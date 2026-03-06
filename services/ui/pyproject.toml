@@ -1,0 +1,13 @@
+[project]
+name = "secure-ai-ui"
+version = "0.1.0"
+description = "Secure AI Appliance local web UI"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+secure-ai-ui = "ui.app:main"

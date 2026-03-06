@@ -1,0 +1,17 @@
+[project]
+name = "secure-ai-quarantine"
+version = "0.1.0"
+description = "Quarantine pipeline: verify, scan, smoke-test, and promote model artifacts"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+scan = [
+    "modelscan>=0.8",
+]
+
+[project.scripts]
+secure-ai-quarantine = "quarantine.watcher:main"

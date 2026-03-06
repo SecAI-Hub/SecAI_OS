@@ -1,0 +1,11 @@
+FROM docker.io/library/python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml .
+COPY quarantine/ quarantine/
+
+RUN pip install --no-cache-dir . && \
+    pip install --no-cache-dir modelscan || true
+
+USER 65534:65534
+ENTRYPOINT ["secure-ai-quarantine"]

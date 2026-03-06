@@ -1,0 +1,79 @@
+[Unit]
+Description=Secure AI Inference Worker (llama-server)
+After=secure-ai-registry.service
+Wants=secure-ai-registry.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/libexec/secure-ai/select-model.sh
+ExecStart=/usr/bin/llama-server \
+    --host 127.0.0.1 \
+    --port 8465 \
+    --model ${MODEL_PATH} \
+    --n-gpu-layers ${GPU_LAYERS} \
+    --ctx-size ${CTX_SIZE} \
+    --threads ${THREADS}
+Environment=MODEL_PATH=
+Environment=GPU_LAYERS=-1
+Environment=CTX_SIZE=8192
+Environment=THREADS=4
+EnvironmentFile=-/var/lib/secure-ai/inference.env
+
+# Filesystem isolation — needs GPU access, no network
+DynamicUser=yes
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/registry
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Syscall filtering — needs GPU ioctls, so allow @raw-io for CUDA/ROCm
+SystemCallFilter=@system-service @io-event
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# GPU access — do NOT set PrivateDevices (need /dev/nvidia*, /dev/dri)
+DeviceAllow=/dev/nvidia* rw
+DeviceAllow=/dev/dri/* rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+
+# Resource limits — generous for inference
+MemoryMax=32G
+CPUQuota=200%
+TasksMax=256
+LimitNOFILE=4096
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# Inference worker: wraps llama-server (llama.cpp) with GPU support.
+# Build arg COMPUTE selects CUDA or CPU-only (Metal uses CPU build on macOS host).
+ARG COMPUTE=cuda
+
+FROM ghcr.io/ggerganov/llama.cpp:server-${COMPUTE} AS runtime
+
+# The entrypoint script reads appliance.yaml and starts llama-server
+# with the correct model path and settings.
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8465
+ENTRYPOINT ["/entrypoint.sh"]

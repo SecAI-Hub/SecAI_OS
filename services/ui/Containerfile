@@ -1,0 +1,11 @@
+FROM docker.io/library/python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml .
+COPY ui/ ui/
+
+RUN pip install --no-cache-dir .
+
+USER 65534:65534
+EXPOSE 8480
+ENTRYPOINT ["secure-ai-ui"]

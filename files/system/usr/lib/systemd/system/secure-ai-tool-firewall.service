@@ -1,0 +1,66 @@
+[Unit]
+Description=Secure AI Tool Firewall (policy-gated tool invocation gateway)
+After=secure-ai-registry.service
+Requires=secure-ai-registry.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/tool-firewall
+Environment=BIND_ADDR=127.0.0.1:8475
+Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/tool-firewall-audit.jsonl
+
+# Filesystem isolation
+DynamicUser=yes
+LogsDirectory=secure-ai
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/vault
+ReadWritePaths=/var/lib/secure-ai/logs
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=32
+LimitNOFILE=512
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

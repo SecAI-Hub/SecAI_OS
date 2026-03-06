@@ -1,0 +1,12 @@
+[Unit]
+Description=Secure AI ephemeral tmpdir (RAM-backed, cleared on reboot)
+Before=secure-ai-registry.service secure-ai-quarantine-watcher.service
+
+[Mount]
+What=tmpfs
+Where=/run/secure-ai/tmp
+Type=tmpfs
+Options=nodev,nosuid,noexec,size=2G,mode=0750
+
+[Install]
+WantedBy=multi-user.target

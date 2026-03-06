@@ -1,0 +1,25 @@
+# Signing keys
+cosign.key
+cosign.private
+
+# BlueBuild generated
+/Containerfile
+
+# Go
+services/*/vendor/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

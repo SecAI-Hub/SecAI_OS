@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure AI - Model Management</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1b26;
+            --border: #2a2b3d;
+            --text: #c0caf5;
+            --text-dim: #565f89;
+            --accent: #7aa2f7;
+            --accent-hover: #89b4fa;
+            --danger: #f7768e;
+            --success: #9ece6a;
+            --warning: #e0af68;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 { font-size: 1.1rem; font-weight: 600; }
+        header nav a {
+            color: var(--accent);
+            text-decoration: none;
+            margin-left: 1.5rem;
+            font-size: 0.9rem;
+        }
+        header nav a:hover { color: var(--accent-hover); }
+        .container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+        .section { margin-bottom: 2rem; }
+        .section h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text);
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .card-header h3 { font-size: 0.95rem; font-weight: 600; }
+        .badge {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        .badge-format { background: #1e2030; color: var(--accent); border: 1px solid var(--border); }
+        .badge-ok { background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
+        .badge-pending { background: #2e2a1a; color: var(--warning); border: 1px solid #4a3d2d; }
+        .meta { font-size: 0.8rem; color: var(--text-dim); }
+        .meta span { margin-right: 1.25rem; }
+        .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+        .btn {
+            padding: 0.4rem 0.8rem;
+            border-radius: 0.4rem;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .btn:hover { border-color: var(--accent); }
+        .btn-danger { color: var(--danger); }
+        .btn-danger:hover { border-color: var(--danger); }
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg);
+            border-color: var(--accent);
+            font-weight: 600;
+        }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 0.75rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .upload-zone:hover { border-color: var(--accent); }
+        .upload-zone.dragover { border-color: var(--accent); background: rgba(122, 162, 247, 0.05); }
+        .upload-zone p { color: var(--text-dim); margin-bottom: 0.5rem; }
+        .upload-zone input[type="file"] { display: none; }
+        .progress-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            margin-top: 0.75rem;
+            overflow: hidden;
+        }
+        .progress-bar .fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .empty { color: var(--text-dim); text-align: center; padding: 2rem; }
+        #status-msg {
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            display: none;
+            font-size: 0.9rem;
+        }
+        #status-msg.success { display: block; background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
+        #status-msg.error { display: block; background: #2e1a1a; color: var(--danger); border: 1px solid #4a2d2d; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Model Management</h1>
+        <nav>
+            <a href="/">Chat</a>
+            <a href="/models">Models</a>
+        </nav>
+    </header>
+
+    <div class="container">
+        <div id="status-msg"></div>
+
+        <div class="section">
+            <h2>Import Model</h2>
+            <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+                <p>Drag and drop a .gguf or .safetensors file here</p>
+                <p style="font-size: 0.8rem;">or click to browse</p>
+                <input type="file" id="file-input" accept=".gguf,.safetensors">
+                <div class="progress-bar" id="upload-progress" style="display: none;">
+                    <div class="fill" id="upload-fill"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Quarantine (pending verification)</h2>
+            <div id="quarantine-list"><div class="empty">No files pending.</div></div>
+        </div>
+
+        <div class="section">
+            <h2>Trusted Models</h2>
+            <div id="models-list"><div class="empty">No models registered yet.</div></div>
+        </div>
+    </div>
+
+    <script>
+        const uploadZone = document.getElementById("upload-zone");
+        const fileInput = document.getElementById("file-input");
+        const statusMsg = document.getElementById("status-msg");
+
+        function showStatus(msg, type) {
+            statusMsg.textContent = msg;
+            statusMsg.className = type;
+            setTimeout(() => { statusMsg.className = ""; statusMsg.style.display = "none"; }, 5000);
+        }
+
+        function formatBytes(b) {
+            if (b === 0) return "0 B";
+            const k = 1024;
+            const sizes = ["B", "KB", "MB", "GB"];
+            const i = Math.floor(Math.log(b) / Math.log(k));
+            return (b / Math.pow(k, i)).toFixed(1) + " " + sizes[i];
+        }
+
+        // Drag and drop
+        uploadZone.addEventListener("dragover", (e) => { e.preventDefault(); uploadZone.classList.add("dragover"); });
+        uploadZone.addEventListener("dragleave", () => uploadZone.classList.remove("dragover"));
+        uploadZone.addEventListener("drop", (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove("dragover");
+            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener("change", () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+
+        async function uploadFile(file) {
+            const ext = file.name.split(".").pop().toLowerCase();
+            if (!["gguf", "safetensors"].includes(ext)) {
+                showStatus("Only .gguf and .safetensors files are allowed.", "error");
+                return;
+            }
+
+            const progress = document.getElementById("upload-progress");
+            const fill = document.getElementById("upload-fill");
+            progress.style.display = "block";
+            fill.style.width = "0%";
+
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/models/import");
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) fill.style.width = (e.loaded / e.total * 100) + "%";
+            };
+            xhr.onload = () => {
+                progress.style.display = "none";
+                if (xhr.status === 202) {
+                    showStatus("Model imported to quarantine. Scanning will begin automatically.", "success");
+                    refreshAll();
+                } else {
+                    const err = JSON.parse(xhr.responseText);
+                    showStatus("Import failed: " + (err.error || "unknown error"), "error");
+                }
+            };
+            xhr.onerror = () => {
+                progress.style.display = "none";
+                showStatus("Upload failed. Check your connection.", "error");
+            };
+            xhr.send(formData);
+        }
+
+        async function loadModels() {
+            try {
+                const resp = await fetch("/api/models");
+                const models = await resp.json();
+                const container = document.getElementById("models-list");
+
+                if (!models.length) {
+                    container.innerHTML = '<div class="empty">No models registered yet. Import one above.</div>';
+                    return;
+                }
+
+                container.innerHTML = models.map(m => `
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>${m.name}</h3>
+                            <span class="badge badge-format">${m.format}</span>
+                        </div>
+                        <div class="meta">
+                            <span>${formatBytes(m.size_bytes)}</span>
+                            <span>sha256: ${m.sha256 ? m.sha256.substring(0, 16) + "..." : "n/a"}</span>
+                            <span>promoted: ${m.promoted_at || "n/a"}</span>
+                        </div>
+                        <div class="actions">
+                            <button class="btn" onclick="verifyModel('${m.name}')">Verify Hash</button>
+                            <button class="btn btn-danger" onclick="deleteModel('${m.name}')">Delete</button>
+                        </div>
+                    </div>
+                `).join("");
+            } catch { }
+        }
+
+        async function loadQuarantine() {
+            try {
+                const resp = await fetch("/api/models/quarantine");
+                const files = await resp.json();
+                const container = document.getElementById("quarantine-list");
+
+                if (!files.length) {
+                    container.innerHTML = '<div class="empty">No files pending.</div>';
+                    return;
+                }
+
+                container.innerHTML = files.map(f => `
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>${f.filename}</h3>
+                            <span class="badge badge-pending">scanning</span>
+                        </div>
+                        <div class="meta"><span>${formatBytes(f.size_bytes)}</span></div>
+                    </div>
+                `).join("");
+            } catch { }
+        }
+
+        async function verifyModel(name) {
+            try {
+                const resp = await fetch("/api/models/verify", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({name}),
+                });
+                const data = await resp.json();
+                if (data.status === "verified") {
+                    showStatus(`${name}: hash verified OK`, "success");
+                } else {
+                    showStatus(`${name}: verification FAILED - ${data.error || "hash mismatch"}`, "error");
+                }
+            } catch {
+                showStatus("Could not reach registry.", "error");
+            }
+        }
+
+        async function deleteModel(name) {
+            if (!confirm(`Delete model "${name}"? This removes it from the registry and disk.`)) return;
+            try {
+                const resp = await fetch("/api/models/delete", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({name}),
+                });
+                if (resp.ok) {
+                    showStatus(`${name} deleted.`, "success");
+                    refreshAll();
+                } else {
+                    showStatus("Delete failed.", "error");
+                }
+            } catch {
+                showStatus("Could not reach registry.", "error");
+            }
+        }
+
+        function refreshAll() { loadModels(); loadQuarantine(); }
+        refreshAll();
+        setInterval(refreshAll, 10000);
+    </script>
+</body>
+</html>

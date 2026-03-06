@@ -1,0 +1,96 @@
+#!/usr/sbin/nft -f
+#
+# Secure AI Appliance — default-deny egress firewall
+#
+# Policy:
+#   - All localhost traffic is allowed (inter-service communication)
+#   - Outbound internet is BLOCKED by default
+#   - Only DHCP for initial network setup
+#   - DNS rate-limited (needed for DHCP/system updates)
+#   - HTTPS outbound for host-level tools (rpm-ostree, cosign)
+#   - Services use PrivateNetwork=yes; only airlock can reach the network
+#   - Rate-limited logging to prevent log flooding
+#   - Invalid packets dropped early
+
+flush ruleset
+
+table inet secure_ai {
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Drop invalid packets immediately
+        ct state invalid drop
+
+        # Allow established/related connections
+        ct state established,related accept
+
+        # Allow loopback
+        iif "lo" accept
+
+        # Allow ICMP (restricted types only)
+        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, echo-reply, destination-unreachable, time-exceeded, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+
+        # Allow DHCP client responses
+        udp sport 67 udp dport 68 accept
+
+        # Allow UI web interface from local network (port 8480)
+        tcp dport 8480 ct state new accept
+
+        # Rate-limited logging for dropped packets
+        limit rate 10/minute log prefix "secure-ai-in-drop: "
+        drop
+    }
+
+    chain output {
+        type filter hook output priority 0; policy drop;
+
+        # Drop invalid packets
+        ct state invalid drop
+
+        # Allow established/related
+        ct state established,related accept
+
+        # Allow all loopback (services talk to each other on localhost)
+        oif "lo" accept
+
+        # Allow ICMP (restricted types only)
+        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, echo-reply, destination-unreachable, time-exceeded, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+
+        # Allow DHCP client
+        udp sport 68 udp dport 67 accept
+
+        # Allow DNS (rate limited)
+        udp dport 53 limit rate 30/minute accept
+        tcp dport 53 limit rate 10/minute accept
+
+        # Allow NTP for time sync (needed for certificate validation)
+        udp dport 123 accept
+
+        # Allow HTTPS outbound — host-level only (rpm-ostree, cosign)
+        # Services with PrivateNetwork=yes cannot reach this chain.
+        # The airlock service is the only service without PrivateNetwork,
+        # so it is the only non-host path to the internet.
+        tcp dport 443 accept
+
+        # Rate-limited logging for dropped packets
+        limit rate 10/minute log prefix "secure-ai-out-drop: "
+        drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # Drop invalid
+        ct state invalid drop
+
+        # Allow established/related
+        ct state established,related accept
+
+        # Drop all forwarded traffic — no routing
+        limit rate 5/minute log prefix "secure-ai-fwd-drop: "
+        drop
+    }
+}

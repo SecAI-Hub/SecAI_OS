@@ -1,0 +1,62 @@
+version: 1
+
+defaults:
+  network:
+    runtime_egress: "deny"
+  logging:
+    store_raw_prompts: false
+    store_raw_responses: false
+
+models:
+  allowed_formats: ["gguf", "safetensors"]
+  deny_formats: ["pickle", "pt", "bin"]
+  require_scan: true
+  require_behavior_tests: true
+
+tools:
+  default: "deny"
+  rate_limit:
+    requests_per_minute: 120
+    burst_size: 20
+  allow:
+    - name: "filesystem.read"
+      paths_allowlist:
+        - "/vault/user_docs/**"
+      paths_denylist:
+        - "/etc/shadow"
+        - "/etc/passwd"
+        - "/etc/secure-ai/**"
+      max_arg_length: 4096
+    - name: "filesystem.write"
+      paths_allowlist:
+        - "/vault/outputs/**"
+      paths_denylist:
+        - "/vault/outputs/../**"
+      args_blocklist:
+        - "../"
+        - "/etc/"
+        - "/usr/"
+      max_arg_length: 4096
+    - name: "filesystem.list"
+      paths_allowlist:
+        - "/vault/user_docs/**"
+        - "/vault/outputs/**"
+  deny:
+    - name: "shell.exec"
+    - name: "network.fetch"
+    - name: "process.spawn"
+    - name: "filesystem.delete"
+
+airlock:
+  enabled: false
+  allowed_destinations:
+    - "https://huggingface.co/"
+    - "https://registry.ollama.ai/"
+  allowed_methods: ["GET", "POST"]
+  max_body_size: 10485760  # 10 MB
+  rate_limit:
+    requests_per_minute: 30
+  content_rules:
+    block_if_contains: []
+    scan_for_pii: true
+    scan_for_credentials: true

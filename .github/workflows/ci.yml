@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions by default
+permissions:
+  contents: read
+
+jobs:
+  go-build-and-test:
+    name: Go Build & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        service: [registry, tool-firewall, airlock]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+
+      - name: Build
+        working-directory: services/${{ matrix.service }}
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null .
+
+      - name: Test
+        working-directory: services/${{ matrix.service }}
+        run: go test -v -race -count=1 ./...
+
+      - name: Vet
+        working-directory: services/${{ matrix.service }}
+        run: go vet ./...
+
+  go-securectl:
+    name: Build securectl CLI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: services/registry/go.sum
+
+      - name: Build securectl
+        working-directory: services/registry
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o /dev/null ./cmd/securectl/
+
+  python-test:
+    name: Python Test & Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyyaml flask requests pytest
+
+      - name: Lint (syntax check)
+        run: |
+          python -m py_compile services/quarantine/quarantine/pipeline.py
+          python -m py_compile services/quarantine/quarantine/watcher.py
+          python -m py_compile services/ui/ui/app.py
+
+      - name: Test quarantine pipeline
+        run: python -m pytest tests/test_pipeline.py -v
+
+      - name: Test UI app
+        run: python -m pytest tests/test_ui.py -v
+
+  shellcheck:
+    name: Shell Script Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint shell scripts
+        run: |
+          shellcheck -s bash \
+            files/system/usr/libexec/secure-ai/firstboot.sh \
+            files/system/usr/libexec/secure-ai/panic.sh \
+            files/system/usr/libexec/secure-ai/setup-vault.sh \
+            files/system/usr/libexec/secure-ai/select-model.sh \
+            files/scripts/build-services.sh
+
+  policy-validate:
+    name: Validate YAML configs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Validate YAML files
+        run: |
+          python -c "
+          import yaml, sys, glob
+          errors = 0
+          for pattern in ['files/system/etc/secure-ai/**/*.yaml', 'recipes/*.yml']:
+              for f in glob.glob(pattern, recursive=True):
+                  try:
+                      with open(f) as fh:
+                          yaml.safe_load(fh)
+                      print(f'OK: {f}')
+                  except Exception as e:
+                      print(f'FAIL: {f}: {e}')
+                      errors += 1
+          sys.exit(errors)
+          "

@@ -1,0 +1,75 @@
+--- # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+
+name: SecAI_OS
+description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
+
+base-image: ghcr.io/ublue-os/silverblue-main
+image-version: 42
+
+modules:
+  # 1) Install required packages.
+  - type: rpm-ostree
+    install:
+      - nftables
+      - cryptsetup
+      - cosign
+      - jq
+      - python3
+      - python3-pip
+      - python3-pyyaml
+      - python3-flask
+      - python3-requests
+      - golang
+
+  # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
+  - type: files
+    files:
+      - source: system
+        destination: /
+
+  # 3) Copy service source code into build context and compile.
+  - type: script
+    scripts:
+      - build-services.sh
+
+  # 4) Install NVIDIA kernel modules (nvidia-open for RTX 5080).
+  - type: akmods
+    base: main
+    install: []
+    nvidia-driver: nvidia-open
+
+  # 5) Kernel args: NVIDIA setup + disable swap + security hardening.
+  - type: kargs
+    append:
+      - rd.driver.blacklist=nouveau
+      - modprobe.blacklist=nouveau
+      - nvidia-drm.modeset=1
+      - systemd.swap=0
+      - slab_nomerge
+      - init_on_alloc=1
+      - init_on_free=1
+      - page_alloc.shuffle=1
+      - randomize_kstack_offset=on
+      - vsyscall=none
+      - lockdown=confidentiality
+      - iommu=force
+    delete:
+      - nomodeset
+
+  # 6) Enable/disable systemd units baked into the image.
+  - type: systemd
+    system:
+      enabled:
+        - secure-ai-registry.service
+        - secure-ai-tool-firewall.service
+        - secure-ai-ui.service
+        - secure-ai-quarantine-watcher.service
+        - secure-ai-inference.service
+        - nftables.service
+        - secure-ai-firstboot.service
+        - secure-ai-tmpdir.mount
+      disabled:
+        - secure-ai-airlock.service
+
+  # 7) Install signing policy for cosign-verified images.
+  - type: signing

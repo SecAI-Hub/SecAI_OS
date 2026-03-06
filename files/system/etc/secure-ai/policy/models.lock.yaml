@@ -1,0 +1,20 @@
+version: 1
+
+# Pinned model artifacts for the Trusted Registry.
+# Each entry records the verified hash at promotion time.
+# The quarantine pipeline checks downloads against these pins.
+# To add a new model: download -> quarantine -> verify hash -> scan -> smoke test -> add here.
+
+models: []
+  # Example entry (uncomment and fill after first model promotion):
+  # - name: "mistral-7b-instruct-v0.3"
+  #   format: "gguf"
+  #   source: "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF"
+  #   filename: "mistral-7b-instruct-v0.3.Q5_K_M.gguf"
+  #   sha256: ""
+  #   size_bytes: 0
+  #   promoted_at: ""
+  #   scan_results:
+  #     modelscan: "pass"
+  #     format_gate: "pass"
+  #     smoke_test_score: 0.0

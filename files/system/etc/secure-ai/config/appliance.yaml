@@ -1,0 +1,40 @@
+version: 1
+
+appliance:
+  name: "Secure AI Appliance"
+  mode: "local-only"  # local-only | online-augmented
+
+paths:
+  vault: "/var/lib/secure-ai/vault"
+  registry: "/var/lib/secure-ai/registry"
+  quarantine: "/var/lib/secure-ai/quarantine"
+  airlock_audit: "/var/lib/secure-ai/airlock-audit"
+  tmpdir: "/run/secure-ai/tmp"
+
+inference:
+  engine: "llama-cpp"
+  bind: "127.0.0.1:8465"
+  gpu_layers: -1  # -1 = offload all layers to GPU; 0 = CPU only
+  context_size: 8192
+  default_model: ""  # set after first model is promoted
+
+services:
+  registry:
+    bind: "127.0.0.1:8470"
+  tool_firewall:
+    bind: "127.0.0.1:8475"
+  ui:
+    bind: "127.0.0.1:8480"
+  airlock:
+    bind: "127.0.0.1:8490"
+
+session:
+  mode: "normal"  # normal | sensitive | offline-only
+  # sensitive mode: aggressive worker recycling after each task
+  # offline-only: hard-block all network even if airlock is enabled
+
+logging:
+  level: "info"
+  store_raw_prompts: false
+  store_raw_responses: false
+  audit_tool_calls: true

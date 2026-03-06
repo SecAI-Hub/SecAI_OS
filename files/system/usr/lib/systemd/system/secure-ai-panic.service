@@ -1,0 +1,7 @@
+[Unit]
+Description=Secure AI Panic Switch (emergency network kill + worker stop)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/panic.sh
+RemainAfterExit=yes

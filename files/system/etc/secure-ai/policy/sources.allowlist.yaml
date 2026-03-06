@@ -1,0 +1,26 @@
+version: 1
+
+# Allowlisted sources for model and container acquisition.
+# The acquisition VM may ONLY download from these origins.
+# All URLs must use HTTPS. Signatures are required where noted.
+
+models:
+  - name: "Hugging Face"
+    url_prefix: "https://huggingface.co/"
+    require_signature: false  # HF does not sign model files; rely on hash pinning
+    allowed_formats: ["safetensors", "gguf"]
+    notes: "Pin exact commit hashes in models.lock.yaml"
+
+  - name: "Ollama Library"
+    url_prefix: "https://registry.ollama.ai/"
+    require_signature: false
+    allowed_formats: ["gguf"]
+
+containers:
+  - registry: "ghcr.io/sec_ai/secai_os"
+    require_cosign: true
+    notes: "Project service containers; must pass cosign verification"
+
+  - registry: "docker.io/library"
+    require_cosign: false
+    notes: "Base images only; scanned by Trivy before use"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Secure AI Appliance
+Comment=Open the Secure AI local web interface
+Exec=sh -c "sleep 5 && xdg-open http://127.0.0.1:8480"
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

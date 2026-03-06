@@ -1,0 +1,13 @@
+[Unit]
+Description=Secure AI Appliance first-boot setup
+ConditionPathExists=!/var/lib/secure-ai/.initialized
+After=local-fs.target
+Before=secure-ai-registry.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/firstboot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
