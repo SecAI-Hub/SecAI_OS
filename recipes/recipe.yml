@@ -27,6 +27,9 @@ modules:
       - vulkan-tools              # vulkaninfo for diagnostics
       - libdrm                    # DRM library (all GPUs)
       - clinfo                    # OpenCL diagnostics
+      # Tor + SearXNG (anonymous web search)
+      - tor                         # Tor SOCKS5 proxy
+      - python3-searxng             # SearXNG metasearch (or installed via pip)
 
   # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
   - type: files
@@ -83,6 +86,10 @@ modules:
         - secure-ai-tmpdir.mount
       disabled:
         - secure-ai-airlock.service
+        # Search stack disabled by default (user enables via policy)
+        - secure-ai-tor.service
+        - secure-ai-searxng.service
+        - secure-ai-search-mediator.service
 
   # 7) Install signing policy for cosign-verified images.
   - type: signing

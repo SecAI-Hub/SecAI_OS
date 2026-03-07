@@ -1,0 +1,35 @@
+[Unit]
+Description=Secure AI Appliance - SearXNG Metasearch Engine (Tor-Routed)
+After=secure-ai-tor.service
+Wants=secure-ai-tor.service
+
+[Service]
+Type=simple
+Environment=SEARXNG_SETTINGS_PATH=/etc/secure-ai/searxng/settings.yml
+ExecStart=/usr/bin/python3 -m searx.webapp
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing — needs network only to reach Tor SOCKS5 on localhost
+ProtectSystem=strict
+ReadOnlyPaths=/etc/secure-ai/searxng
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# SearXNG connects to Tor on localhost, which connects to the internet
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+# No GPU, no devices
+PrivateDevices=yes
+
+# Resource limits
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

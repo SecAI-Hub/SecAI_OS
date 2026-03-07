@@ -1,0 +1,33 @@
+# Secure AI Appliance - Tor configuration
+# Provides anonymous SOCKS5 proxy for SearXNG search routing.
+# Only SearXNG connects to Tor — no other services have access.
+
+# SOCKS5 proxy for SearXNG
+SocksPort 127.0.0.1:9050
+
+# Disable direct connections (SOCKS only)
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
+
+# Circuit isolation: each destination gets its own circuit
+IsolateDestAddr 1
+IsolateDestPort 1
+
+# New circuit for each SearXNG query batch (rotate every 60s)
+NewCircuitPeriod 60
+MaxCircuitDirtiness 600
+
+# Disable unused features
+ControlPort 0
+DNSPort 0
+
+# Logging (minimal — don't log query content)
+Log notice file /var/lib/secure-ai/logs/tor.log
+SafeLogging 1
+
+# Data directory
+DataDirectory /var/lib/secure-ai/tor
+
+# Hardened security settings
+Sandbox 1
+NoExec 1

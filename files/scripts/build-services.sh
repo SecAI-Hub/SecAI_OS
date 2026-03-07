@@ -63,6 +63,27 @@ mkdir -p "$DIFFUSION_DIR"
 cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
 echo "  -> ${DIFFUSION_DIR}/app.py"
 
+# Search mediator
+echo "Installing: search-mediator"
+SEARCH_DIR="/opt/secure-ai/services/search-mediator"
+mkdir -p "$SEARCH_DIR"
+cp /tmp/services/search-mediator/app.py "$SEARCH_DIR/app.py"
+cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
+#!/usr/bin/env python3
+import sys
+sys.path.insert(0, "/opt/secure-ai/services/search-mediator")
+from app import main
+main()
+WRAPPER
+chmod +x "${INSTALL_DIR}/search-mediator"
+echo "  -> ${INSTALL_DIR}/search-mediator"
+
+# Install SearXNG via pip if not available as RPM
+echo "Installing: searxng"
+pip3 install --prefix=/usr --no-cache-dir searxng 2>/dev/null || \
+    pip3 install --prefix=/usr --break-system-packages --no-cache-dir searxng 2>/dev/null || \
+    echo "WARNING: searxng pip install failed, relying on RPM package"
+
 # Cleanup build artifacts
 rm -rf "$SRC_DIR"
 dnf remove -y golang 2>/dev/null || true

@@ -1,0 +1,99 @@
+# Secure AI Appliance - SearXNG Configuration
+# Self-hosted metasearch engine. All outbound requests route through Tor.
+# Listens on localhost only — accessed by the search mediator service.
+
+general:
+  instance_name: "SecAI Search"
+  debug: false
+  enable_metrics: false
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8888
+  secret_key: "secai-local-only-key"
+  # No public access — localhost only
+  limiter: false
+  # Disable public image proxy (no need, we strip images)
+  image_proxy: false
+
+search:
+  safe_search: 1
+  default_lang: "en"
+  autocomplete: false
+  # Max results per engine
+  max_results: 10
+
+# Route ALL outbound requests through Tor SOCKS5 proxy
+outgoing:
+  proxies:
+    all://:
+      - socks5h://127.0.0.1:9050
+  # Timeout per engine request (Tor adds latency)
+  request_timeout: 20
+  useragent_suffix: ""
+
+# Only enable privacy-respecting search engines
+engines:
+  # Web search
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: false
+
+  # Programming / technical
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    disabled: false
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+
+  - name: arch wiki
+    engine: archlinux
+    shortcut: aw
+    disabled: false
+
+  # Disable all engines that require API keys or track users
+  - name: google
+    engine: google
+    disabled: true
+
+  - name: bing
+    engine: bing
+    disabled: true
+
+  - name: yahoo
+    engine: yahoo
+    disabled: true
+
+  - name: brave
+    engine: brave
+    disabled: true
+
+# Disable analytics, tracking, result collection
+ui:
+  static_use_hash: true
+  default_theme: simple
+  results_on_new_tab: false
+
+# No external plugins
+plugins: []
+
+# Privacy-focused defaults
+enabled_plugins:
+  - "Hash plugin"
+  - "Hostname replace"
+  - "Tracker URL remover"

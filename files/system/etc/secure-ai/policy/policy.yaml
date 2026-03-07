@@ -65,6 +65,31 @@ tools:
     - name: "process.spawn"
     - name: "filesystem.delete"
 
+search:
+  # Tor-routed web search via self-hosted SearXNG
+  # Disabled by default — user must explicitly enable
+  enabled: false
+  # Maximum query length sent to SearXNG (after PII stripping)
+  max_query_length: 200
+  # Maximum results returned per search
+  max_results: 5
+  # Maximum context size injected into LLM (characters)
+  max_context_length: 4000
+  # PII scanning on outbound queries (always on)
+  strip_pii: true
+  # Block queries that are >50% redacted PII
+  block_high_pii_queries: true
+  # Injection detection on inbound results
+  detect_injection: true
+  # Audit every search (query hash + sanitized query + result count)
+  audit: true
+  # Search engines enabled in SearXNG (privacy-respecting only)
+  allowed_engines:
+    - duckduckgo
+    - wikipedia
+    - stackoverflow
+    - github
+
 airlock:
   enabled: false
   allowed_destinations:

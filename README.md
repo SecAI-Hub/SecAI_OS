@@ -40,6 +40,9 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with 
 | Inference Worker | 8465 | llama.cpp | LLM inference (CUDA / ROCm / Vulkan / Metal / CPU) |
 | Diffusion Worker | 8455 | Python | Image and video generation (CUDA / ROCm / XPU / MPS / CPU) |
 | Quarantine | -- | Python | 7-stage verify, scan, and promote pipeline |
+| Search Mediator | 8485 | Python | Sanitized web search (query PII stripping + result cleaning) |
+| SearXNG | 8888 | Python | Self-hosted metasearch engine (privacy-respecting engines only) |
+| Tor | 9050 | C | Anonymous SOCKS5 proxy (all searches routed through Tor) |
 
 ## Hardware Support
 
@@ -389,6 +392,46 @@ To disable the airlock again:
 sudo systemctl stop secure-ai-airlock
 ```
 
+### Web Search (Tor-Routed, Optional)
+
+Web search is **disabled by default**. When enabled, the LLM can augment its answers with web search results — all routed through Tor for anonymity.
+
+**How it works:**
+1. The LLM generates a search query (your raw prompt never leaves the device)
+2. The search mediator strips PII (emails, phone numbers, SSNs, API keys, IPs) from the query
+3. The sanitized query goes to a local SearXNG instance
+4. SearXNG routes the search through Tor (your IP is hidden from search engines)
+5. Results come back through Tor, are stripped of HTML/scripts, and checked for prompt injection
+6. Clean results are injected as context for the LLM to formulate a better answer
+7. The UI shows a "web sources used" indicator with citations
+
+**To enable:**
+
+```bash
+# Enable in policy first
+# Edit /etc/secure-ai/policy/policy.yaml and set search.enabled: true
+
+# Start the search stack (Tor -> SearXNG -> Search Mediator)
+sudo systemctl start secure-ai-tor
+sudo systemctl start secure-ai-searxng
+sudo systemctl start secure-ai-search-mediator
+```
+
+**Privacy protections:**
+- All traffic routed through Tor (IP hidden from search engines)
+- Only privacy-respecting engines enabled (DuckDuckGo, Wikipedia, StackOverflow, GitHub)
+- PII automatically stripped from outbound queries
+- Queries with >50% PII content are blocked entirely
+- Inbound results scanned for prompt injection attacks
+- Every search is audit-logged (query hash only, not raw content)
+- `offline-only` session mode hard-blocks all search even if enabled
+
+**To disable:**
+
+```bash
+sudo systemctl stop secure-ai-search-mediator secure-ai-searxng secure-ai-tor
+```
+
 ---
 
 ## Security Overview
@@ -421,6 +464,7 @@ Every model — whether downloaded from the catalog or imported by the user — 
 | **Models** | 7-stage quarantine: source, format, integrity, provenance, static scan, behavioral test, diffusion scan |
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
+| **Search** | Tor-routed, PII stripped from queries, injection detection on results, audit logged |
 | **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, syscall filters |
 | **GPU Isolation** | Vendor-specific DeviceAllow (NVIDIA `/dev/nvidia*`, AMD `/dev/kfd`, Intel `/dev/dri/*`), PrivateNetwork on all |
 | **Emergency** | Panic switch: instant network kill + route flush + service stop |
@@ -514,6 +558,19 @@ quarantine:
   smoke_test_max_critical: 1  # fail if >1 critical flag
 ```
 
+**Web search** (`policy/policy.yaml`):
+```yaml
+search:
+  enabled: false          # disabled by default
+  strip_pii: true         # always strip PII from queries
+  detect_injection: true  # scan results for prompt injection
+  audit: true             # log every search (hash only)
+  allowed_engines:        # privacy-respecting engines only
+    - duckduckgo
+    - wikipedia
+    - stackoverflow
+```
+
 **Tool firewall policy** (`policy/policy.yaml`):
 ```yaml
 tools:
@@ -550,9 +607,11 @@ services/
   quarantine/           Python -- 7-stage verification + scanning pipeline
   inference-worker/     llama.cpp wrapper
   diffusion-worker/     Python -- Stable Diffusion image/video generation
+  search-mediator/      Python -- Tor-routed web search with PII stripping
   ui/                   Python/Flask -- Web UI (chat, generate, model management)
 tests/
   test_pipeline.py      Quarantine pipeline tests (48 tests)
+  test_search.py        Search mediator tests (27 tests)
   test_ui.py            Web UI tests (7 tests)
 docs/
   threat-model.md       Formal threat model and security invariants
@@ -566,7 +625,7 @@ cd services/registry && go test -v -race ./...
 cd services/tool-firewall && go test -v -race ./...
 cd services/airlock && go test -v -race ./...
 
-# Python tests (55 total)
+# Python tests (82 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -585,7 +644,9 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 - [x] **M6 Hardening** -- Systemd sandboxing, kernel params, nftables, panic switch
 - [x] **M7 CI/CD** -- GitHub Actions, Go/Python tests, shellcheck, YAML validation
 - [x] **M8 Image/Video Generation** -- Diffusion worker, one-click downloads, generate UI
-- [ ] **M9 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
+- [x] **M9 Multi-GPU Support** -- NVIDIA/AMD/Intel/Apple auto-detection, Vulkan fallback
+- [x] **M10 Tor-Routed Search** -- SearXNG + Tor, PII stripping, injection detection, audit
+- [ ] **M11 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
 
 ## Troubleshooting
 

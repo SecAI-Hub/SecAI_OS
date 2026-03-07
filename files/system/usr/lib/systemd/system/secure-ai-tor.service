@@ -1,0 +1,40 @@
+[Unit]
+Description=Secure AI Appliance - Tor Anonymous Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /var/lib/secure-ai/tor /var/lib/secure-ai/logs
+ExecStart=/usr/bin/tor -f /etc/secure-ai/tor/torrc
+Restart=on-failure
+RestartSec=10
+
+# Sandboxing — Tor needs network but nothing else
+DynamicUser=yes
+StateDirectory=secure-ai/tor
+LogsDirectory=secure-ai
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai/tor /var/lib/secure-ai/logs
+ReadOnlyPaths=/etc/secure-ai/tor
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# Tor needs network (it IS the network proxy)
+# But restrict to IPv4/IPv6 TCP only
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# No GPU, no devices
+PrivateDevices=yes
+
+# Resource limits
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

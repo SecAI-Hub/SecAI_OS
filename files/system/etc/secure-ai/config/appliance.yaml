@@ -41,6 +41,12 @@ services:
     bind: "127.0.0.1:8490"
   diffusion:
     bind: "127.0.0.1:8455"
+  search_mediator:
+    bind: "127.0.0.1:8485"
+  searxng:
+    bind: "127.0.0.1:8888"
+  tor:
+    socks: "127.0.0.1:9050"
 
 session:
   mode: "normal"  # normal | sensitive | offline-only

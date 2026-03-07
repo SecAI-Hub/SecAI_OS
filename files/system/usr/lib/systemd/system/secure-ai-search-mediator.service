@@ -1,0 +1,41 @@
+[Unit]
+Description=Secure AI Appliance - Search Mediator (Sanitized Web Search)
+After=secure-ai-searxng.service
+Wants=secure-ai-searxng.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/search-mediator
+Restart=on-failure
+RestartSec=5
+
+Environment=BIND_ADDR=127.0.0.1:8485
+Environment=SEARXNG_URL=http://127.0.0.1:8888
+Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
+Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
+Environment=AUDIT_DIR=/var/lib/secure-ai/logs
+
+# Sandboxing — mediator only talks to SearXNG on localhost
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai/logs
+ReadOnlyPaths=/etc/secure-ai
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# Only needs localhost network (to reach SearXNG)
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+# No GPU, no devices
+PrivateDevices=yes
+
+# Resource limits
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

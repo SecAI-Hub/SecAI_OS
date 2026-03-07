@@ -27,6 +27,7 @@ DIFFUSION_URL = os.getenv("DIFFUSION_URL", "http://127.0.0.1:8455")
 REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
 TOOL_FIREWALL_URL = os.getenv("TOOL_FIREWALL_URL", "http://127.0.0.1:8475")
 AIRLOCK_URL = os.getenv("AIRLOCK_URL", "http://127.0.0.1:8490")
+SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
 
@@ -428,6 +429,100 @@ def chat_stream():
     return Response(generate(), mimetype="text/event-stream")
 
 
+# --- API: Web Search (Tor-routed via search mediator) ---
+
+@app.route("/api/search", methods=["POST"])
+def web_search():
+    """Perform a Tor-routed web search. The query is sanitized by the mediator.
+
+    Returns search results + a pre-built context string for augmenting LLM responses.
+    """
+    try:
+        resp = requests.post(
+            f"{SEARCH_MEDIATOR_URL}/v1/search",
+            json=request.get_json(),
+            timeout=45,
+        )
+        return jsonify(resp.json()), resp.status_code
+    except requests.ConnectionError:
+        return jsonify({"error": "search mediator not available (is Tor running?)"}), 503
+
+
+@app.route("/api/search/status")
+def search_status():
+    """Check if Tor-routed search is available."""
+    try:
+        resp = requests.get(f"{SEARCH_MEDIATOR_URL}/health", timeout=5)
+        return jsonify(resp.json())
+    except requests.ConnectionError:
+        return jsonify({"status": "unavailable", "search_enabled": False})
+
+
+@app.route("/api/chat/search", methods=["POST"])
+def chat_with_search():
+    """Chat with optional web search augmentation.
+
+    If the request includes "search": true, the user's last message is used
+    to perform a Tor-routed search. Results are injected as context before
+    sending to the LLM. The response includes a flag indicating online sources
+    were used.
+    """
+    body = request.get_json()
+    messages = body.get("messages", [])
+    do_search = body.get("search", False)
+
+    search_context = None
+    search_results = None
+
+    if do_search and messages:
+        # Use the last user message as the search query
+        last_user = next(
+            (m for m in reversed(messages) if m.get("role") == "user"),
+            None,
+        )
+        if last_user:
+            try:
+                search_resp = requests.post(
+                    f"{SEARCH_MEDIATOR_URL}/v1/search",
+                    json={"query": last_user["content"]},
+                    timeout=45,
+                )
+                if search_resp.status_code == 200:
+                    search_data = search_resp.json()
+                    search_context = search_data.get("context", "")
+                    search_results = search_data.get("results", [])
+            except Exception:
+                log.warning("search augmentation failed, proceeding without")
+
+    # If we got search context, inject it as a system message
+    augmented_messages = list(messages)
+    if search_context:
+        augmented_messages.insert(0, {
+            "role": "system",
+            "content": (
+                "You have access to the following web search results. "
+                "Use them to inform your answer if relevant. "
+                "Always cite sources by number when using information from search results. "
+                "If the search results aren't helpful, rely on your own knowledge.\n\n"
+                + search_context
+            ),
+        })
+
+    try:
+        resp = requests.post(
+            f"{INFERENCE_URL}/v1/chat/completions",
+            json={"messages": augmented_messages, "stream": False},
+            timeout=300,
+        )
+        result = resp.json()
+        result["web_search_used"] = search_context is not None
+        if search_results:
+            result["search_sources"] = search_results
+        return jsonify(result)
+    except requests.ConnectionError:
+        return jsonify({"error": "inference worker not available"}), 503
+
+
 # --- API: Image/Video Generation (proxy to diffusion worker) ---
 
 @app.route("/api/generate/image", methods=["POST"])
@@ -493,6 +588,7 @@ def status():
         ("diffusion", DIFFUSION_URL),
         ("tool_firewall", TOOL_FIREWALL_URL),
         ("airlock", AIRLOCK_URL),
+        ("search", SEARCH_MEDIATOR_URL),
     ]:
         try:
             r = requests.get(f"{url}/health", timeout=2)
