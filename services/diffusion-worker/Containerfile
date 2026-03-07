@@ -1,0 +1,33 @@
+# Diffusion worker: image and video generation via diffusers library.
+# Build arg COMPUTE selects CUDA or CPU-only.
+ARG COMPUTE=cuda
+
+FROM python:3.12-slim AS base
+
+ARG COMPUTE
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch (CUDA or CPU)
+RUN if [ "$COMPUTE" = "cuda" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124; \
+    else \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
+    fi
+
+RUN pip install --no-cache-dir \
+    diffusers[torch] \
+    transformers \
+    accelerate \
+    safetensors \
+    flask \
+    pyyaml \
+    Pillow
+
+COPY app.py /app/app.py
+
+WORKDIR /app
+EXPOSE 8455
+CMD ["python", "app.py"]

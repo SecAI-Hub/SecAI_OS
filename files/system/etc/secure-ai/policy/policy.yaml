@@ -12,6 +12,24 @@ models:
   deny_formats: ["pickle", "pt", "bin"]
   require_scan: true
   require_behavior_tests: true
+  require_source_verification: true
+  require_entropy_analysis: true
+  # Diffusion models: directories with model_index.json + safetensors components
+  allow_diffusion_directories: true
+
+quarantine:
+  # Pipeline stages (all enabled by default for maximum security)
+  stages:
+    source_policy: true       # Stage 1: verify origin against allowlist
+    format_gate: true         # Stage 2: validate headers + reject unsafe formats
+    integrity_check: true     # Stage 3: hash pinning verification
+    provenance_check: true    # Stage 4: cosign / signature verification
+    static_scan: true         # Stage 5: modelscan + entropy analysis
+    behavioral_test: true     # Stage 6: adversarial prompt suite (LLM only)
+    diffusion_deep_scan: true # Stage 7: config integrity (diffusion only)
+  # Smoke test threshold: fail if >30% prompts flagged OR >1 critical flag
+  smoke_test_max_score: 0.3
+  smoke_test_max_critical: 1
 
 tools:
   default: "deny"
@@ -52,6 +70,8 @@ airlock:
   allowed_destinations:
     - "https://huggingface.co/"
     - "https://registry.ollama.ai/"
+    - "https://cdn-lfs.huggingface.co/"
+    - "https://cdn-lfs-us-1.huggingface.co/"
   allowed_methods: ["GET", "POST"]
   max_body_size: 10485760  # 10 MB
   rate_limit:

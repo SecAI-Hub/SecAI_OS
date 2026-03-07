@@ -10,6 +10,7 @@ paths:
   quarantine: "/var/lib/secure-ai/quarantine"
   airlock_audit: "/var/lib/secure-ai/airlock-audit"
   tmpdir: "/run/secure-ai/tmp"
+  outputs: "/var/lib/secure-ai/vault/outputs"
 
 inference:
   engine: "llama-cpp"
@@ -17,6 +18,12 @@ inference:
   gpu_layers: -1  # -1 = offload all layers to GPU; 0 = CPU only
   context_size: 8192
   default_model: ""  # set after first model is promoted
+
+diffusion:
+  bind: "127.0.0.1:8455"
+  max_resolution: 2048
+  max_steps: 100
+  max_frames: 120
 
 services:
   registry:
@@ -27,6 +34,8 @@ services:
     bind: "127.0.0.1:8480"
   airlock:
     bind: "127.0.0.1:8490"
+  diffusion:
+    bind: "127.0.0.1:8455"
 
 session:
   mode: "normal"  # normal | sensitive | offline-only

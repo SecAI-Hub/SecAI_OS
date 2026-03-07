@@ -11,14 +11,15 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with 
 - **Supply-chain distrust** -- Models, containers, and plugins are untrusted until verified and scanned.
 - **Deterministic policy** -- Promotion to "trusted" is rule-based (signatures, hashes, scans, tests), not ad-hoc.
 - **Short-lived workers** -- No swap, tmpfs for temp data, inference workers restart between sessions.
+- **Hands-off security** -- All scanning, verification, and promotion happens automatically. Users never run security tools manually.
 
 ## Architecture
 
 ```
 +-------------------+     +-------------------+     +-------------------+
 |  A) Base OS       | --> |  B) Acquisition   | --> |  C) Quarantine    |
-|  immutable image  |     |  dirty net /      |     |  verify + scan +  |
-|  signed updates   |     |  allowlist only   |     |  smoke test       |
+|  immutable image  |     |  dirty net /      |     |  7-stage pipeline |
+|  signed updates   |     |  allowlist only   |     |  fully automatic  |
 +-------------------+     +-------------------+     +--------+----------+
                                                              |
                           +-------------------+     +--------v----------+
@@ -34,10 +35,11 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with 
 |---------|------|----------|---------|
 | Registry | 8470 | Go | Trusted artifact manifest, read-only model store |
 | Tool Firewall | 8475 | Go | Policy-gated tool invocation gateway |
-| Web UI | 8480 | Python | Local chat and management interface |
+| Web UI | 8480 | Python | Chat, image/video generation, model management |
 | Airlock | 8490 | Go | Sanitized egress proxy (disabled by default) |
 | Inference Worker | 8465 | llama.cpp | LLM inference (CUDA + Metal) |
-| Quarantine | -- | Python | Verify, scan, and promote model artifacts |
+| Diffusion Worker | 8455 | Python | Image and video generation (Stable Diffusion) |
+| Quarantine | -- | Python | 7-stage verify, scan, and promote pipeline |
 
 ## Hardware Support
 
@@ -51,7 +53,7 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with 
 **Minimum requirements:**
 
 - 16 GB RAM (32 GB recommended for larger models)
-- 8 GB VRAM for GPU offload (24 GB recommended for 13B+ models)
+- 8 GB VRAM for GPU offload (24 GB recommended for 13B+ models or image generation)
 - 64 GB storage (32 GB OS + encrypted vault)
 - USB 3.0 flash drive (16 GB+) or spare SSD for bootable install
 
@@ -199,8 +201,10 @@ cd services/registry && go build -o ../../bin/registry . && cd ../..
 cd services/tool-firewall && go build -o ../../bin/tool-firewall . && cd ../..
 cd services/airlock && go build -o ../../bin/airlock . && cd ../..
 
+# Install Python dependencies
+pip install flask requests pyyaml diffusers transformers accelerate torch safetensors
+
 # Run the UI (Flask)
-pip install flask requests pyyaml
 cd services/ui && python -m flask --app ui.app run --port 8480
 ```
 
@@ -209,34 +213,70 @@ cd services/ui && python -m flask --app ui.app run --port 8480
 
 ---
 
-## Post-Install: Importing Your First Model
+## Quick Start: Getting Your First Model
 
-After installation, you need to import a model before you can use the chat interface.
+After installation, open the Web UI at `http://127.0.0.1:8480`. SecAI OS is designed so that **all security scanning is fully automatic** — you never need to run any scanning tools manually.
 
-### Method 1: Via the Web UI
+### One-Click Download (Recommended)
 
-1. Open a browser to `http://127.0.0.1:8480`
-2. Navigate to the **Models** page
-3. Upload a `.gguf` model file
+1. Open `http://127.0.0.1:8480` and go to the **Models** page.
+2. Browse the **Model Catalog** — a curated list of pre-verified models for both LLM chat and image/video generation.
+3. Click **Download** next to any model. The download begins in the background.
+4. Track progress on the Models page. When complete, the model enters quarantine automatically.
+5. The 7-stage quarantine pipeline runs without any user intervention:
+   - Source verification (confirms origin against allowlist)
+   - Format validation (header checks, rejects unsafe formats)
+   - Integrity check (hash pinning)
+   - Provenance verification (signature checks)
+   - Static scan + entropy analysis (detects hidden payloads)
+   - Behavioral smoke test (22 adversarial prompts — LLM models only)
+   - Diffusion deep scan (config integrity — diffusion models only)
+6. If all stages pass, the model is **promoted to the trusted registry** and becomes available immediately.
+7. If any stage fails, the model is **rejected and quarantined**. Check the logs for details.
 
-The file is placed into quarantine, scanned, and promoted to the trusted registry automatically if it passes all checks.
+That's it. Pick a model, click download, and start using it once promotion completes.
 
-### Method 2: Manual Import via CLI
+### Pre-Curated Model Catalog
 
+**LLM Models (Chat):**
+
+| Model | Size | VRAM | Best For |
+|-------|------|------|----------|
+| Phi-3 Mini 3.8B (Q4_K_M) | ~2 GB | 4 GB | Quick responses, testing, low-VRAM systems |
+| Mistral 7B Instruct (Q4_K_M) | ~4 GB | 6 GB | General-purpose chat, fast inference |
+| Llama 3.1 8B Instruct (Q4_K_M) | ~5 GB | 7 GB | Strong reasoning, coding assistance |
+
+**Diffusion Models (Image/Video):**
+
+| Model | Size | VRAM | Best For |
+|-------|------|------|----------|
+| Stable Diffusion 1.5 | ~4 GB | 6 GB | Fast image generation, many community styles |
+| Stable Diffusion XL | ~7 GB | 10 GB | High-quality images, better composition |
+| Stable Video Diffusion XT | ~10 GB | 16 GB | Short video clips from images |
+
+### Importing Your Own Models
+
+You can also import models you've downloaded or created yourself. Custom models go through the **exact same 7-stage quarantine pipeline** as catalog models:
+
+**Via the Web UI:**
+1. Go to the **Models** page
+2. Click **Import** and select your model file (`.gguf` or `.safetensors`)
+3. The quarantine pipeline runs automatically — no manual steps needed
+
+**Via the CLI:**
 ```bash
-# Copy a GGUF model file into the quarantine incoming directory
+# Copy a model into the quarantine incoming directory
 sudo cp /path/to/your-model.gguf /var/lib/secure-ai/quarantine/incoming/
 
-# The quarantine watcher service picks it up automatically.
-# Check its progress:
+# The quarantine watcher picks it up automatically
+# Watch the pipeline progress:
 journalctl -u secure-ai-quarantine-watcher -f
 
 # Once promoted, verify it appears in the registry:
 curl http://127.0.0.1:8470/v1/models | python3 -m json.tool
 ```
 
-### Method 3: Using securectl
-
+**Via securectl:**
 ```bash
 # List models in the registry
 securectl list
@@ -245,16 +285,8 @@ securectl list
 securectl verify --name your-model
 ```
 
-### Recommended Models (GGUF Format)
-
-| Model | Size | VRAM Needed | Notes |
-|-------|------|-------------|-------|
-| Mistral 7B Q4_K_M | ~4 GB | 6 GB | Good general-purpose, fast |
-| Llama 3.1 8B Q4_K_M | ~5 GB | 7 GB | Strong reasoning |
-| Llama 3.1 70B Q4_K_M | ~40 GB | 48 GB | Best quality, needs multi-GPU or CPU offload |
-| Phi-3 Mini 3.8B Q4_K_M | ~2 GB | 4 GB | Smallest, good for testing |
-
-Download models from [Hugging Face](https://huggingface.co/models?sort=trending&search=gguf) in GGUF format.
+> [!IMPORTANT]
+> Custom models with no known source are subject to stricter scrutiny. Models from sources not in the allowlist will have their source policy stage flagged. The remaining 6 stages still run, and the model can be promoted if it passes all other checks.
 
 ---
 
@@ -264,9 +296,13 @@ Download models from [Hugging Face](https://huggingface.co/models?sort=trending&
 
 Open `http://127.0.0.1:8480` in a browser. The UI provides:
 
-- **Chat** — Interact with your loaded model
-- **Models** — View, import, verify, and delete models
-- **Status** — Check service health
+- **Chat** — Interact with your loaded LLM model
+- **Generate** — Create images and videos with diffusion models
+  - Text-to-Image: Describe what you want, set resolution and steps
+  - Image-to-Image: Upload a reference image and transform it with a prompt
+  - Text-to-Video: Generate short video clips from text descriptions
+- **Models** — Browse catalog, one-click download, import, verify, and manage models
+- **Status** — Check health of all services (inference, diffusion, registry, airlock)
 
 ### Service Management
 
@@ -276,6 +312,9 @@ systemctl status secure-ai-*
 
 # View inference logs
 journalctl -u secure-ai-inference -f
+
+# View diffusion worker logs
+journalctl -u secure-ai-diffusion -f
 
 # Restart a service
 sudo systemctl restart secure-ai-inference
@@ -328,6 +367,22 @@ sudo systemctl stop secure-ai-airlock
 
 ## Security Overview
 
+### 7-Stage Quarantine Pipeline
+
+Every model — whether downloaded from the catalog or imported by the user — passes through the same fully automatic pipeline. No manual scanning is required.
+
+| Stage | Name | What It Does |
+|-------|------|-------------|
+| 1 | **Source Policy** | Verifies the download URL against `sources.allowlist.yaml`. Local imports pass; unknown remote sources are flagged. |
+| 2 | **Format Gate** | Validates file headers (GGUF magic bytes, safetensors JSON header). Rejects unsafe formats (pickle, .pt, .bin, .exe). For diffusion model directories, scans all component files and checks JSON configs for embedded code. |
+| 3 | **Integrity Check** | Computes SHA-256 hash and compares against pinned hashes in `models.lock.yaml`. Supports both single files and multi-file directories. |
+| 4 | **Provenance** | Verifies cosign signatures for container-sourced models. Records provenance metadata for audit trail. |
+| 5 | **Static Scan + Entropy Analysis** | Runs ModelScan (if installed) to detect known malicious patterns. Performs entropy analysis on weight files — near-random entropy (>7.99 bits/byte) indicates possible steganographic or encrypted payloads hidden in model weights. |
+| 6 | **Behavioral Smoke Test** | (LLM models only) Runs the model against a suite of 22 adversarial prompts across 10 categories: command injection, file exfiltration, network exfiltration, credential theft, PII handling, canary leak detection, jailbreak resistance, tool abuse, and prompt injection. Checks responses against 40+ danger patterns. Category-based scoring with stricter thresholds for critical attack vectors. |
+| 7 | **Diffusion Deep Scan** | (Diffusion models only) Validates `model_index.json` structure, verifies all declared components exist, detects symlinks, and scans configs for suspicious URLs or code injection. |
+
+**Scoring:** The smoke test uses category-weighted scoring. Critical categories (command injection, file exfiltration, network exfiltration, credential theft) have a stricter threshold — a single critical flag or >30% overall flag rate causes rejection.
+
 ### Defense Layers
 
 | Layer | Mechanism |
@@ -337,10 +392,11 @@ sudo systemctl stop secure-ai-airlock
 | **Network** | nftables default-deny egress, services use PrivateNetwork=yes |
 | **Swap** | Disabled (kernel arg + runtime check) — prevents secrets hitting disk |
 | **Filesystem** | Encrypted vault (LUKS2/AES-256/Argon2id), restrictive permissions |
-| **Models** | Format validation, hash pinning, static scanning, behavioral smoke tests |
+| **Models** | 7-stage quarantine: source, format, integrity, provenance, static scan, behavioral test, diffusion scan |
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
 | **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, syscall filters |
+| **GPU Isolation** | Diffusion worker sandboxed with explicit DeviceAllow for GPU access only |
 | **Emergency** | Panic switch: instant network kill + route flush + service stop |
 
 ### Systemd Sandboxing
@@ -355,6 +411,11 @@ Every service runs with defense-in-depth sandboxing:
 - `CapabilityBoundingSet=` — no capabilities (except where needed)
 - `SystemCallFilter=@system-service` — restricted syscalls
 - `MemoryDenyWriteExecute=yes` — no JIT/RWX memory
+
+The diffusion worker has additional GPU-specific sandboxing:
+- `DeviceAllow=/dev/nvidia* rw` and `DeviceAllow=/dev/dri/* rw` — explicit GPU access
+- `ReadWritePaths=/var/lib/secure-ai/vault/outputs` — write only to outputs directory
+- `ReadOnlyPaths=/var/lib/secure-ai/registry` — read-only model access
 
 ### Verify Image Signatures
 
@@ -372,8 +433,8 @@ All configuration lives in `/etc/secure-ai/` (baked into the image, read-only at
 
 | File | Purpose |
 |------|---------|
-| `config/appliance.yaml` | Mode, paths, inference settings, service binds |
-| `policy/policy.yaml` | Tool firewall rules, airlock settings, model format rules |
+| `config/appliance.yaml` | Mode, paths, inference/diffusion settings, service binds |
+| `policy/policy.yaml` | Tool firewall rules, airlock settings, model format rules, quarantine stages |
 | `policy/models.lock.yaml` | Pinned model hashes (supply-chain verification) |
 | `policy/sources.allowlist.yaml` | Trusted container/model sources |
 
@@ -386,12 +447,36 @@ inference:
   context_size: 8192
 ```
 
+**Diffusion settings** (`config/appliance.yaml`):
+```yaml
+diffusion:
+  bind: "127.0.0.1:8455"
+  max_resolution: 2048
+  max_steps: 100
+  max_frames: 120
+```
+
 **Session modes** (`config/appliance.yaml`):
 ```yaml
 session:
   mode: "normal"       # normal | sensitive | offline-only
   # sensitive: aggressive worker recycling after each task
   # offline-only: hard-block all network even if airlock is enabled
+```
+
+**Quarantine pipeline stages** (`policy/policy.yaml`):
+```yaml
+quarantine:
+  stages:
+    source_policy: true       # Stage 1: verify origin
+    format_gate: true         # Stage 2: validate headers
+    integrity_check: true     # Stage 3: hash pinning
+    provenance_check: true    # Stage 4: signature verification
+    static_scan: true         # Stage 5: modelscan + entropy
+    behavioral_test: true     # Stage 6: adversarial prompts (LLM)
+    diffusion_deep_scan: true # Stage 7: config integrity (diffusion)
+  smoke_test_max_score: 0.3   # fail if >30% prompts flagged
+  smoke_test_max_critical: 1  # fail if >1 critical flag
 ```
 
 **Tool firewall policy** (`policy/policy.yaml`):
@@ -427,11 +512,12 @@ services/
   registry/             Go -- Trusted Registry
   tool-firewall/        Go -- Policy engine + tool gateway
   airlock/              Go -- Online egress proxy
-  quarantine/           Python -- Verification + scanning pipeline
+  quarantine/           Python -- 7-stage verification + scanning pipeline
   inference-worker/     llama.cpp wrapper
-  ui/                   Python/Flask -- Web chat UI
+  diffusion-worker/     Python -- Stable Diffusion image/video generation
+  ui/                   Python/Flask -- Web UI (chat, generate, model management)
 tests/
-  test_pipeline.py      Quarantine pipeline tests (16 tests)
+  test_pipeline.py      Quarantine pipeline tests (48 tests)
   test_ui.py            Web UI tests (7 tests)
 docs/
   threat-model.md       Formal threat model and security invariants
@@ -445,7 +531,7 @@ cd services/registry && go test -v -race ./...
 cd services/tool-firewall && go test -v -race ./...
 cd services/airlock && go test -v -race ./...
 
-# Python tests (23 total)
+# Python tests (55 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -458,12 +544,13 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 - [x] **M0 Spec** -- Threat model, dataflow, invariants, policy files
 - [x] **M1 Bootable OS** -- Encrypted vault, GPU drivers, runtime offline
 - [x] **M2 Trusted Registry** -- Allowlist + hash pinning + cosign verification
-- [x] **M3 Quarantine Pipeline** -- Static scanning + smoke tests + promotion gate
+- [x] **M3 Quarantine Pipeline** -- 7-stage scanning (source, format, integrity, provenance, static, behavioral, diffusion)
 - [x] **M4 Tool Firewall** -- Policy-gated tool calls + file access gateway
 - [x] **M5 Online Airlock** -- Sanitization + allowlist + user approval UI
 - [x] **M6 Hardening** -- Systemd sandboxing, kernel params, nftables, panic switch
 - [x] **M7 CI/CD** -- GitHub Actions, Go/Python tests, shellcheck, YAML validation
-- [ ] **M8 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
+- [x] **M8 Image/Video Generation** -- Diffusion worker, one-click downloads, generate UI
+- [ ] **M9 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
 
 ## Troubleshooting
 
@@ -475,11 +562,27 @@ The inference worker needs at least one `.gguf` model in the registry:
 # Check if any models are registered
 curl http://127.0.0.1:8470/v1/models
 
-# Import a model
+# Import a model (or use the one-click catalog in the Web UI)
 sudo cp your-model.gguf /var/lib/secure-ai/quarantine/incoming/
 
 # Watch the quarantine pipeline
 journalctl -u secure-ai-quarantine-watcher -f
+```
+
+### Model stuck in quarantine
+
+If a model download completes but never appears in the registry:
+
+```bash
+# Check quarantine watcher logs for pipeline results
+journalctl -u secure-ai-quarantine-watcher --no-pager -n 100
+
+# Common reasons for rejection:
+# - Source not in allowlist (add to sources.allowlist.yaml)
+# - Unsafe format detected (pickle, .pt, .bin files)
+# - Hash mismatch (update models.lock.yaml)
+# - Smoke test failed (model responded to adversarial prompts)
+# - High entropy in weights (possible hidden payload)
 ```
 
 ### Services won't start
@@ -507,6 +610,19 @@ lsmod | grep nvidia
 # For Apple Silicon, GPU acceleration runs on the host (not in container)
 # Verify Metal support:
 system_profiler SPDisplaysDataType
+```
+
+### Image generation not working
+
+```bash
+# Check diffusion worker health
+curl http://127.0.0.1:8455/health
+
+# Check diffusion worker logs
+journalctl -u secure-ai-diffusion -f
+
+# Verify a diffusion model is in the registry
+curl http://127.0.0.1:8455/v1/models
 ```
 
 ### Firewall blocking something it shouldn't

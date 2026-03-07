@@ -2,6 +2,14 @@
 Quarantine watcher: monitors the quarantine drop directory for new artifacts,
 runs the verification/scanning pipeline, and promotes passing artifacts to
 the trusted registry via its HTTP API.
+
+Supports:
+- Single-file LLM models (.gguf, .safetensors)
+- Multi-file diffusion model directories (containing model_index.json)
+
+Everything is fully automatic. Users drop files into quarantine (via UI or CLI)
+and the watcher handles scanning, verification, and promotion with zero
+manual intervention.
 """
 
 import hashlib
@@ -17,7 +25,11 @@ from urllib.request import Request, urlopen
 
 import yaml
 
-from quarantine.pipeline import run_pipeline
+from quarantine.pipeline import (
+    run_pipeline,
+    run_pipeline_directory,
+    sha256_of_directory,
+)
 
 log = logging.getLogger("quarantine")
 
@@ -64,7 +76,6 @@ def load_policy() -> dict:
 def model_name_from_filename(filename: str) -> str:
     """Derive a human-readable model name from filename."""
     stem = Path(filename).stem
-    # Remove common quantization suffixes for a cleaner name
     for suffix in [".Q4_K_M", ".Q5_K_M", ".Q8_0", ".Q4_0", ".Q6_K", ".f16", ".f32"]:
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
@@ -72,7 +83,24 @@ def model_name_from_filename(filename: str) -> str:
     return stem
 
 
-def promote_to_registry(filename: str, file_hash: str, size_bytes: int, scan_results: dict) -> bool:
+def _read_source_metadata(artifact_path: Path) -> str:
+    """Read source URL from .source metadata file if present.
+
+    When a model is downloaded via the UI's one-click download, a companion
+    .source file is written alongside containing the origin URL. This lets
+    the pipeline verify the source against the allowlist.
+    """
+    source_file = artifact_path.parent / f".{artifact_path.name}.source"
+    if source_file.exists():
+        try:
+            return source_file.read_text().strip()
+        except OSError:
+            pass
+    return ""
+
+
+def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
+                        scan_results: dict, model_type: str = "llm") -> bool:
     """Call the registry's promote endpoint to register the artifact."""
     name = model_name_from_filename(filename)
     payload = {
@@ -103,7 +131,7 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int, scan_res
 
 
 def process_artifact(artifact_path: Path) -> bool:
-    """Run the full pipeline on a single artifact. Returns True if promoted."""
+    """Run the full pipeline on a single-file artifact. Returns True if promoted."""
     log.info("processing: %s", artifact_path.name)
 
     ext = artifact_path.suffix.lower()
@@ -121,9 +149,10 @@ def process_artifact(artifact_path: Path) -> bool:
 
     file_hash = sha256_file(artifact_path)
     file_size = artifact_path.stat().st_size
-    log.info("sha256: %s  size: %d bytes", file_hash, file_size)
+    source_url = _read_source_metadata(artifact_path)
+    log.info("sha256: %s  size: %d bytes  source: %s", file_hash, file_size, source_url or "local")
 
-    result = run_pipeline(artifact_path, file_hash, load_policy())
+    result = run_pipeline(artifact_path, file_hash, load_policy(), source_url=source_url)
 
     if not result["passed"]:
         log.warning("REJECTED (%s): %s", result["reason"], artifact_path.name)
@@ -135,6 +164,10 @@ def process_artifact(artifact_path: Path) -> bool:
             details={k: str(v) for k, v in result.get("details", {}).items()},
         )
         artifact_path.unlink()
+        # Clean up source metadata file
+        source_meta = artifact_path.parent / f".{artifact_path.name}.source"
+        if source_meta.exists():
+            source_meta.unlink()
         return False
 
     # Move file to registry directory
@@ -142,48 +175,125 @@ def process_artifact(artifact_path: Path) -> bool:
     shutil.move(str(artifact_path), str(dest))
     log.info("moved to registry dir: %s", dest)
 
-    # Collect scan result summary for the manifest
-    details = result.get("details", {})
-    scan_summary = {}
-    if "format_gate" in details:
-        scan_summary["format_gate"] = "pass" if details["format_gate"].get("passed") else "fail"
-    if "static_scan" in details:
-        scan_summary["static_scan"] = details["static_scan"].get("scanner", "unknown")
-    if "smoke_test" in details:
-        scan_summary["smoke_test"] = str(details["smoke_test"].get("score", "n/a"))
+    # Clean up source metadata
+    source_meta = artifact_path.parent / f".{artifact_path.name}.source"
+    if source_meta.exists():
+        source_meta.unlink()
 
-    # Register with the registry service
+    # Collect scan result summary
+    details = result.get("details", {})
+    scan_summary = _build_scan_summary(details)
+
     if promote_to_registry(artifact_path.name, file_hash, file_size, scan_summary):
         log.info("PROMOTED: %s (registered in manifest)", artifact_path.name)
-        audit_log(
-            "promoted", artifact_path.name,
-            sha256=file_hash,
-            size_bytes=file_size,
-            scan_summary=scan_summary,
-        )
+        audit_log("promoted", artifact_path.name, sha256=file_hash,
+                  size_bytes=file_size, scan_summary=scan_summary)
         return True
     else:
         log.error("PROMOTED to disk but registry update failed: %s", artifact_path.name)
-        log.error("The file is in %s but not in the manifest. Manual intervention needed.", dest)
-        audit_log(
-            "promotion_partial", artifact_path.name,
-            sha256=file_hash,
-            size_bytes=file_size,
-            note="file moved to registry dir but manifest update failed",
-        )
+        audit_log("promotion_partial", artifact_path.name, sha256=file_hash,
+                  size_bytes=file_size, note="file moved but manifest update failed")
         return False
+
+
+def process_directory(artifact_dir: Path) -> bool:
+    """Run the full pipeline on a multi-file diffusion model directory.
+    Returns True if promoted.
+    """
+    log.info("processing directory: %s", artifact_dir.name)
+
+    # Compute deterministic hash of the entire directory
+    dir_hash = sha256_of_directory(artifact_dir)
+    source_url = _read_source_metadata(artifact_dir)
+    log.info("directory hash: %s  source: %s", dir_hash, source_url or "local")
+
+    # Calculate total size
+    total_size = sum(f.stat().st_size for f in artifact_dir.rglob("*") if f.is_file())
+
+    result = run_pipeline_directory(artifact_dir, dir_hash, load_policy(), source_url=source_url)
+
+    if not result["passed"]:
+        log.warning("REJECTED (%s): %s", result["reason"], artifact_dir.name)
+        audit_log(
+            "rejected", artifact_dir.name,
+            reason=result["reason"],
+            sha256=dir_hash,
+            size_bytes=total_size,
+            model_type="diffusion",
+            details={k: str(v) for k, v in result.get("details", {}).items()},
+        )
+        shutil.rmtree(artifact_dir)
+        source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
+        if source_meta.exists():
+            source_meta.unlink()
+        return False
+
+    # Move directory to registry
+    dest = REGISTRY_DIR / artifact_dir.name
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.move(str(artifact_dir), str(dest))
+    log.info("moved to registry dir: %s", dest)
+
+    source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
+    if source_meta.exists():
+        source_meta.unlink()
+
+    details = result.get("details", {})
+    scan_summary = _build_scan_summary(details)
+    scan_summary["model_type"] = "diffusion"
+
+    if promote_to_registry(artifact_dir.name, dir_hash, total_size, scan_summary, model_type="diffusion"):
+        log.info("PROMOTED: %s (diffusion model registered)", artifact_dir.name)
+        audit_log("promoted", artifact_dir.name, sha256=dir_hash,
+                  size_bytes=total_size, model_type="diffusion", scan_summary=scan_summary)
+        return True
+    else:
+        log.error("PROMOTED to disk but registry update failed: %s", artifact_dir.name)
+        audit_log("promotion_partial", artifact_dir.name, sha256=dir_hash,
+                  size_bytes=total_size, note="directory moved but manifest update failed")
+        return False
+
+
+def _build_scan_summary(details: dict) -> dict:
+    """Build a summary dict from pipeline details for the registry manifest."""
+    summary = {}
+    if "source_policy" in details:
+        summary["source_policy"] = "pass" if details["source_policy"].get("passed") else "fail"
+    if "format_gate" in details:
+        summary["format_gate"] = "pass" if details["format_gate"].get("passed") else "fail"
+    if "provenance" in details:
+        summary["provenance"] = details["provenance"].get("provenance", "unknown")
+    if "static_scan" in details:
+        scan = details["static_scan"]
+        summary["static_scan"] = scan.get("scanner", "unknown")
+    if "smoke_test" in details:
+        summary["smoke_test"] = str(details["smoke_test"].get("score", "n/a"))
+    if "diffusion_deep_scan" in details:
+        summary["diffusion_deep_scan"] = "pass" if details["diffusion_deep_scan"].get("passed") else "fail"
+    return summary
 
 
 def scan_directory():
     """One-shot scan of the quarantine directory."""
     if not QUARANTINE_DIR.exists():
         return
+
     for entry in sorted(QUARANTINE_DIR.iterdir()):
-        if entry.is_file() and not entry.name.startswith("."):
-            try:
+        if entry.name.startswith("."):
+            continue
+
+        try:
+            if entry.is_dir():
+                # Check if it's a diffusion model directory (has model_index.json)
+                if (entry / "model_index.json").exists():
+                    process_directory(entry)
+                else:
+                    log.warning("skipping directory without model_index.json: %s", entry.name)
+            elif entry.is_file():
                 process_artifact(entry)
-            except Exception:
-                log.exception("error processing %s", entry.name)
+        except Exception:
+            log.exception("error processing %s", entry.name)
 
 
 def main():

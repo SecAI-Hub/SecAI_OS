@@ -1,0 +1,38 @@
+[Unit]
+Description=Secure AI Appliance - Diffusion Worker (Image/Video Generation)
+After=secure-ai-registry.service
+Wants=secure-ai-registry.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/secure-ai/services/diffusion-worker/app.py
+Restart=on-failure
+RestartSec=5
+
+Environment=BIND_ADDR=127.0.0.1:8455
+Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+Environment=OUTPUTS_DIR=/var/lib/secure-ai/vault/outputs
+Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
+Environment=MAX_RESOLUTION=2048
+Environment=MAX_STEPS=100
+
+# Sandboxing
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai/vault/outputs
+ReadOnlyPaths=/var/lib/secure-ai/registry /etc/secure-ai
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=no
+# GPU access requires broader syscalls and device access
+DeviceAllow=/dev/nvidia* rw
+DeviceAllow=/dev/dri/* rw
+SupplementaryGroups=video render
+
+[Install]
+WantedBy=multi-user.target
