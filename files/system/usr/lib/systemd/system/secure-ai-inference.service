@@ -58,12 +58,13 @@ SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-em
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
-# GPU access — do NOT set PrivateDevices (need /dev/nvidia*, /dev/dri)
+# GPU access — NVIDIA (CUDA), AMD (ROCm via /dev/kfd + /dev/dri), Intel (DRI)
 DeviceAllow=/dev/nvidia* rw
 DeviceAllow=/dev/dri/* rw
 DeviceAllow=/dev/nvidiactl rw
 DeviceAllow=/dev/nvidia-uvm rw
 DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/kfd rw
 
 # Resource limits — generous for inference
 MemoryMax=32G

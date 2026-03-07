@@ -1,6 +1,6 @@
 # SecAI OS
 
-A bootable, local-first AI appliance with defense-in-depth security for consumer RTX workstations and Apple Silicon.
+A bootable, local-first AI appliance with defense-in-depth security. Supports NVIDIA, AMD, Intel, and Apple Silicon GPUs — all compute stays on-device.
 
 Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with an immutable OS, encrypted vault, and sealed runtime where sensitive data never leaves the device by default.
 
@@ -37,18 +37,41 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue) with 
 | Tool Firewall | 8475 | Go | Policy-gated tool invocation gateway |
 | Web UI | 8480 | Python | Chat, image/video generation, model management |
 | Airlock | 8490 | Go | Sanitized egress proxy (disabled by default) |
-| Inference Worker | 8465 | llama.cpp | LLM inference (CUDA + Metal) |
-| Diffusion Worker | 8455 | Python | Image and video generation (Stable Diffusion) |
+| Inference Worker | 8465 | llama.cpp | LLM inference (CUDA / ROCm / Vulkan / Metal / CPU) |
+| Diffusion Worker | 8455 | Python | Image and video generation (CUDA / ROCm / XPU / MPS / CPU) |
 | Quarantine | -- | Python | 7-stage verify, scan, and promote pipeline |
 
 ## Hardware Support
 
-| Platform | GPU Acceleration | Notes |
-|----------|-----------------|-------|
-| NVIDIA RTX 5080 | CUDA (full offload) | Primary target; uses nvidia-open drivers |
-| NVIDIA RTX 4090/4080/3090 | CUDA (full offload) | Any RTX card with sufficient VRAM |
-| Apple M4 / M3 / M2 / M1 | Metal (via llama.cpp) | CPU-only container, Metal on host |
-| Any x86_64 | CPU fallback | Slower but functional |
+GPU is **auto-detected at first boot** — no manual configuration needed. The `detect-gpu.sh` script identifies your hardware and writes the optimal settings.
+
+### Supported GPUs
+
+| Vendor | GPUs | Backend | LLM (llama.cpp) | Diffusion (PyTorch) |
+|--------|------|---------|-----------------|-------------------|
+| **NVIDIA** | RTX 5090/5080/4090/4080/3090/3080, any CUDA GPU | CUDA | Full offload | Full offload |
+| **AMD** | RX 7900 XTX/XT, RX 7800/7700, RX 6900/6800, any RDNA/CDNA | ROCm (HIP) | Full offload | Full offload |
+| **Intel** | Arc A770/A750/A580, Arc B-series, Data Center Max | XPU (oneAPI) | Via Vulkan | Via IPEX |
+| **Apple** | M4/M3/M2/M1 (Pro/Max/Ultra) | Metal / MPS | Full offload | MPS acceleration |
+| **Any CPU** | x86_64 (AVX2/AVX-512), ARM64 (NEON) | CPU | Optimized | Functional |
+
+### Backend Priority
+
+The system auto-selects the best available backend in this order:
+1. **CUDA** (NVIDIA) — highest throughput for both LLM and diffusion
+2. **ROCm** (AMD) — near-CUDA performance on RDNA3/CDNA
+3. **MPS** (Apple Silicon) — Metal acceleration on macOS
+4. **XPU** (Intel Arc) — oneAPI/SYCL for discrete Intel GPUs
+5. **Vulkan** (cross-vendor) — universal GPU compute fallback for llama.cpp
+6. **CPU** — AVX2/AVX-512/NEON auto-vectorized, works on everything
+
+### Security Note
+
+All GPU backends run locally with the same sandboxing:
+- `PrivateNetwork=yes` — no network access regardless of GPU vendor
+- `DeviceAllow` restricts access to only the specific GPU device nodes needed
+- AMD ROCm uses `/dev/kfd` + `/dev/dri/*`; NVIDIA uses `/dev/nvidia*`; Intel uses `/dev/dri/*`
+- No cloud compute, no driver telemetry endpoints (blocked by nftables default-deny)
 
 **Minimum requirements:**
 
@@ -202,6 +225,9 @@ cd services/tool-firewall && go build -o ../../bin/tool-firewall . && cd ../..
 cd services/airlock && go build -o ../../bin/airlock . && cd ../..
 
 # Install Python dependencies
+# For NVIDIA: pip install torch --index-url https://download.pytorch.org/whl/cu124
+# For AMD:    pip install torch --index-url https://download.pytorch.org/whl/rocm6.1
+# For CPU:    pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install flask requests pyyaml diffusers transformers accelerate torch safetensors
 
 # Run the UI (Flask)
@@ -396,7 +422,7 @@ Every model — whether downloaded from the catalog or imported by the user — 
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
 | **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, syscall filters |
-| **GPU Isolation** | Diffusion worker sandboxed with explicit DeviceAllow for GPU access only |
+| **GPU Isolation** | Vendor-specific DeviceAllow (NVIDIA `/dev/nvidia*`, AMD `/dev/kfd`, Intel `/dev/dri/*`), PrivateNetwork on all |
 | **Emergency** | Panic switch: instant network kill + route flush + service stop |
 
 ### Systemd Sandboxing
@@ -412,10 +438,13 @@ Every service runs with defense-in-depth sandboxing:
 - `SystemCallFilter=@system-service` — restricted syscalls
 - `MemoryDenyWriteExecute=yes` — no JIT/RWX memory
 
-The diffusion worker has additional GPU-specific sandboxing:
-- `DeviceAllow=/dev/nvidia* rw` and `DeviceAllow=/dev/dri/* rw` — explicit GPU access
+Both inference and diffusion workers have GPU-specific sandboxing:
+- `DeviceAllow=/dev/nvidia* rw` — NVIDIA CUDA access
+- `DeviceAllow=/dev/kfd rw` — AMD ROCm compute access
+- `DeviceAllow=/dev/dri/* rw` — AMD/Intel DRI render nodes
 - `ReadWritePaths=/var/lib/secure-ai/vault/outputs` — write only to outputs directory
 - `ReadOnlyPaths=/var/lib/secure-ai/registry` — read-only model access
+- Unused GPU device nodes are harmless — systemd silently ignores DeviceAllow for non-existent devices
 
 ### Verify Image Signatures
 
@@ -439,6 +468,12 @@ All configuration lives in `/etc/secure-ai/` (baked into the image, read-only at
 | `policy/sources.allowlist.yaml` | Trusted container/model sources |
 
 ### Key Configuration Options
+
+**GPU backend** (`config/appliance.yaml`):
+```yaml
+gpu:
+  backend: "auto"   # auto | cuda | rocm | xpu | vulkan | mps | cpu
+```
 
 **Inference settings** (`config/appliance.yaml`):
 ```yaml
@@ -601,14 +636,28 @@ mount | grep secure-ai
 ### GPU not detected
 
 ```bash
-# Check NVIDIA driver
-nvidia-smi
+# Re-run GPU detection
+sudo /usr/libexec/secure-ai/detect-gpu.sh
 
-# If not loaded, check kernel modules
+# Check what was detected
+cat /var/lib/secure-ai/inference.env
+
+# NVIDIA: check driver
+nvidia-smi
 lsmod | grep nvidia
 
-# For Apple Silicon, GPU acceleration runs on the host (not in container)
-# Verify Metal support:
+# AMD: check ROCm
+rocminfo
+ls -la /dev/kfd /dev/dri/renderD128
+
+# Intel: check DRI
+ls -la /dev/dri/renderD128
+cat /sys/class/drm/card0/device/vendor  # should be 0x8086
+
+# Vulkan (any vendor)
+vulkaninfo --summary
+
+# Apple Silicon (Metal runs on host, not in container)
 system_profiler SPDisplaysDataType
 ```
 

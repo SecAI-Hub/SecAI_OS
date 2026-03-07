@@ -1,5 +1,9 @@
 # Inference worker: wraps llama-server (llama.cpp) with GPU support.
-# Build arg COMPUTE selects CUDA or CPU-only (Metal uses CPU build on macOS host).
+# Build arg COMPUTE selects the backend:
+#   cuda   - NVIDIA GPUs (official llama.cpp CUDA build)
+#   rocm   - AMD GPUs (official llama.cpp ROCm build)
+#   vulkan - Cross-vendor Vulkan compute (Intel Arc, AMD, NVIDIA)
+#   cpu    - CPU only (AVX2/AVX-512/NEON auto-detected, Metal on macOS host)
 ARG COMPUTE=cuda
 
 FROM ghcr.io/ggerganov/llama.cpp:server-${COMPUTE} AS runtime

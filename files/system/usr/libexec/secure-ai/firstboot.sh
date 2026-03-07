@@ -79,6 +79,17 @@ EOF
     chmod 644 "${SECURE_AI_ROOT}/registry/manifest.json"
 fi
 
+# Detect GPU and write inference.env
+log "Running GPU detection..."
+/usr/libexec/secure-ai/detect-gpu.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: GPU detection failed. Defaulting to CPU."
+    cat > "${SECURE_AI_ROOT}/inference.env" <<'GPUEOF'
+GPU_BACKEND=cpu
+GPU_NAME=CPU (detection failed)
+GPU_LAYERS=0
+GPUEOF
+}
+
 # Disable swap (belt-and-suspenders alongside kernel arg)
 log "Ensuring swap is disabled..."
 swapoff -a 2>/dev/null || true

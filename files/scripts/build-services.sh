@@ -56,6 +56,13 @@ WRAPPER
 chmod +x "${INSTALL_DIR}/ui"
 echo "  -> ${INSTALL_DIR}/ui"
 
+# Diffusion worker
+echo "Installing: diffusion-worker"
+DIFFUSION_DIR="/opt/secure-ai/services/diffusion-worker"
+mkdir -p "$DIFFUSION_DIR"
+cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
+echo "  -> ${DIFFUSION_DIR}/app.py"
+
 # Cleanup build artifacts
 rm -rf "$SRC_DIR"
 dnf remove -y golang 2>/dev/null || true

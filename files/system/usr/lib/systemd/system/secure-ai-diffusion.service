@@ -15,6 +15,7 @@ Environment=OUTPUTS_DIR=/var/lib/secure-ai/vault/outputs
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=MAX_RESOLUTION=2048
 Environment=MAX_STEPS=100
+EnvironmentFile=-/var/lib/secure-ai/inference.env
 
 # Sandboxing
 ProtectSystem=strict
@@ -29,9 +30,13 @@ ProtectControlGroups=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=no
-# GPU access requires broader syscalls and device access
+# GPU access — NVIDIA (CUDA), AMD (ROCm), Intel (DRI/XPU)
 DeviceAllow=/dev/nvidia* rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
 DeviceAllow=/dev/dri/* rw
+DeviceAllow=/dev/kfd rw
 SupplementaryGroups=video render
 
 [Install]

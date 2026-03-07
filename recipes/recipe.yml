@@ -7,7 +7,7 @@ base-image: ghcr.io/ublue-os/silverblue-main
 image-version: 42
 
 modules:
-  # 1) Install required packages.
+  # 1) Install required packages (includes GPU compute libraries).
   - type: rpm-ostree
     install:
       - nftables
@@ -20,6 +20,13 @@ modules:
       - python3-flask
       - python3-requests
       - golang
+      # GPU compute support
+      - mesa-dri-drivers          # Intel/AMD OpenGL + Vulkan
+      - mesa-vulkan-drivers       # Vulkan for Intel/AMD
+      - vulkan-loader             # Vulkan ICD loader
+      - vulkan-tools              # vulkaninfo for diagnostics
+      - libdrm                    # DRM library (all GPUs)
+      - clinfo                    # OpenCL diagnostics
 
   # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
   - type: files
@@ -32,18 +39,23 @@ modules:
     scripts:
       - build-services.sh
 
-  # 4) Install NVIDIA kernel modules (nvidia-open for RTX 5080).
+  # 4) NVIDIA kernel modules (nvidia-open for RTX 5080+).
+  #    AMD and Intel use in-kernel drivers (amdgpu, i915/xe) — no akmods needed.
   - type: akmods
     base: main
     install: []
     nvidia-driver: nvidia-open
 
-  # 5) Kernel args: NVIDIA setup + disable swap + security hardening.
+  # 5) Kernel args: GPU setup + disable swap + security hardening.
   - type: kargs
     append:
+      # NVIDIA
       - rd.driver.blacklist=nouveau
       - modprobe.blacklist=nouveau
       - nvidia-drm.modeset=1
+      # AMD — amdgpu is in-kernel, just ensure it's preferred
+      - amdgpu.dc=1
+      # Security hardening
       - systemd.swap=0
       - slab_nomerge
       - init_on_alloc=1
@@ -65,6 +77,7 @@ modules:
         - secure-ai-ui.service
         - secure-ai-quarantine-watcher.service
         - secure-ai-inference.service
+        - secure-ai-diffusion.service
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

@@ -1,5 +1,8 @@
 # Diffusion worker: image and video generation via diffusers library.
-# Build arg COMPUTE selects CUDA or CPU-only.
+# Build arg COMPUTE selects the GPU backend:
+#   cuda  - NVIDIA GPUs (CUDA 12.4)
+#   rocm  - AMD GPUs (ROCm 6.1)
+#   cpu   - CPU only (AVX2/AVX-512 optimized, works everywhere)
 ARG COMPUTE=cuda
 
 FROM python:3.12-slim AS base
@@ -10,9 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch (CUDA or CPU)
+# Install PyTorch with the appropriate compute backend
 RUN if [ "$COMPUTE" = "cuda" ]; then \
         pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124; \
+    elif [ "$COMPUTE" = "rocm" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/rocm6.1; \
     else \
         pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
     fi
@@ -25,6 +30,11 @@ RUN pip install --no-cache-dir \
     flask \
     pyyaml \
     Pillow
+
+# Intel XPU support (install IPEX when building for CPU — it auto-detects Intel GPUs)
+RUN if [ "$COMPUTE" = "cpu" ]; then \
+        pip install --no-cache-dir intel-extension-for-pytorch 2>/dev/null || true; \
+    fi
 
 COPY app.py /app/app.py
 

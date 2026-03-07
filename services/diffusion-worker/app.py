@@ -42,14 +42,25 @@ def load_config() -> dict:
 
 
 def _get_device():
-    """Detect best available device."""
+    """Detect best available compute device.
+
+    Priority: CUDA (NVIDIA) > ROCm (AMD) > MPS (Apple) > XPU (Intel) > CPU
+    All backends keep data local — no cloud compute.
+    """
     try:
         import torch
 
         if torch.cuda.is_available():
             return "cuda"
+        # ROCm exposes AMD GPUs via torch.cuda when built with ROCm
+        # but we also check the HIP runtime explicitly
+        if hasattr(torch.version, "hip") and torch.version.hip is not None:
+            return "cuda"  # ROCm uses the cuda device interface in PyTorch
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
+        # Intel XPU (Arc / Data Center) via Intel Extension for PyTorch
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu"
     except ImportError:
         pass
     return "cpu"
@@ -76,7 +87,8 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
         raise RuntimeError("diffusers library not installed")
 
     device = _get_device()
-    dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+    # float16 for GPU backends; float32 for CPU (no half-precision support on most CPUs)
+    dtype = torch.float16 if device in ("cuda", "mps", "xpu") else torch.float32
 
     model_dir = Path(model_path)
     if not model_dir.exists():
@@ -99,8 +111,8 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
 
     pipe = pipe.to(device)
 
-    # Memory optimizations
-    if device == "cuda":
+    # Memory optimizations for GPU backends
+    if device in ("cuda", "xpu"):
         try:
             pipe.enable_model_cpu_offload()
         except Exception:
@@ -155,12 +167,35 @@ def _find_diffusion_models() -> list:
 def health():
     device = _get_device()
     models = _find_diffusion_models()
+    gpu_info = _get_gpu_info()
     return jsonify({
         "status": "ok",
         "device": device,
+        "gpu": gpu_info,
         "loaded_pipelines": list(_pipelines.keys()),
         "available_models": len(models),
     })
+
+
+def _get_gpu_info() -> dict:
+    """Return GPU name and backend for diagnostics."""
+    info = {"backend": "cpu", "name": "CPU"}
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            info["backend"] = "rocm" if (hasattr(torch.version, "hip") and torch.version.hip) else "cuda"
+            info["name"] = torch.cuda.get_device_name(0)
+            info["vram_mb"] = round(torch.cuda.get_device_properties(0).total_mem / 1048576)
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            info["backend"] = "mps"
+            info["name"] = "Apple Silicon (Metal)"
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            info["backend"] = "xpu"
+            info["name"] = torch.xpu.get_device_name(0)
+    except Exception:
+        pass
+    return info
 
 
 # --- List available diffusion models ---
@@ -456,6 +491,8 @@ def unload_pipelines():
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
     except ImportError:
         pass
 

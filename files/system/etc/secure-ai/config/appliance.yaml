@@ -12,6 +12,11 @@ paths:
   tmpdir: "/run/secure-ai/tmp"
   outputs: "/var/lib/secure-ai/vault/outputs"
 
+gpu:
+  # Auto-detected at first boot by detect-gpu.sh. Override here if needed.
+  # backend: auto | cuda | rocm | xpu | vulkan | mps | cpu
+  backend: "auto"
+
 inference:
   engine: "llama-cpp"
   bind: "127.0.0.1:8465"
