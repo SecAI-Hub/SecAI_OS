@@ -1,0 +1,27 @@
+[Unit]
+Description=Secure AI Vault Auto-Lock Watchdog
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py
+Restart=on-failure
+RestartSec=10
+
+# Sandboxing
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai /run/secure-ai /dev/mapper
+ProtectHome=yes
+NoNewPrivileges=no
+PrivateTmp=yes
+
+# Needs root for cryptsetup and umount
+User=root
+
+# Resource limits
+MemoryMax=64M
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target
