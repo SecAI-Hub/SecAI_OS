@@ -1,258 +1,268 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure AI Appliance</title>
-    <style>
-        :root {
-            --bg: #0f1117;
-            --surface: #1a1b26;
-            --border: #2a2b3d;
-            --text: #c0caf5;
-            --text-dim: #565f89;
-            --accent: #7aa2f7;
-            --accent-hover: #89b4fa;
-            --user-bg: #1e2030;
-            --ai-bg: #16161e;
-            --danger: #f7768e;
-            --success: #9ece6a;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        header h1 {
-            font-size: 1.1rem;
-            font-weight: 600;
-        }
-        #status-badge {
-            font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
-            border-radius: 999px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-        }
-        #status-badge.online { border-color: var(--success); color: var(--success); }
-        #status-badge.offline { border-color: var(--danger); color: var(--danger); }
-        #chat-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-        }
-        .message {
-            max-width: 75%;
-            padding: 0.75rem 1rem;
-            border-radius: 0.75rem;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-        .message.user {
-            align-self: flex-end;
-            background: var(--user-bg);
-            border: 1px solid var(--border);
-        }
-        .message.assistant {
-            align-self: flex-start;
-            background: var(--ai-bg);
-            border: 1px solid var(--border);
-        }
-        #input-area {
-            padding: 1rem 1.5rem;
-            border-top: 1px solid var(--border);
-            display: flex;
-            gap: 0.75rem;
-        }
-        #input-area textarea {
-            flex: 1;
-            resize: none;
-            background: var(--surface);
-            color: var(--text);
-            border: 1px solid var(--border);
-            border-radius: 0.5rem;
-            padding: 0.75rem;
-            font-size: 0.95rem;
-            font-family: inherit;
-            outline: none;
-            min-height: 2.5rem;
-            max-height: 10rem;
-        }
-        #input-area textarea:focus { border-color: var(--accent); }
-        #input-area button {
-            background: var(--accent);
-            color: var(--bg);
-            border: none;
-            border-radius: 0.5rem;
-            padding: 0 1.25rem;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 0.95rem;
-        }
-        #input-area button:hover { background: var(--accent-hover); }
-        #input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .empty-state {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-dim);
-            font-size: 1.1rem;
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Secure AI Appliance</h1>
-        <div style="display: flex; align-items: center; gap: 1rem;">
-            <a href="/models" style="color: var(--accent); text-decoration: none; font-size: 0.9rem;">Models</a>
-            <a href="/settings" style="color: var(--accent); text-decoration: none; font-size: 0.9rem;">Settings</a>
-            <span id="vault-badge" style="font-size:0.75rem;padding:0.2rem 0.6rem;border-radius:999px;background:var(--surface);border:1px solid var(--border);cursor:help;" title="Vault status"></span>
-            <span id="status-badge" class="offline">checking...</span>
-        </div>
-    </header>
+{% extends "base.html" %}
+{% block title %}SecAI OS - Chat{% endblock %}
+{% block page_title %}Chat{% endblock %}
 
-    <div id="chat-container">
-        <div class="empty-state" id="empty-state">
-            Local-first. Private by default.
-        </div>
+{% block extra_css %}
+<style>
+    .content { padding: 0 !important; display: flex; flex-direction: column; }
+    .chat-container {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    .message {
+        max-width: 75%;
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius-lg);
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-size: 0.9rem;
+        animation: msgIn 0.2s ease;
+    }
+    @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .message.user {
+        align-self: flex-end;
+        background: var(--accent-subtle);
+        border: 1px solid rgba(122,162,247,0.2);
+        color: var(--text);
+    }
+    .message.assistant {
+        align-self: flex-start;
+        background: var(--surface);
+        border: 1px solid var(--border);
+    }
+    .message .msg-label {
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 0.35rem;
+        opacity: 0.6;
+    }
+    .chat-empty {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+    }
+    .chat-empty svg { width: 56px; height: 56px; color: var(--text-muted); opacity: 0.2; }
+    .chat-empty h3 { font-size: 1.1rem; color: var(--text-secondary); font-weight: 600; }
+    .chat-empty p { font-size: 0.85rem; color: var(--text-muted); }
+    .chat-input-area {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-end;
+        background: var(--bg);
+    }
+    .chat-input-area textarea {
+        flex: 1;
+        resize: none;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 0.75rem;
+        font-size: 0.9rem;
+        font-family: inherit;
+        outline: none;
+        min-height: 44px;
+        max-height: 160px;
+        transition: border-color var(--transition);
+        line-height: 1.4;
+    }
+    .chat-input-area textarea:focus { border-color: var(--accent); }
+    .chat-input-area textarea::placeholder { color: var(--text-muted); }
+    .chat-input-area .btn-primary { min-height: 44px; padding: 0 1.25rem; }
+    .typing-indicator {
+        align-self: flex-start;
+        padding: 0.75rem 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        display: flex;
+        gap: 4px;
+    }
+    .typing-indicator span {
+        width: 6px; height: 6px;
+        background: var(--text-muted);
+        border-radius: 50%;
+        animation: typingBounce 1.4s infinite;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typingBounce {
+        0%, 60%, 100% { transform: translateY(0); }
+        30% { transform: translateY(-4px); }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="chat-container" id="chat-container">
+    <div class="chat-empty" id="empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <h3>Local-first. Private by default.</h3>
+        <p>Your conversations never leave this device.</p>
     </div>
+</div>
+<div class="chat-input-area">
+    <button class="btn btn-sm" id="search-toggle" onclick="toggleSearch()" title="Toggle web search (Tor-routed)" style="min-height:44px;padding:0 0.65rem;opacity:0.4">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </button>
+    <textarea id="user-input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" autofocus></textarea>
+    <button class="btn btn-primary" id="send-btn" onclick="sendMessage()">Send</button>
+</div>
+{% endblock %}
 
-    <div id="input-area">
-        <textarea id="user-input" rows="1" placeholder="Type a message..." autofocus></textarea>
-        <button id="send-btn" onclick="sendMessage()">Send</button>
-    </div>
+{% block scripts %}
+<script>
+    var chatContainer = document.getElementById('chat-container');
+    var userInput = document.getElementById('user-input');
+    var sendBtn = document.getElementById('send-btn');
+    var searchToggle = document.getElementById('search-toggle');
+    var emptyState = document.getElementById('empty-state');
+    var messages = [];
+    var searchEnabled = false;
+    var searchAvailable = false;
 
-    <script>
-        const chatContainer = document.getElementById("chat-container");
-        const userInput = document.getElementById("user-input");
-        const sendBtn = document.getElementById("send-btn");
-        const emptyState = document.getElementById("empty-state");
-        const statusBadge = document.getElementById("status-badge");
-
-        let messages = [];
-
-        userInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
+    /* Check if search mediator is reachable */
+    (async function() {
+        try {
+            var resp = await fetch('/api/search/status');
+            var data = await resp.json();
+            searchAvailable = data.search_enabled !== false;
+            if (searchAvailable) {
+                searchToggle.title = 'Toggle web search (Tor-routed)';
+            } else {
+                searchToggle.title = 'Web search unavailable (Tor not running)';
+                searchToggle.style.opacity = '0.15';
+                searchToggle.style.cursor = 'not-allowed';
             }
-        });
+        } catch(e) {
+            searchToggle.style.opacity = '0.15';
+            searchToggle.style.cursor = 'not-allowed';
+        }
+    })();
 
-        userInput.addEventListener("input", () => {
-            userInput.style.height = "auto";
-            userInput.style.height = Math.min(userInput.scrollHeight, 160) + "px";
-        });
+    function toggleSearch() {
+        if (!searchAvailable) {
+            toast('Web search unavailable. Tor and the search mediator must be running.', 'warning');
+            return;
+        }
+        searchEnabled = !searchEnabled;
+        if (searchEnabled) {
+            searchToggle.style.opacity = '1';
+            searchToggle.style.background = 'var(--accent-subtle)';
+            searchToggle.style.borderColor = 'var(--accent)';
+            toast('Web search enabled (Tor-routed)', 'info');
+        } else {
+            searchToggle.style.opacity = '0.4';
+            searchToggle.style.background = '';
+            searchToggle.style.borderColor = '';
+            toast('Web search disabled', 'info');
+        }
+    }
 
-        async function sendMessage() {
-            const text = userInput.value.trim();
-            if (!text) return;
+    userInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
 
-            if (emptyState) emptyState.remove();
+    userInput.addEventListener('input', function() {
+        userInput.style.height = 'auto';
+        userInput.style.height = Math.min(userInput.scrollHeight, 160) + 'px';
+    });
 
-            appendMessage("user", text);
-            messages.push({ role: "user", content: text });
-            userInput.value = "";
-            userInput.style.height = "auto";
-            sendBtn.disabled = true;
+    async function sendMessage() {
+        var text = userInput.value.trim();
+        if (!text) return;
 
-            try {
-                const resp = await fetch("/api/chat", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ messages }),
-                });
-                const data = await resp.json();
+        if (emptyState) { emptyState.remove(); emptyState = null; }
 
-                if (data.error) {
-                    appendMessage("assistant", "Error: " + data.error);
-                } else {
-                    const content = data.choices?.[0]?.message?.content || "No response";
-                    appendMessage("assistant", content);
-                    messages.push({ role: "assistant", content });
+        appendMessage('user', text);
+        messages.push({ role: 'user', content: text });
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        sendBtn.disabled = true;
+
+        /* Show typing indicator */
+        var typing = document.createElement('div');
+        typing.className = 'typing-indicator';
+        typing.id = 'typing';
+        typing.innerHTML = '<span></span><span></span><span></span>';
+        chatContainer.appendChild(typing);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        var endpoint = searchEnabled ? '/api/chat/search' : '/api/chat';
+
+        try {
+            var resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: messages }),
+            });
+            var data = await resp.json();
+
+            var typingEl = document.getElementById('typing');
+            if (typingEl) typingEl.remove();
+
+            if (data.error) {
+                appendMessage('assistant', 'Error: ' + data.error);
+            } else {
+                var content = (data.choices && data.choices[0] && data.choices[0].message)
+                    ? data.choices[0].message.content : 'No response';
+                appendMessage('assistant', content);
+                messages.push({ role: 'assistant', content: content });
+
+                /* Show search sources if web search was used */
+                if (data.web_search_used && data.search_sources && data.search_sources.length) {
+                    var srcDiv = document.createElement('div');
+                    srcDiv.className = 'message assistant';
+                    srcDiv.style.fontSize = '0.75rem';
+                    srcDiv.style.opacity = '0.7';
+                    srcDiv.style.padding = '0.5rem 0.75rem';
+                    srcDiv.textContent = 'Sources: ' + data.search_sources.map(function(s) { return s.title || s.url; }).join(', ');
+                    chatContainer.appendChild(srcDiv);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
-            } catch (err) {
-                appendMessage("assistant", "Error: could not reach inference worker");
             }
-
-            sendBtn.disabled = false;
-            userInput.focus();
+        } catch (err) {
+            var typingEl = document.getElementById('typing');
+            if (typingEl) typingEl.remove();
+            appendMessage('assistant', 'Error: could not reach inference worker');
         }
 
-        function appendMessage(role, content) {
-            const div = document.createElement("div");
-            div.className = "message " + role;
-            div.textContent = content;
-            chatContainer.appendChild(div);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-        }
+        sendBtn.disabled = false;
+        userInput.focus();
+    }
 
-        async function checkStatus() {
-            try {
-                const resp = await fetch("/api/status");
-                const data = await resp.json();
-                const inferUp = data.services?.inference?.status === "ok";
-                statusBadge.textContent = inferUp ? "local-only" : "no model loaded";
-                statusBadge.className = inferUp ? "online" : "offline";
-            } catch {
-                statusBadge.textContent = "offline";
-                statusBadge.className = "offline";
-            }
-        }
+    function appendMessage(role, content) {
+        var div = document.createElement('div');
+        div.className = 'message ' + role;
 
-        async function checkVault() {
-            const vb = document.getElementById("vault-badge");
-            try {
-                const resp = await fetch("/api/vault/status");
-                const data = await resp.json();
-                const s = data.state;
-                if (s === "unlocked") {
-                    const idle = Math.floor((data.idle_seconds || 0) / 60);
-                    vb.textContent = "vault unlocked";
-                    vb.style.borderColor = "var(--success)";
-                    vb.style.color = "var(--success)";
-                    vb.title = `Vault unlocked. Idle: ${idle} min.`;
-                } else if (s === "locking_soon") {
-                    vb.textContent = "vault locking...";
-                    vb.style.borderColor = "#e0af68";
-                    vb.style.color = "#e0af68";
-                    vb.title = data.detail || "Vault will lock soon due to inactivity";
-                } else if (s === "locked") {
-                    vb.textContent = "vault locked";
-                    vb.style.borderColor = "var(--danger)";
-                    vb.style.color = "var(--danger)";
-                    vb.title = "Vault is locked. Unlock from Settings.";
-                } else {
-                    vb.textContent = "vault ?";
-                    vb.style.borderColor = "var(--border)";
-                    vb.style.color = "var(--text-dim)";
-                }
-            } catch {
-                vb.textContent = "vault ?";
-                vb.style.borderColor = "var(--border)";
-                vb.style.color = "var(--text-dim)";
-            }
-        }
+        var label = document.createElement('div');
+        label.className = 'msg-label';
+        label.textContent = role === 'user' ? 'You' : 'AI';
+        div.appendChild(label);
 
-        checkStatus();
-        checkVault();
-        setInterval(checkStatus, 15000);
-        setInterval(checkVault, 10000);
-    </script>
-</body>
-</html>
+        var body = document.createElement('div');
+        body.textContent = content;
+        div.appendChild(body);
+
+        chatContainer.appendChild(div);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+</script>
+{% endblock %}

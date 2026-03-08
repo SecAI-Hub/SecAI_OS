@@ -3,21 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure AI - Setup</title>
+    <meta name="referrer" content="no-referrer">
+    <title>SecAI OS - Setup</title>
     <style>
         :root {
             --bg: #0f1117;
             --surface: #1a1b26;
+            --surface-hover: #1e2030;
             --border: #2a2b3d;
             --text: #c0caf5;
-            --text-dim: #565f89;
+            --text-secondary: #a9b1d6;
+            --text-muted: #565f89;
             --accent: #7aa2f7;
             --accent-hover: #89b4fa;
+            --accent-subtle: rgba(122, 162, 247, 0.1);
             --success: #9ece6a;
+            --success-subtle: rgba(158, 206, 106, 0.1);
+            --warning: #e0af68;
+            --danger: #f7768e;
+            --radius: 8px;
+            --radius-lg: 12px;
+            --transition: 0.15s ease;
         }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
             background: var(--bg);
             color: var(--text);
             min-height: 100vh;
@@ -26,26 +36,40 @@
             justify-content: center;
         }
         .setup-container {
-            max-width: 600px;
+            max-width: 560px;
             width: 100%;
             padding: 2rem;
         }
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .brand svg { width: 32px; height: 32px; color: var(--accent); }
+        .brand span { font-size: 1.25rem; font-weight: 700; }
         h1 {
-            font-size: 1.75rem;
+            font-size: 1.5rem;
+            text-align: center;
             margin-bottom: 0.5rem;
         }
         .subtitle {
-            color: var(--text-dim);
+            text-align: center;
+            color: var(--text-muted);
             margin-bottom: 2rem;
             line-height: 1.6;
+            font-size: 0.9rem;
         }
         .step {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 0.75rem;
+            border-radius: var(--radius-lg);
             padding: 1.25rem;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
+            transition: border-color var(--transition);
         }
+        .step.done { border-color: rgba(158, 206, 106, 0.3); }
         .step-header {
             display: flex;
             align-items: center;
@@ -64,30 +88,43 @@
             font-weight: 700;
             font-size: 0.85rem;
             flex-shrink: 0;
+            transition: background var(--transition);
         }
         .step-num.done { background: var(--success); }
-        .step-header h3 { font-size: 0.95rem; }
-        .step p { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin-left: 2.5rem; }
-        .check { display: none; color: var(--success); font-size: 0.85rem; margin-left: 2.5rem; margin-top: 0.25rem; }
+        .step-header h3 { font-size: 0.95rem; font-weight: 600; }
+        .step p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            line-height: 1.5;
+            margin-left: 2.5rem;
+        }
+        .step .check {
+            display: none;
+            color: var(--success);
+            font-size: 0.85rem;
+            margin-left: 2.5rem;
+            margin-top: 0.35rem;
+        }
         .upload-area {
             margin-left: 2.5rem;
             margin-top: 0.75rem;
         }
-        .upload-area label {
+        .upload-btn {
             display: inline-block;
             padding: 0.5rem 1.25rem;
             background: var(--accent);
             color: var(--bg);
-            border-radius: 0.4rem;
+            border-radius: var(--radius);
             cursor: pointer;
             font-weight: 600;
             font-size: 0.85rem;
+            transition: background var(--transition);
         }
-        .upload-area label:hover { background: var(--accent-hover); }
+        .upload-btn:hover { background: var(--accent-hover); }
         .upload-area input[type="file"] { display: none; }
         .upload-status {
             font-size: 0.8rem;
-            color: var(--text-dim);
+            color: var(--text-muted);
             margin-top: 0.5rem;
         }
         .btn-start {
@@ -97,58 +134,68 @@
             background: var(--accent);
             color: var(--bg);
             border: none;
-            border-radius: 0.5rem;
+            border-radius: var(--radius);
             font-size: 1rem;
             font-weight: 600;
+            font-family: inherit;
             cursor: pointer;
-            margin-top: 1.5rem;
+            margin-top: 1.25rem;
             opacity: 0.4;
             pointer-events: none;
+            transition: all var(--transition);
         }
         .btn-start.ready { opacity: 1; pointer-events: all; }
         .btn-start:hover { background: var(--accent-hover); }
         .security-note {
             text-align: center;
-            color: var(--text-dim);
+            color: var(--text-muted);
             font-size: 0.75rem;
-            margin-top: 1rem;
+            margin-top: 1.25rem;
             line-height: 1.5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
         }
+        .security-note svg { width: 14px; height: 14px; flex-shrink: 0; }
     </style>
 </head>
 <body>
     <div class="setup-container">
-        <h1>Welcome to Secure AI</h1>
+        <div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>SecAI OS</span>
+        </div>
+        <h1>Welcome</h1>
         <p class="subtitle">
-            Your local-first, private AI appliance. Everything runs on this device.
+            Your local-first, private AI appliance. Everything runs on this device.<br>
             No data leaves unless you explicitly allow it.
         </p>
 
-        <div class="step">
+        <div class="step" id="step1">
             <div class="step-header">
                 <div class="step-num" id="step1-num">1</div>
                 <h3>System Check</h3>
             </div>
-            <p>Verifying services are running...</p>
+            <p>Verifying core services are running...</p>
             <div class="check" id="step1-check"></div>
         </div>
 
-        <div class="step">
+        <div class="step" id="step2">
             <div class="step-header">
                 <div class="step-num" id="step2-num">2</div>
                 <h3>Import a Model</h3>
             </div>
-            <p>Drag a .gguf model file here, or click to browse. The file will be
-               verified and scanned before it becomes available.</p>
+            <p>Upload a .gguf model file. It will be verified and scanned before becoming available.</p>
             <div class="upload-area">
-                <label for="model-file">Choose model file</label>
+                <label class="upload-btn" for="model-file">Choose model file</label>
                 <input type="file" id="model-file" accept=".gguf,.safetensors">
                 <div class="upload-status" id="upload-status"></div>
             </div>
             <div class="check" id="step2-check"></div>
         </div>
 
-        <div class="step">
+        <div class="step" id="step3">
             <div class="step-header">
                 <div class="step-num" id="step3-num">3</div>
                 <h3>Start Chatting</h3>
@@ -161,96 +208,94 @@
         </button>
 
         <p class="security-note">
-            All traffic stays on this device. The runtime has no internet access.<br>
-            Firewall and encryption are active. Your data is yours.
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            All traffic stays on this device. Firewall and encryption are active.
         </p>
     </div>
 
     <script>
-        let servicesOk = false;
-        let modelReady = false;
+        var servicesOk = false;
+        var modelReady = false;
 
         function updateButton() {
-            const btn = document.getElementById("btn-start");
-            if (modelReady) {
-                btn.classList.add("ready");
-            }
+            if (modelReady) document.getElementById('btn-start').classList.add('ready');
         }
 
         async function checkServices() {
             try {
-                const resp = await fetch("/api/status");
-                const data = await resp.json();
-                const regOk = data.services?.registry?.status === "ok";
-                const el = document.getElementById("step1-check");
-                const num = document.getElementById("step1-num");
+                var resp = await fetch('/api/status');
+                var data = await resp.json();
+                var regOk = data.services && data.services.registry && data.services.registry.status === 'ok';
+                var el = document.getElementById('step1-check');
+                var num = document.getElementById('step1-num');
                 if (regOk) {
-                    el.textContent = "All services running.";
-                    el.style.display = "block";
-                    num.classList.add("done");
+                    el.textContent = 'All services running.';
+                    el.style.display = 'block';
+                    num.classList.add('done');
+                    document.getElementById('step1').classList.add('done');
                     servicesOk = true;
                 } else {
-                    el.textContent = "Waiting for services to start...";
-                    el.style.display = "block";
-                    el.style.color = "#e0af68";
+                    el.textContent = 'Waiting for services to start...';
+                    el.style.display = 'block';
+                    el.style.color = 'var(--warning)';
                 }
-            } catch {
-                document.getElementById("step1-check").textContent = "Connecting...";
-                document.getElementById("step1-check").style.display = "block";
+            } catch(e) {
+                document.getElementById('step1-check').textContent = 'Connecting...';
+                document.getElementById('step1-check').style.display = 'block';
             }
         }
 
         async function checkModels() {
             try {
-                const resp = await fetch("/api/models");
-                const models = await resp.json();
+                var resp = await fetch('/api/models');
+                var models = await resp.json();
                 if (models.length > 0) {
-                    const el = document.getElementById("step2-check");
-                    const num = document.getElementById("step2-num");
-                    el.textContent = `Model ready: ${models[0].name} (${models[0].format})`;
-                    el.style.display = "block";
-                    num.classList.add("done");
-                    document.getElementById("step3-num").classList.add("done");
+                    var el = document.getElementById('step2-check');
+                    el.textContent = 'Model ready: ' + models[0].name + ' (' + models[0].format + ')';
+                    el.style.display = 'block';
+                    document.getElementById('step2-num').classList.add('done');
+                    document.getElementById('step3-num').classList.add('done');
+                    document.getElementById('step2').classList.add('done');
+                    document.getElementById('step3').classList.add('done');
                     modelReady = true;
                     updateButton();
                 }
-            } catch { }
+            } catch(e) { }
         }
 
-        document.getElementById("model-file").addEventListener("change", async (e) => {
-            const file = e.target.files[0];
+        document.getElementById('model-file').addEventListener('change', async function(e) {
+            var file = e.target.files[0];
             if (!file) return;
+            var status = document.getElementById('upload-status');
+            status.textContent = 'Uploading ' + file.name + '...';
+            status.style.color = 'var(--text-muted)';
 
-            const status = document.getElementById("upload-status");
-            status.textContent = `Uploading ${file.name}...`;
-
-            const formData = new FormData();
-            formData.append("file", file);
+            var formData = new FormData();
+            formData.append('file', file);
 
             try {
-                const resp = await fetch("/api/models/import", { method: "POST", body: formData });
-                const data = await resp.json();
+                var resp = await fetch('/api/models/import', { method: 'POST', body: formData });
                 if (resp.ok) {
-                    status.textContent = `${file.name} imported. Scanning...`;
-                    status.style.color = "#9ece6a";
-                    // Poll for promotion
+                    status.textContent = file.name + ' imported. Scanning...';
+                    status.style.color = 'var(--success)';
                     pollForModel();
                 } else {
-                    status.textContent = `Error: ${data.error}`;
-                    status.style.color = "#f7768e";
+                    var data = await resp.json();
+                    status.textContent = 'Error: ' + (data.error || 'unknown');
+                    status.style.color = 'var(--danger)';
                 }
-            } catch {
-                status.textContent = "Upload failed.";
-                status.style.color = "#f7768e";
+            } catch(e) {
+                status.textContent = 'Upload failed.';
+                status.style.color = 'var(--danger)';
             }
         });
 
         function pollForModel() {
-            const interval = setInterval(async () => {
+            var interval = setInterval(async function() {
                 await checkModels();
                 if (modelReady) {
                     clearInterval(interval);
-                    document.getElementById("upload-status").textContent = "Model promoted and ready!";
+                    document.getElementById('upload-status').textContent = 'Model promoted and ready!';
                 }
             }, 3000);
         }

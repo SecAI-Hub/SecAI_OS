@@ -395,13 +395,15 @@ securectl verify --name your-model
 
 Open `http://127.0.0.1:8480` in a browser. The UI provides:
 
-- **Chat** — Interact with your loaded LLM model
+- **Chat** — Interact with your loaded LLM model, with optional Tor-routed web search toggle
+- **Models** — Browse catalog, one-click download, import, drag-and-drop upload, verify hashes, and manage models
 - **Generate** — Create images and videos with diffusion models
   - Text-to-Image: Describe what you want, set resolution and steps
   - Image-to-Image: Upload a reference image and transform it with a prompt
   - Text-to-Video: Generate short video clips from text descriptions
-- **Models** — Browse catalog, one-click download, import, verify, and manage models
-- **Status** — Check health of all services (inference, diffusion, registry, airlock)
+- **Security** — Dashboard showing service health, Secure Boot / TPM2 status, audit chain verification, VM detection, and emergency panic controls
+- **Updates** — Staged update workflow (check / stage / apply / rollback) with health check status
+- **Settings** — Vault management (lock/unlock/keepalive), passphrase change, session management, logout
 
 ### Service Management
 
@@ -440,7 +442,7 @@ sudo securectl panic 2 --confirm "your-passphrase"
 sudo securectl panic 3 --confirm "your-passphrase"
 ```
 
-You can also trigger Level 1 from the Web UI via **Settings > Emergency Lock**, or Level 2/3 via the API:
+You can also trigger all three levels from the Web UI **Security** page (with modal confirmations), or via the API:
 
 ```bash
 curl -X POST http://127.0.0.1:8480/api/emergency/panic \
@@ -499,7 +501,7 @@ sudo /usr/libexec/secure-ai/update-verify.sh apply
 sudo /usr/libexec/secure-ai/update-verify.sh rollback
 ```
 
-You can also manage updates from the Web UI via **Settings > Updates**.
+You can also manage updates from the Web UI **Updates** page, which provides buttons for check, stage, apply, and rollback.
 
 **Auto-rollback:** If the system fails to boot after an update, the greenboot health check detects the failure and automatically rolls back via `rpm-ostree rollback`. After 2 failed rollback attempts, the system halts for manual intervention.
 
@@ -527,7 +529,7 @@ curl -X POST http://127.0.0.1:8480/api/vault/keepalive
 
 ### Web Search (Tor-Routed, Optional)
 
-Web search is **disabled by default**. When enabled, the LLM can augment its answers with web search results — all routed through Tor for anonymity.
+Web search is **disabled by default**. When enabled, use the search toggle button (magnifying glass icon) in the chat input area to augment LLM answers with web search results — all routed through Tor for anonymity.
 
 **How it works:**
 1. The LLM generates a search query (your raw prompt never leaves the device)
@@ -600,6 +602,7 @@ Every model — whether downloaded from the catalog or imported by the user — 
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
 | **Search** | Tor-routed with differential privacy (decoy queries, k-anonymity, batch timing), PII stripped, injection detection |
 | **Audit** | Hash-chained tamper-evident logs with periodic verification |
+| **Web UI** | Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, Cache-Control), input length validation, XSS-escaped output, error message sanitization, localhost-only binding |
 | **Auth** | Local passphrase with scrypt hashing, rate-limited login, session management |
 | **Vault** | Auto-lock after 30 min idle, TPM2-sealed keys, manual lock/unlock via UI |
 | **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, seccomp-bpf, Landlock, PrivateUsers |
@@ -813,7 +816,7 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 - [x] **M22 Canary/Tripwire** -- Canary files with hashed tokens, 5-min timer checks, inotify real-time monitoring, auto-lockdown
 - [x] **M23 Emergency Wipe** -- 3-level securectl panic (lock/wipe keys/full wipe), passphrase gates, audit trail
 - [x] **M24 Update Verification** -- Cosign-verified rpm-ostree upgrades, greenboot health checks, auto-rollback
-- [ ] **M25 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
+- [x] **M25 UI Polish & Security Hardening** -- Unified TokyoNight dark theme, sidebar navigation, security headers (CSP, X-Frame-Options, Referrer-Policy, Permissions-Policy), input validation, error message sanitization, XSS prevention, Security dashboard, Updates page, model catalog browser, web search toggle, toast/modal system, expanded differential privacy decoy pool
 
 ## Troubleshooting
 

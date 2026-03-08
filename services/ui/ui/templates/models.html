@@ -1,408 +1,328 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure AI - Model Management</title>
-    <style>
-        :root {
-            --bg: #0f1117;
-            --surface: #1a1b26;
-            --border: #2a2b3d;
-            --text: #c0caf5;
-            --text-dim: #565f89;
-            --accent: #7aa2f7;
-            --accent-hover: #89b4fa;
-            --danger: #f7768e;
-            --success: #9ece6a;
-            --warning: #e0af68;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-        }
-        header {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        header h1 { font-size: 1.1rem; font-weight: 600; }
-        header nav a {
-            color: var(--accent);
-            text-decoration: none;
-            margin-left: 1.5rem;
-            font-size: 0.9rem;
-        }
-        header nav a:hover { color: var(--accent-hover); }
-        .container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
-        .section { margin-bottom: 2rem; }
-        .section h2 {
-            font-size: 1rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-            color: var(--text);
-        }
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 0.75rem;
-            padding: 1rem;
-            margin-bottom: 0.75rem;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-        .card-header h3 { font-size: 0.95rem; font-weight: 600; }
-        .badge {
-            font-size: 0.7rem;
-            padding: 0.15rem 0.5rem;
-            border-radius: 999px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-        .badge-format { background: #1e2030; color: var(--accent); border: 1px solid var(--border); }
-        .badge-ok { background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
-        .badge-pending { background: #2e2a1a; color: var(--warning); border: 1px solid #4a3d2d; }
-        .meta { font-size: 0.8rem; color: var(--text-dim); }
-        .meta span { margin-right: 1.25rem; }
-        .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-        .btn {
-            padding: 0.4rem 0.8rem;
-            border-radius: 0.4rem;
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--text);
-            cursor: pointer;
-            font-size: 0.8rem;
-        }
-        .btn:hover { border-color: var(--accent); }
-        .btn-danger { color: var(--danger); }
-        .btn-danger:hover { border-color: var(--danger); }
-        .btn-primary {
-            background: var(--accent);
-            color: var(--bg);
-            border-color: var(--accent);
-            font-weight: 600;
-        }
-        .btn-primary:hover { background: var(--accent-hover); }
-        .upload-zone {
-            border: 2px dashed var(--border);
-            border-radius: 0.75rem;
-            padding: 2rem;
-            text-align: center;
-            cursor: pointer;
-            transition: border-color 0.2s;
-        }
-        .upload-zone:hover { border-color: var(--accent); }
-        .upload-zone.dragover { border-color: var(--accent); background: rgba(122, 162, 247, 0.05); }
-        .upload-zone p { color: var(--text-dim); margin-bottom: 0.5rem; }
-        .upload-zone input[type="file"] { display: none; }
-        .progress-bar {
-            height: 4px;
-            background: var(--border);
-            border-radius: 2px;
-            margin-top: 0.75rem;
-            overflow: hidden;
-        }
-        .progress-bar .fill {
-            height: 100%;
-            background: var(--accent);
-            width: 0%;
-            transition: width 0.3s;
-        }
-        .empty { color: var(--text-dim); text-align: center; padding: 2rem; }
-        #status-msg {
-            padding: 0.75rem 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 1rem;
-            display: none;
-            font-size: 0.9rem;
-        }
-        #status-msg.success { display: block; background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
-        #status-msg.error { display: block; background: #2e1a1a; color: var(--danger); border: 1px solid #4a2d2d; }
-        .integrity-banner {
-            padding: 0.75rem 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.85rem;
-        }
-        .integrity-ok { background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
-        .integrity-failed { background: #2e1a1a; color: var(--danger); border: 1px solid #4a2d2d; }
-        .integrity-unknown { background: #1e2030; color: var(--text-dim); border: 1px solid var(--border); }
-        .integrity-banner .info { display: flex; align-items: center; gap: 0.5rem; }
-        .integrity-banner .dot {
-            width: 8px; height: 8px; border-radius: 50%; display: inline-block;
-        }
-        .dot-green { background: var(--success); }
-        .dot-red { background: var(--danger); }
-        .dot-gray { background: var(--text-dim); }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Model Management</h1>
-        <nav>
-            <a href="/">Chat</a>
-            <a href="/models">Models</a>
-        </nav>
-    </header>
+{% extends "base.html" %}
+{% block title %}SecAI OS - Models{% endblock %}
+{% block page_title %}Model Management{% endblock %}
+{% block content_class %}content-wide{% endblock %}
 
-    <div class="container">
-        <div id="status-msg"></div>
+{% block content %}
+<div id="status-alert"></div>
 
-        <div id="integrity-banner" class="integrity-banner integrity-unknown">
-            <div class="info">
-                <span class="dot dot-gray" id="integrity-dot"></span>
-                <span id="integrity-text">Checking model integrity...</span>
-            </div>
-            <button class="btn" id="verify-all-btn" onclick="verifyAll()">Verify All Now</button>
-        </div>
+<div id="integrity-banner" class="alert alert-info mb-lg">
+    <span class="status-dot gray" id="integrity-dot" style="width:8px;height:8px"></span>
+    <span id="integrity-text">Checking model integrity...</span>
+    <button class="btn btn-sm" id="verify-all-btn" onclick="verifyAll()" style="margin-left:auto">Verify All</button>
+</div>
 
-        <div class="section">
-            <h2>Import Model</h2>
-            <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
-                <p>Drag and drop a .gguf or .safetensors file here</p>
-                <p style="font-size: 0.8rem;">or click to browse</p>
-                <input type="file" id="file-input" accept=".gguf,.safetensors">
-                <div class="progress-bar" id="upload-progress" style="display: none;">
-                    <div class="fill" id="upload-fill"></div>
-                </div>
-            </div>
-        </div>
+<div class="section-title">Model Catalog</div>
+<p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">One-click download from verified sources. Models are scanned in quarantine before use.</p>
+<div id="catalog-list" class="mb-lg">
+    <div class="empty-state"><p>Loading catalog...</p></div>
+</div>
 
-        <div class="section">
-            <h2>Quarantine (pending verification)</h2>
-            <div id="quarantine-list"><div class="empty">No files pending.</div></div>
-        </div>
-
-        <div class="section">
-            <h2>Trusted Models</h2>
-            <div id="models-list"><div class="empty">No models registered yet.</div></div>
-        </div>
+<div class="section-title">Import Model</div>
+<div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+    <p style="font-size:0.9rem;margin-bottom:0.35rem">Drag and drop a model file here</p>
+    <p style="font-size:0.8rem">.gguf or .safetensors &mdash; or click to browse</p>
+    <input type="file" id="file-input" accept=".gguf,.safetensors">
+    <div class="progress-bar mt-sm" id="upload-progress" style="display:none">
+        <div class="fill" id="upload-fill"></div>
     </div>
+</div>
 
-    <script>
-        const uploadZone = document.getElementById("upload-zone");
-        const fileInput = document.getElementById("file-input");
-        const statusMsg = document.getElementById("status-msg");
+<div class="section-title">Quarantine</div>
+<p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">Files pending security scan before promotion</p>
+<div id="quarantine-list">
+    <div class="empty-state"><p>No files pending.</p></div>
+</div>
 
-        function showStatus(msg, type) {
-            statusMsg.textContent = msg;
-            statusMsg.className = type;
-            setTimeout(() => { statusMsg.className = ""; statusMsg.style.display = "none"; }, 5000);
+<div class="section-title">Trusted Models</div>
+<div id="models-list">
+    <div class="empty-state"><p>No models registered yet. Import one above.</p></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    var uploadZone = document.getElementById('upload-zone');
+    var fileInput = document.getElementById('file-input');
+
+    function showAlert(msg, type) {
+        var el = document.getElementById('status-alert');
+        el.innerHTML = '<div class="alert alert-' + type + '">' + esc(msg) + '</div>';
+        setTimeout(function() { el.innerHTML = ''; }, 5000);
+    }
+
+    /* Drag and drop */
+    uploadZone.addEventListener('dragover', function(e) { e.preventDefault(); uploadZone.classList.add('dragover'); });
+    uploadZone.addEventListener('dragleave', function() { uploadZone.classList.remove('dragover'); });
+    uploadZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', function() { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+
+    async function uploadFile(file) {
+        var ext = file.name.split('.').pop().toLowerCase();
+        if (['gguf', 'safetensors'].indexOf(ext) === -1) {
+            toast('Only .gguf and .safetensors files are allowed.', 'error');
+            return;
         }
 
-        function formatBytes(b) {
-            if (b === 0) return "0 B";
-            const k = 1024;
-            const sizes = ["B", "KB", "MB", "GB"];
-            const i = Math.floor(Math.log(b) / Math.log(k));
-            return (b / Math.pow(k, i)).toFixed(1) + " " + sizes[i];
-        }
+        var progress = document.getElementById('upload-progress');
+        var fill = document.getElementById('upload-fill');
+        progress.style.display = 'block';
+        fill.style.width = '0%';
 
-        // Drag and drop
-        uploadZone.addEventListener("dragover", (e) => { e.preventDefault(); uploadZone.classList.add("dragover"); });
-        uploadZone.addEventListener("dragleave", () => uploadZone.classList.remove("dragover"));
-        uploadZone.addEventListener("drop", (e) => {
-            e.preventDefault();
-            uploadZone.classList.remove("dragover");
-            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
-        });
-        fileInput.addEventListener("change", () => { if (fileInput.files.length) uploadFile(fileInput.files[0]); });
+        var formData = new FormData();
+        formData.append('file', file);
 
-        async function uploadFile(file) {
-            const ext = file.name.split(".").pop().toLowerCase();
-            if (!["gguf", "safetensors"].includes(ext)) {
-                showStatus("Only .gguf and .safetensors files are allowed.", "error");
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/models/import');
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) fill.style.width = (e.loaded / e.total * 100) + '%';
+        };
+        xhr.onload = function() {
+            progress.style.display = 'none';
+            if (xhr.status === 202) {
+                toast('Model imported to quarantine. Scanning will begin automatically.', 'success');
+                refreshAll();
+            } else {
+                try {
+                    var err = JSON.parse(xhr.responseText);
+                    toast('Import failed: ' + (err.error || 'unknown error'), 'error');
+                } catch(e) {
+                    toast('Import failed.', 'error');
+                }
+            }
+        };
+        xhr.onerror = function() {
+            progress.style.display = 'none';
+            toast('Upload failed. Check your connection.', 'error');
+        };
+        xhr.send(formData);
+    }
+
+    async function loadModels() {
+        try {
+            var resp = await fetch('/api/models');
+            var models = await resp.json();
+            var container = document.getElementById('models-list');
+
+            if (!models.length) {
+                container.innerHTML = '<div class="empty-state"><p>No models registered yet. Import one above.</p></div>';
                 return;
             }
 
-            const progress = document.getElementById("upload-progress");
-            const fill = document.getElementById("upload-fill");
-            progress.style.display = "block";
-            fill.style.width = "0%";
+            container.innerHTML = models.map(function(m) {
+                return '<div class="card">' +
+                    '<div class="card-header">' +
+                        '<span class="card-title">' + esc(m.name) + '</span>' +
+                        '<span class="badge badge-accent">' + esc(m.format) + '</span>' +
+                    '</div>' +
+                    '<div class="meta">' +
+                        '<span>' + formatBytes(m.size_bytes) + '</span>' +
+                        '<span>sha256: ' + (m.sha256 ? esc(m.sha256.substring(0, 16)) + '...' : 'n/a') + '</span>' +
+                        '<span>promoted: ' + esc(m.promoted_at || 'n/a') + '</span>' +
+                    '</div>' +
+                    '<div class="btn-group mt-md">' +
+                        '<button class="btn btn-sm btn-success" onclick="verifyModel(\'' + esc(m.name) + '\')">Verify Hash</button>' +
+                        '<button class="btn btn-sm btn-danger" onclick="deleteModel(\'' + esc(m.name) + '\')">Delete</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+        } catch(e) { }
+    }
 
-            const formData = new FormData();
-            formData.append("file", file);
+    async function loadQuarantine() {
+        try {
+            var resp = await fetch('/api/models/quarantine');
+            var files = await resp.json();
+            var container = document.getElementById('quarantine-list');
 
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/models/import");
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) fill.style.width = (e.loaded / e.total * 100) + "%";
-            };
-            xhr.onload = () => {
-                progress.style.display = "none";
-                if (xhr.status === 202) {
-                    showStatus("Model imported to quarantine. Scanning will begin automatically.", "success");
-                    refreshAll();
-                } else {
-                    const err = JSON.parse(xhr.responseText);
-                    showStatus("Import failed: " + (err.error || "unknown error"), "error");
-                }
-            };
-            xhr.onerror = () => {
-                progress.style.display = "none";
-                showStatus("Upload failed. Check your connection.", "error");
-            };
-            xhr.send(formData);
-        }
-
-        async function loadModels() {
-            try {
-                const resp = await fetch("/api/models");
-                const models = await resp.json();
-                const container = document.getElementById("models-list");
-
-                if (!models.length) {
-                    container.innerHTML = '<div class="empty">No models registered yet. Import one above.</div>';
-                    return;
-                }
-
-                container.innerHTML = models.map(m => `
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>${m.name}</h3>
-                            <span class="badge badge-format">${m.format}</span>
-                        </div>
-                        <div class="meta">
-                            <span>${formatBytes(m.size_bytes)}</span>
-                            <span>sha256: ${m.sha256 ? m.sha256.substring(0, 16) + "..." : "n/a"}</span>
-                            <span>promoted: ${m.promoted_at || "n/a"}</span>
-                        </div>
-                        <div class="actions">
-                            <button class="btn" onclick="verifyModel('${m.name}')">Verify Hash</button>
-                            <button class="btn btn-danger" onclick="deleteModel('${m.name}')">Delete</button>
-                        </div>
-                    </div>
-                `).join("");
-            } catch { }
-        }
-
-        async function loadQuarantine() {
-            try {
-                const resp = await fetch("/api/models/quarantine");
-                const files = await resp.json();
-                const container = document.getElementById("quarantine-list");
-
-                if (!files.length) {
-                    container.innerHTML = '<div class="empty">No files pending.</div>';
-                    return;
-                }
-
-                container.innerHTML = files.map(f => `
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>${f.filename}</h3>
-                            <span class="badge badge-pending">scanning</span>
-                        </div>
-                        <div class="meta"><span>${formatBytes(f.size_bytes)}</span></div>
-                    </div>
-                `).join("");
-            } catch { }
-        }
-
-        async function verifyModel(name) {
-            try {
-                const resp = await fetch("/api/models/verify", {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({name}),
-                });
-                const data = await resp.json();
-                if (data.status === "verified") {
-                    showStatus(`${name}: hash verified OK`, "success");
-                } else {
-                    showStatus(`${name}: verification FAILED - ${data.error || "hash mismatch"}`, "error");
-                }
-            } catch {
-                showStatus("Could not reach registry.", "error");
+            if (!files.length) {
+                container.innerHTML = '<div class="empty-state"><p>No files pending.</p></div>';
+                return;
             }
-        }
 
-        async function deleteModel(name) {
-            if (!confirm(`Delete model "${name}"? This removes it from the registry and disk.`)) return;
-            try {
-                const resp = await fetch("/api/models/delete", {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({name}),
-                });
-                if (resp.ok) {
-                    showStatus(`${name} deleted.`, "success");
-                    refreshAll();
-                } else {
-                    showStatus("Delete failed.", "error");
-                }
-            } catch {
-                showStatus("Could not reach registry.", "error");
+            container.innerHTML = files.map(function(f) {
+                return '<div class="card">' +
+                    '<div class="card-header">' +
+                        '<span class="card-title">' + esc(f.filename) + '</span>' +
+                        '<span class="badge badge-warning">scanning</span>' +
+                    '</div>' +
+                    '<div class="meta"><span>' + formatBytes(f.size_bytes) + '</span></div>' +
+                '</div>';
+            }).join('');
+        } catch(e) { }
+    }
+
+    async function verifyModel(name) {
+        try {
+            var resp = await fetch('/api/models/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name}),
+            });
+            var data = await resp.json();
+            if (data.status === 'verified') {
+                toast(name + ': hash verified OK', 'success');
+            } else {
+                toast(name + ': verification FAILED', 'error');
             }
+        } catch(e) {
+            toast('Could not reach registry.', 'error');
         }
+    }
 
-        async function loadIntegrityStatus() {
-            const banner = document.getElementById("integrity-banner");
-            const dot = document.getElementById("integrity-dot");
-            const text = document.getElementById("integrity-text");
-            try {
-                const resp = await fetch("/api/integrity/status");
-                const data = await resp.json();
-                if (data.status === "ok") {
-                    banner.className = "integrity-banner integrity-ok";
-                    dot.className = "dot dot-green";
-                    const checked = data.models_checked || 0;
-                    const time = data.checked_at ? new Date(data.checked_at).toLocaleTimeString() : "unknown";
-                    text.textContent = `All ${checked} model(s) verified OK (last check: ${time})`;
-                } else if (data.status === "failed") {
-                    banner.className = "integrity-banner integrity-failed";
-                    dot.className = "dot dot-red";
-                    const failures = data.failures || 0;
-                    text.textContent = `INTEGRITY ALERT: ${failures} model(s) failed verification!`;
-                } else {
-                    banner.className = "integrity-banner integrity-unknown";
-                    dot.className = "dot dot-gray";
-                    text.textContent = data.detail || "No integrity check has run yet";
-                }
-            } catch {
-                banner.className = "integrity-banner integrity-unknown";
-                dot.className = "dot dot-gray";
-                text.textContent = "Could not reach integrity status";
+    async function deleteModel(name) {
+        var confirmed = await showConfirm('Delete Model', 'Delete "' + name + '"? This removes it from the registry and disk.');
+        if (!confirmed) return;
+        try {
+            var resp = await fetch('/api/models/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name}),
+            });
+            if (resp.ok) {
+                toast(name + ' deleted.', 'success');
+                refreshAll();
+            } else {
+                toast('Delete failed.', 'error');
             }
+        } catch(e) {
+            toast('Could not reach registry.', 'error');
         }
+    }
 
-        async function verifyAll() {
-            const btn = document.getElementById("verify-all-btn");
-            btn.disabled = true;
-            btn.textContent = "Verifying...";
-            try {
-                const resp = await fetch("/api/integrity/verify-all", { method: "POST" });
-                const data = await resp.json();
-                if (data.status === "ok") {
-                    showStatus(`All ${data.checked} model(s) verified OK`, "success");
-                } else {
-                    const failed = (data.models || []).filter(m => m.status === "failed");
-                    showStatus(`Verification FAILED: ${failed.map(m => m.name).join(", ")}`, "error");
-                }
-                loadIntegrityStatus();
-            } catch {
-                showStatus("Could not reach registry for verification.", "error");
+    async function loadIntegrityStatus() {
+        var banner = document.getElementById('integrity-banner');
+        var dot = document.getElementById('integrity-dot');
+        var text = document.getElementById('integrity-text');
+        try {
+            var resp = await fetch('/api/integrity/status');
+            var data = await resp.json();
+            if (data.status === 'ok') {
+                banner.className = 'alert alert-success mb-lg';
+                dot.className = 'status-dot green';
+                var checked = data.models_checked || 0;
+                var time = data.checked_at ? new Date(data.checked_at).toLocaleTimeString() : 'unknown';
+                text.textContent = 'All ' + checked + ' model(s) verified OK (last check: ' + time + ')';
+            } else if (data.status === 'failed') {
+                banner.className = 'alert alert-danger mb-lg';
+                dot.className = 'status-dot red';
+                text.textContent = 'INTEGRITY ALERT: ' + (data.failures || 0) + ' model(s) failed verification!';
+            } else {
+                banner.className = 'alert alert-info mb-lg';
+                dot.className = 'status-dot gray';
+                text.textContent = data.detail || 'No integrity check has run yet';
             }
-            btn.disabled = false;
-            btn.textContent = "Verify All Now";
+        } catch(e) {
+            banner.className = 'alert alert-info mb-lg';
+            dot.className = 'status-dot gray';
+            text.textContent = 'Could not reach integrity status';
         }
+    }
 
-        function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); }
-        refreshAll();
-        setInterval(refreshAll, 10000);
-    </script>
-</body>
-</html>
+    async function verifyAll() {
+        var btn = document.getElementById('verify-all-btn');
+        btn.disabled = true;
+        btn.textContent = 'Verifying...';
+        try {
+            var resp = await fetch('/api/integrity/verify-all', { method: 'POST' });
+            var data = await resp.json();
+            if (data.status === 'ok') {
+                toast('All ' + data.checked + ' model(s) verified OK', 'success');
+            } else {
+                var failed = (data.models || []).filter(function(m) { return m.status === 'failed'; });
+                toast('Verification FAILED: ' + failed.map(function(m) { return m.name; }).join(', '), 'error');
+            }
+            loadIntegrityStatus();
+        } catch(e) {
+            toast('Could not reach registry for verification.', 'error');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Verify All';
+    }
+
+    /* --- Model Catalog --- */
+    async function loadCatalog() {
+        try {
+            var resp = await fetch('/api/catalog');
+            var catalog = await resp.json();
+            var dlResp = await fetch('/api/catalog/downloads');
+            var downloads = await dlResp.json();
+            var container = document.getElementById('catalog-list');
+
+            if (!catalog.length) {
+                container.innerHTML = '<div class="empty-state"><p>No catalog entries configured.</p></div>';
+                return;
+            }
+
+            container.innerHTML = catalog.map(function(m) {
+                var dl = downloads[m.filename];
+                var btnHtml;
+                if (dl && dl.status === 'downloading') {
+                    var pct = dl.progress || 0;
+                    btnHtml = '<div style="flex:1;max-width:200px">' +
+                        '<div class="progress-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
+                        '<span style="font-size:0.75rem;color:var(--text-muted)">' + pct + '% downloading...</span>' +
+                        '</div>';
+                } else if (dl && dl.status === 'quarantined') {
+                    btnHtml = '<span class="badge badge-warning">Scanning...</span>';
+                } else if (dl && dl.status === 'failed') {
+                    btnHtml = '<span class="badge badge-danger">Failed</span>' +
+                        '<button class="btn btn-sm" onclick="downloadCatalogModel(\'' + esc(m.url) + '\',\'' + esc(m.filename) + '\',\'' + esc(m.type) + '\')">Retry</button>';
+                } else {
+                    btnHtml = '<button class="btn btn-sm btn-primary" onclick="downloadCatalogModel(\'' + esc(m.url) + '\',\'' + esc(m.filename) + '\',\'' + esc(m.type) + '\')">Download</button>';
+                }
+
+                return '<div class="card">' +
+                    '<div class="card-header">' +
+                        '<span class="card-title">' + esc(m.name) + '</span>' +
+                        '<span class="badge badge-accent">' + esc(m.type) + '</span>' +
+                    '</div>' +
+                    '<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0.5rem">' + esc(m.description) + '</p>' +
+                    '<div class="meta">' +
+                        '<span>' + m.size_gb + ' GB</span>' +
+                        '<span>VRAM: ~' + m.vram_gb + ' GB</span>' +
+                    '</div>' +
+                    '<div class="btn-group mt-md" style="align-items:center">' + btnHtml + '</div>' +
+                '</div>';
+            }).join('');
+        } catch(e) {
+            document.getElementById('catalog-list').innerHTML = '<div class="empty-state"><p>Could not load catalog.</p></div>';
+        }
+    }
+
+    async function downloadCatalogModel(url, filename, type) {
+        try {
+            var resp = await fetch('/api/catalog/download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url, filename: filename, type: type}),
+            });
+            var data = await resp.json();
+            if (resp.status === 202) {
+                toast('Downloading ' + filename + '. It will be scanned automatically.', 'success');
+                loadCatalog();
+                /* Poll for progress while downloading */
+                var pollId = setInterval(function() {
+                    loadCatalog();
+                    fetch('/api/catalog/downloads').then(function(r) { return r.json(); }).then(function(dls) {
+                        var dl = dls[filename];
+                        if (!dl || dl.status !== 'downloading') clearInterval(pollId);
+                    });
+                }, 3000);
+            } else {
+                toast(data.error || 'Download failed.', 'error');
+            }
+        } catch(e) {
+            toast('Could not start download.', 'error');
+        }
+    }
+
+    function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); loadCatalog(); }
+    refreshAll();
+    setInterval(refreshAll, 10000);
+</script>
+{% endblock %}

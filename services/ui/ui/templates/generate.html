@@ -1,198 +1,166 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SecAI OS - Generate</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; }
-        .nav { background: #1a1a2e; padding: 1rem 2rem; display: flex; gap: 2rem; align-items: center; }
-        .nav a { color: #a0a0ff; text-decoration: none; }
-        .nav a:hover { color: #fff; }
-        .nav .brand { font-weight: bold; font-size: 1.2rem; color: #fff; }
-        .container { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-        h2 { margin-bottom: 1rem; }
-        .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-        .tab { padding: 0.5rem 1.5rem; background: #1a1a2e; border: none; color: #a0a0ff;
-               cursor: pointer; border-radius: 4px; }
-        .tab.active { background: #2a2a4e; color: #fff; }
-        .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.3rem; font-size: 0.9rem; color: #aaa; }
-        .form-group input, .form-group textarea, .form-group select {
-            width: 100%; padding: 0.6rem; background: #1a1a2e; border: 1px solid #333;
-            color: #e0e0e0; border-radius: 4px; }
-        .form-row { display: flex; gap: 1rem; }
-        .form-row .form-group { flex: 1; }
-        .btn { padding: 0.7rem 2rem; background: #4040a0; color: #fff; border: none;
-               border-radius: 4px; cursor: pointer; font-size: 1rem; }
-        .btn:hover { background: #5050b0; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .result { margin-top: 2rem; text-align: center; }
-        .result img { max-width: 100%; border-radius: 8px; }
-        .result video { max-width: 100%; border-radius: 8px; }
-        .status { margin-top: 1rem; padding: 1rem; background: #1a1a2e; border-radius: 4px; font-size: 0.9rem; }
-        .hidden { display: none; }
-    </style>
-</head>
-<body>
-    <div class="nav">
-        <span class="brand">SecAI OS</span>
-        <a href="/chat">Chat</a>
-        <a href="/models">Models</a>
-        <a href="/generate">Generate</a>
+{% extends "base.html" %}
+{% block title %}SecAI OS - Generate{% endblock %}
+{% block page_title %}Image &amp; Video Generation{% endblock %}
+{% block content_class %}content-wide{% endblock %}
+
+{% block content %}
+<div class="tabs">
+    <button class="tab active" onclick="switchTab('image', this)">Text to Image</button>
+    <button class="tab" onclick="switchTab('video', this)">Text to Video</button>
+    <button class="tab" onclick="switchTab('img2img', this)">Image to Image</button>
+</div>
+
+<div id="panel-image">
+    <div class="form-group">
+        <label class="form-label">Prompt</label>
+        <textarea class="form-input" id="img-prompt" rows="3" placeholder="Describe the image you want to generate..."></textarea>
     </div>
-    <div class="container">
-        <h2>Image &amp; Video Generation</h2>
-
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('image')">Text to Image</button>
-            <button class="tab" onclick="switchTab('video')">Text to Video</button>
-            <button class="tab" onclick="switchTab('img2img')">Image to Image</button>
-        </div>
-
-        <div id="panel-image">
-            <div class="form-group">
-                <label>Prompt</label>
-                <textarea id="img-prompt" rows="3" placeholder="Describe the image you want to generate..."></textarea>
-            </div>
-            <div class="form-group">
-                <label>Negative Prompt (optional)</label>
-                <input id="img-neg" placeholder="What to avoid...">
-            </div>
-            <div class="form-row">
-                <div class="form-group"><label>Width</label><input id="img-w" type="number" value="512"></div>
-                <div class="form-group"><label>Height</label><input id="img-h" type="number" value="512"></div>
-                <div class="form-group"><label>Steps</label><input id="img-steps" type="number" value="30"></div>
-                <div class="form-group"><label>Seed</label><input id="img-seed" type="number" placeholder="Random"></div>
-            </div>
-            <button class="btn" id="btn-image" onclick="generateImage()">Generate Image</button>
-        </div>
-
-        <div id="panel-video" class="hidden">
-            <div class="form-group">
-                <label>Prompt</label>
-                <textarea id="vid-prompt" rows="3" placeholder="Describe the video..."></textarea>
-            </div>
-            <div class="form-row">
-                <div class="form-group"><label>Width</label><input id="vid-w" type="number" value="512"></div>
-                <div class="form-group"><label>Height</label><input id="vid-h" type="number" value="512"></div>
-                <div class="form-group"><label>Frames</label><input id="vid-frames" type="number" value="25"></div>
-                <div class="form-group"><label>Steps</label><input id="vid-steps" type="number" value="25"></div>
-            </div>
-            <button class="btn" id="btn-video" onclick="generateVideo()">Generate Video</button>
-        </div>
-
-        <div id="panel-img2img" class="hidden">
-            <div class="form-group">
-                <label>Prompt</label>
-                <textarea id="i2i-prompt" rows="3" placeholder="Describe the transformation..."></textarea>
-            </div>
-            <div class="form-group">
-                <label>Source Image</label>
-                <input id="i2i-file" type="file" accept="image/*">
-            </div>
-            <div class="form-row">
-                <div class="form-group"><label>Strength</label><input id="i2i-strength" type="number" value="0.75" step="0.05" min="0" max="1"></div>
-                <div class="form-group"><label>Steps</label><input id="i2i-steps" type="number" value="30"></div>
-            </div>
-            <button class="btn" id="btn-img2img" onclick="generateImg2Img()">Generate</button>
-        </div>
-
-        <div id="result" class="result"></div>
-        <div id="status" class="status hidden"></div>
+    <div class="form-group">
+        <label class="form-label">Negative Prompt (optional)</label>
+        <input class="form-input" id="img-neg" placeholder="What to avoid...">
     </div>
-    <script>
-        function switchTab(tab) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('[id^="panel-"]').forEach(p => p.classList.add('hidden'));
-            event.target.classList.add('active');
-            document.getElementById('panel-' + tab).classList.remove('hidden');
-        }
-        function showStatus(msg) {
-            const el = document.getElementById('status');
-            el.textContent = msg; el.classList.remove('hidden');
-        }
-        async function generateImage() {
-            const btn = document.getElementById('btn-image');
-            btn.disabled = true; showStatus('Generating image...');
-            document.getElementById('result').innerHTML = '';
+    <div class="form-row">
+        <div class="form-group"><label class="form-label">Width</label><input class="form-input" id="img-w" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Height</label><input class="form-input" id="img-h" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="img-steps" type="number" value="30"></div>
+        <div class="form-group"><label class="form-label">Seed</label><input class="form-input" id="img-seed" type="number" placeholder="Random"></div>
+    </div>
+    <button class="btn btn-primary btn-lg" id="btn-image" onclick="generateImage()">Generate Image</button>
+</div>
+
+<div id="panel-video" class="hidden">
+    <div class="form-group">
+        <label class="form-label">Prompt</label>
+        <textarea class="form-input" id="vid-prompt" rows="3" placeholder="Describe the video..."></textarea>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label class="form-label">Width</label><input class="form-input" id="vid-w" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Height</label><input class="form-input" id="vid-h" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Frames</label><input class="form-input" id="vid-frames" type="number" value="25"></div>
+        <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="vid-steps" type="number" value="25"></div>
+    </div>
+    <button class="btn btn-primary btn-lg" id="btn-video" onclick="generateVideo()">Generate Video</button>
+</div>
+
+<div id="panel-img2img" class="hidden">
+    <div class="form-group">
+        <label class="form-label">Prompt</label>
+        <textarea class="form-input" id="i2i-prompt" rows="3" placeholder="Describe the transformation..."></textarea>
+    </div>
+    <div class="form-group">
+        <label class="form-label">Source Image</label>
+        <input class="form-input" id="i2i-file" type="file" accept="image/*" style="padding:0.35rem">
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label class="form-label">Strength</label><input class="form-input" id="i2i-strength" type="number" value="0.75" step="0.05" min="0" max="1"></div>
+        <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="i2i-steps" type="number" value="30"></div>
+    </div>
+    <button class="btn btn-primary btn-lg" id="btn-img2img" onclick="generateImg2Img()">Generate</button>
+</div>
+
+<div id="result" style="margin-top:1.5rem;text-align:center"></div>
+<div id="gen-status" class="hidden" style="margin-top:1rem;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:0.85rem;color:var(--text-muted)"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function switchTab(tab, el) {
+        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+        document.querySelectorAll('[id^="panel-"]').forEach(function(p) { p.classList.add('hidden'); });
+        el.classList.add('active');
+        document.getElementById('panel-' + tab).classList.remove('hidden');
+    }
+
+    function showGenStatus(msg) {
+        var el = document.getElementById('gen-status');
+        el.textContent = msg;
+        el.classList.remove('hidden');
+    }
+
+    async function generateImage() {
+        var btn = document.getElementById('btn-image');
+        btn.disabled = true;
+        showGenStatus('Generating image...');
+        document.getElementById('result').innerHTML = '';
+        try {
+            var body = {
+                prompt: document.getElementById('img-prompt').value,
+                negative_prompt: document.getElementById('img-neg').value,
+                width: parseInt(document.getElementById('img-w').value),
+                height: parseInt(document.getElementById('img-h').value),
+                steps: parseInt(document.getElementById('img-steps').value),
+            };
+            var seed = document.getElementById('img-seed').value;
+            if (seed) body.seed = parseInt(seed);
+            var resp = await fetch('/api/generate/image', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+            });
+            var data = await resp.json();
+            if (data.error) { showGenStatus('Error: ' + data.error); return; }
+            var html = '';
+            (data.images || []).forEach(function(b64) {
+                html += '<img src="data:image/png;base64,' + b64 + '" style="max-width:100%;border-radius:var(--radius-lg);margin-bottom:1rem">';
+            });
+            document.getElementById('result').innerHTML = html;
+            showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+        } catch(e) { showGenStatus('Error: ' + e.message); }
+        finally { btn.disabled = false; }
+    }
+
+    async function generateVideo() {
+        var btn = document.getElementById('btn-video');
+        btn.disabled = true;
+        showGenStatus('Generating video (this may take a while)...');
+        document.getElementById('result').innerHTML = '';
+        try {
+            var resp = await fetch('/api/generate/video', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    prompt: document.getElementById('vid-prompt').value,
+                    width: parseInt(document.getElementById('vid-w').value),
+                    height: parseInt(document.getElementById('vid-h').value),
+                    num_frames: parseInt(document.getElementById('vid-frames').value),
+                    steps: parseInt(document.getElementById('vid-steps').value),
+                })
+            });
+            var data = await resp.json();
+            if (data.error) { showGenStatus('Error: ' + data.error); return; }
+            document.getElementById('result').innerHTML =
+                '<video controls autoplay style="max-width:100%;border-radius:var(--radius-lg)"><source src="data:video/mp4;base64,' + data.video + '" type="video/mp4"></video>';
+            showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+        } catch(e) { showGenStatus('Error: ' + e.message); }
+        finally { btn.disabled = false; }
+    }
+
+    async function generateImg2Img() {
+        var btn = document.getElementById('btn-img2img');
+        var file = document.getElementById('i2i-file').files[0];
+        if (!file) { toast('Please select a source image.', 'warning'); return; }
+        btn.disabled = true;
+        showGenStatus('Processing...');
+        document.getElementById('result').innerHTML = '';
+        var reader = new FileReader();
+        reader.onload = async function() {
             try {
-                const body = {
-                    prompt: document.getElementById('img-prompt').value,
-                    negative_prompt: document.getElementById('img-neg').value,
-                    width: parseInt(document.getElementById('img-w').value),
-                    height: parseInt(document.getElementById('img-h').value),
-                    steps: parseInt(document.getElementById('img-steps').value),
-                };
-                const seed = document.getElementById('img-seed').value;
-                if (seed) body.seed = parseInt(seed);
-                const resp = await fetch('/api/generate/image', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-                });
-                const data = await resp.json();
-                if (data.error) { showStatus('Error: ' + data.error); return; }
-                let html = '';
-                for (const b64 of (data.images || [])) {
-                    html += '<img src="data:image/png;base64,' + b64 + '">';
-                }
-                document.getElementById('result').innerHTML = html;
-                showStatus('Generated in ' + data.elapsed_seconds + 's');
-            } catch(e) { showStatus('Error: ' + e.message); }
-            finally { btn.disabled = false; }
-        }
-        async function generateVideo() {
-            const btn = document.getElementById('btn-video');
-            btn.disabled = true; showStatus('Generating video (this may take a while)...');
-            document.getElementById('result').innerHTML = '';
-            try {
-                const resp = await fetch('/api/generate/video', {
+                var b64 = reader.result.split(',')[1];
+                var resp = await fetch('/api/generate/img2img', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        prompt: document.getElementById('vid-prompt').value,
-                        width: parseInt(document.getElementById('vid-w').value),
-                        height: parseInt(document.getElementById('vid-h').value),
-                        num_frames: parseInt(document.getElementById('vid-frames').value),
-                        steps: parseInt(document.getElementById('vid-steps').value),
+                        prompt: document.getElementById('i2i-prompt').value,
+                        image: b64,
+                        strength: parseFloat(document.getElementById('i2i-strength').value),
+                        steps: parseInt(document.getElementById('i2i-steps').value),
                     })
                 });
-                const data = await resp.json();
-                if (data.error) { showStatus('Error: ' + data.error); return; }
+                var data = await resp.json();
+                if (data.error) { showGenStatus('Error: ' + data.error); return; }
                 document.getElementById('result').innerHTML =
-                    '<video controls autoplay><source src="data:video/mp4;base64,' + data.video + '" type="video/mp4"></video>';
-                showStatus('Generated in ' + data.elapsed_seconds + 's');
-            } catch(e) { showStatus('Error: ' + e.message); }
+                    '<img src="data:image/png;base64,' + data.image + '" style="max-width:100%;border-radius:var(--radius-lg)">';
+                showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+            } catch(e) { showGenStatus('Error: ' + e.message); }
             finally { btn.disabled = false; }
-        }
-        async function generateImg2Img() {
-            const btn = document.getElementById('btn-img2img');
-            const file = document.getElementById('i2i-file').files[0];
-            if (!file) { showStatus('Please select a source image.'); return; }
-            btn.disabled = true; showStatus('Processing...');
-            document.getElementById('result').innerHTML = '';
-            const reader = new FileReader();
-            reader.onload = async function() {
-                try {
-                    const b64 = reader.result.split(',')[1];
-                    const resp = await fetch('/api/generate/img2img', {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({
-                            prompt: document.getElementById('i2i-prompt').value,
-                            image: b64,
-                            strength: parseFloat(document.getElementById('i2i-strength').value),
-                            steps: parseInt(document.getElementById('i2i-steps').value),
-                        })
-                    });
-                    const data = await resp.json();
-                    if (data.error) { showStatus('Error: ' + data.error); return; }
-                    document.getElementById('result').innerHTML =
-                        '<img src="data:image/png;base64,' + data.image + '">';
-                    showStatus('Generated in ' + data.elapsed_seconds + 's');
-                } catch(e) { showStatus('Error: ' + e.message); }
-                finally { btn.disabled = false; }
-            };
-            reader.readAsDataURL(file);
-        }
-    </script>
-</body>
-</html>
+        };
+        reader.readAsDataURL(file);
+    }
+</script>
+{% endblock %}

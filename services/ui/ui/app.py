@@ -33,6 +33,37 @@ log = logging.getLogger("ui")
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
 
+# --- Security: Max input sizes ---
+MAX_PASSPHRASE_LENGTH = 256
+
+
+@app.after_request
+def add_security_headers(response):
+    """Add defense-in-depth HTTP security headers to every response."""
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "media-src 'self' data:; "
+        "font-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    # Cache-Control: prevent caching of sensitive pages
+    if not request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://127.0.0.1:8465")
 DIFFUSION_URL = os.getenv("DIFFUSION_URL", "http://127.0.0.1:8455")
 REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
@@ -199,6 +230,8 @@ def auth_setup():
 
     if len(passphrase) < 8:
         return jsonify({"success": False, "error": "passphrase must be at least 8 characters"}), 400
+    if len(passphrase) > MAX_PASSPHRASE_LENGTH:
+        return jsonify({"success": False, "error": "passphrase too long"}), 400
 
     if _auth.setup_passphrase(passphrase):
         _ui_audit.append("auth_setup", {"action": "passphrase_configured"})
@@ -211,6 +244,9 @@ def auth_login():
     """Authenticate with passphrase and receive a session cookie."""
     body = request.get_json()
     passphrase = body.get("passphrase", "") if body else ""
+
+    if len(passphrase) > MAX_PASSPHRASE_LENGTH:
+        return jsonify({"success": False, "error": "invalid credentials"}), 401
 
     result = _auth.login(passphrase)
 
@@ -254,6 +290,9 @@ def auth_change_passphrase():
     current = body.get("current", "") if body else ""
     new_pass = body.get("new_passphrase", "") if body else ""
 
+    if len(new_pass) > MAX_PASSPHRASE_LENGTH or len(current) > MAX_PASSPHRASE_LENGTH:
+        return jsonify({"error": "passphrase too long"}), 400
+
     result = _auth.change_passphrase(current, new_pass)
     if result.get("success"):
         _ui_audit.append("passphrase_changed", {})
@@ -277,7 +316,7 @@ def login_page():
 
 @app.route("/settings")
 def settings_page():
-    return render_template("settings.html")
+    return render_template("settings.html", active_page="settings")
 
 
 def is_first_boot() -> bool:
@@ -307,24 +346,32 @@ def load_appliance_config() -> dict:
 def index():
     if is_first_boot() or not has_models():
         return render_template("setup.html")
-    config = load_appliance_config()
-    return render_template("index.html", config=config)
+    return render_template("index.html", active_page="chat")
 
 
 @app.route("/chat")
 def chat_page():
-    config = load_appliance_config()
-    return render_template("index.html", config=config)
+    return render_template("index.html", active_page="chat")
 
 
 @app.route("/models")
 def models_page():
-    return render_template("models.html")
+    return render_template("models.html", active_page="models")
 
 
 @app.route("/generate")
 def generate_page():
-    return render_template("generate.html")
+    return render_template("generate.html", active_page="generate")
+
+
+@app.route("/security")
+def security_page():
+    return render_template("security.html", active_page="security")
+
+
+@app.route("/updates")
+def updates_page():
+    return render_template("updates.html", active_page="updates")
 
 
 # --- API: Model Catalog (one-click download) ---
@@ -413,8 +460,11 @@ def _download_single_file(url: str, filename: str):
     dest = QUARANTINE_DIR / filename
     source_meta = QUARANTINE_DIR / f".{filename}.source"
 
-    resp = requests.get(url, stream=True, timeout=30)
+    resp = requests.get(url, stream=True, timeout=30, allow_redirects=True)
     resp.raise_for_status()
+    # Verify final URL is still HTTPS (prevent downgrade via redirect)
+    if not resp.url.startswith("https://"):
+        raise ValueError("download redirected to non-HTTPS URL")
     total = int(resp.headers.get("content-length", 0))
     downloaded = 0
 
@@ -510,7 +560,7 @@ def import_model():
         ext = Path(uploaded.filename).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({
-                "error": f"format not allowed: {ext}",
+                "error": "file format not allowed",
                 "allowed": list(ALLOWED_EXTENSIONS),
             }), 400
 
@@ -529,14 +579,14 @@ def import_model():
     if local_path:
         src = Path(local_path)
         if not src.exists():
-            return jsonify({"error": f"file not found: {local_path}"}), 404
+            return jsonify({"error": "file not found"}), 404
         if not src.is_file():
             return jsonify({"error": "path is not a file"}), 400
 
         ext = src.suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({
-                "error": f"format not allowed: {ext}",
+                "error": "file format not allowed",
                 "allowed": list(ALLOWED_EXTENSIONS),
             }), 400
 
@@ -1026,6 +1076,8 @@ def vault_unlock():
 
     if not passphrase:
         return jsonify({"success": False, "error": "passphrase required"}), 400
+    if len(passphrase) > MAX_PASSPHRASE_LENGTH:
+        return jsonify({"success": False, "error": "passphrase too long"}), 400
 
     # Find partition from crypttab
     partition = ""

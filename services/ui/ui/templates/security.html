@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% block title %}SecAI OS - Security{% endblock %}
+{% block page_title %}Security Dashboard{% endblock %}
+{% block content_class %}content-wide{% endblock %}
+
+{% block content %}
+<!-- Stats overview -->
+<div class="stats-grid" id="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value text-success" id="stat-services">--</div>
+        <div class="stat-label">Services Online</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value text-accent" id="stat-models">--</div>
+        <div class="stat-label">Trusted Models</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-integrity" style="color:var(--text-muted)">--</div>
+        <div class="stat-label">Integrity Status</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-audit" style="color:var(--text-muted)">--</div>
+        <div class="stat-label">Audit Chain</div>
+    </div>
+</div>
+
+<!-- Service Health -->
+<div class="section-title">Service Health</div>
+<div class="card">
+    <table class="data-table" id="services-table">
+        <thead>
+            <tr>
+                <th>Service</th>
+                <th>Status</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody id="services-tbody">
+            <tr><td colspan="3" class="text-muted">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Secure Boot & TPM2 -->
+<div class="section-title">Secure Boot &amp; TPM2</div>
+<div class="stats-grid">
+    <div class="card" id="secureboot-card">
+        <div class="card-header">
+            <span class="card-title">Secure Boot</span>
+            <span class="badge badge-muted" id="secureboot-badge">checking</span>
+        </div>
+        <p class="meta" id="secureboot-detail">Checking Secure Boot chain...</p>
+    </div>
+    <div class="card" id="tpm2-card">
+        <div class="card-header">
+            <span class="card-title">TPM2 Vault Sealing</span>
+            <span class="badge badge-muted" id="tpm2-badge">checking</span>
+        </div>
+        <p class="meta" id="tpm2-detail">Checking TPM2 status...</p>
+    </div>
+</div>
+
+<!-- Audit Logs -->
+<div class="section-title">Audit Log Integrity</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Hash-Chained Audit Logs</span>
+        <button class="btn btn-sm" onclick="verifyAudit()">Verify Now</button>
+    </div>
+    <p class="meta" id="audit-detail">Loading audit status...</p>
+</div>
+
+<!-- VM Detection -->
+<div class="section-title">Environment</div>
+<div class="card" id="vm-card">
+    <div class="card-header">
+        <span class="card-title">VM Detection</span>
+        <span class="badge badge-muted" id="vm-badge">checking</span>
+    </div>
+    <p class="meta" id="vm-detail">Checking environment...</p>
+</div>
+
+<!-- Emergency Controls -->
+<div class="section-title">Emergency Controls</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;color:var(--danger)"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Emergency Panic
+        </span>
+        <span class="badge" id="panic-badge">normal</span>
+    </div>
+    <p class="meta mb-md" id="panic-detail">System operating normally.</p>
+    <div class="btn-group">
+        <button class="btn btn-warning btn-sm" onclick="triggerPanic(1)">Level 1: Lock</button>
+        <button class="btn btn-danger btn-sm" onclick="triggerPanic(2)">Level 2: Shred Keys</button>
+        <button class="btn btn-danger btn-sm" onclick="triggerPanic(3)">Level 3: Wipe All</button>
+    </div>
+    <p class="form-hint mt-sm">Level 1 is reversible. Levels 2-3 require passphrase and are irreversible.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadServiceHealth() {
+        try {
+            var resp = await fetch('/api/status');
+            var data = await resp.json();
+            var services = data.services || {};
+            var tbody = document.getElementById('services-tbody');
+            var onlineCount = 0;
+            var rows = '';
+
+            var svcList = [
+                {key: 'inference', name: 'Inference (llama-server)'},
+                {key: 'registry', name: 'Model Registry'},
+                {key: 'tool_firewall', name: 'Tool Firewall'},
+                {key: 'diffusion', name: 'Diffusion Worker'},
+                {key: 'airlock', name: 'Airlock'},
+                {key: 'search_mediator', name: 'Search Mediator'},
+            ];
+
+            svcList.forEach(function(svc) {
+                var s = services[svc.key] || {};
+                var ok = s.status === 'ok';
+                if (ok) onlineCount++;
+                rows += '<tr>' +
+                    '<td style="font-weight:500">' + esc(svc.name) + '</td>' +
+                    '<td><span class="badge ' + (ok ? 'badge-success' : 'badge-muted') + '">' + (ok ? 'online' : 'offline') + '</span></td>' +
+                    '<td>' + (s.detail ? esc(s.detail) : (ok ? 'Healthy' : 'Not responding')) + '</td>' +
+                '</tr>';
+            });
+
+            tbody.innerHTML = rows;
+            document.getElementById('stat-services').textContent = onlineCount + '/' + svcList.length;
+        } catch(e) {
+            document.getElementById('services-tbody').innerHTML = '<tr><td colspan="3" class="text-muted">Could not reach status endpoint</td></tr>';
+        }
+    }
+
+    async function loadModelsCount() {
+        try {
+            var resp = await fetch('/api/models');
+            var models = await resp.json();
+            document.getElementById('stat-models').textContent = models.length;
+        } catch(e) {
+            document.getElementById('stat-models').textContent = '?';
+        }
+    }
+
+    async function loadIntegrity() {
+        try {
+            var resp = await fetch('/api/integrity/status');
+            var data = await resp.json();
+            var el = document.getElementById('stat-integrity');
+            if (data.status === 'ok') {
+                el.textContent = 'OK';
+                el.style.color = 'var(--success)';
+            } else if (data.status === 'failed') {
+                el.textContent = 'FAIL';
+                el.style.color = 'var(--danger)';
+            } else {
+                el.textContent = 'N/A';
+            }
+        } catch(e) {
+            document.getElementById('stat-integrity').textContent = '?';
+        }
+    }
+
+    async function loadAuditStatus() {
+        try {
+            var resp = await fetch('/api/audit/status');
+            var data = await resp.json();
+            var el = document.getElementById('stat-audit');
+            var detail = document.getElementById('audit-detail');
+            if (data.status === 'ok' || data.valid === true) {
+                el.textContent = 'Valid';
+                el.style.color = 'var(--success)';
+                detail.textContent = 'Chain verified. ' + (data.entries || '?') + ' entries. Last check: ' + (data.checked_at ? new Date(data.checked_at).toLocaleString() : 'unknown');
+            } else if (data.status === 'failed' || data.valid === false) {
+                el.textContent = 'Broken';
+                el.style.color = 'var(--danger)';
+                detail.textContent = 'Audit chain integrity FAILED! ' + (data.detail || '');
+            } else {
+                el.textContent = 'N/A';
+                detail.textContent = data.detail || 'No audit verification has run yet.';
+            }
+        } catch(e) {
+            document.getElementById('stat-audit').textContent = '?';
+            document.getElementById('audit-detail').textContent = 'Could not reach audit status.';
+        }
+    }
+
+    async function verifyAudit() {
+        try {
+            var resp = await fetch('/api/audit/verify', { method: 'POST' });
+            var data = await resp.json();
+            if (data.valid || data.status === 'ok') {
+                toast('Audit chain verified OK', 'success');
+            } else {
+                toast('Audit chain verification FAILED', 'error');
+            }
+            loadAuditStatus();
+        } catch(e) {
+            toast('Could not verify audit chain.', 'error');
+        }
+    }
+
+    async function loadBootStatus() {
+        /* Secure Boot */
+        try {
+            var resp = await fetch('/api/boot/secureboot/status');
+            var data = await resp.json();
+            var badge = document.getElementById('secureboot-badge');
+            var detail = document.getElementById('secureboot-detail');
+            if (data.enabled) {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'enabled';
+                detail.textContent = data.detail || 'Secure Boot chain verified.';
+            } else {
+                badge.className = 'badge badge-warning';
+                badge.textContent = 'disabled';
+                detail.textContent = data.detail || 'Secure Boot is not enabled.';
+            }
+        } catch(e) {
+            document.getElementById('secureboot-badge').textContent = 'unknown';
+            document.getElementById('secureboot-detail').textContent = 'Could not check Secure Boot status.';
+        }
+
+        /* TPM2 */
+        try {
+            var resp = await fetch('/api/boot/tpm2/status');
+            var data = await resp.json();
+            var badge = document.getElementById('tpm2-badge');
+            var detail = document.getElementById('tpm2-detail');
+            if (data.sealed) {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'sealed';
+                detail.textContent = data.detail || 'Vault key sealed to TPM2 PCRs.';
+            } else {
+                badge.className = 'badge badge-warning';
+                badge.textContent = 'not sealed';
+                detail.textContent = data.detail || 'Vault is not TPM2-sealed.';
+            }
+        } catch(e) {
+            document.getElementById('tpm2-badge').textContent = 'unknown';
+            document.getElementById('tpm2-detail').textContent = 'Could not check TPM2 status.';
+        }
+    }
+
+    async function loadVMStatus() {
+        try {
+            var resp = await fetch('/api/vm/status');
+            var data = await resp.json();
+            var badge = document.getElementById('vm-badge');
+            var detail = document.getElementById('vm-detail');
+            if (data.is_vm) {
+                badge.className = 'badge badge-warning';
+                badge.textContent = 'virtual machine';
+                detail.textContent = 'Running inside a VM (' + (data.hypervisor || 'unknown') + '). GPU passthrough: ' + (data.gpu_passthrough ? 'Yes' : 'No');
+            } else {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'bare metal';
+                detail.textContent = 'Running on bare metal hardware.';
+            }
+        } catch(e) {
+            document.getElementById('vm-badge').textContent = 'unknown';
+            document.getElementById('vm-detail').textContent = 'Could not detect environment.';
+        }
+    }
+
+    async function loadPanicStatus() {
+        try {
+            var resp = await fetch('/api/emergency/status');
+            var data = await resp.json();
+            var badge = document.getElementById('panic-badge');
+            var detail = document.getElementById('panic-detail');
+            if (data.level && data.level > 0) {
+                badge.className = 'badge badge-danger';
+                badge.textContent = 'level ' + data.level;
+                detail.textContent = 'Emergency panic active! Level ' + data.level + ' triggered at ' + (data.triggered_at || 'unknown') + '.';
+            } else {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'normal';
+                detail.textContent = 'System operating normally.';
+            }
+        } catch(e) {
+            /* No panic state file = normal operation */
+            document.getElementById('panic-badge').className = 'badge badge-success';
+            document.getElementById('panic-badge').textContent = 'normal';
+        }
+    }
+
+    async function triggerPanic(level) {
+        var titles = {1: 'Level 1: Lock', 2: 'Level 2: Shred Keys', 3: 'Level 3: Wipe All'};
+        var messages = {
+            1: 'This will lock the vault and stop all AI services. This is reversible.',
+            2: 'This will PERMANENTLY SHRED all encryption keys. This CANNOT be undone. You will need your passphrase.',
+            3: 'This will RE-ENCRYPT the vault with a random key, making ALL DATA UNRECOVERABLE. This CANNOT be undone.'
+        };
+
+        var confirmed = await showConfirm(titles[level], messages[level], 'Trigger Panic Level ' + level, true);
+        if (!confirmed) return;
+
+        var body = {level: level};
+        if (level >= 2) {
+            var passphrase = prompt('Enter your passphrase to confirm Level ' + level + ' panic:');
+            if (!passphrase) return;
+            body.passphrase = passphrase;
+        }
+
+        try {
+            var resp = await fetch('/api/emergency/panic', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            var data = await resp.json();
+            if (data.success) {
+                toast('Panic level ' + level + ' triggered.', 'warning');
+                loadPanicStatus();
+            } else {
+                toast(data.error || 'Panic trigger failed.', 'error');
+            }
+        } catch(e) {
+            toast('Could not connect to server.', 'error');
+        }
+    }
+
+    /* Load all sections */
+    loadServiceHealth();
+    loadModelsCount();
+    loadIntegrity();
+    loadAuditStatus();
+    loadBootStatus();
+    loadVMStatus();
+    loadPanicStatus();
+
+    setInterval(loadServiceHealth, 15000);
+    setInterval(loadPanicStatus, 10000);
+</script>
+{% endblock %}

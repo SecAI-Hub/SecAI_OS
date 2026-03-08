@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>{% block title %}SecAI OS{% endblock %}</title>
+    <style>
+        /* -- Reset & Variables -- */
+        :root {
+            --bg: #0f1117;
+            --bg-raised: #13151e;
+            --surface: #1a1b26;
+            --surface-hover: #1e2030;
+            --border: #2a2b3d;
+            --border-active: #3d3f5c;
+            --text: #c0caf5;
+            --text-secondary: #a9b1d6;
+            --text-muted: #565f89;
+            --accent: #7aa2f7;
+            --accent-hover: #89b4fa;
+            --accent-subtle: rgba(122, 162, 247, 0.1);
+            --danger: #f7768e;
+            --danger-subtle: rgba(247, 118, 142, 0.1);
+            --success: #9ece6a;
+            --success-subtle: rgba(158, 206, 106, 0.1);
+            --warning: #e0af68;
+            --warning-subtle: rgba(224, 175, 104, 0.1);
+            --sidebar-w: 240px;
+            --radius: 8px;
+            --radius-lg: 12px;
+            --transition: 0.15s ease;
+        }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+        }
+
+        /* -- Sidebar -- */
+        .sidebar {
+            width: var(--sidebar-w);
+            height: 100vh;
+            background: var(--bg-raised);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            z-index: 100;
+        }
+        .sidebar-brand {
+            padding: 1.25rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-brand svg { width: 24px; height: 24px; color: var(--accent); flex-shrink: 0; }
+        .sidebar-brand span { font-weight: 700; font-size: 1rem; letter-spacing: 0.5px; }
+        .sidebar-nav {
+            flex: 1;
+            padding: 0.75rem 0;
+            overflow-y: auto;
+        }
+        .nav-section { padding: 0 0.75rem; margin-bottom: 0.25rem; }
+        .nav-section-label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            padding: 0.5rem 0.75rem 0.25rem;
+        }
+        .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.55rem 0.75rem;
+            border-radius: var(--radius);
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all var(--transition);
+            position: relative;
+        }
+        .nav-link:hover { background: var(--surface); color: var(--text); }
+        .nav-link.active { background: var(--accent-subtle); color: var(--accent); }
+        .nav-link.active::before {
+            content: '';
+            position: absolute;
+            left: -0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 20px;
+            background: var(--accent);
+            border-radius: 0 3px 3px 0;
+        }
+        .nav-link svg { width: 18px; height: 18px; flex-shrink: 0; }
+        .nav-divider { height: 1px; background: var(--border); margin: 0.5rem 0.75rem; }
+        .sidebar-footer {
+            padding: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .status-dot.green { background: var(--success); box-shadow: 0 0 4px var(--success); }
+        .status-dot.red { background: var(--danger); box-shadow: 0 0 4px var(--danger); }
+        .status-dot.yellow { background: var(--warning); box-shadow: 0 0 4px var(--warning); }
+        .status-dot.gray { background: var(--text-muted); }
+
+        /* -- Main Area -- */
+        .main {
+            flex: 1;
+            margin-left: var(--sidebar-w);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            min-width: 0;
+        }
+        .topbar {
+            padding: 0.75rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            background: var(--bg);
+        }
+        .topbar h1 { font-size: 1rem; font-weight: 600; }
+        .topbar-left { display: flex; align-items: center; gap: 0.75rem; }
+        .topbar-right { display: flex; align-items: center; gap: 0.75rem; }
+        .topbar-badge {
+            font-size: 0.7rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 999px;
+            font-weight: 500;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            cursor: help;
+        }
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+        }
+        .content-narrow { max-width: 700px; }
+        .content-wide { max-width: 1000px; }
+
+        /* -- Cards -- */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+            transition: border-color var(--transition);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .card-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .card-title svg { width: 16px; height: 16px; color: var(--text-muted); }
+
+        /* -- Buttons -- */
+        .btn {
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all var(--transition);
+            white-space: nowrap;
+        }
+        .btn:hover { border-color: var(--border-active); background: var(--surface-hover); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn svg { width: 14px; height: 14px; }
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg);
+            border-color: var(--accent);
+            font-weight: 600;
+        }
+        .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+        .btn-danger { color: var(--danger); }
+        .btn-danger:hover { border-color: var(--danger); background: var(--danger-subtle); }
+        .btn-success { color: var(--success); }
+        .btn-success:hover { border-color: var(--success); background: var(--success-subtle); }
+        .btn-warning { color: var(--warning); }
+        .btn-warning:hover { border-color: var(--warning); background: var(--warning-subtle); }
+        .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.75rem; }
+        .btn-lg { padding: 0.65rem 1.5rem; font-size: 0.9rem; }
+        .btn-block { width: 100%; justify-content: center; }
+        .btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+        /* -- Forms -- */
+        .form-group { margin-bottom: 1rem; }
+        .form-label {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 0.375rem;
+        }
+        .form-hint {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+        .form-input {
+            width: 100%;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.875rem;
+            font-family: inherit;
+            transition: border-color var(--transition);
+        }
+        .form-input:focus { outline: none; border-color: var(--accent); }
+        .form-input::placeholder { color: var(--text-muted); }
+        textarea.form-input { resize: vertical; min-height: 80px; }
+        .form-row { display: flex; gap: 1rem; }
+        .form-row .form-group { flex: 1; }
+
+        /* -- Toggle Switch -- */
+        .toggle { position: relative; display: inline-flex; align-items: center; gap: 0.75rem; cursor: pointer; }
+        .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+        .toggle-track {
+            width: 40px; height: 22px;
+            background: var(--border);
+            border-radius: 22px;
+            position: relative;
+            transition: background var(--transition);
+            flex-shrink: 0;
+        }
+        .toggle-track::after {
+            content: '';
+            position: absolute;
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            background: var(--text);
+            top: 3px; left: 3px;
+            transition: transform var(--transition);
+        }
+        .toggle input:checked + .toggle-track { background: var(--accent); }
+        .toggle input:checked + .toggle-track::after { transform: translateX(18px); }
+        .toggle-label { font-size: 0.8125rem; color: var(--text-secondary); }
+
+        /* -- Badges & Pills -- */
+        .badge {
+            font-size: 0.65rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: inline-block;
+        }
+        .badge-accent { background: var(--accent-subtle); color: var(--accent); }
+        .badge-success { background: var(--success-subtle); color: var(--success); }
+        .badge-danger { background: var(--danger-subtle); color: var(--danger); }
+        .badge-warning { background: var(--warning-subtle); color: var(--warning); }
+        .badge-muted { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border); }
+
+        /* -- Alerts -- */
+        .alert {
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .alert svg { width: 16px; height: 16px; flex-shrink: 0; }
+        .alert-success { background: var(--success-subtle); color: var(--success); border: 1px solid rgba(158,206,106,0.2); }
+        .alert-danger { background: var(--danger-subtle); color: var(--danger); border: 1px solid rgba(247,118,142,0.2); }
+        .alert-warning { background: var(--warning-subtle); color: var(--warning); border: 1px solid rgba(224,175,104,0.2); }
+        .alert-info { background: var(--accent-subtle); color: var(--accent); border: 1px solid rgba(122,162,247,0.2); }
+
+        /* -- Meta text -- */
+        .meta { font-size: 0.8rem; color: var(--text-muted); }
+        .meta span { margin-right: 1rem; }
+
+        /* -- Section headers -- */
+        .section-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.75rem;
+            margin-top: 1.5rem;
+        }
+        .section-title:first-child { margin-top: 0; }
+
+        /* -- Stats grid -- */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+        }
+        .stat-value { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.25rem; }
+        .stat-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* -- Upload zone -- */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+        .upload-zone:hover { border-color: var(--accent); background: var(--accent-subtle); }
+        .upload-zone.dragover { border-color: var(--accent); background: var(--accent-subtle); }
+        .upload-zone p { color: var(--text-muted); }
+        .upload-zone input[type="file"] { display: none; }
+
+        /* -- Progress bar -- */
+        .progress-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-bar .fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.3s;
+            border-radius: 2px;
+        }
+
+        /* -- Tabs -- */
+        .tabs {
+            display: flex;
+            gap: 0.25rem;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1.5rem;
+        }
+        .tab {
+            padding: 0.6rem 1rem;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            font-family: inherit;
+            transition: all var(--transition);
+        }
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        /* -- Empty state -- */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+        }
+        .empty-state svg { width: 48px; height: 48px; margin-bottom: 1rem; opacity: 0.3; }
+        .empty-state h3 { font-size: 1rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
+        .empty-state p { font-size: 0.85rem; }
+
+        /* -- Table -- */
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .data-table th {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+        }
+        .data-table td {
+            padding: 0.65rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .data-table tr:last-child td { border-bottom: none; }
+        .data-table tr:hover td { background: var(--surface-hover); }
+
+        /* -- Toast notifications -- */
+        #toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 0.75rem 1rem;
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            animation: toastIn 0.3s ease;
+            pointer-events: auto;
+            max-width: 400px;
+            backdrop-filter: blur(12px);
+        }
+        .toast-success { background: rgba(26, 46, 26, 0.95); color: var(--success); border: 1px solid rgba(158,206,106,0.3); }
+        .toast-error { background: rgba(46, 26, 26, 0.95); color: var(--danger); border: 1px solid rgba(247,118,142,0.3); }
+        .toast-info { background: rgba(26, 32, 48, 0.95); color: var(--accent); border: 1px solid rgba(122,162,247,0.3); }
+        .toast-warning { background: rgba(46, 42, 26, 0.95); color: var(--warning); border: 1px solid rgba(224,175,104,0.3); }
+        .toast-exit { animation: toastOut 0.3s ease forwards; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(100%); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(100%); } }
+
+        /* -- Modal -- */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 10001;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.hidden { display: none; }
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            max-width: 420px;
+            width: 90%;
+            animation: modalIn 0.2s ease;
+        }
+        .modal h3 { font-size: 1rem; margin-bottom: 0.75rem; }
+        .modal p { font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1.25rem; line-height: 1.5; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+        /* -- Responsive -- */
+        .mobile-toggle { display: none; }
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); transition: transform 0.2s ease; }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; }
+            .mobile-toggle {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 36px; height: 36px;
+                background: none;
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                color: var(--text);
+                cursor: pointer;
+            }
+            .content { padding: 1rem; }
+            .form-row { flex-direction: column; gap: 0; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+        }
+
+        /* -- Scrollbar -- */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+
+        /* -- Utilities -- */
+        .hidden { display: none !important; }
+        .flex { display: flex; }
+        .flex-col { flex-direction: column; }
+        .items-center { align-items: center; }
+        .justify-between { justify-content: space-between; }
+        .gap-xs { gap: 0.25rem; }
+        .gap-sm { gap: 0.5rem; }
+        .gap-md { gap: 0.75rem; }
+        .gap-lg { gap: 1rem; }
+        .mt-sm { margin-top: 0.5rem; }
+        .mt-md { margin-top: 0.75rem; }
+        .mb-md { margin-bottom: 0.75rem; }
+        .mb-lg { margin-bottom: 1.5rem; }
+        .text-success { color: var(--success); }
+        .text-danger { color: var(--danger); }
+        .text-warning { color: var(--warning); }
+        .text-muted { color: var(--text-muted); }
+        .text-accent { color: var(--accent); }
+        .fw-600 { font-weight: 600; }
+        .w-full { width: 100%; }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>SecAI OS</span>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-section">
+                <a href="/chat" class="nav-link {% if active_page == 'chat' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    Chat
+                </a>
+                <a href="/models" class="nav-link {% if active_page == 'models' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                    Models
+                </a>
+                <a href="/generate" class="nav-link {% if active_page == 'generate' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    Generate
+                </a>
+            </div>
+            <div class="nav-divider"></div>
+            <div class="nav-section">
+                <div class="nav-section-label">System</div>
+                <a href="/security" class="nav-link {% if active_page == 'security' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Security
+                </a>
+                <a href="/updates" class="nav-link {% if active_page == 'updates' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Updates
+                </a>
+                <a href="/settings" class="nav-link {% if active_page == 'settings' %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg>
+                    Settings
+                </a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="status-indicator" id="sidebar-vault">
+                <span class="status-dot gray" id="sidebar-vault-dot"></span>
+                <span id="sidebar-vault-text">Vault</span>
+            </div>
+            <div class="status-indicator" id="sidebar-system">
+                <span class="status-dot gray" id="sidebar-system-dot"></span>
+                <span id="sidebar-system-text">System</span>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="mobile-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <h1>{% block page_title %}{% endblock %}</h1>
+            </div>
+            <div class="topbar-right">
+                <span class="topbar-badge" id="vault-badge" title="Vault status">vault</span>
+                <span class="topbar-badge" id="system-badge">system</span>
+            </div>
+        </header>
+        <div class="content {% block content_class %}{% endblock %}">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <div id="toast-container"></div>
+
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal">
+            <h3 id="modal-title"></h3>
+            <p id="modal-body"></p>
+            <div class="modal-actions">
+                <button class="btn" id="modal-cancel" onclick="closeModal(false)">Cancel</button>
+                <button class="btn btn-danger" id="modal-confirm" onclick="closeModal(true)">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /* -- Toast system -- */
+        function toast(message, type, duration) {
+            type = type || 'info';
+            duration = duration || 5000;
+            var container = document.getElementById('toast-container');
+            var el = document.createElement('div');
+            el.className = 'toast toast-' + type;
+            el.textContent = message;
+            container.appendChild(el);
+            setTimeout(function() {
+                el.classList.add('toast-exit');
+                setTimeout(function() { el.remove(); }, 300);
+            }, duration);
+        }
+
+        /* -- Modal system -- */
+        var _modalResolve = null;
+        function showConfirm(title, message, confirmLabel, danger) {
+            if (confirmLabel === undefined) confirmLabel = 'Confirm';
+            if (danger === undefined) danger = true;
+            return new Promise(function(resolve) {
+                _modalResolve = resolve;
+                document.getElementById('modal-title').textContent = title;
+                document.getElementById('modal-body').textContent = message;
+                var confirmBtn = document.getElementById('modal-confirm');
+                confirmBtn.textContent = confirmLabel;
+                confirmBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+                document.getElementById('modal-overlay').classList.remove('hidden');
+            });
+        }
+        function closeModal(result) {
+            document.getElementById('modal-overlay').classList.add('hidden');
+            if (_modalResolve) { _modalResolve(result); _modalResolve = null; }
+        }
+        document.getElementById('modal-overlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) closeModal(false);
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && !document.getElementById('modal-overlay').classList.contains('hidden')) {
+                closeModal(false);
+            }
+        });
+
+        /* -- HTML escape -- */
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        /* -- Format bytes -- */
+        function formatBytes(b) {
+            if (b === 0) return '0 B';
+            var k = 1024;
+            var sizes = ['B', 'KB', 'MB', 'GB'];
+            var i = Math.floor(Math.log(b) / Math.log(k));
+            return (b / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+        }
+
+        /* -- Status polling -- */
+        async function pollVaultStatus() {
+            try {
+                var resp = await fetch('/api/vault/status');
+                var data = await resp.json();
+                var s = data.state;
+                var badge = document.getElementById('vault-badge');
+                var dot = document.getElementById('sidebar-vault-dot');
+                var text = document.getElementById('sidebar-vault-text');
+                if (s === 'unlocked') {
+                    var idle = Math.floor((data.idle_seconds || 0) / 60);
+                    badge.textContent = 'vault unlocked';
+                    badge.style.borderColor = 'var(--success)';
+                    badge.style.color = 'var(--success)';
+                    badge.title = 'Idle: ' + idle + ' min';
+                    dot.className = 'status-dot green';
+                    text.textContent = 'Vault unlocked (' + idle + 'm idle)';
+                } else if (s === 'locking_soon') {
+                    badge.textContent = 'vault locking';
+                    badge.style.borderColor = 'var(--warning)';
+                    badge.style.color = 'var(--warning)';
+                    dot.className = 'status-dot yellow';
+                    text.textContent = 'Vault locking soon';
+                } else if (s === 'locked') {
+                    badge.textContent = 'vault locked';
+                    badge.style.borderColor = 'var(--danger)';
+                    badge.style.color = 'var(--danger)';
+                    dot.className = 'status-dot red';
+                    text.textContent = 'Vault locked';
+                } else {
+                    badge.textContent = 'vault';
+                    badge.style.borderColor = '';
+                    badge.style.color = '';
+                    dot.className = 'status-dot gray';
+                    text.textContent = 'Vault unknown';
+                }
+            } catch(e) {
+                document.getElementById('sidebar-vault-dot').className = 'status-dot gray';
+                document.getElementById('sidebar-vault-text').textContent = 'Vault unreachable';
+            }
+        }
+
+        async function pollSystemStatus() {
+            try {
+                var resp = await fetch('/api/status');
+                var data = await resp.json();
+                var badge = document.getElementById('system-badge');
+                var dot = document.getElementById('sidebar-system-dot');
+                var text = document.getElementById('sidebar-system-text');
+                var inferUp = data.services && data.services.inference && data.services.inference.status === 'ok';
+                if (inferUp) {
+                    badge.textContent = 'local-only';
+                    badge.style.borderColor = 'var(--success)';
+                    badge.style.color = 'var(--success)';
+                    dot.className = 'status-dot green';
+                    text.textContent = 'System online';
+                } else {
+                    badge.textContent = 'no model';
+                    badge.style.borderColor = 'var(--warning)';
+                    badge.style.color = 'var(--warning)';
+                    dot.className = 'status-dot yellow';
+                    text.textContent = 'No model loaded';
+                }
+            } catch(e) {
+                var badge = document.getElementById('system-badge');
+                badge.textContent = 'offline';
+                badge.style.borderColor = 'var(--danger)';
+                badge.style.color = 'var(--danger)';
+                document.getElementById('sidebar-system-dot').className = 'status-dot red';
+                document.getElementById('sidebar-system-text').textContent = 'System offline';
+            }
+        }
+
+        pollVaultStatus();
+        pollSystemStatus();
+        setInterval(pollVaultStatus, 10000);
+        setInterval(pollSystemStatus, 15000);
+
+        /* Close sidebar on mobile when clicking main area */
+        document.querySelector('.main').addEventListener('click', function() {
+            document.getElementById('sidebar').classList.remove('open');
+        });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

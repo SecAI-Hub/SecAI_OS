@@ -6,7 +6,7 @@ Requires=secure-ai-registry.service secure-ai-tool-firewall.service
 [Service]
 Type=simple
 ExecStart=/usr/libexec/secure-ai/ui
-Environment=BIND_ADDR=0.0.0.0:8480
+Environment=BIND_ADDR=127.0.0.1:8480
 Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475

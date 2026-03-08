@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}SecAI OS - Updates{% endblock %}
+{% block page_title %}System Updates{% endblock %}
+{% block content_class %}content-narrow{% endblock %}
+
+{% block content %}
+<!-- Current Status -->
+<div class="section-title" style="margin-top:0">Current Status</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Update Status
+        </span>
+        <span class="badge" id="update-badge">checking</span>
+    </div>
+    <p class="meta" id="update-detail">Loading update status...</p>
+    <div class="btn-group mt-md">
+        <button class="btn btn-sm btn-primary" id="btn-check" onclick="checkUpdates()">Check for Updates</button>
+    </div>
+</div>
+
+<!-- Available Update -->
+<div class="card hidden" id="update-available-card">
+    <div class="card-header">
+        <span class="card-title text-accent">Update Available</span>
+    </div>
+    <p class="meta" id="update-available-detail"></p>
+    <div class="btn-group mt-md">
+        <button class="btn btn-sm btn-primary" id="btn-stage" onclick="stageUpdate()">Download &amp; Stage</button>
+    </div>
+</div>
+
+<!-- Staged Update -->
+<div class="card hidden" id="update-staged-card">
+    <div class="card-header">
+        <span class="card-title text-success">Update Staged</span>
+        <span class="badge badge-success">ready to apply</span>
+    </div>
+    <p class="meta" id="update-staged-detail">An update has been downloaded and verified. Apply when ready.</p>
+    <div class="btn-group mt-md">
+        <button class="btn btn-sm btn-primary" id="btn-apply" onclick="applyUpdate()">Apply &amp; Reboot</button>
+    </div>
+    <p class="form-hint mt-sm">The system will reboot to apply the update. A health check will run automatically after reboot.</p>
+</div>
+
+<!-- Health Check -->
+<div class="section-title">Health Check</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Post-Update Health</span>
+        <span class="badge" id="health-badge">--</span>
+    </div>
+    <p class="meta" id="health-detail">Loading health check status...</p>
+</div>
+
+<!-- Rollback -->
+<div class="section-title">Rollback</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+            Roll Back to Previous Version
+        </span>
+    </div>
+    <p class="meta mb-md">If the current deployment has issues, roll back to the previous rpm-ostree deployment.</p>
+    <button class="btn btn-danger btn-sm" onclick="rollbackUpdate()">Rollback &amp; Reboot</button>
+    <p class="form-hint mt-sm">The system will reboot into the previous deployment. A health check will verify system integrity.</p>
+</div>
+
+<!-- Update Settings -->
+<div class="section-title">Update Settings</div>
+<div class="card">
+    <div style="display:flex;flex-direction:column;gap:1rem">
+        <label class="toggle">
+            <input type="checkbox" id="toggle-cosign" checked disabled>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Cosign signature verification (always enabled)</span>
+        </label>
+        <label class="toggle">
+            <input type="checkbox" id="toggle-staged" checked disabled>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Staged updates (download first, apply manually)</span>
+        </label>
+        <label class="toggle">
+            <input type="checkbox" id="toggle-autocheck" checked disabled>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">Auto-check every 6 hours</span>
+        </label>
+    </div>
+    <p class="form-hint mt-md">These security settings are enforced by policy and cannot be disabled.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadUpdateStatus() {
+        try {
+            var resp = await fetch('/api/update/status');
+            var data = await resp.json();
+            var badge = document.getElementById('update-badge');
+            var detail = document.getElementById('update-detail');
+            var availableCard = document.getElementById('update-available-card');
+            var stagedCard = document.getElementById('update-staged-card');
+
+            if (data.state === 'staged' || data.staged) {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'staged';
+                detail.textContent = 'An update is staged and ready to apply.';
+                availableCard.classList.add('hidden');
+                stagedCard.classList.remove('hidden');
+                if (data.version) {
+                    document.getElementById('update-staged-detail').textContent =
+                        'Version ' + data.version + ' has been downloaded, verified, and is ready to apply.';
+                }
+            } else if (data.state === 'available' || data.update_available) {
+                badge.className = 'badge badge-accent';
+                badge.textContent = 'available';
+                detail.textContent = 'An update is available.';
+                stagedCard.classList.add('hidden');
+                availableCard.classList.remove('hidden');
+                document.getElementById('update-available-detail').textContent =
+                    'New version available' + (data.new_version ? ': ' + data.new_version : '') + '. Download and stage before applying.';
+            } else {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'up to date';
+                detail.textContent = 'System is up to date.' + (data.current_commit ? ' Current: ' + data.current_commit.substring(0, 12) : '');
+                availableCard.classList.add('hidden');
+                stagedCard.classList.add('hidden');
+            }
+        } catch(e) {
+            document.getElementById('update-badge').textContent = 'unknown';
+            document.getElementById('update-detail').textContent = 'Could not reach update status.';
+        }
+    }
+
+    async function loadHealthStatus() {
+        try {
+            var resp = await fetch('/api/update/health');
+            var data = await resp.json();
+            var badge = document.getElementById('health-badge');
+            var detail = document.getElementById('health-detail');
+
+            if (data.status === 'ok' || data.healthy === true) {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'healthy';
+                detail.textContent = 'All health checks passed.' + (data.boot_id ? ' Boot: ' + data.boot_id.substring(0, 8) : '');
+            } else if (data.status === 'failed' || data.healthy === false) {
+                badge.className = 'badge badge-danger';
+                badge.textContent = 'unhealthy';
+                detail.textContent = 'Health check failed: ' + (data.detail || 'unknown issue');
+            } else {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'no data';
+                detail.textContent = data.detail || 'No health check results available.';
+            }
+        } catch(e) {
+            document.getElementById('health-badge').textContent = 'unknown';
+            document.getElementById('health-detail').textContent = 'Could not reach health check status.';
+        }
+    }
+
+    async function checkUpdates() {
+        var btn = document.getElementById('btn-check');
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        try {
+            var resp = await fetch('/api/update/check', { method: 'POST' });
+            var data = await resp.json();
+            if (data.update_available) {
+                toast('Update available!', 'info');
+            } else {
+                toast('System is up to date.', 'success');
+            }
+            loadUpdateStatus();
+        } catch(e) {
+            toast('Could not check for updates.', 'error');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Check for Updates';
+    }
+
+    async function stageUpdate() {
+        var confirmed = await showConfirm('Stage Update', 'Download and verify the update? This will not apply it yet.', 'Download & Stage', false);
+        if (!confirmed) return;
+
+        var btn = document.getElementById('btn-stage');
+        btn.disabled = true;
+        btn.textContent = 'Staging...';
+        try {
+            var resp = await fetch('/api/update/stage', { method: 'POST' });
+            var data = await resp.json();
+            if (data.success) {
+                toast('Update staged successfully. Ready to apply.', 'success');
+            } else {
+                toast(data.error || 'Stage failed.', 'error');
+            }
+            loadUpdateStatus();
+        } catch(e) {
+            toast('Could not stage update.', 'error');
+        }
+        btn.disabled = false;
+        btn.textContent = 'Download & Stage';
+    }
+
+    async function applyUpdate() {
+        var confirmed = await showConfirm('Apply Update & Reboot', 'The system will reboot to apply the update. A health check will run after reboot to verify everything is working.', 'Apply & Reboot');
+        if (!confirmed) return;
+
+        try {
+            var resp = await fetch('/api/update/apply', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({confirm: true}),
+            });
+            var data = await resp.json();
+            if (data.success) {
+                toast('Update applied. System is rebooting...', 'warning', 10000);
+            } else {
+                toast(data.error || 'Apply failed.', 'error');
+            }
+        } catch(e) {
+            toast('Could not apply update.', 'error');
+        }
+    }
+
+    async function rollbackUpdate() {
+        var confirmed = await showConfirm('Rollback System', 'Roll back to the previous rpm-ostree deployment? The system will reboot.', 'Rollback & Reboot');
+        if (!confirmed) return;
+
+        try {
+            var resp = await fetch('/api/update/rollback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({confirm: true}),
+            });
+            var data = await resp.json();
+            if (data.success) {
+                toast('Rolling back. System is rebooting...', 'warning', 10000);
+            } else {
+                toast(data.error || 'Rollback failed.', 'error');
+            }
+        } catch(e) {
+            toast('Could not initiate rollback.', 'error');
+        }
+    }
+
+    loadUpdateStatus();
+    loadHealthStatus();
+    setInterval(loadUpdateStatus, 30000);
+</script>
+{% endblock %}
