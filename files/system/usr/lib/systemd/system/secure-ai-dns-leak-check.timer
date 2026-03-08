@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic DNS Leak Detection (every 60 minutes)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

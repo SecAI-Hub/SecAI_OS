@@ -1,0 +1,29 @@
+[Unit]
+Description=Secure AI DNS Leak Detection Check
+After=network-online.target secure-ai-tor.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/check-dns-leak.sh
+
+# Sandboxing
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+# Needs network to test DNS + Tor connectivity
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Write results to logs
+ReadWritePaths=/var/lib/secure-ai/logs
+ReadOnlyPaths=/etc/secure-ai
+
+# Resource limits
+MemoryMax=64M
+TasksMax=16

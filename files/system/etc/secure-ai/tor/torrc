@@ -13,9 +13,14 @@ SocksPolicy reject *
 IsolateDestAddr 1
 IsolateDestPort 1
 
-# New circuit for each SearXNG query batch (rotate every 60s)
+# New circuit for each SearXNG query batch (rotate every 30s under active use)
 NewCircuitPeriod 60
-MaxCircuitDirtiness 600
+MaxCircuitDirtiness 30
+
+# Traffic analysis protection (M19)
+# Padding: adds dummy cells to obscure traffic patterns and timing
+ConnectionPadding 1
+ReducedConnectionPadding 0
 
 # Disable unused features
 ControlPort 0

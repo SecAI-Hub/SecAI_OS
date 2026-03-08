@@ -62,9 +62,14 @@ table inet secure_ai {
         # Allow DHCP client
         udp sport 68 udp dport 67 accept
 
-        # Allow DNS (rate limited)
-        udp dport 53 limit rate 30/minute accept
-        tcp dport 53 limit rate 10/minute accept
+        # Allow DNS (tightly rate-limited, M19)
+        # When search is enabled, DNS goes through Tor SOCKS5 (no direct DNS).
+        # These rules allow minimal direct DNS for DHCP/system operations only.
+        udp dport 53 limit rate 10/minute accept
+        tcp dport 53 limit rate 5/minute accept
+        # Log and drop excess DNS (potential leak indicator)
+        udp dport 53 log prefix "secure-ai-dns-excess: " drop
+        tcp dport 53 log prefix "secure-ai-dns-excess: " drop
 
         # Allow NTP for time sync (needed for certificate validation)
         udp dport 123 accept
