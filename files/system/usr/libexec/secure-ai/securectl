@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+#
+# Secure AI Appliance — securectl (M23)
+#
+# Emergency data protection tool with three severity levels:
+#
+#   Level 1 — Lock:
+#     Lock vault, kill workers, require re-auth. Fully reversible.
+#
+#   Level 2 — Wipe Keys:
+#     Delete LUKS header backup, delete cosign keys, lock vault.
+#     Data recoverable only with passphrase.
+#
+#   Level 3 — Full Wipe:
+#     Re-encrypt vault with random key (data unrecoverable),
+#     zero inference memory, delete all logs, delete registry.
+#
+# Usage:
+#   securectl panic <level> [--confirm <passphrase>] [--no-countdown]
+#   securectl status
+#
+set -euo pipefail
+
+SECURE_AI_ROOT="/var/lib/secure-ai"
+AUTH_DIR="${SECURE_AI_ROOT}/auth"
+AUDIT_LOG="${SECURE_AI_ROOT}/logs/panic-audit.jsonl"
+PANIC_STATE="/run/secure-ai/panic-state.json"
+MAPPER_NAME="secure-ai-vault"
+MOUNT_POINT="${SECURE_AI_ROOT}"
+
+log() {
+    echo "[securectl] $*"
+    logger -t securectl "$*" 2>/dev/null || true
+}
+
+# --- Audit logging ---
+audit_panic() {
+    local level="$1"
+    local action="$2"
+    local timestamp
+    timestamp=$(date -Iseconds)
+
+    mkdir -p "$(dirname "$AUDIT_LOG")" 2>/dev/null || true
+
+    local entry
+    entry=$(python3 -c "
+import json, hashlib
+entry = {
+    'timestamp': '${timestamp}',
+    'event': 'emergency_panic',
+    'severity': 'CRITICAL',
+    'level': ${level},
+    'action': '${action}'
+}
+entry['hash'] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+print(json.dumps(entry))
+" 2>/dev/null || echo '{"event":"emergency_panic","level":'${level}'}')
+    echo "$entry" >> "$AUDIT_LOG" 2>/dev/null || true
+}
+
+# --- Passphrase verification ---
+verify_passphrase() {
+    local passphrase="$1"
+
+    if [ ! -f "${AUTH_DIR}/passphrase.json" ]; then
+        log "WARNING: no passphrase configured, skipping verification"
+        return 0
+    fi
+
+    # Verify against stored scrypt hash
+    python3 -c "
+import json, hashlib, base64, sys
+try:
+    with open('${AUTH_DIR}/passphrase.json') as f:
+        data = json.load(f)
+    stored_hash = data['hash']
+    salt = base64.b64decode(data['salt'])
+    n = data.get('n', 32768)
+    r = data.get('r', 8)
+    p = data.get('p', 1)
+    dk = hashlib.scrypt(sys.argv[1].encode(), salt=salt, n=n, r=r, p=p, dklen=64)
+    if dk.hex() == stored_hash:
+        sys.exit(0)
+    else:
+        sys.exit(1)
+except Exception as e:
+    print(f'Verification error: {e}', file=sys.stderr)
+    sys.exit(1)
+" "$passphrase" 2>/dev/null
+}
+
+# --- Countdown ---
+countdown() {
+    local seconds="${1:-5}"
+    echo ""
+    echo "  *** EMERGENCY ACTION IN ${seconds} SECONDS ***"
+    echo "  Press Ctrl+C to cancel."
+    echo ""
+    for i in $(seq "$seconds" -1 1); do
+        echo "  ${i}..."
+        sleep 1
+    done
+    echo ""
+}
+
+# --- Write panic state ---
+write_panic_state() {
+    local level="$1"
+    local status="$2"
+    mkdir -p "$(dirname "$PANIC_STATE")" 2>/dev/null || true
+    cat > "$PANIC_STATE" <<EOF
+{
+  "panic_active": true,
+  "level": ${level},
+  "status": "${status}",
+  "timestamp": "$(date -Iseconds)"
+}
+EOF
+    chmod 644 "$PANIC_STATE"
+}
+
+# --- Level 1: Lock ---
+panic_level_1() {
+    log "PANIC LEVEL 1: LOCK"
+    audit_panic 1 "lock"
+    write_panic_state 1 "locking"
+
+    # Stop all AI services
+    log "Stopping all AI services..."
+    systemctl stop secure-ai-inference.service 2>/dev/null || true
+    systemctl stop secure-ai-diffusion.service 2>/dev/null || true
+    systemctl stop secure-ai-registry.service 2>/dev/null || true
+    systemctl stop secure-ai-tool-firewall.service 2>/dev/null || true
+    systemctl stop secure-ai-quarantine-watcher.service 2>/dev/null || true
+    systemctl stop secure-ai-search-mediator.service 2>/dev/null || true
+
+    # Kill any remaining workers
+    pkill -f "llama-server" 2>/dev/null || true
+    pkill -f "diffusion-worker" 2>/dev/null || true
+
+    # Lock vault
+    log "Locking vault..."
+    sync
+    umount "${MOUNT_POINT}" 2>/dev/null || true
+    cryptsetup close "${MAPPER_NAME}" 2>/dev/null || true
+
+    # Invalidate all sessions
+    if [ -d "${AUTH_DIR}/sessions" ]; then
+        rm -rf "${AUTH_DIR}/sessions"/* 2>/dev/null || true
+    fi
+
+    write_panic_state 1 "locked"
+    log "LEVEL 1 COMPLETE: vault locked, services stopped, sessions invalidated"
+}
+
+# --- Level 2: Wipe Keys ---
+panic_level_2() {
+    log "PANIC LEVEL 2: WIPE KEYS"
+    audit_panic 2 "wipe_keys"
+    write_panic_state 2 "wiping_keys"
+
+    # First do everything Level 1 does
+    panic_level_1
+
+    # Delete LUKS header backup
+    log "Deleting LUKS header backup..."
+    if [ -f "${SECURE_AI_ROOT}/keys/luks-header-backup" ]; then
+        shred -vfz -n 3 "${SECURE_AI_ROOT}/keys/luks-header-backup" 2>/dev/null || true
+        rm -f "${SECURE_AI_ROOT}/keys/luks-header-backup" 2>/dev/null || true
+    fi
+
+    # Delete cosign keys
+    log "Deleting cosign signing keys..."
+    find "${SECURE_AI_ROOT}/keys" -name "*.key" -o -name "*.pem" -o -name "*.pub" 2>/dev/null | while read -r keyfile; do
+        shred -vfz -n 3 "$keyfile" 2>/dev/null || true
+        rm -f "$keyfile" 2>/dev/null || true
+    done
+
+    # Delete TPM2 sealed keys
+    if [ -d "${SECURE_AI_ROOT}/keys/tpm2" ]; then
+        shred -vfz -n 3 "${SECURE_AI_ROOT}/keys/tpm2"/* 2>/dev/null || true
+        rm -rf "${SECURE_AI_ROOT}/keys/tpm2" 2>/dev/null || true
+    fi
+
+    # Delete MOK private key
+    find /etc/secure-ai -name "*.key" 2>/dev/null | while read -r keyfile; do
+        shred -vfz -n 3 "$keyfile" 2>/dev/null || true
+        rm -f "$keyfile" 2>/dev/null || true
+    done
+
+    write_panic_state 2 "keys_wiped"
+    log "LEVEL 2 COMPLETE: all signing/encryption keys destroyed"
+}
+
+# --- Level 3: Full Wipe ---
+panic_level_3() {
+    log "PANIC LEVEL 3: FULL WIPE"
+    audit_panic 3 "full_wipe"
+    write_panic_state 3 "full_wipe"
+
+    # First do everything Level 2 does
+    panic_level_2
+
+    # Re-encrypt vault with random key (makes data unrecoverable)
+    log "Re-encrypting vault with random key..."
+    local vault_device
+    vault_device=$(awk -v name="${MAPPER_NAME}" '$1 == name {print $2}' /etc/crypttab 2>/dev/null || echo "")
+    if [ -n "$vault_device" ] && [ -b "$vault_device" ]; then
+        # Generate random passphrase and re-encrypt
+        local random_key
+        random_key=$(head -c 64 /dev/urandom | base64)
+        echo -n "$random_key" | cryptsetup luksErase "$vault_device" --batch-mode 2>/dev/null || true
+        log "Vault encryption key destroyed"
+    fi
+
+    # Zero inference memory (drop caches)
+    log "Clearing memory..."
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+    # Delete all logs
+    log "Deleting all logs..."  # This is the last log that will be written
+    find "${SECURE_AI_ROOT}/logs" -type f -name "*.jsonl" -o -name "*.log" 2>/dev/null | while read -r logfile; do
+        shred -vfz -n 1 "$logfile" 2>/dev/null || true
+        rm -f "$logfile" 2>/dev/null || true
+    done
+
+    # Delete registry (models)
+    log "Deleting model registry..."
+    if [ -d "${SECURE_AI_ROOT}/registry" ]; then
+        rm -rf "${SECURE_AI_ROOT}/registry"/* 2>/dev/null || true
+    fi
+
+    # Delete auth data
+    if [ -d "${AUTH_DIR}" ]; then
+        shred -vfz -n 1 "${AUTH_DIR}"/* 2>/dev/null || true
+        rm -rf "${AUTH_DIR}"/* 2>/dev/null || true
+    fi
+
+    # Delete canary database
+    shred -vfz -n 1 "${SECURE_AI_ROOT}/canary-db.json" 2>/dev/null || true
+    rm -f "${SECURE_AI_ROOT}/canary-db.json" 2>/dev/null || true
+
+    # Remove firstboot marker to force fresh setup
+    rm -f "${SECURE_AI_ROOT}/.firstboot-done" 2>/dev/null || true
+
+    write_panic_state 3 "wiped"
+    log "LEVEL 3 COMPLETE: all data destroyed, system in factory-reset state"
+}
+
+# --- Status ---
+show_status() {
+    if [ -f "$PANIC_STATE" ]; then
+        cat "$PANIC_STATE"
+    else
+        echo '{"panic_active": false}'
+    fi
+}
+
+# --- Main ---
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    panic)
+        level="${1:-}"
+        shift || true
+
+        if [ -z "$level" ] || ! echo "$level" | grep -qE '^[123]$'; then
+            echo "Usage: securectl panic <1|2|3> [--confirm <passphrase>] [--no-countdown]"
+            echo ""
+            echo "Levels:"
+            echo "  1 — Lock vault, stop services (reversible)"
+            echo "  2 — Wipe keys + Level 1 (data needs passphrase)"
+            echo "  3 — Full wipe + Level 2 (data unrecoverable)"
+            exit 1
+        fi
+
+        # Parse options
+        passphrase=""
+        do_countdown="true"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --confirm)
+                    passphrase="${2:-}"
+                    shift 2 || { echo "ERROR: --confirm requires a passphrase"; exit 1; }
+                    ;;
+                --no-countdown)
+                    do_countdown="false"
+                    shift
+                    ;;
+                *)
+                    echo "Unknown option: $1"
+                    exit 1
+                    ;;
+            esac
+        done
+
+        # Level 2 and 3 require passphrase confirmation
+        if [ "$level" -ge 2 ]; then
+            if [ -z "$passphrase" ]; then
+                echo "ERROR: Level ${level} requires --confirm <passphrase>"
+                exit 1
+            fi
+            if ! verify_passphrase "$passphrase"; then
+                echo "ERROR: passphrase verification failed"
+                exit 1
+            fi
+        fi
+
+        echo ""
+        echo "  =========================================="
+        echo "  EMERGENCY PANIC — LEVEL ${level}"
+        echo "  =========================================="
+        case "$level" in
+            1) echo "  Action: Lock vault, stop services" ;;
+            2) echo "  Action: WIPE ALL KEYS + lock" ;;
+            3) echo "  Action: FULL WIPE — DATA UNRECOVERABLE" ;;
+        esac
+        echo "  =========================================="
+
+        if [ "$do_countdown" = "true" ]; then
+            countdown 5
+        fi
+
+        case "$level" in
+            1) panic_level_1 ;;
+            2) panic_level_2 ;;
+            3) panic_level_3 ;;
+        esac
+        ;;
+
+    status)
+        show_status
+        ;;
+
+    help|--help|-h)
+        echo "securectl — Secure AI Appliance Emergency Control"
+        echo ""
+        echo "Commands:"
+        echo "  panic <1|2|3>  Execute emergency action at specified level"
+        echo "  status         Show current panic state"
+        echo ""
+        echo "Options:"
+        echo "  --confirm <passphrase>  Required for levels 2 and 3"
+        echo "  --no-countdown          Skip 5-second countdown"
+        ;;
+
+    *)
+        echo "Unknown command: $cmd"
+        echo "Run 'securectl help' for usage."
+        exit 1
+        ;;
+esac

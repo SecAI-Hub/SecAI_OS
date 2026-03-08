@@ -1,7 +1,17 @@
 [Unit]
-Description=Secure AI Panic Switch (emergency network kill + worker stop)
+Description=Secure AI Emergency Panic (securectl)
+After=secure-ai-firstboot.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/secure-ai/panic.sh
+ExecStart=/usr/libexec/secure-ai/securectl panic 1 --no-countdown
 RemainAfterExit=yes
+
+# Needs root for vault lock, process kill, key shred
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+ReadWritePaths=/var/lib/secure-ai /run/secure-ai /etc/secure-ai
