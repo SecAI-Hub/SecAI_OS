@@ -30,6 +30,11 @@ modules:
       # Tor + SearXNG (anonymous web search)
       - tor                         # Tor SOCKS5 proxy
       - python3-searxng             # SearXNG metasearch (or installed via pip)
+      # Secure Boot + TPM2 (M17)
+      - mokutil                       # MOK enrollment
+      - sbsigntools                   # EFI binary signing
+      - tpm2-tools                    # TPM2 key sealing/unsealing
+      - tpm2-tss                      # TPM2 Software Stack
 
   # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
   - type: files
@@ -84,6 +89,7 @@ modules:
         - secure-ai-integrity.timer
         - secure-ai-audit-verify.timer
         - secure-ai-vault-watchdog.service
+        - secure-ai-boot-verify.service
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

@@ -1,0 +1,23 @@
+[Unit]
+Description=Secure AI Boot Chain Integrity Verification
+After=local-fs.target
+Before=secure-ai-registry.service secure-ai-ui.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/verify-boot-chain.sh
+RemainAfterExit=yes
+
+# Needs access to /sys/firmware/efi, /dev/tpmrm0, /boot
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+
+# Write results to logs
+ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+
+[Install]
+WantedBy=multi-user.target

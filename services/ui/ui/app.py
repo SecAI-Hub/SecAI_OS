@@ -913,6 +913,45 @@ def audit_verify_now():
         return jsonify({"error": "verification script not found"}), 500
 
 
+# --- API: Boot Chain Integrity (M17) ---
+
+@app.route("/api/boot/status")
+def boot_status():
+    """Return the last boot chain verification result."""
+    result_path = SECURE_AI_ROOT / "logs" / "boot-verify-last.json"
+    if not result_path.exists():
+        return jsonify({"status": "unknown", "detail": "no boot verification has run yet"})
+    try:
+        data = json.loads(result_path.read_text())
+        return jsonify(data)
+    except Exception:
+        return jsonify({"status": "unknown", "detail": "could not read boot verification result"})
+
+
+@app.route("/api/boot/tpm2/status")
+def tpm2_status():
+    """Return TPM2 state from the runtime state file."""
+    state_path = Path("/run/secure-ai/tpm2-state")
+    if not state_path.exists():
+        return jsonify({"tpm2_available": False, "sealed": False, "detail": "no TPM2 state"})
+    try:
+        return jsonify(json.loads(state_path.read_text()))
+    except Exception:
+        return jsonify({"tpm2_available": False, "detail": "could not read TPM2 state"})
+
+
+@app.route("/api/boot/secureboot/status")
+def secureboot_status():
+    """Return Secure Boot state from the runtime state file."""
+    state_path = Path("/run/secure-ai/secureboot-state")
+    if not state_path.exists():
+        return jsonify({"secure_boot": "unknown", "mok_enrolled": "unknown"})
+    try:
+        return jsonify(json.loads(state_path.read_text()))
+    except Exception:
+        return jsonify({"secure_boot": "unknown", "detail": "could not read state"})
+
+
 # --- API: Vault Auto-Lock ---
 
 @app.route("/api/vault/status")

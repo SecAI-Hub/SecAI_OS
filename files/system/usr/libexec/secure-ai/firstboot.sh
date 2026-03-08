@@ -153,6 +153,34 @@ if [ -w /proc/sys/kernel/yama/ptrace_scope ]; then
     echo 1 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true
 fi
 
+# --- Secure Boot + TPM2 checks (M17) ---
+log "Checking Secure Boot status..."
+/usr/libexec/secure-ai/enroll-secureboot.sh --check-only 2>&1 | while IFS= read -r line; do log "$line"; done || true
+
+log "Checking TPM2 status..."
+/usr/libexec/secure-ai/tpm2-seal-vault.sh status 2>&1 | while IFS= read -r line; do log "$line"; done || true
+
+# Create TPM2 key directory
+mkdir -p "${SECURE_AI_ROOT}/keys/tpm2"
+chmod 700 "${SECURE_AI_ROOT}/keys/tpm2"
+
+# If TPM2 is available and vault key is not yet sealed, log instructions
+if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
+    if [ ! -f "${SECURE_AI_ROOT}/keys/tpm2/vault-key.sealed.pub" ]; then
+        log ""
+        log "TPM2 detected. To seal the vault key to the boot chain:"
+        log "  sudo /usr/libexec/secure-ai/tpm2-seal-vault.sh seal"
+        log "This binds vault auto-unlock to the current firmware + kernel state."
+        log ""
+    fi
+fi
+
+# Run boot chain verification
+log "Running boot chain integrity verification..."
+/usr/libexec/secure-ai/verify-boot-chain.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: boot chain verification failed"
+}
+
 # Write marker (read-only to prevent tampering)
 date -Iseconds > "$MARKER"
 chmod 444 "$MARKER"

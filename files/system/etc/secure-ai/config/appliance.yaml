@@ -90,6 +90,19 @@ auth:
   # Escalated lockout after 15 failed attempts (seconds).
   escalated_lockout: 900
 
+secure_boot:
+  # UEFI Secure Boot + TPM2 measured boot (M17).
+  # MOK (Machine Owner Key) signs bootloader and kernel.
+  # TPM2 seals the LUKS vault key to PCR values (firmware, kernel, bootloader,
+  # secure boot state). If the boot chain is tampered, TPM refuses to unseal
+  # and the user must enter the passphrase manually.
+  # PCR binding: PCR 0 (firmware), 2 (option ROM), 4 (bootloader), 7 (SB state).
+  tpm2_pcr_binding: "sha256:0,2,4,7"
+  # Allow passphrase fallback when PCR mismatch (e.g., after legitimate update).
+  passphrase_fallback: true
+  # Auto-reseal after rpm-ostree upgrade (requires user passphrase confirmation).
+  auto_reseal_on_update: false
+
 sandbox:
   # Per-service process isolation (M16).
   # seccomp: JSON profiles in /etc/secure-ai/seccomp/ define allowed syscalls.
