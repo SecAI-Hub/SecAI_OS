@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure AI - Login</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1b26;
+            --border: #2a2b3d;
+            --text: #c0caf5;
+            --text-dim: #565f89;
+            --accent: #7aa2f7;
+            --accent-hover: #89b4fa;
+            --danger: #f7768e;
+            --success: #9ece6a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 1rem;
+            padding: 2rem;
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-card h1 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        .login-card p {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            margin-bottom: 1.5rem;
+        }
+        label {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            display: block;
+            margin-bottom: 0.35rem;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 0.6rem 0.8rem;
+            border: 1px solid var(--border);
+            border-radius: 0.4rem;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+        input[type="password"]:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .btn {
+            width: 100%;
+            padding: 0.6rem;
+            border-radius: 0.4rem;
+            border: none;
+            background: var(--accent);
+            color: var(--bg);
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .error-msg {
+            background: #2e1a1a;
+            color: var(--danger);
+            border: 1px solid #4a2d2d;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.4rem;
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+        .setup-note {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-top: 1rem;
+            text-align: center;
+        }
+        /* First-boot setup: confirm field */
+        .confirm-group { display: none; }
+        .confirm-group.visible { display: block; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <h1 id="title">Secure AI Appliance</h1>
+        <p id="subtitle">Enter your passphrase to continue</p>
+
+        <div class="error-msg" id="error-msg"></div>
+
+        <form id="auth-form" onsubmit="handleSubmit(event)">
+            <label for="passphrase">Passphrase</label>
+            <input type="password" id="passphrase" name="passphrase"
+                   placeholder="Enter passphrase" autofocus required minlength="8">
+
+            <div class="confirm-group" id="confirm-group">
+                <label for="confirm">Confirm Passphrase</label>
+                <input type="password" id="confirm" name="confirm"
+                       placeholder="Confirm passphrase" minlength="8">
+            </div>
+
+            <button type="submit" class="btn" id="submit-btn">Unlock</button>
+        </form>
+
+        <div class="setup-note" id="setup-note" style="display: none;">
+            Choose a passphrase (minimum 8 characters) to protect this appliance.
+        </div>
+    </div>
+
+    <script>
+        let isSetup = false;
+
+        async function checkSetup() {
+            try {
+                const resp = await fetch("/api/auth/status");
+                const data = await resp.json();
+                if (!data.configured) {
+                    isSetup = true;
+                    document.getElementById("title").textContent = "Set Up Passphrase";
+                    document.getElementById("subtitle").textContent = "Protect your Secure AI Appliance";
+                    document.getElementById("confirm-group").classList.add("visible");
+                    document.getElementById("submit-btn").textContent = "Set Passphrase";
+                    document.getElementById("setup-note").style.display = "block";
+                }
+            } catch {}
+        }
+
+        function showError(msg) {
+            const el = document.getElementById("error-msg");
+            el.textContent = msg;
+            el.style.display = "block";
+        }
+
+        function hideError() {
+            document.getElementById("error-msg").style.display = "none";
+        }
+
+        async function handleSubmit(e) {
+            e.preventDefault();
+            hideError();
+
+            const passphrase = document.getElementById("passphrase").value;
+            const btn = document.getElementById("submit-btn");
+
+            if (isSetup) {
+                const confirm = document.getElementById("confirm").value;
+                if (passphrase !== confirm) {
+                    showError("Passphrases do not match.");
+                    return;
+                }
+                if (passphrase.length < 8) {
+                    showError("Passphrase must be at least 8 characters.");
+                    return;
+                }
+
+                btn.disabled = true;
+                btn.textContent = "Setting up...";
+
+                try {
+                    const resp = await fetch("/api/auth/setup", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({passphrase}),
+                    });
+                    const data = await resp.json();
+                    if (data.success) {
+                        // Auto-login after setup
+                        await doLogin(passphrase);
+                    } else {
+                        showError(data.error || "Setup failed.");
+                    }
+                } catch {
+                    showError("Could not connect to server.");
+                }
+                btn.disabled = false;
+                btn.textContent = "Set Passphrase";
+            } else {
+                btn.disabled = true;
+                btn.textContent = "Unlocking...";
+                await doLogin(passphrase);
+                btn.disabled = false;
+                btn.textContent = "Unlock";
+            }
+        }
+
+        async function doLogin(passphrase) {
+            try {
+                const resp = await fetch("/api/auth/login", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({passphrase}),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    window.location.href = "/";
+                } else {
+                    showError(data.error || "Login failed.");
+                }
+            } catch {
+                showError("Could not connect to server.");
+            }
+        }
+
+        checkSetup();
+    </script>
+</body>
+</html>
