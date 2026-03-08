@@ -5,7 +5,7 @@
 #   cpu   - CPU only (AVX2/AVX-512 optimized, works everywhere)
 ARG COMPUTE=cuda
 
-FROM python:3.12-slim AS base
+FROM docker.io/library/python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0 AS base
 
 ARG COMPUTE
 

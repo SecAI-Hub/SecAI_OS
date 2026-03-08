@@ -18,6 +18,7 @@ Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine
 Environment=SECURE_AI_ROOT=/var/lib/secure-ai
 Environment=AUTH_DATA_DIR=/var/lib/secure-ai/auth
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/ui-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes

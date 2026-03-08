@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{% block title %}SecAI OS{% endblock %}</title>
     <style>
         /* -- Reset & Variables -- */
@@ -620,6 +621,22 @@
     </div>
 
     <script>
+        /* -- CSRF: auto-include token on all non-GET fetch requests -- */
+        var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        var _origFetch = window.fetch;
+        window.fetch = function(url, opts) {
+            opts = opts || {};
+            if (opts.method && opts.method !== 'GET') {
+                opts.headers = opts.headers || {};
+                if (opts.headers instanceof Headers) {
+                    opts.headers.set('X-CSRF-Token', csrfToken);
+                } else {
+                    opts.headers['X-CSRF-Token'] = csrfToken;
+                }
+            }
+            return _origFetch.call(this, url, opts);
+        };
+
         /* -- Toast system -- */
         function toast(message, type, duration) {
             type = type || 'info';

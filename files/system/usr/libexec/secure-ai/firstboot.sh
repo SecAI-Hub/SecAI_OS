@@ -67,6 +67,17 @@ if [ ! -f "${SECURE_AI_ROOT}/keys/local-cosign.key" ]; then
     fi
 fi
 
+# Generate service-to-service auth token
+SERVICE_TOKEN_DIR="/run/secure-ai"
+SERVICE_TOKEN_PATH="${SERVICE_TOKEN_DIR}/service-token"
+if [ ! -f "$SERVICE_TOKEN_PATH" ]; then
+    mkdir -p "$SERVICE_TOKEN_DIR"
+    head -c 32 /dev/urandom | xxd -p -c 64 > "$SERVICE_TOKEN_PATH"
+    chmod 0640 "$SERVICE_TOKEN_PATH"
+    chgrp secure-ai "$SERVICE_TOKEN_PATH" 2>/dev/null || true
+    log "Service token generated at $SERVICE_TOKEN_PATH"
+fi
+
 # Create initial empty registry manifest
 if [ ! -f "${SECURE_AI_ROOT}/registry/manifest.json" ]; then
     log "Creating empty registry manifest..."

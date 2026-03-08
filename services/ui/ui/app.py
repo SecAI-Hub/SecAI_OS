@@ -6,6 +6,7 @@ Talks to local services only. One-click model download flows through
 the airlock (if enabled) into quarantine for automatic scanning.
 """
 
+import hmac
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import requests
 import yaml
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, session
 
 # Add services/ to path so we can import common.audit_chain
 _services_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -31,10 +32,96 @@ from common.auth import AuthManager
 log = logging.getLogger("ui")
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
 
 # --- Security: Max input sizes ---
 MAX_PASSPHRASE_LENGTH = 256
+
+# --- Flask secret key (persistent, regenerated on passphrase change) ---
+_FLASK_SECRET_FILE = Path(os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")) / "flask-secret"
+
+
+def _load_or_create_secret_key() -> str:
+    """Load the Flask secret key from file, or generate and save a new one."""
+    env_key = os.getenv("FLASK_SECRET_KEY")
+    if env_key:
+        return env_key
+    try:
+        if _FLASK_SECRET_FILE.exists():
+            return _FLASK_SECRET_FILE.read_text().strip()
+    except OSError:
+        pass
+    new_key = os.urandom(32).hex()
+    try:
+        _FLASK_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _FLASK_SECRET_FILE.write_text(new_key)
+        os.chmod(str(_FLASK_SECRET_FILE), 0o600)
+    except OSError:
+        pass
+    return new_key
+
+
+app.secret_key = _load_or_create_secret_key()
+
+
+# --- CSRF Protection (double-submit cookie pattern) ---
+
+def _generate_csrf_token() -> str:
+    """Generate a 32-byte hex CSRF token."""
+    return os.urandom(32).hex()
+
+
+# Routes exempt from CSRF validation
+_CSRF_EXEMPT_PATHS = {
+    "/login", "/api/auth/login", "/api/auth/setup", "/api/auth/status",
+    "/api/status", "/health",
+}
+
+
+@app.before_request
+def csrf_protect():
+    """Validate CSRF token on state-changing requests."""
+    # Skip safe (read-only) methods
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+
+    # Skip exempt routes
+    if request.path in _CSRF_EXEMPT_PATHS:
+        return None
+
+    # Skip if auth not yet configured (first-boot setup flow)
+    if not _auth.is_configured():
+        return None
+
+    # Skip for service-to-service calls with valid Bearer token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if _auth.validate_session(token):
+            return None
+
+    # Extract the submitted CSRF token
+    submitted = request.headers.get("X-CSRF-Token", "")
+    if not submitted:
+        # Fall back to form field
+        submitted = request.form.get("csrf_token", "")
+
+    # Compare against session-stored token
+    expected = session.get("csrf_token", "")
+
+    if not submitted or not expected:
+        return jsonify({"error": "CSRF validation failed"}), 403
+
+    if not hmac.compare_digest(submitted, expected):
+        return jsonify({"error": "CSRF validation failed"}), 403
+
+    return None
+
+
+@app.context_processor
+def inject_csrf_token():
+    """Expose CSRF token to all templates."""
+    token = session.get("csrf_token", "")
+    return {"csrf_token": token}
 
 
 @app.after_request
@@ -62,6 +149,14 @@ def add_security_headers(response):
     if not request.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
+
+    # Set CSRF cookie (readable by JavaScript for double-submit pattern)
+    csrf_token = session.get("csrf_token", "")
+    if csrf_token:
+        response.set_cookie(
+            "csrf_token", csrf_token,
+            httponly=False, samesite="Strict", secure=False,
+        )
     return response
 
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://127.0.0.1:8465")
@@ -101,6 +196,8 @@ MODEL_CATALOG = [
         "size_gb": 2.3,
         "vram_gb": 4,
         "description": "Fast, small LLM. Good for testing and low-VRAM systems.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(2.3 * 1024 * 1024 * 1024),
     },
     {
         "name": "Mistral 7B Instruct (Q4_K_M)",
@@ -110,6 +207,8 @@ MODEL_CATALOG = [
         "size_gb": 4.4,
         "vram_gb": 6,
         "description": "General-purpose LLM. Good balance of speed and quality.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(4.4 * 1024 * 1024 * 1024),
     },
     {
         "name": "Llama 3.1 8B Instruct (Q4_K_M)",
@@ -119,6 +218,8 @@ MODEL_CATALOG = [
         "size_gb": 4.9,
         "vram_gb": 7,
         "description": "Strong reasoning and instruction following.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(4.9 * 1024 * 1024 * 1024),
     },
     {
         "name": "Stable Diffusion XL Base",
@@ -128,6 +229,8 @@ MODEL_CATALOG = [
         "size_gb": 6.9,
         "vram_gb": 8,
         "description": "Image generation. 1024x1024 output. Requires 8GB+ VRAM.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(6.9 * 1024 * 1024 * 1024),
     },
     {
         "name": "Stable Diffusion 1.5",
@@ -137,6 +240,8 @@ MODEL_CATALOG = [
         "size_gb": 4.3,
         "vram_gb": 4,
         "description": "Image generation. 512x512 output. Lower VRAM requirement.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(4.3 * 1024 * 1024 * 1024),
     },
     {
         "name": "Stable Video Diffusion XT",
@@ -146,6 +251,8 @@ MODEL_CATALOG = [
         "size_gb": 9.6,
         "vram_gb": 16,
         "description": "Video generation from image. 25 frames. Requires 16GB+ VRAM.",
+        "expected_sha256": "pin-on-first-download",
+        "expected_size_bytes": int(9.6 * 1024 * 1024 * 1024),
     },
 ]
 
@@ -235,6 +342,9 @@ def auth_setup():
 
     if _auth.setup_passphrase(passphrase):
         _ui_audit.append("auth_setup", {"action": "passphrase_configured"})
+        # Session regeneration for setup flow
+        session.clear()
+        session["csrf_token"] = _generate_csrf_token()
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "setup failed"}), 500
 
@@ -252,6 +362,10 @@ def auth_login():
 
     if result.get("success"):
         _ui_audit.append("login", {"success": True})
+        # Session regeneration: clear old session, create fresh one
+        session.clear()
+        csrf_token = _generate_csrf_token()
+        session["csrf_token"] = csrf_token
         resp = jsonify(result)
         resp.set_cookie(
             "session_token", result["token"],
@@ -296,8 +410,21 @@ def auth_change_passphrase():
     result = _auth.change_passphrase(current, new_pass)
     if result.get("success"):
         _ui_audit.append("passphrase_changed", {})
+
+        # Regenerate Flask secret key to invalidate ALL existing sessions
+        new_secret = os.urandom(32).hex()
+        app.secret_key = new_secret
+        try:
+            _FLASK_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _FLASK_SECRET_FILE.write_text(new_secret)
+            os.chmod(str(_FLASK_SECRET_FILE), 0o600)
+        except OSError:
+            pass
+
         # Give them a new session
         login_result = _auth.login(new_pass)
+        session.clear()
+        session["csrf_token"] = _generate_csrf_token()
         resp = jsonify({"success": True})
         if login_result.get("token"):
             resp.set_cookie(
@@ -409,9 +536,15 @@ def catalog_download():
         if filename in _active_downloads:
             return jsonify({"error": "download already in progress", "filename": filename}), 409
 
+    # Look up catalog entry for post-download verification
+    catalog_entry = next(
+        (m for m in MODEL_CATALOG if m.get("url") == url and m.get("filename") == filename),
+        None,
+    )
+
     thread = threading.Thread(
         target=_background_download,
-        args=(url, filename, model_type),
+        args=(url, filename, model_type, catalog_entry),
         daemon=True,
     )
     with _download_lock:
@@ -432,7 +565,8 @@ def download_status():
         return jsonify(_active_downloads)
 
 
-def _background_download(url: str, filename: str, model_type: str):
+def _background_download(url: str, filename: str, model_type: str,
+                         catalog_entry: dict | None = None):
     """Download a model file into quarantine in the background."""
     try:
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
@@ -440,7 +574,7 @@ def _background_download(url: str, filename: str, model_type: str):
         if model_type == "diffusion":
             _download_diffusion_model(url, filename)
         else:
-            _download_single_file(url, filename)
+            _download_single_file(url, filename, catalog_entry=catalog_entry)
 
         with _download_lock:
             _active_downloads[filename] = {
@@ -455,8 +589,12 @@ def _background_download(url: str, filename: str, model_type: str):
             _active_downloads[filename] = {"status": "failed", "error": str(e)}
 
 
-def _download_single_file(url: str, filename: str):
-    """Download a single file (LLM GGUF) into quarantine."""
+def _download_single_file(url: str, filename: str, catalog_entry: dict | None = None):
+    """Download a single file (LLM GGUF) into quarantine.
+
+    If a catalog_entry is provided, post-download verification checks the
+    file size (within 5% tolerance) and SHA-256 hash (if a real pin exists).
+    """
     dest = QUARANTINE_DIR / filename
     source_meta = QUARANTINE_DIR / f".{filename}.source"
 
@@ -482,6 +620,34 @@ def _download_single_file(url: str, filename: str):
                         "total_mb": round(total / (1 << 20), 1),
                     }
 
+    # Post-download verification
+    if catalog_entry:
+        actual_size = dest.stat().st_size
+        expected_size = catalog_entry.get("expected_size_bytes")
+        if expected_size and expected_size > 0:
+            tolerance = 0.05
+            if abs(actual_size - expected_size) / expected_size > tolerance:
+                dest.unlink(missing_ok=True)
+                raise ValueError(
+                    f"downloaded file size {actual_size} differs from expected "
+                    f"{expected_size} by more than 5%"
+                )
+
+        expected_hash = catalog_entry.get("expected_sha256", "")
+        if expected_hash and expected_hash != "pin-on-first-download":
+            import hashlib
+            h = hashlib.sha256()
+            with open(dest, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            actual_hash = h.hexdigest()
+            if actual_hash != expected_hash:
+                dest.unlink(missing_ok=True)
+                raise ValueError(
+                    f"SHA-256 mismatch: expected {expected_hash[:16]}..., "
+                    f"got {actual_hash[:16]}..."
+                )
+
     source_meta.write_text(url)
 
 
@@ -503,6 +669,8 @@ def _download_diffusion_model(url: str, dirname: str):
             check=True, capture_output=True, text=True, timeout=3600,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
+        if not url.startswith("https://huggingface.co/"):
+            raise ValueError("source not in allowlist for git clone")
         subprocess.run(
             ["git", "clone", "--depth", "1", url, str(dest)],
             check=True, capture_output=True, text=True, timeout=3600,
@@ -1324,9 +1492,12 @@ def emergency_panic():
 
     passphrase = body.get("passphrase", "")
 
-    # Levels 2 and 3 require passphrase
+    # Levels 2 and 3 require passphrase re-authentication
     if level >= 2 and not passphrase:
         return jsonify({"error": f"Level {level} requires passphrase confirmation"}), 400
+    if level >= 2 and not _auth._verify_stored(passphrase):
+        _ui_audit.append("emergency_panic_reauth_failed", {"level": level})
+        return jsonify({"error": "passphrase verification failed"}), 401
 
     cmd = [SECURECTL, "panic", str(level), "--no-countdown"]
     if level >= 2:

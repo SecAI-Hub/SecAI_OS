@@ -9,11 +9,13 @@ ExecStart=/usr/libexec/secure-ai/tool-firewall
 Environment=BIND_ADDR=127.0.0.1:8475
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/tool-firewall-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes
 LogsDirectory=secure-ai
 ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
 ReadOnlyPaths=/var/lib/secure-ai/vault
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateNetwork=yes

@@ -98,16 +98,62 @@ def _read_source_metadata(artifact_path: Path) -> str:
     return ""
 
 
+def _extract_scanner_versions(scan_results: dict) -> dict:
+    """Extract scanner version info from pipeline scan result details."""
+    versions = {}
+    for key, value in scan_results.items():
+        if isinstance(value, dict):
+            ver = value.get("scanner_version")
+            if ver:
+                versions[key] = ver
+        elif isinstance(value, str):
+            # Try to parse stringified dicts (from {k: str(v)} conversions)
+            pass
+    return versions
+
+
+def _compute_policy_version() -> dict:
+    """Read the policy file and return its hash as a version identifier."""
+    if not POLICY_PATH.exists():
+        return {"hash": "none", "note": "no policy file"}
+    try:
+        content = POLICY_PATH.read_bytes()
+        return {"hash": hashlib.sha256(content).hexdigest()}
+    except OSError:
+        return {"hash": "unreadable"}
+
+
 def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
-                        scan_results: dict, model_type: str = "llm") -> bool:
+                        scan_results: dict, model_type: str = "llm",
+                        source_url: str = "",
+                        pipeline_details: dict | None = None) -> bool:
     """Call the registry's promote endpoint to register the artifact."""
     name = model_name_from_filename(filename)
+
+    # Extract scanner versions from full pipeline details if available
+    scanner_versions = {}
+    if pipeline_details:
+        scanner_versions = _extract_scanner_versions(pipeline_details)
+
+    # Extract source revision for HuggingFace URLs
+    source_revision = ""
+    if source_url and "huggingface.co" in source_url:
+        # Try to extract revision/commit from URL (e.g. /resolve/main/ or /commit/abc123)
+        import re
+        rev_match = re.search(r"/resolve/([^/]+)/", source_url)
+        if rev_match:
+            source_revision = rev_match.group(1)
+
     payload = {
         "name": name,
         "filename": filename,
         "sha256": file_hash,
         "size_bytes": size_bytes,
         "scan_results": {k: str(v) for k, v in scan_results.items()},
+        "source": source_url,
+        "source_revision": source_revision,
+        "scanner_versions": scanner_versions,
+        "policy_version": _compute_policy_version(),
     }
 
     try:
@@ -183,7 +229,8 @@ def process_artifact(artifact_path: Path) -> bool:
     details = result.get("details", {})
     scan_summary = _build_scan_summary(details)
 
-    if promote_to_registry(artifact_path.name, file_hash, file_size, scan_summary):
+    if promote_to_registry(artifact_path.name, file_hash, file_size, scan_summary,
+                           source_url=source_url, pipeline_details=details):
         log.info("PROMOTED: %s (registered in manifest)", artifact_path.name)
         audit_log("promoted", artifact_path.name, sha256=file_hash,
                   size_bytes=file_size, scan_summary=scan_summary)
@@ -242,7 +289,9 @@ def process_directory(artifact_dir: Path) -> bool:
     scan_summary = _build_scan_summary(details)
     scan_summary["model_type"] = "diffusion"
 
-    if promote_to_registry(artifact_dir.name, dir_hash, total_size, scan_summary, model_type="diffusion"):
+    if promote_to_registry(artifact_dir.name, dir_hash, total_size, scan_summary,
+                           model_type="diffusion", source_url=source_url,
+                           pipeline_details=details):
         log.info("PROMOTED: %s (diffusion model registered)", artifact_dir.name)
         audit_log("promoted", artifact_dir.name, sha256=dir_hash,
                   size_bytes=total_size, model_type="diffusion", scan_summary=scan_summary)
@@ -257,19 +306,34 @@ def process_directory(artifact_dir: Path) -> bool:
 def _build_scan_summary(details: dict) -> dict:
     """Build a summary dict from pipeline details for the registry manifest."""
     summary = {}
+    scanner_versions = {}
     if "source_policy" in details:
         summary["source_policy"] = "pass" if details["source_policy"].get("passed") else "fail"
     if "format_gate" in details:
         summary["format_gate"] = "pass" if details["format_gate"].get("passed") else "fail"
     if "provenance" in details:
         summary["provenance"] = details["provenance"].get("provenance", "unknown")
+        ver = details["provenance"].get("scanner_version")
+        if ver:
+            scanner_versions["cosign"] = ver
     if "static_scan" in details:
         scan = details["static_scan"]
         summary["static_scan"] = scan.get("scanner", "unknown")
+        # Extract modelscan version from nested details
+        ms_details = scan.get("details", {})
+        ms_info = ms_details.get("modelscan", {}) if isinstance(ms_details, dict) else {}
+        ver = ms_info.get("scanner_version") if isinstance(ms_info, dict) else None
+        if ver:
+            scanner_versions["modelscan"] = ver
     if "smoke_test" in details:
         summary["smoke_test"] = str(details["smoke_test"].get("score", "n/a"))
+        ver = details["smoke_test"].get("scanner_version")
+        if ver:
+            scanner_versions["llama-server"] = ver
     if "diffusion_deep_scan" in details:
         summary["diffusion_deep_scan"] = "pass" if details["diffusion_deep_scan"].get("passed") else "fail"
+    if scanner_versions:
+        summary["scanner_versions"] = scanner_versions
     return summary
 
 

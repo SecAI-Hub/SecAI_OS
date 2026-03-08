@@ -282,8 +282,14 @@ def _load_pinned_hashes() -> dict:
         return {}
 
 
-def check_hash_pin(filename: str, file_hash: str) -> dict:
-    """Stage 3: Verify hash against pinned value (if any)."""
+def check_hash_pin(filename: str, file_hash: str, source_url: str = "") -> dict:
+    """Stage 3: Verify hash against pinned value (if any).
+
+    For remote artifacts (source_url is non-empty), a missing pin is a hard
+    failure — we refuse to trust an artifact we cannot verify.  For local
+    imports (source_url is empty) we allow first-install TOFU but note that
+    the hash must be pinned before the next promotion.
+    """
     pins = _load_pinned_hashes()
     if filename in pins:
         expected = pins[filename]
@@ -295,7 +301,17 @@ def check_hash_pin(filename: str, file_hash: str) -> dict:
             "pinned": True,
             "match": False,
         }
-    return {"passed": True, "pinned": False, "note": "no pin found; hash recorded for future pinning"}
+    # No pin found
+    if source_url:
+        return {
+            "passed": False,
+            "reason": "remote artifact has no pinned hash",
+        }
+    return {
+        "passed": True,
+        "pinned": False,
+        "note": "first-install trust: hash recorded, must be pinned before next promotion",
+    }
 
 
 def sha256_of_directory(dir_path: Path) -> str:
@@ -328,12 +344,15 @@ def check_provenance(artifact_path: Path, source_url: str) -> dict:
             "note": "local import; no remote provenance available",
         }
 
+    cosign_version = None
     try:
         result = subprocess.run(
             ["cosign", "version"],
             capture_output=True, text=True, timeout=10,
         )
         has_cosign = result.returncode == 0
+        if has_cosign:
+            cosign_version = result.stdout.strip() or result.stderr.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         has_cosign = False
 
@@ -344,7 +363,10 @@ def check_provenance(artifact_path: Path, source_url: str) -> dict:
                 capture_output=True, text=True, timeout=60,
             )
             if result.returncode == 0:
-                return {"passed": True, "provenance": "cosign-verified"}
+                r = {"passed": True, "provenance": "cosign-verified"}
+                if cosign_version:
+                    r["scanner_version"] = cosign_version
+                return r
             return {
                 "passed": False,
                 "reason": f"cosign verification failed: {result.stderr[:200]}",
@@ -352,23 +374,28 @@ def check_provenance(artifact_path: Path, source_url: str) -> dict:
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             log.warning("cosign verification error: %s", e)
 
-    return {
+    r = {
         "passed": True,
         "provenance": "recorded",
         "source": source_url[:200],
         "note": "source URL recorded; no cryptographic signature available for this source type",
     }
+    if cosign_version:
+        r["scanner_version"] = cosign_version
+    return r
 
 
 # ---------------------------------------------------------------------------
 # Stage 5: Static scan (modelscan + entropy analysis)
 # ---------------------------------------------------------------------------
 
-def check_static_scan(artifact_path: Path) -> dict:
+def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
     """Stage 5: Run modelscan + entropy analysis."""
+    if policy is None:
+        policy = {}
     results = {}
 
-    ms_result = _run_modelscan(artifact_path)
+    ms_result = _run_modelscan(artifact_path, policy=policy)
     results["modelscan"] = ms_result
     if not ms_result["passed"]:
         return {
@@ -391,22 +418,33 @@ def check_static_scan(artifact_path: Path) -> dict:
     return {"passed": True, "details": results, "scanner": "all-static"}
 
 
-def _run_modelscan(artifact_path: Path) -> dict:
-    """Run modelscan via Python API or CLI."""
+def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
+    """Run modelscan via Python API or CLI.
+
+    If ``policy.models.require_scan`` is True (the default) and modelscan is
+    not installed, this is now a hard failure instead of a silent skip.
+    """
+    if policy is None:
+        policy = {}
+    require_scan = policy.get("models", {}).get("require_scan", True)
+
     try:
         from modelscan.modelscan import ModelScan
+        import modelscan as _ms_mod
 
         scanner = ModelScan()
         results = scanner.scan(str(artifact_path))
         issues = results.get("issues", [])
+        version = getattr(_ms_mod, "__version__", "unknown")
         if issues:
             return {
                 "passed": False,
                 "reason": f"modelscan found {len(issues)} issue(s)",
                 "details": issues,
                 "scanner": "modelscan-api",
+                "scanner_version": version,
             }
-        return {"passed": True, "scanner": "modelscan-api"}
+        return {"passed": True, "scanner": "modelscan-api", "scanner_version": version}
     except ImportError:
         pass
     except Exception as e:
@@ -417,6 +455,17 @@ def _run_modelscan(artifact_path: Path) -> dict:
             ["modelscan", "--path", str(artifact_path), "--output", "json"],
             capture_output=True, text=True, timeout=300,
         )
+        # Try to extract CLI version
+        cli_version = "unknown"
+        try:
+            ver_result = subprocess.run(
+                ["modelscan", "--version"], capture_output=True, text=True, timeout=10,
+            )
+            if ver_result.returncode == 0:
+                cli_version = ver_result.stdout.strip()
+        except Exception:
+            pass
+
         if result.returncode == 0:
             try:
                 scan_data = json.loads(result.stdout)
@@ -427,15 +476,19 @@ def _run_modelscan(artifact_path: Path) -> dict:
                         "reason": f"modelscan found {len(issues)} issue(s)",
                         "details": issues,
                         "scanner": "modelscan-cli",
+                        "scanner_version": cli_version,
                     }
-                return {"passed": True, "scanner": "modelscan-cli"}
+                return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version}
             except json.JSONDecodeError:
-                return {"passed": True, "scanner": "modelscan-cli", "note": "no JSON output"}
+                return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version, "note": "no JSON output"}
         else:
             log.warning("modelscan CLI exited %d: %s", result.returncode, result.stderr[:500])
             return {"passed": False, "reason": f"modelscan CLI error (exit {result.returncode})"}
     except FileNotFoundError:
-        log.warning("modelscan not installed; skipping static scan")
+        if require_scan:
+            log.warning("modelscan not installed; scan is required by policy — failing")
+            return {"passed": False, "reason": "static scanner required but not installed"}
+        log.warning("modelscan not installed; skipping static scan (not required by policy)")
         return {"passed": True, "scanner": "skipped"}
     except subprocess.TimeoutExpired:
         log.warning("modelscan timed out after 300s")
@@ -485,13 +538,15 @@ def _check_file_entropy(artifact_path: Path) -> dict:
         return {"passed": False, "reason": f"entropy check failed: {e}"}
 
 
-def check_static_scan_directory(artifact_dir: Path) -> dict:
+def check_static_scan_directory(artifact_dir: Path, policy: dict | None = None) -> dict:
     """Stage 5 (directory variant): Scan all safetensors files in a diffusion model."""
+    if policy is None:
+        policy = {}
     issues = []
     scanned = 0
 
     for p in artifact_dir.rglob("*.safetensors"):
-        result = check_static_scan(p)
+        result = check_static_scan(p, policy=policy)
         scanned += 1
         if not result["passed"]:
             issues.append({"file": str(p.relative_to(artifact_dir)), "reason": result.get("reason", "unknown")})
@@ -636,6 +691,18 @@ def check_smoke_test(artifact_path: Path) -> dict:
         log.warning("llama-server not found at %s; skipping smoke test", LLAMA_SERVER_BIN)
         return {"passed": True, "score": 0.0, "note": "llama-server not available"}
 
+    # Capture llama-server version for provenance evidence
+    llama_version = "unknown"
+    try:
+        ver = subprocess.run(
+            [LLAMA_SERVER_BIN, "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if ver.returncode == 0:
+            llama_version = (ver.stdout.strip() or ver.stderr.strip()) or "unknown"
+    except Exception:
+        pass
+
     port = _find_free_port()
     proc = None
     try:
@@ -697,6 +764,7 @@ def check_smoke_test(artifact_path: Path) -> dict:
             "flagged_count": len(flags),
             "category_summary": {k: len(v) for k, v in category_flags.items()},
             "critical_flags": critical_flags,
+            "scanner_version": llama_version,
         }
         if not passed:
             result["reason"] = (
@@ -818,7 +886,7 @@ def run_pipeline(artifact_path: Path, file_hash: str, policy: dict,
         return {"passed": False, "reason": "format_gate", "details": details}
 
     # Stage 3: Integrity (hash pinning)
-    pin = check_hash_pin(artifact_path.name, file_hash)
+    pin = check_hash_pin(artifact_path.name, file_hash, source_url=source_url)
     details["hash_pin"] = pin
     details["hash"] = {"sha256": file_hash}
     if not pin["passed"]:
@@ -831,13 +899,10 @@ def run_pipeline(artifact_path: Path, file_hash: str, policy: dict,
         return {"passed": False, "reason": "provenance", "details": details}
 
     # Stage 5: Static scan
-    if model_policy.get("require_scan", True):
-        scan = check_static_scan(artifact_path)
-        details["static_scan"] = scan
-        if not scan["passed"]:
-            return {"passed": False, "reason": "static_scan", "details": details}
-    else:
-        details["static_scan"] = {"passed": True, "scanner": "skipped-by-policy"}
+    scan = check_static_scan(artifact_path, policy=policy)
+    details["static_scan"] = scan
+    if not scan["passed"]:
+        return {"passed": False, "reason": "static_scan", "details": details}
 
     # Stage 6: Behavioral smoke test (LLM GGUF files only)
     if artifact_path.suffix.lower() == ".gguf":
@@ -860,7 +925,6 @@ def run_pipeline_directory(artifact_dir: Path, dir_hash: str, policy: dict,
     Returns aggregate result dict.
     """
     details = {}
-    model_policy = policy.get("models", {})
 
     # Stage 1: Source policy
     src = check_source_policy(source_url)
@@ -875,7 +939,7 @@ def run_pipeline_directory(artifact_dir: Path, dir_hash: str, policy: dict,
         return {"passed": False, "reason": "format_gate", "details": details}
 
     # Stage 3: Integrity (directory hash)
-    pin = check_hash_pin(artifact_dir.name, dir_hash)
+    pin = check_hash_pin(artifact_dir.name, dir_hash, source_url=source_url)
     details["hash_pin"] = pin
     details["hash"] = {"sha256": dir_hash}
     if not pin["passed"]:
@@ -888,13 +952,10 @@ def run_pipeline_directory(artifact_dir: Path, dir_hash: str, policy: dict,
         return {"passed": False, "reason": "provenance", "details": details}
 
     # Stage 5: Static scan (all safetensors in directory)
-    if model_policy.get("require_scan", True):
-        scan = check_static_scan_directory(artifact_dir)
-        details["static_scan"] = scan
-        if not scan["passed"]:
-            return {"passed": False, "reason": "static_scan", "details": details}
-    else:
-        details["static_scan"] = {"passed": True, "scanner": "skipped-by-policy"}
+    scan = check_static_scan_directory(artifact_dir, policy=policy)
+    details["static_scan"] = scan
+    if not scan["passed"]:
+        return {"passed": False, "reason": "static_scan", "details": details}
 
     # Stage 6: No behavioral smoke test for diffusion models
     details["smoke_test"] = {"passed": True, "note": "not applicable for diffusion models"}

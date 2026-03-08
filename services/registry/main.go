@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -26,7 +27,10 @@ type Artifact struct {
 	SizeBytes   int64             `json:"size_bytes" yaml:"size_bytes"`
 	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
 	PromotedAt  string            `json:"promoted_at" yaml:"promoted_at"`
-	ScanResults map[string]string `json:"scan_results,omitempty" yaml:"scan_results,omitempty"`
+	ScanResults     map[string]string `json:"scan_results,omitempty" yaml:"scan_results,omitempty"`
+	ScannerVersions map[string]string `json:"scanner_versions,omitempty" yaml:"scanner_versions,omitempty"`
+	PolicyVersion   string            `json:"policy_version,omitempty" yaml:"policy_version,omitempty"`
+	SourceRevision  string            `json:"source_revision,omitempty" yaml:"source_revision,omitempty"`
 }
 
 // Manifest is the runtime registry manifest (stored as JSON on the vault).
@@ -48,7 +52,10 @@ type PromoteRequest struct {
 	SHA256      string            `json:"sha256"`
 	SizeBytes   int64             `json:"size_bytes"`
 	Source      string            `json:"source,omitempty"`
-	ScanResults map[string]string `json:"scan_results,omitempty"`
+	ScanResults     map[string]string `json:"scan_results,omitempty"`
+	ScannerVersions map[string]string `json:"scanner_versions,omitempty"`
+	PolicyVersion   string            `json:"policy_version,omitempty"`
+	SourceRevision  string            `json:"source_revision,omitempty"`
 }
 
 var (
@@ -57,7 +64,54 @@ var (
 	registryDir  string
 	manifestPath string
 	allowedFmts  = map[string]bool{"gguf": true, "safetensors": true}
+	serviceToken string // loaded at startup; empty = dev mode (no auth)
 )
+
+// loadServiceToken reads the service-to-service auth token from disk.
+// If the file does not exist, token auth is disabled (dev/test mode).
+func loadServiceToken() {
+	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
+	if tokenPath == "" {
+		tokenPath = "/run/secure-ai/service-token"
+	}
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		log.Printf("warning: service token not loaded (%v) — running in dev mode (no token auth)", err)
+		return
+	}
+	serviceToken = strings.TrimSpace(string(data))
+	if serviceToken == "" {
+		log.Printf("warning: service token file is empty — running in dev mode (no token auth)")
+		return
+	}
+	log.Printf("service token loaded from %s", tokenPath)
+}
+
+// requireServiceToken wraps a handler to enforce Bearer token auth on mutating endpoints.
+// If no token was loaded at startup (dev mode), all requests pass through.
+func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if serviceToken == "" {
+			next(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden: invalid service token"})
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(serviceToken)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden: invalid service token"})
+			return
+		}
+		next(w, r)
+	}
+}
 
 func loadManifest() error {
 	// Try runtime manifest first (writable, on vault)
@@ -227,14 +281,17 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	artifact := Artifact{
-		Name:        req.Name,
-		Format:      format,
-		Filename:    req.Filename,
-		SHA256:      actualHash,
-		SizeBytes:   info.Size(),
-		Source:      req.Source,
-		PromotedAt:  time.Now().UTC().Format(time.RFC3339),
-		ScanResults: req.ScanResults,
+		Name:            req.Name,
+		Format:          format,
+		Filename:        req.Filename,
+		SHA256:          actualHash,
+		SizeBytes:       info.Size(),
+		Source:          req.Source,
+		PromotedAt:      time.Now().UTC().Format(time.RFC3339),
+		ScanResults:     req.ScanResults,
+		ScannerVersions: req.ScannerVersions,
+		PolicyVersion:   req.PolicyVersion,
+		SourceRevision:  req.SourceRevision,
 	}
 
 	manifestMu.Lock()
@@ -457,21 +514,25 @@ func main() {
 	}
 	log.Printf("loaded %d model(s) from manifest", len(manifest.Models))
 
+	loadServiceToken()
+
 	bind := os.Getenv("BIND_ADDR")
 	if bind == "" {
-		bind = "0.0.0.0:8470"
+		bind = "127.0.0.1:8470"
 	}
 
 	mux := http.NewServeMux()
+	// Read-only endpoints — no auth required
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/v1/models", handleListModels)
 	mux.HandleFunc("/v1/model", handleGetModel)
 	mux.HandleFunc("/v1/model/path", handleModelPath)
-	mux.HandleFunc("/v1/model/promote", handlePromote)
-	mux.HandleFunc("/v1/model/delete", handleDelete)
 	mux.HandleFunc("/v1/model/verify", handleVerifyModel)
 	mux.HandleFunc("/v1/models/verify-all", handleVerifyAll)
 	mux.HandleFunc("/v1/integrity/status", handleIntegrityStatus)
+	// Mutating endpoints — require service token
+	mux.HandleFunc("/v1/model/promote", requireServiceToken(handlePromote))
+	mux.HandleFunc("/v1/model/delete", requireServiceToken(handleDelete))
 
 	log.Printf("secure-ai-registry listening on %s", bind)
 	if err := http.ListenAndServe(bind, mux); err != nil {

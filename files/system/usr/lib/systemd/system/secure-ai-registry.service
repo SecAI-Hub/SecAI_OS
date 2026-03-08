@@ -10,12 +10,14 @@ Environment=BIND_ADDR=127.0.0.1:8470
 Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
 Environment=REGISTRY_LOCK_PATH=/etc/secure-ai/policy/models.lock.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/registry-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes
 StateDirectory=secure-ai/registry
 LogsDirectory=secure-ai
 ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/registry
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateNetwork=yes

@@ -3,6 +3,9 @@
 name: SecAI_OS
 description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
 
+# SECURITY: Base image should be digest-pinned in production.
+# Run: skopeo inspect docker://ghcr.io/ublue-os/silverblue-main:42 | jq -r '.Digest'
+# Then set: image-version: "42@sha256:<digest>"
 base-image: ghcr.io/ublue-os/silverblue-main
 image-version: 42
 

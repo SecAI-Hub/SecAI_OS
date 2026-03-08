@@ -245,11 +245,20 @@ class TestSafetensorsHeader:
 # ---------------------------------------------------------------------------
 
 class TestHashPin:
-    def test_no_pin_passes(self):
+    def test_no_pin_local_import_passes(self):
+        """Local imports (no source_url) use TOFU: pass but note pinning needed."""
         with patch("quarantine.pipeline._load_pinned_hashes", return_value={}):
             result = check_hash_pin("model.gguf", "abc123")
         assert result["passed"]
         assert not result["pinned"]
+        assert "first-install trust" in result["note"]
+
+    def test_no_pin_remote_fails(self):
+        """Remote artifacts with no pinned hash must fail closed."""
+        with patch("quarantine.pipeline._load_pinned_hashes", return_value={}):
+            result = check_hash_pin("model.gguf", "abc123", source_url="https://huggingface.co/x")
+        assert not result["passed"]
+        assert "remote artifact has no pinned hash" in result["reason"]
 
     def test_matching_pin_passes(self):
         pins = {"model.gguf": "abc123"}
@@ -290,9 +299,18 @@ class TestProvenance:
 # ---------------------------------------------------------------------------
 
 class TestStaticScan:
-    def test_skipped_when_not_installed(self, tmp_path):
+    def test_fails_when_not_installed_and_required(self, tmp_path):
+        """When require_scan is True (default), missing modelscan is a hard failure."""
         p = make_gguf_file(tmp_path)
         result = check_static_scan(p)
+        assert not result["passed"]
+        assert "required but not installed" in result["details"]["modelscan"]["reason"]
+
+    def test_skipped_when_not_installed_and_not_required(self, tmp_path):
+        """When require_scan is False, missing modelscan is acceptable."""
+        p = make_gguf_file(tmp_path)
+        policy = {"models": {"require_scan": False}}
+        result = check_static_scan(p, policy=policy)
         assert result["passed"]
 
 

@@ -13,11 +13,13 @@ Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=MODELS_LOCK_PATH=/etc/secure-ai/policy/models.lock.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/quarantine-audit.jsonl
 Environment=LLAMA_SERVER_BIN=/usr/bin/llama-server
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes
 LogsDirectory=secure-ai
 ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/quarantine
 ReadWritePaths=/var/lib/secure-ai/registry
 ReadWritePaths=/var/lib/secure-ai/logs
