@@ -29,6 +29,9 @@ RestrictSUIDSGID=yes
 # But restrict to IPv4/IPv6 TCP only
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
+# Clipboard isolation (M21) — no access to user clipboard
+PrivateUsers=yes
+
 # No GPU, no devices
 PrivateDevices=yes
 

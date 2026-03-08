@@ -1,0 +1,22 @@
+[Unit]
+Description=Secure AI Clipboard Auto-Clear
+Documentation=Clears clipboard to prevent sensitive data persistence
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/clipboard-clear.sh
+
+# Minimal sandboxing — needs display access for clipboard
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateNetwork=yes
+LimitCORE=0
+
+# Resource limits
+MemoryMax=32M
+TasksMax=8

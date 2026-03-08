@@ -49,6 +49,9 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX
 
+# Clipboard isolation (M21) — no access to user clipboard
+PrivateUsers=yes
+
 # Syscall filtering
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

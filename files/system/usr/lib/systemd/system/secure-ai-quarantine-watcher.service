@@ -50,6 +50,9 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
+# Clipboard isolation (M21) — no access to user clipboard
+PrivateUsers=yes
+
 # Syscall filtering — needs process spawning for smoke tests
 SystemCallFilter=@system-service @process
 SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

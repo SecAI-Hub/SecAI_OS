@@ -51,6 +51,9 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
+# Clipboard isolation (M21) — no access to user clipboard
+PrivateUsers=yes
+
 # Syscall filtering — needs GPU ioctls for CUDA/ROCm, image write
 SystemCallFilter=@system-service @io-event
 SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete

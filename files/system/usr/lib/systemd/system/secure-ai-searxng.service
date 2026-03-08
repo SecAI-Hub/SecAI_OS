@@ -24,6 +24,9 @@ RestrictSUIDSGID=yes
 # SearXNG connects to Tor on localhost, which connects to the internet
 RestrictAddressFamilies=AF_INET AF_UNIX
 
+# Clipboard isolation (M21) — no access to user clipboard
+PrivateUsers=yes
+
 # No GPU, no devices
 PrivateDevices=yes
 

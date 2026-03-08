@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Clipboard Clear (every 60 seconds)
+Documentation=Prevents sensitive data from persisting on clipboard
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+RandomizedDelaySec=5
+
+[Install]
+WantedBy=timers.target
