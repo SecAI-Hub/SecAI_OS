@@ -690,6 +690,29 @@ def list_models():
         return jsonify([])
 
 
+@app.route("/api/models/fsverity")
+def model_fsverity_status():
+    """Check fs-verity status of all trusted models."""
+    try:
+        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=5)
+        models = resp.json()
+        results = []
+        for m in models:
+            provenance_path = SECURE_AI_ROOT / "registry" / f"{m['filename']}.provenance.json"
+            prov = {}
+            if provenance_path.exists():
+                prov = json.loads(provenance_path.read_text())
+            results.append({
+                "name": m["name"],
+                "fsverity_enabled": prov.get("integrity", {}).get("fsverity_enabled", False),
+                "fsverity_digest": prov.get("integrity", {}).get("fsverity_digest"),
+                "provenance_signed": Path(str(provenance_path) + ".sig").exists(),
+            })
+        return jsonify(results)
+    except Exception:
+        return jsonify([])
+
+
 @app.route("/api/models/verify", methods=["POST"])
 def verify_model():
     name = request.json.get("name", "")

@@ -10,12 +10,18 @@ import pytest
 
 # Add services to path so we can import without installing
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "quarantine"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "services"))
 
 from quarantine.pipeline import (
     DANGER_PATTERNS,
     SMOKE_PROMPTS,
     _check_file_entropy,
+    _check_jinja_template,
     _check_json_for_code,
+    _check_pickle_polyglot,
+    _run_fickling_scan,
+    _run_modelaudit,
+    _scan_gguf_chat_template,
     _validate_gguf_header,
     _validate_safetensors_header,
     check_diffusion_config_integrity,
@@ -42,6 +48,27 @@ def make_gguf_file(tmp_path: Path, version: int = 3) -> Path:
         f.write(b"GGUF")
         f.write(struct.pack("<I", version))
         f.write(b"\x00" * 100)  # padding
+    return p
+
+
+def make_gguf_with_template(tmp_path: Path, template: str, name: str = "test.gguf") -> Path:
+    """Create a GGUF file with a chat template embedded in metadata."""
+    p = tmp_path / name
+    key = b"tokenizer.chat_template"
+    template_bytes = template.encode("utf-8")
+    with open(p, "wb") as f:
+        # Header
+        f.write(b"GGUF")                          # magic
+        f.write(struct.pack("<I", 3))              # version
+        f.write(struct.pack("<Q", 0))              # tensor_count
+        f.write(struct.pack("<Q", 1))              # metadata_kv_count (1 entry)
+        # KV pair: key
+        f.write(struct.pack("<Q", len(key)))       # key_length
+        f.write(key)                                # key
+        f.write(struct.pack("<I", 8))              # value_type = string
+        f.write(struct.pack("<Q", len(template_bytes)))  # string_length
+        f.write(template_bytes)                     # string data
+        f.write(b"\x00" * 64)                      # padding
     return p
 
 
@@ -344,7 +371,7 @@ class TestSmokeTestSuite:
         assert required.issubset(categories), f"missing: {required - categories}"
 
     def test_prompt_suite_minimum_size(self):
-        assert len(SMOKE_PROMPTS) >= 20
+        assert len(SMOKE_PROMPTS) >= 40
 
     def test_danger_patterns_minimum_coverage(self):
         assert len(DANGER_PATTERNS) >= 40
@@ -487,3 +514,249 @@ class TestJsonCodeDetection:
         issues = []
         _check_json_for_code(p, issues, tmp_path)
         assert len(issues) > 0
+
+
+# ---------------------------------------------------------------------------
+# 7a: GGUF chat template SSTI scanning
+# ---------------------------------------------------------------------------
+
+class TestGGUFTemplateScan:
+    def test_gguf_template_clean(self, tmp_path):
+        """GGUF with a normal Jinja2 chat template passes."""
+        template = (
+            "{% for message in messages %}"
+            "{{ message['role'] }}: {{ message['content'] }}\n"
+            "{% endfor %}"
+        )
+        p = make_gguf_with_template(tmp_path, template)
+        result = _scan_gguf_chat_template(p)
+        assert result["passed"], f"clean template should pass: {result}"
+
+    def test_gguf_template_ssti(self, tmp_path):
+        """GGUF with __class__.__mro__ in template fails."""
+        template = (
+            "{% for message in messages %}"
+            "{{ ''.__class__.__mro__[1].__subclasses__() }}"
+            "{% endfor %}"
+        )
+        p = make_gguf_with_template(tmp_path, template, name="ssti.gguf")
+        result = _scan_gguf_chat_template(p)
+        assert not result["passed"], "SSTI template should fail"
+        assert "issues" in result
+        assert any("class traversal" in i for i in result["issues"])
+
+    def test_gguf_template_os_system(self, tmp_path):
+        """GGUF with os.system call in template fails."""
+        template = "{{ os.system('whoami') }}"
+        p = make_gguf_with_template(tmp_path, template, name="os_sys.gguf")
+        result = _scan_gguf_chat_template(p)
+        assert not result["passed"]
+
+    def test_gguf_no_template(self, tmp_path):
+        """GGUF with no chat template passes with note."""
+        p = make_gguf_file(tmp_path)
+        result = _scan_gguf_chat_template(p)
+        assert result["passed"]
+        assert "no chat template" in result.get("note", "")
+
+    def test_jinja_checker_clean(self):
+        """_check_jinja_template on normal template returns empty list."""
+        template = "{% if user %}Hello {{ user }}{% endif %}"
+        issues = _check_jinja_template(template, "test_key")
+        assert issues == []
+
+    def test_jinja_checker_subprocess(self):
+        """_check_jinja_template catches subprocess reference."""
+        template = "{{ subprocess.run(['ls']) }}"
+        issues = _check_jinja_template(template, "test_key")
+        assert len(issues) > 0
+        assert any("Subprocess" in i for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# 7b: Pickle polyglot detection & Fickling/ModelAudit graceful degradation
+# ---------------------------------------------------------------------------
+
+class TestPicklePolyglot:
+    def test_pickle_polyglot_detection(self, tmp_path):
+        """File with pickle opcodes in header is caught."""
+        p = tmp_path / "fake.safetensors"
+        # Write valid safetensors start, then inject pickle PROTO opcode
+        header = b'{"__metadata__": {}}'
+        with open(p, "wb") as f:
+            f.write(struct.pack("<Q", len(header)))
+            f.write(header)
+            # Inject pickle PROTO v4 opcode in the data region (still within first 8KB)
+            f.write(b"\x80\x04" + b"\x00" * 100)
+        result = _check_pickle_polyglot(p)
+        assert not result["passed"]
+        assert "pickle polyglot" in result["reason"]
+
+    def test_clean_file_passes(self, tmp_path):
+        """Normal file with no pickle opcodes passes."""
+        p = tmp_path / "clean.safetensors"
+        header = b'{"__metadata__": {}}'
+        with open(p, "wb") as f:
+            f.write(struct.pack("<Q", len(header)))
+            f.write(header)
+            f.write(b"\x00" * 200)
+        result = _check_pickle_polyglot(p)
+        assert result["passed"]
+
+    def test_polyglot_in_format_gate(self, tmp_path):
+        """Format gate catches polyglot files."""
+        p = tmp_path / "poly.safetensors"
+        header = b'{"__metadata__": {}}'
+        with open(p, "wb") as f:
+            f.write(struct.pack("<Q", len(header)))
+            f.write(header)
+            f.write(b"cbuiltins\n" + b"\x00" * 100)
+        result = check_format_gate(p)
+        assert not result["passed"]
+        assert "polyglot" in result["reason"]
+
+
+class TestFicklingGraceful:
+    def test_fickling_not_installed(self, tmp_path):
+        """Graceful skip when fickling is not installed."""
+        p = make_gguf_file(tmp_path)
+        result = _run_fickling_scan(p)
+        assert result["passed"]
+        assert "not installed" in result.get("note", "")
+
+
+class TestModelAuditGraceful:
+    def test_modelaudit_not_installed(self, tmp_path):
+        """Graceful skip when modelaudit is not installed."""
+        p = make_gguf_file(tmp_path)
+        result = _run_modelaudit(p)
+        assert result["passed"]
+        assert "not installed" in result.get("note", "")
+
+
+# ---------------------------------------------------------------------------
+# 7c: Expanded adversarial prompt suite
+# ---------------------------------------------------------------------------
+
+class TestExpandedAdversarialSuite:
+    def test_expanded_adversarial_prompts(self):
+        """Verify the prompt list has at least 40 entries."""
+        assert len(SMOKE_PROMPTS) >= 40, f"expected >= 40 prompts, got {len(SMOKE_PROMPTS)}"
+
+    def test_expanded_danger_patterns(self):
+        """Verify danger patterns cover new categories."""
+        patterns_lower = [p.lower() for p in DANGER_PATTERNS]
+        # Data leakage
+        assert any("system prompt" in p for p in patterns_lower)
+        assert any("training data" in p for p in patterns_lower)
+        # Multi-turn manipulation
+        assert any("override accepted" in p for p in patterns_lower)
+        assert any("maintenance mode" in p for p in patterns_lower)
+        # Privacy probing
+        assert any("192.168." in p for p in patterns_lower)
+
+    def test_new_categories_present(self):
+        """Verify new prompt categories exist."""
+        categories = {p["category"] for p in SMOKE_PROMPTS}
+        new_required = {
+            "data_leakage", "hallucination", "encoding_bypass",
+            "multi_turn", "privacy_probing",
+        }
+        assert new_required.issubset(categories), f"missing: {new_required - categories}"
+
+    def test_prompt_suite_has_all_categories(self):
+        """All original + new categories are present."""
+        categories = {p["category"] for p in SMOKE_PROMPTS}
+        required = {
+            "baseline", "command_injection", "file_exfil",
+            "network_exfil", "credential_theft", "pii_handling",
+            "canary_leak", "jailbreak", "tool_abuse", "prompt_injection",
+            "data_leakage", "hallucination", "encoding_bypass",
+            "multi_turn", "privacy_probing",
+        }
+        assert required.issubset(categories), f"missing: {required - categories}"
+
+
+# ---------------------------------------------------------------------------
+# Provenance manifest & fs-verity
+# ---------------------------------------------------------------------------
+
+from quarantine.watcher import _write_provenance_manifest, _enable_fsverity
+
+
+class TestProvenanceManifest:
+    def test_creates_valid_json(self, tmp_path, monkeypatch):
+        """_write_provenance_manifest creates a valid JSON file with all fields."""
+        import quarantine.watcher as watcher_mod
+        monkeypatch.setattr(watcher_mod, "REGISTRY_DIR", tmp_path)
+
+        model_file = tmp_path / "test-model.gguf"
+        model_file.write_bytes(b"\x00" * 100)
+
+        _write_provenance_manifest(
+            artifact_path=model_file,
+            filename="test-model.gguf",
+            file_hash="abc123" * 10 + "abcd",
+            size_bytes=100,
+            source_url="https://huggingface.co/test/model",
+            source_revision="main",
+            scan_results={"format_gate": "pass"},
+            pipeline_details={"format_gate": {"passed": True}},
+            fsverity_success=False,
+        )
+
+        manifest_path = tmp_path / "test-model.gguf.provenance.json"
+        assert manifest_path.exists()
+
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["schema_version"] == "1.0"
+
+        required_fields = [
+            "artifact", "source", "scanners", "policy",
+            "promotion", "scan_summary", "integrity",
+        ]
+        for field in required_fields:
+            assert field in manifest, f"missing required field: {field}"
+
+        assert manifest["artifact"]["filename"] == "test-model.gguf"
+        assert manifest["artifact"]["sha256"] == "abc123" * 10 + "abcd"
+        assert manifest["artifact"]["size_bytes"] == 100
+        assert manifest["source"]["url"] == "https://huggingface.co/test/model"
+        assert manifest["source"]["revision"] == "main"
+        assert "timestamp" in manifest["promotion"]
+        assert "hostname" in manifest["promotion"]
+        assert manifest["integrity"]["fsverity_enabled"] is False
+        assert manifest["integrity"]["fsverity_digest"] is None
+
+    def test_local_import_defaults(self, tmp_path, monkeypatch):
+        """Local imports get default source values."""
+        import quarantine.watcher as watcher_mod
+        monkeypatch.setattr(watcher_mod, "REGISTRY_DIR", tmp_path)
+
+        model_file = tmp_path / "local-model.gguf"
+        model_file.write_bytes(b"\x00" * 50)
+
+        _write_provenance_manifest(
+            artifact_path=model_file,
+            filename="local-model.gguf",
+            file_hash="def456" * 10 + "defg",
+            size_bytes=50,
+            source_url="",
+            source_revision="",
+            scan_results={},
+            pipeline_details={},
+        )
+
+        manifest_path = tmp_path / "local-model.gguf.provenance.json"
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["source"]["url"] == "local-import"
+        assert manifest["source"]["revision"] == "unknown"
+
+
+class TestFsverity:
+    def test_returns_false_when_not_installed(self, tmp_path):
+        """_enable_fsverity returns False gracefully when fsverity tool is not installed."""
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"\x00" * 100)
+        result = _enable_fsverity(model_file)
+        assert result is False

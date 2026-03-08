@@ -17,7 +17,10 @@ import json
 import logging
 import os
 import shutil
+import socket
+import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -220,6 +223,9 @@ def process_artifact(artifact_path: Path) -> bool:
     shutil.move(str(artifact_path), str(dest))
     log.info("moved to registry dir: %s", dest)
 
+    # Enable fs-verity on the promoted file (before provenance manifest)
+    fsverity_ok = _enable_fsverity(dest)
+
     # Clean up source metadata
     source_meta = artifact_path.parent / f".{artifact_path.name}.source"
     if source_meta.exists():
@@ -229,16 +235,36 @@ def process_artifact(artifact_path: Path) -> bool:
     details = result.get("details", {})
     scan_summary = _build_scan_summary(details)
 
+    # Extract source revision
+    source_revision = ""
+    if source_url and "huggingface.co" in source_url:
+        import re
+        rev_match = re.search(r"/resolve/([^/]+)/", source_url)
+        if rev_match:
+            source_revision = rev_match.group(1)
+
     if promote_to_registry(artifact_path.name, file_hash, file_size, scan_summary,
                            source_url=source_url, pipeline_details=details):
         log.info("PROMOTED: %s (registered in manifest)", artifact_path.name)
         audit_log("promoted", artifact_path.name, sha256=file_hash,
                   size_bytes=file_size, scan_summary=scan_summary)
+        # Write provenance manifest after successful promotion
+        _write_provenance_manifest(
+            dest, artifact_path.name, file_hash, file_size,
+            source_url, source_revision, scan_summary, details,
+            fsverity_success=fsverity_ok,
+        )
         return True
     else:
         log.error("PROMOTED to disk but registry update failed: %s", artifact_path.name)
         audit_log("promotion_partial", artifact_path.name, sha256=file_hash,
                   size_bytes=file_size, note="file moved but manifest update failed")
+        # Still write provenance manifest even if registry update failed
+        _write_provenance_manifest(
+            dest, artifact_path.name, file_hash, file_size,
+            source_url, source_revision, scan_summary, details,
+            fsverity_success=fsverity_ok,
+        )
         return False
 
 
@@ -281,6 +307,14 @@ def process_directory(artifact_dir: Path) -> bool:
     shutil.move(str(artifact_dir), str(dest))
     log.info("moved to registry dir: %s", dest)
 
+    # Enable fs-verity on individual model files in the directory
+    fsverity_ok = True
+    verity_extensions = {".safetensors", ".json"}
+    for f in dest.rglob("*"):
+        if f.is_file() and f.suffix in verity_extensions:
+            if not _enable_fsverity(f):
+                fsverity_ok = False
+
     source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
     if source_meta.exists():
         source_meta.unlink()
@@ -289,18 +323,135 @@ def process_directory(artifact_dir: Path) -> bool:
     scan_summary = _build_scan_summary(details)
     scan_summary["model_type"] = "diffusion"
 
+    # Extract source revision
+    source_revision = ""
+    if source_url and "huggingface.co" in source_url:
+        import re
+        rev_match = re.search(r"/resolve/([^/]+)/", source_url)
+        if rev_match:
+            source_revision = rev_match.group(1)
+
     if promote_to_registry(artifact_dir.name, dir_hash, total_size, scan_summary,
                            model_type="diffusion", source_url=source_url,
                            pipeline_details=details):
         log.info("PROMOTED: %s (diffusion model registered)", artifact_dir.name)
         audit_log("promoted", artifact_dir.name, sha256=dir_hash,
                   size_bytes=total_size, model_type="diffusion", scan_summary=scan_summary)
+        # Write provenance manifest after successful promotion
+        _write_provenance_manifest(
+            dest, artifact_dir.name, dir_hash, total_size,
+            source_url, source_revision, scan_summary, details,
+            fsverity_success=fsverity_ok,
+        )
         return True
     else:
         log.error("PROMOTED to disk but registry update failed: %s", artifact_dir.name)
         audit_log("promotion_partial", artifact_dir.name, sha256=dir_hash,
                   size_bytes=total_size, note="directory moved but manifest update failed")
+        # Still write provenance manifest even if registry update failed
+        _write_provenance_manifest(
+            dest, artifact_dir.name, dir_hash, total_size,
+            source_url, source_revision, scan_summary, details,
+            fsverity_success=fsverity_ok,
+        )
         return False
+
+
+def _enable_fsverity(filepath: Path) -> bool:
+    """Enable fs-verity on a promoted model file for kernel-level integrity."""
+    try:
+        subprocess.run(
+            ["fsverity", "enable", str(filepath)],
+            check=True, capture_output=True, timeout=30,
+        )
+        log.info("fs-verity enabled on %s", filepath.name)
+        return True
+    except FileNotFoundError:
+        log.warning("fsverity tool not installed, skipping runtime integrity protection")
+        return False
+    except subprocess.CalledProcessError as e:
+        # Common reasons: filesystem doesn't support verity, file is open, etc.
+        log.warning(
+            "fs-verity not supported for %s: %s",
+            filepath.name,
+            e.stderr.decode().strip() if e.stderr else str(e),
+        )
+        return False
+
+
+def _get_fsverity_digest(filepath: Path) -> str | None:
+    """Read the fs-verity digest of a file."""
+    try:
+        result = subprocess.run(
+            ["fsverity", "digest", str(filepath)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().split()[0]  # "sha256:abc123..."
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    return None
+
+
+def _write_provenance_manifest(
+    artifact_path: Path,
+    filename: str,
+    file_hash: str,
+    size_bytes: int,
+    source_url: str,
+    source_revision: str,
+    scan_results: dict,
+    pipeline_details: dict,
+    fsverity_success: bool = False,
+) -> None:
+    """Generate and optionally sign a JSON provenance manifest for a promoted model."""
+    manifest = {
+        "schema_version": "1.0",
+        "artifact": {
+            "filename": filename,
+            "sha256": file_hash,
+            "size_bytes": size_bytes,
+        },
+        "source": {
+            "url": source_url or "local-import",
+            "revision": source_revision or "unknown",
+        },
+        "scanners": _extract_scanner_versions(pipeline_details),
+        "policy": {
+            "version": _compute_policy_version(),
+        },
+        "promotion": {
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "hostname": socket.gethostname(),
+        },
+        "scan_summary": _build_scan_summary(pipeline_details),
+        "integrity": {
+            "fsverity_enabled": fsverity_success,
+            "fsverity_digest": _get_fsverity_digest(artifact_path) if fsverity_success else None,
+        },
+    }
+
+    manifest_path = REGISTRY_DIR / f"{filename}.provenance.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    log.info("provenance manifest written: %s", manifest_path.name)
+
+    # Try to sign with local cosign key
+    cosign_key = Path("/etc/secure-ai/keys/cosign.key")
+    if cosign_key.exists():
+        try:
+            subprocess.run(
+                [
+                    "cosign", "sign-blob", "--key", str(cosign_key),
+                    "--output-signature", str(manifest_path) + ".sig",
+                    str(manifest_path),
+                ],
+                check=True, capture_output=True, timeout=30,
+            )
+            log.info("provenance manifest signed: %s", filename)
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            log.warning("could not sign provenance manifest: %s", e)
+    else:
+        log.info("no cosign key found, provenance manifest unsigned")
 
 
 def _build_scan_summary(details: dict) -> dict:

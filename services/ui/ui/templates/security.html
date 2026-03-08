@@ -80,6 +80,26 @@
     <p class="meta" id="vm-detail">Checking environment...</p>
 </div>
 
+<!-- Model Provenance & fs-verity -->
+<div class="section-title">Model Provenance &amp; Integrity</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">fs-verity &amp; Signed Provenance</span>
+        <span class="badge badge-muted" id="fsverity-badge">checking</span>
+    </div>
+    <p class="meta" id="fsverity-detail">Loading model integrity status...</p>
+    <table class="data-table" id="fsverity-table" style="display:none;margin-top:0.5rem">
+        <thead>
+            <tr>
+                <th>Model</th>
+                <th>fs-verity</th>
+                <th>Provenance Signed</th>
+            </tr>
+        </thead>
+        <tbody id="fsverity-tbody"></tbody>
+    </table>
+</div>
+
 <!-- Emergency Controls -->
 <div class="section-title">Emergency Controls</div>
 <div class="card">
@@ -327,6 +347,58 @@
         }
     }
 
+    async function loadFsverityStatus() {
+        try {
+            var resp = await fetch('/api/models/fsverity');
+            var models = await resp.json();
+            var badge = document.getElementById('fsverity-badge');
+            var detail = document.getElementById('fsverity-detail');
+            var table = document.getElementById('fsverity-table');
+            var tbody = document.getElementById('fsverity-tbody');
+
+            if (!models || models.length === 0) {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'no models';
+                detail.textContent = 'No trusted models found.';
+                return;
+            }
+
+            var verityCount = 0;
+            var signedCount = 0;
+            var rows = '';
+            models.forEach(function(m) {
+                if (m.fsverity_enabled) verityCount++;
+                if (m.provenance_signed) signedCount++;
+                rows += '<tr>' +
+                    '<td style="font-weight:500">' + esc(m.name) + '</td>' +
+                    '<td><span class="badge ' + (m.fsverity_enabled ? 'badge-success' : 'badge-muted') + '">' +
+                        (m.fsverity_enabled ? 'enabled' : 'off') + '</span></td>' +
+                    '<td><span class="badge ' + (m.provenance_signed ? 'badge-success' : 'badge-muted') + '">' +
+                        (m.provenance_signed ? 'signed' : 'unsigned') + '</span></td>' +
+                '</tr>';
+            });
+
+            tbody.innerHTML = rows;
+            table.style.display = '';
+            detail.textContent = verityCount + '/' + models.length + ' models with fs-verity, ' +
+                signedCount + '/' + models.length + ' provenance manifests signed.';
+
+            if (verityCount === models.length && signedCount === models.length) {
+                badge.className = 'badge badge-success';
+                badge.textContent = 'all protected';
+            } else if (verityCount > 0 || signedCount > 0) {
+                badge.className = 'badge badge-warning';
+                badge.textContent = 'partial';
+            } else {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'unprotected';
+            }
+        } catch(e) {
+            document.getElementById('fsverity-badge').textContent = 'unknown';
+            document.getElementById('fsverity-detail').textContent = 'Could not load fs-verity status.';
+        }
+    }
+
     /* Load all sections */
     loadServiceHealth();
     loadModelsCount();
@@ -335,6 +407,7 @@
     loadBootStatus();
     loadVMStatus();
     loadPanicStatus();
+    loadFsverityStatus();
 
     setInterval(loadServiceHealth, 15000);
     setInterval(loadPanicStatus, 10000);
