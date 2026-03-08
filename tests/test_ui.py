@@ -68,3 +68,67 @@ class TestSecurityStats:
             data = resp.get_json()
             assert "tool_firewall" in data
             assert "airlock" in data
+
+
+class TestIntegrityMonitoring:
+    def test_integrity_status_returns_json(self, client):
+        import requests as req_lib
+        with patch("ui.app.requests.get", side_effect=req_lib.ConnectionError("down")):
+            resp = client.get("/api/integrity/status")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert "status" in data
+
+    def test_verify_all_handles_unreachable(self, client):
+        import requests as req_lib
+        with patch("ui.app.requests.post", side_effect=req_lib.ConnectionError("down")):
+            resp = client.post("/api/integrity/verify-all")
+            assert resp.status_code == 503
+
+    def test_chat_blocked_on_integrity_failure(self, client):
+        """Chat should return 403 when model integrity check fails."""
+        mock_models_resp = type("Resp", (), {"json": lambda self: [], "status_code": 200})()
+        with patch("ui.app.requests.get", return_value=mock_models_resp):
+            resp = client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+            assert resp.status_code == 403
+            data = resp.get_json()
+            assert data["integrity_failed"] is True
+
+    def test_chat_allowed_on_integrity_pass(self, client):
+        """Chat should proceed when model passes integrity check."""
+        mock_models_resp = type("Resp", (), {
+            "json": lambda self: [{"name": "test-model"}],
+            "status_code": 200,
+        })()
+        mock_verify_resp = type("Resp", (), {
+            "json": lambda self: {"safe_to_use": "true", "status": "verified"},
+            "status_code": 200,
+        })()
+        mock_chat_resp = type("Resp", (), {
+            "json": lambda self: {"choices": [{"message": {"content": "hello"}}]},
+            "status_code": 200,
+        })()
+
+        def mock_get(url, **kwargs):
+            if "/v1/models" in url:
+                return mock_models_resp
+            raise Exception("unexpected GET")
+
+        def mock_post(url, **kwargs):
+            if "/v1/model/verify" in url:
+                return mock_verify_resp
+            if "/v1/chat/completions" in url:
+                return mock_chat_resp
+            raise Exception("unexpected POST")
+
+        with patch("ui.app.requests.get", side_effect=mock_get), \
+             patch("ui.app.requests.post", side_effect=mock_post):
+            resp = client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+            assert resp.status_code == 200
+
+    def test_stream_blocked_on_integrity_failure(self, client):
+        """Stream chat should return 403 when model integrity check fails."""
+        mock_models_resp = type("Resp", (), {"json": lambda self: [], "status_code": 200})()
+        with patch("ui.app.requests.get", return_value=mock_models_resp):
+            resp = client.post("/api/chat/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+            assert resp.status_code == 403

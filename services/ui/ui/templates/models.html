@@ -128,6 +128,25 @@
         }
         #status-msg.success { display: block; background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
         #status-msg.error { display: block; background: #2e1a1a; color: var(--danger); border: 1px solid #4a2d2d; }
+        .integrity-banner {
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+        }
+        .integrity-ok { background: #1a2e1a; color: var(--success); border: 1px solid #2d4a2d; }
+        .integrity-failed { background: #2e1a1a; color: var(--danger); border: 1px solid #4a2d2d; }
+        .integrity-unknown { background: #1e2030; color: var(--text-dim); border: 1px solid var(--border); }
+        .integrity-banner .info { display: flex; align-items: center; gap: 0.5rem; }
+        .integrity-banner .dot {
+            width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+        }
+        .dot-green { background: var(--success); }
+        .dot-red { background: var(--danger); }
+        .dot-gray { background: var(--text-dim); }
     </style>
 </head>
 <body>
@@ -141,6 +160,14 @@
 
     <div class="container">
         <div id="status-msg"></div>
+
+        <div id="integrity-banner" class="integrity-banner integrity-unknown">
+            <div class="info">
+                <span class="dot dot-gray" id="integrity-dot"></span>
+                <span id="integrity-text">Checking model integrity...</span>
+            </div>
+            <button class="btn" id="verify-all-btn" onclick="verifyAll()">Verify All Now</button>
+        </div>
 
         <div class="section">
             <h2>Import Model</h2>
@@ -322,7 +349,58 @@
             }
         }
 
-        function refreshAll() { loadModels(); loadQuarantine(); }
+        async function loadIntegrityStatus() {
+            const banner = document.getElementById("integrity-banner");
+            const dot = document.getElementById("integrity-dot");
+            const text = document.getElementById("integrity-text");
+            try {
+                const resp = await fetch("/api/integrity/status");
+                const data = await resp.json();
+                if (data.status === "ok") {
+                    banner.className = "integrity-banner integrity-ok";
+                    dot.className = "dot dot-green";
+                    const checked = data.models_checked || 0;
+                    const time = data.checked_at ? new Date(data.checked_at).toLocaleTimeString() : "unknown";
+                    text.textContent = `All ${checked} model(s) verified OK (last check: ${time})`;
+                } else if (data.status === "failed") {
+                    banner.className = "integrity-banner integrity-failed";
+                    dot.className = "dot dot-red";
+                    const failures = data.failures || 0;
+                    text.textContent = `INTEGRITY ALERT: ${failures} model(s) failed verification!`;
+                } else {
+                    banner.className = "integrity-banner integrity-unknown";
+                    dot.className = "dot dot-gray";
+                    text.textContent = data.detail || "No integrity check has run yet";
+                }
+            } catch {
+                banner.className = "integrity-banner integrity-unknown";
+                dot.className = "dot dot-gray";
+                text.textContent = "Could not reach integrity status";
+            }
+        }
+
+        async function verifyAll() {
+            const btn = document.getElementById("verify-all-btn");
+            btn.disabled = true;
+            btn.textContent = "Verifying...";
+            try {
+                const resp = await fetch("/api/integrity/verify-all", { method: "POST" });
+                const data = await resp.json();
+                if (data.status === "ok") {
+                    showStatus(`All ${data.checked} model(s) verified OK`, "success");
+                } else {
+                    const failed = (data.models || []).filter(m => m.status === "failed");
+                    showStatus(`Verification FAILED: ${failed.map(m => m.name).join(", ")}`, "error");
+                }
+                loadIntegrityStatus();
+            } catch {
+                showStatus("Could not reach registry for verification.", "error");
+            }
+            btn.disabled = false;
+            btn.textContent = "Verify All Now";
+        }
+
+        function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); }
         refreshAll();
         setInterval(refreshAll, 10000);
     </script>

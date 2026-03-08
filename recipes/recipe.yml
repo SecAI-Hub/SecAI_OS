@@ -81,6 +81,7 @@ modules:
         - secure-ai-quarantine-watcher.service
         - secure-ai-inference.service
         - secure-ai-diffusion.service
+        - secure-ai-integrity.timer
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

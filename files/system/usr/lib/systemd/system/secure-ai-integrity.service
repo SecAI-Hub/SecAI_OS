@@ -1,0 +1,40 @@
+[Unit]
+Description=Secure AI Model Integrity Check (verify all model hashes)
+After=secure-ai-registry.service
+Wants=secure-ai-registry.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/integrity-check.sh
+Environment=REGISTRY_URL=http://127.0.0.1:8470
+Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+
+# Filesystem access
+ReadOnlyPaths=/usr/libexec/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/quarantine
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Needs network to talk to registry on localhost
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=16

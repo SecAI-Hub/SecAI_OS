@@ -311,7 +311,83 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 }
 
-func handleVerify(w http.ResponseWriter, r *http.Request) {
+func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	manifestMu.RLock()
+	models := make([]Artifact, len(manifest.Models))
+	copy(models, manifest.Models)
+	manifestMu.RUnlock()
+
+	results := make([]map[string]string, 0, len(models))
+	allOk := true
+
+	for _, m := range models {
+		filePath := filepath.Join(registryDir, m.Filename)
+		actual, err := verifyFileHash(filePath, m.SHA256)
+		if err != nil {
+			allOk = false
+			results = append(results, map[string]string{
+				"name":     m.Name,
+				"status":   "failed",
+				"expected": m.SHA256,
+				"actual":   actual,
+				"error":    err.Error(),
+			})
+		} else {
+			results = append(results, map[string]string{
+				"name":   m.Name,
+				"status": "verified",
+				"sha256": actual,
+			})
+		}
+	}
+
+	status := "ok"
+	if !allOk {
+		status = "failed"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if !allOk {
+		w.WriteHeader(http.StatusConflict)
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  status,
+		"models":  results,
+		"checked": len(results),
+	})
+}
+
+func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resultPath := os.Getenv("INTEGRITY_RESULT_PATH")
+	if resultPath == "" {
+		resultPath = "/var/lib/secure-ai/logs/integrity-last.json"
+	}
+
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "unknown",
+			"detail":  "no integrity check has run yet",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
+func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -339,14 +415,16 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 					"expected": m.SHA256,
 					"actual":   actual,
 					"error":    err.Error(),
+					"safe_to_use": "false",
 				})
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
-				"status": "verified",
-				"name":   name,
-				"sha256": actual,
+				"status":      "verified",
+				"name":        name,
+				"sha256":      actual,
+				"safe_to_use": "true",
 			})
 			return
 		}
@@ -391,7 +469,9 @@ func main() {
 	mux.HandleFunc("/v1/model/path", handleModelPath)
 	mux.HandleFunc("/v1/model/promote", handlePromote)
 	mux.HandleFunc("/v1/model/delete", handleDelete)
-	mux.HandleFunc("/v1/model/verify", handleVerify)
+	mux.HandleFunc("/v1/model/verify", handleVerifyModel)
+	mux.HandleFunc("/v1/models/verify-all", handleVerifyAll)
+	mux.HandleFunc("/v1/integrity/status", handleIntegrityStatus)
 
 	log.Printf("secure-ai-registry listening on %s", bind)
 	if err := http.ListenAndServe(bind, mux); err != nil {

@@ -391,10 +391,49 @@ def quarantine_status():
 
 # --- API: Chat ---
 
+def _verify_active_model() -> dict:
+    """Pre-inference check: verify the active model's hash before use.
+
+    Returns {"safe": True/False, "detail": "..."}.
+    This ensures every inference request uses a verified, non-tampered model.
+    """
+    try:
+        # Get the active/default model from the registry
+        models_resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=3)
+        models = models_resp.json()
+        if not models:
+            return {"safe": False, "detail": "no models in registry"}
+
+        # Verify the first (active) model
+        name = models[0].get("name", "")
+        verify_resp = requests.post(
+            f"{REGISTRY_URL}/v1/model/verify?name={name}", timeout=30
+        )
+        result = verify_resp.json()
+        if result.get("safe_to_use") == "true":
+            return {"safe": True, "detail": f"{name} verified"}
+        return {
+            "safe": False,
+            "detail": f"{name} failed integrity check: {result.get('error', 'unknown')}",
+        }
+    except Exception as e:
+        log.warning("pre-inference verification failed: %s", e)
+        return {"safe": False, "detail": f"verification error: {e}"}
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     body = request.get_json()
     messages = body.get("messages", [])
+
+    # Pre-inference integrity check
+    check = _verify_active_model()
+    if not check["safe"]:
+        return jsonify({
+            "error": "inference blocked: model integrity check failed",
+            "detail": check["detail"],
+            "integrity_failed": True,
+        }), 403
 
     try:
         resp = requests.post(
@@ -411,6 +450,15 @@ def chat():
 def chat_stream():
     body = request.get_json()
     messages = body.get("messages", [])
+
+    # Pre-inference integrity check
+    check = _verify_active_model()
+    if not check["safe"]:
+        return jsonify({
+            "error": "inference blocked: model integrity check failed",
+            "detail": check["detail"],
+            "integrity_failed": True,
+        }), 403
 
     def generate():
         try:
@@ -493,6 +541,15 @@ def chat_with_search():
                     search_results = search_data.get("results", [])
             except Exception:
                 log.warning("search augmentation failed, proceeding without")
+
+    # Pre-inference integrity check
+    check = _verify_active_model()
+    if not check["safe"]:
+        return jsonify({
+            "error": "inference blocked: model integrity check failed",
+            "detail": check["detail"],
+            "integrity_failed": True,
+        }), 403
 
     # If we got search context, inject it as a system message
     augmented_messages = list(messages)
@@ -614,6 +671,28 @@ def security_stats():
         except Exception:
             stats[name] = {"error": "unreachable"}
     return jsonify(stats)
+
+
+# --- API: Model Integrity Monitoring ---
+
+@app.route("/api/integrity/status")
+def integrity_status():
+    """Return the last integrity check result and current verification state."""
+    try:
+        resp = requests.get(f"{REGISTRY_URL}/v1/integrity/status", timeout=5)
+        return jsonify(resp.json())
+    except requests.ConnectionError:
+        return jsonify({"status": "unknown", "detail": "registry unreachable"})
+
+
+@app.route("/api/integrity/verify-all", methods=["POST"])
+def integrity_verify_all():
+    """Trigger an immediate verification of all model hashes."""
+    try:
+        resp = requests.post(f"{REGISTRY_URL}/v1/models/verify-all", timeout=120)
+        return jsonify(resp.json()), resp.status_code
+    except requests.ConnectionError:
+        return jsonify({"error": "registry unreachable"}), 503
 
 
 # --- API: VM Status and GPU Passthrough Toggle ---

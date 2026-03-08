@@ -60,6 +60,12 @@ session:
   # sensitive mode: aggressive worker recycling after each task
   # offline-only: hard-block all network even if airlock is enabled
 
+monitoring:
+  # Model integrity check interval (minutes). The integrity timer verifies
+  # SHA256 hashes of all promoted models against the registry manifest.
+  # On mismatch: model is quarantined, removed from manifest, workers restarted.
+  integrity_interval: 15  # minutes (5, 15, 30, or 60)
+
 logging:
   level: "info"
   store_raw_prompts: false
