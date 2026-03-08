@@ -1,0 +1,36 @@
+[Unit]
+Description=Secure AI Audit Log Chain Verification
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/verify-audit-chains.py
+Environment=AUDIT_LOGS_DIR=/var/lib/secure-ai/logs
+Environment=SERVICES_DIR=/usr/libexec/secure-ai/services
+
+# Filesystem access
+ReadOnlyPaths=/usr/libexec/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+PrivateNetwork=yes
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=15%
+TasksMax=8

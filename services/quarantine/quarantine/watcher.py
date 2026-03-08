@@ -18,11 +18,11 @@ import logging
 import os
 import shutil
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import sys
 import yaml
 
 from quarantine.pipeline import (
@@ -30,6 +30,13 @@ from quarantine.pipeline import (
     run_pipeline_directory,
     sha256_of_directory,
 )
+
+# Add services/ to path so we can import common.audit_chain
+_services_root = str(Path(__file__).resolve().parent.parent.parent)
+if _services_root not in sys.path:
+    sys.path.insert(0, _services_root)
+
+from common.audit_chain import AuditChain
 
 log = logging.getLogger("quarantine")
 
@@ -42,21 +49,13 @@ AUDIT_LOG_PATH = Path(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/quara
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 DENIED_EXTENSIONS = {".pkl", ".pickle", ".pt", ".bin"}
 
+# Hash-chained audit log instance
+_audit_chain = AuditChain(str(AUDIT_LOG_PATH))
+
 
 def audit_log(event: str, filename: str, **kwargs):
-    """Append a structured audit entry to the quarantine audit log."""
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        "filename": filename,
-        **kwargs,
-    }
-    try:
-        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG_PATH, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError as e:
-        log.warning("failed to write audit log: %s", e)
+    """Append a hash-chained audit entry to the quarantine audit log."""
+    _audit_chain.append(event, {"filename": filename, **kwargs})
 
 
 def sha256_file(path: Path) -> str:

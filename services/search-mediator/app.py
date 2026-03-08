@@ -14,12 +14,20 @@ import html
 import logging
 import os
 import re
-import time
+import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 import yaml
 from flask import Flask, jsonify, request
+
+# Add services/ to path so we can import common.audit_chain
+_services_root = str(Path(__file__).resolve().parent.parent)
+if _services_root not in sys.path:
+    sys.path.insert(0, _services_root)
+
+from common.audit_chain import AuditChain
 
 log = logging.getLogger("search-mediator")
 
@@ -30,6 +38,8 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 POLICY_PATH = os.getenv("POLICY_PATH", "/etc/secure-ai/policy/policy.yaml")
 AUDIT_DIR = os.getenv("AUDIT_DIR", "/var/lib/secure-ai/logs")
+
+_audit_chain = AuditChain(os.path.join(AUDIT_DIR, "search-audit.jsonl"))
 
 # Limits
 MAX_QUERY_LENGTH = 200
@@ -232,26 +242,15 @@ def build_context(results: list) -> str:
 
 def audit_search(query: str, sanitized_query: str, redactions: list,
                  num_results: int, blocked: bool):
-    """Write an audit record for every search attempt."""
-    try:
-        os.makedirs(AUDIT_DIR, exist_ok=True)
-        ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        # Hash the original query for audit without storing raw content
-        query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
-        record = {
-            "timestamp": ts,
-            "type": "web_search",
-            "query_hash": query_hash,
-            "sanitized_query": sanitized_query,
-            "redactions_count": len(redactions),
-            "results_returned": num_results,
-            "blocked": blocked,
-        }
-        log_path = os.path.join(AUDIT_DIR, "search-audit.log")
-        with open(log_path, "a") as f:
-            f.write(str(record) + "\n")
-    except Exception:
-        log.exception("failed to write search audit")
+    """Write a hash-chained audit record for every search attempt."""
+    query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
+    _audit_chain.append("web_search", {
+        "query_hash": query_hash,
+        "sanitized_query": sanitized_query,
+        "redactions_count": len(redactions),
+        "results_returned": num_results,
+        "blocked": blocked,
+    })
 
 
 # ---------------------------------------------------------------------------
