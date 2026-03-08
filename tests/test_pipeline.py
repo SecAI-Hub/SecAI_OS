@@ -15,13 +15,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services"))
 from quarantine.pipeline import (
     DANGER_PATTERNS,
     SMOKE_PROMPTS,
+    WEIGHT_STATS_MAX_KURTOSIS,
+    WEIGHT_STATS_MAX_ZERO_FRACTION,
+    _analyze_weight_distribution,
     _check_file_entropy,
     _check_jinja_template,
     _check_json_for_code,
     _check_pickle_polyglot,
+    _check_weight_anomalies,
+    _compute_tensor_stats,
     _run_fickling_scan,
     _run_modelaudit,
     _scan_gguf_chat_template,
+    _stats_from_values,
     _validate_gguf_header,
     _validate_safetensors_header,
     check_diffusion_config_integrity,
@@ -760,3 +766,193 @@ class TestFsverity:
         model_file.write_bytes(b"\x00" * 100)
         result = _enable_fsverity(model_file)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 8: Weight distribution statistical analysis
+# ---------------------------------------------------------------------------
+
+def _make_gguf_with_tensor(tmp_path: Path, tensor_data: bytes, dtype_id: int = 0,
+                            tensor_name: str = "test.weight") -> Path:
+    """Create a minimal GGUF file with one tensor containing given data."""
+    p = tmp_path / "weight_test.gguf"
+    name_bytes = tensor_name.encode("utf-8")
+    n_dims = 1
+    # For F32 (dtype 0), element count = len(data) / 4
+    if dtype_id == 0:
+        element_count = len(tensor_data) // 4
+    elif dtype_id == 1:
+        element_count = len(tensor_data) // 2
+    elif dtype_id == 8:  # Q8_0
+        element_count = (len(tensor_data) // 34) * 32
+    else:
+        element_count = len(tensor_data) // 4
+
+    with open(p, "wb") as f:
+        # GGUF header
+        f.write(b"GGUF")                          # magic
+        f.write(struct.pack("<I", 3))              # version
+        f.write(struct.pack("<Q", 1))              # tensor_count
+        f.write(struct.pack("<Q", 0))              # metadata_kv_count
+
+        # Tensor info
+        f.write(struct.pack("<Q", len(name_bytes)))
+        f.write(name_bytes)
+        f.write(struct.pack("<I", n_dims))          # n_dims
+        f.write(struct.pack("<Q", element_count))   # dim[0]
+        f.write(struct.pack("<I", dtype_id))        # dtype
+        f.write(struct.pack("<Q", 0))               # offset (relative to data start)
+
+        # Pad to 32-byte alignment
+        pos = f.tell()
+        alignment = 32
+        pad = (alignment - (pos % alignment)) % alignment
+        f.write(b"\x00" * pad)
+
+        # Tensor data
+        f.write(tensor_data)
+
+    return p
+
+
+class TestStatsFromValues:
+    def test_normal_distribution(self):
+        """Basic stats computation on a known list."""
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        stats = _stats_from_values(values)
+        assert abs(stats["mean"] - 3.0) < 0.001
+        assert stats["variance"] > 0
+        assert stats["zero_fraction"] == 0.0
+        assert stats["samples"] == 5
+
+    def test_all_zeros(self):
+        """All-zero values yield zero mean, zero variance."""
+        values = [0.0] * 100
+        stats = _stats_from_values(values)
+        assert stats["mean"] == 0.0
+        assert stats["variance"] == 0.0
+        assert stats["zero_fraction"] == 1.0
+
+    def test_kurtosis_normal_range(self):
+        """Well-distributed values should have moderate kurtosis."""
+        import random
+        random.seed(42)
+        values = [random.gauss(0, 1) for _ in range(10000)]
+        stats = _stats_from_values(values)
+        # Gaussian excess kurtosis should be near 0 (±1 for finite samples)
+        assert abs(stats["kurtosis"]) < 2.0
+
+
+class TestComputeTensorStats:
+    def test_f32_tensor(self):
+        """Compute stats on F32 tensor data."""
+        # Pack 100 float32 values: 1.0, 2.0, ..., 100.0
+        values = [float(i) for i in range(1, 101)]
+        data = struct.pack(f"<{len(values)}f", *values)
+        stats = _compute_tensor_stats(data, len(values), "f32")
+        assert stats is not None
+        assert abs(stats["mean"] - 50.5) < 0.1
+        assert stats["variance"] > 0
+        assert stats["zero_fraction"] == 0.0
+
+    def test_f16_tensor(self):
+        """Compute stats on F16 tensor data."""
+        values = [float(i) for i in range(1, 101)]
+        data = struct.pack(f"<{len(values)}e", *values)
+        stats = _compute_tensor_stats(data, len(values), "f16")
+        assert stats is not None
+        assert abs(stats["mean"] - 50.5) < 1.0
+
+    def test_too_few_elements(self):
+        """Return None for very small tensors."""
+        data = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
+        stats = _compute_tensor_stats(data, 4, "f32")
+        assert stats is None
+
+
+class TestCheckWeightAnomalies:
+    def test_normal_stats_pass(self):
+        """Normal weight statistics produce no anomalies."""
+        stats = {"mean": 0.01, "variance": 0.05, "kurtosis": 2.5,
+                 "zero_fraction": 0.1, "samples": 1000}
+        issues = _check_weight_anomalies("layer.0.weight", stats)
+        assert len(issues) == 0
+
+    def test_extreme_mean_flagged(self):
+        """Abnormally large mean is flagged."""
+        stats = {"mean": 50.0, "variance": 1.0, "kurtosis": 0.0,
+                 "zero_fraction": 0.0, "samples": 1000}
+        issues = _check_weight_anomalies("layer.0.weight", stats)
+        assert any("abnormal mean" in i for i in issues)
+
+    def test_extreme_kurtosis_flagged(self):
+        """Extremely peaked distribution is flagged as possible trojan."""
+        stats = {"mean": 0.0, "variance": 1.0, "kurtosis": 200.0,
+                 "zero_fraction": 0.0, "samples": 1000}
+        issues = _check_weight_anomalies("layer.0.weight", stats)
+        assert any("kurtosis" in i for i in issues)
+
+    def test_mostly_zeros_flagged(self):
+        """Nearly all-zero tensor is flagged as possibly corrupted."""
+        stats = {"mean": 0.0, "variance": 0.0001, "kurtosis": 0.0,
+                 "zero_fraction": 0.999, "samples": 1000}
+        issues = _check_weight_anomalies("layer.0.weight", stats)
+        assert any("zeros" in i for i in issues)
+
+
+class TestAnalyzeWeightDistribution:
+    def test_gguf_normal_weights(self, tmp_path):
+        """Normal GGUF weights pass analysis."""
+        import random
+        random.seed(42)
+        # Create F32 tensor data with normal-looking weights
+        values = [random.gauss(0, 0.1) for _ in range(256)]
+        tensor_data = struct.pack(f"<{len(values)}f", *values)
+        p = _make_gguf_with_tensor(tmp_path, tensor_data, dtype_id=0)
+        result = _analyze_weight_distribution(p)
+        assert result["passed"]
+
+    def test_gguf_all_zeros_flagged(self, tmp_path):
+        """All-zero GGUF tensor is flagged."""
+        tensor_data = b"\x00" * (256 * 4)  # 256 zero floats
+        p = _make_gguf_with_tensor(tmp_path, tensor_data, dtype_id=0)
+        result = _analyze_weight_distribution(p)
+        assert not result["passed"]
+        assert "zeros" in result.get("reason", "")
+
+    def test_safetensors_normal_weights(self, tmp_path):
+        """Normal safetensors weights pass analysis."""
+        import random
+        random.seed(42)
+        values = [random.gauss(0, 0.1) for _ in range(256)]
+        tensor_data = struct.pack(f"<{len(values)}f", *values)
+
+        p = tmp_path / "normal.safetensors"
+        header = json.dumps({
+            "test.weight": {
+                "dtype": "F32",
+                "shape": [256],
+                "data_offsets": [0, len(tensor_data)],
+            }
+        }).encode()
+        with open(p, "wb") as f:
+            f.write(struct.pack("<Q", len(header)))
+            f.write(header)
+            f.write(tensor_data)
+
+        result = _analyze_weight_distribution(p)
+        assert result["passed"]
+
+    def test_unsupported_format_passes(self, tmp_path):
+        """Unsupported file extensions pass gracefully."""
+        p = tmp_path / "model.bin"
+        p.write_bytes(b"\x00" * 100)
+        result = _analyze_weight_distribution(p)
+        assert result["passed"]
+        assert "not supported" in result.get("note", "")
+
+    def test_integrated_in_static_scan(self, tmp_path):
+        """Weight analysis runs as part of check_static_scan."""
+        p = make_gguf_file(tmp_path)
+        result = check_static_scan(p)
+        assert "weight_stats" in result.get("details", {})

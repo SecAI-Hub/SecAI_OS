@@ -602,8 +602,367 @@ def _run_modelaudit(filepath: Path) -> dict:
         return {"passed": True, "scanner": "modelaudit", "note": f"modelaudit error: {e}"}
 
 
+# ---------------------------------------------------------------------------
+# Weight distribution statistical fingerprinting
+# ---------------------------------------------------------------------------
+
+# GGUF type IDs → (numpy dtype string, byte size)
+_GGUF_TYPE_INFO = {
+    0: ("f32", 4),   # GGUF_TYPE_F32
+    1: ("f16", 2),   # GGUF_TYPE_F16
+    6: ("f32", 4),   # GGUF_TYPE_F64 → read as f32 pairs
+    # Quantized types are not directly interpretable as floats;
+    # we dequantize Q8_0 blocks and skip others.
+    8: ("q8_0", 34),  # GGUF_TYPE_Q8_0: 34 bytes per block of 32 values
+}
+
+# Thresholds for anomaly detection
+WEIGHT_STATS_MAX_KURTOSIS = 100.0  # Extremely peaked = suspicious
+WEIGHT_STATS_MAX_MEAN_ABS = 10.0   # Unusually large mean
+WEIGHT_STATS_MIN_VARIANCE = 1e-12  # All-zero or constant tensor
+WEIGHT_STATS_MAX_ZERO_FRACTION = 0.99  # Nearly all zeros = possibly corrupted
+
+
+def _analyze_weight_distribution(artifact_path: Path) -> dict:
+    """Statistical fingerprinting of model weights.
+
+    Reads tensor data from GGUF or safetensors files and computes per-layer
+    statistics (mean, variance, kurtosis, zero-fraction). Flags anomalies
+    that may indicate:
+      - Trojan patches (localized extreme values)
+      - Corrupted/zeroed weights
+      - Steganographic payloads (unusual distribution shape)
+    """
+    ext = artifact_path.suffix.lower()
+    try:
+        if ext == ".gguf":
+            return _analyze_gguf_weights(artifact_path)
+        elif ext == ".safetensors":
+            return _analyze_safetensors_weights(artifact_path)
+        else:
+            return {"passed": True, "note": f"weight analysis not supported for {ext}"}
+    except Exception as e:
+        log.warning("weight distribution analysis failed: %s", e)
+        return {"passed": True, "note": f"analysis error (non-fatal): {e}"}
+
+
+def _compute_tensor_stats(data: bytes, count: int, dtype: str = "f32") -> dict | None:
+    """Compute statistics for a raw tensor buffer.
+
+    Returns dict with mean, variance, kurtosis, zero_fraction, or None on error.
+    """
+    if count == 0:
+        return None
+
+    # Sample up to 1M values for large tensors (performance)
+    max_samples = 1_000_000
+
+    if dtype == "f32":
+        fmt_size = 4
+        fmt_char = "f"
+    elif dtype == "f16":
+        # Read f16 as unsigned 16-bit, convert manually
+        fmt_size = 2
+        fmt_char = "e"  # IEEE 754 half-precision
+    elif dtype == "q8_0":
+        # Q8_0 dequantization: each block = 2-byte f16 scale + 32 int8 values
+        return _dequant_q8_0_stats(data, count)
+    else:
+        return None
+
+    actual_count = min(count, len(data) // fmt_size)
+    if actual_count < 16:
+        return None
+
+    sample_count = min(actual_count, max_samples)
+    # Use struct to unpack values (no numpy dependency)
+    step = max(1, actual_count // sample_count)
+    values = []
+    for i in range(0, actual_count, step):
+        offset = i * fmt_size
+        if offset + fmt_size > len(data):
+            break
+        try:
+            val = struct.unpack_from(f"<{fmt_char}", data, offset)[0]
+            if math.isfinite(val):
+                values.append(val)
+        except struct.error:
+            break
+
+    if len(values) < 16:
+        return None
+
+    return _stats_from_values(values)
+
+
+def _dequant_q8_0_stats(data: bytes, _element_count: int) -> dict | None:
+    """Dequantize Q8_0 blocks and compute stats.
+
+    Q8_0 format: each block contains 2-byte f16 scale + 32 int8 quantized values.
+    """
+    block_size = 34  # 2 (scale) + 32 (quants)
+    n_blocks = len(data) // block_size
+    if n_blocks == 0:
+        return None
+
+    max_blocks = 32768  # Sample ~1M values
+    step = max(1, n_blocks // max_blocks)
+    values = []
+
+    for bi in range(0, n_blocks, step):
+        offset = bi * block_size
+        if offset + block_size > len(data):
+            break
+        try:
+            scale = struct.unpack_from("<e", data, offset)[0]
+            if not math.isfinite(scale):
+                continue
+            for qi in range(32):
+                qval = struct.unpack_from("b", data, offset + 2 + qi)[0]
+                values.append(scale * qval)
+        except struct.error:
+            break
+
+    if len(values) < 16:
+        return None
+
+    return _stats_from_values(values)
+
+
+def _stats_from_values(values: list) -> dict:
+    """Compute mean, variance, kurtosis, zero fraction from a list of floats."""
+    n = len(values)
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / n
+
+    # Excess kurtosis (normal distribution = 0)
+    if var > 0:
+        m4 = sum((v - mean) ** 4 for v in values) / n
+        kurtosis = m4 / (var ** 2) - 3.0
+    else:
+        kurtosis = 0.0
+
+    zero_count = sum(1 for v in values if v == 0.0)
+
+    return {
+        "mean": round(mean, 6),
+        "variance": round(var, 6),
+        "kurtosis": round(kurtosis, 4),
+        "zero_fraction": round(zero_count / n, 4),
+        "samples": n,
+    }
+
+
+def _analyze_gguf_weights(filepath: Path) -> dict:
+    """Parse GGUF tensor info and compute weight statistics."""
+    anomalies = []
+    tensor_stats = []
+
+    try:
+        with open(filepath, "rb") as f:
+            magic = f.read(4)
+            if magic != GGUF_MAGIC:
+                return {"passed": True, "note": "not a valid GGUF file"}
+
+            struct.unpack("<I", f.read(4))  # version, already validated
+            n_tensors = struct.unpack("<Q", f.read(8))[0]
+            n_kv = struct.unpack("<Q", f.read(8))[0]
+
+            # Skip metadata KV pairs
+            for _ in range(n_kv):
+                key_len = struct.unpack("<Q", f.read(8))[0]
+                f.seek(key_len, 1)  # skip key
+                val_type = struct.unpack("<I", f.read(4))[0]
+                _skip_gguf_value(f, val_type)
+
+            # Read tensor info entries
+            tensor_infos = []
+            for _ in range(min(n_tensors, 2000)):  # cap to prevent abuse
+                name_len = struct.unpack("<Q", f.read(8))[0]
+                name = f.read(name_len).decode("utf-8", errors="replace")
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = [struct.unpack("<Q", f.read(8))[0] for _ in range(n_dims)]
+                dtype_id = struct.unpack("<I", f.read(4))[0]
+                offset = struct.unpack("<Q", f.read(8))[0]
+                element_count = 1
+                for d in dims:
+                    element_count *= d
+                tensor_infos.append({
+                    "name": name,
+                    "dims": dims,
+                    "dtype_id": dtype_id,
+                    "offset": offset,
+                    "element_count": element_count,
+                })
+
+            # Data starts at alignment boundary after header
+            header_end = f.tell()
+            alignment = 32  # GGUF default alignment
+            data_start = ((header_end + alignment - 1) // alignment) * alignment
+
+            # Analyze a sample of tensors (largest ones are most informative)
+            # Sort by element count descending, take top 20
+            tensor_infos.sort(key=lambda t: t["element_count"], reverse=True)
+            sample_tensors = tensor_infos[:20]
+
+            for tinfo in sample_tensors:
+                dtype_id = tinfo["dtype_id"]
+                if dtype_id not in _GGUF_TYPE_INFO:
+                    continue  # Skip unsupported quantization types
+
+                dtype_name, type_size = _GGUF_TYPE_INFO[dtype_id]
+                if dtype_name == "q8_0":
+                    n_blocks = (tinfo["element_count"] + 31) // 32
+                    data_size = n_blocks * 34
+                else:
+                    data_size = tinfo["element_count"] * type_size
+
+                # Cap read size to 32MB per tensor
+                read_size = min(data_size, 32 * 1024 * 1024)
+
+                f.seek(data_start + tinfo["offset"])
+                raw = f.read(read_size)
+
+                stats = _compute_tensor_stats(raw, tinfo["element_count"], dtype_name)
+                if stats is None:
+                    continue
+
+                stats["name"] = tinfo["name"]
+                tensor_stats.append(stats)
+
+                # Check anomaly thresholds
+                issues = _check_weight_anomalies(tinfo["name"], stats)
+                anomalies.extend(issues)
+
+    except (struct.error, OSError) as e:
+        return {"passed": True, "note": f"GGUF weight parse error (non-fatal): {e}"}
+
+    if anomalies:
+        return {
+            "passed": False,
+            "reason": f"weight distribution anomalies: {'; '.join(anomalies[:3])}",
+            "anomalies": anomalies,
+            "tensors_analyzed": len(tensor_stats),
+        }
+
+    return {
+        "passed": True,
+        "tensors_analyzed": len(tensor_stats),
+        "tensor_stats": tensor_stats[:5],  # Include top 5 for provenance
+    }
+
+
+def _analyze_safetensors_weights(filepath: Path) -> dict:
+    """Parse safetensors header and compute weight statistics on tensors."""
+    anomalies = []
+    tensor_stats = []
+
+    try:
+        with open(filepath, "rb") as f:
+            header_len = struct.unpack("<Q", f.read(8))[0]
+            if header_len > SAFETENSORS_MAX_HEADER:
+                return {"passed": True, "note": "header too large for weight analysis"}
+            header_raw = f.read(header_len)
+            header = json.loads(header_raw)
+            data_start = 8 + header_len
+
+            # Collect tensor metadata
+            tensors = []
+            for name, info in header.items():
+                if name == "__metadata__":
+                    continue
+                dtype = info.get("dtype", "")
+                offsets = info.get("data_offsets", [0, 0])
+                start, end = offsets[0], offsets[1]
+                size_bytes = end - start
+                tensors.append({
+                    "name": name,
+                    "dtype": dtype,
+                    "offset": start,
+                    "size_bytes": size_bytes,
+                })
+
+            # Sort by size, analyze top 20
+            tensors.sort(key=lambda t: t["size_bytes"], reverse=True)
+            sample_tensors = tensors[:20]
+
+            for tinfo in sample_tensors:
+                dtype = tinfo["dtype"]
+                if dtype == "F32":
+                    fmt_dtype = "f32"
+                    elem_size = 4
+                elif dtype == "F16":
+                    fmt_dtype = "f16"
+                    elem_size = 2
+                elif dtype == "BF16":
+                    # BF16 not directly supported by struct; skip
+                    continue
+                else:
+                    continue
+
+                element_count = tinfo["size_bytes"] // elem_size
+                read_size = min(tinfo["size_bytes"], 32 * 1024 * 1024)
+
+                f.seek(data_start + tinfo["offset"])
+                raw = f.read(read_size)
+
+                stats = _compute_tensor_stats(raw, element_count, fmt_dtype)
+                if stats is None:
+                    continue
+
+                stats["name"] = tinfo["name"]
+                tensor_stats.append(stats)
+
+                issues = _check_weight_anomalies(tinfo["name"], stats)
+                anomalies.extend(issues)
+
+    except (struct.error, OSError, json.JSONDecodeError) as e:
+        return {"passed": True, "note": f"safetensors weight parse error (non-fatal): {e}"}
+
+    if anomalies:
+        return {
+            "passed": False,
+            "reason": f"weight distribution anomalies: {'; '.join(anomalies[:3])}",
+            "anomalies": anomalies,
+            "tensors_analyzed": len(tensor_stats),
+        }
+
+    return {
+        "passed": True,
+        "tensors_analyzed": len(tensor_stats),
+        "tensor_stats": tensor_stats[:5],
+    }
+
+
+def _check_weight_anomalies(tensor_name: str, stats: dict) -> list:
+    """Check a tensor's statistics against anomaly thresholds."""
+    issues = []
+
+    if abs(stats["mean"]) > WEIGHT_STATS_MAX_MEAN_ABS:
+        issues.append(
+            f"{tensor_name}: abnormal mean ({stats['mean']:.4f})"
+        )
+
+    if stats["variance"] < WEIGHT_STATS_MIN_VARIANCE and stats["zero_fraction"] < 0.99:
+        issues.append(
+            f"{tensor_name}: near-zero variance ({stats['variance']:.2e}) with non-zero values"
+        )
+
+    if stats["kurtosis"] > WEIGHT_STATS_MAX_KURTOSIS:
+        issues.append(
+            f"{tensor_name}: extreme kurtosis ({stats['kurtosis']:.2f}), possible trojan patch"
+        )
+
+    if stats["zero_fraction"] > WEIGHT_STATS_MAX_ZERO_FRACTION:
+        issues.append(
+            f"{tensor_name}: {stats['zero_fraction']*100:.1f}% zeros, possibly corrupted"
+        )
+
+    return issues
+
+
 def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
-    """Stage 5: Run modelscan + fickling + modelaudit + entropy analysis."""
+    """Stage 5: Run modelscan + fickling + modelaudit + entropy + weight analysis."""
     if policy is None:
         policy = {}
     results = {}
@@ -627,6 +986,10 @@ def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
     # 5. Entropy analysis (existing)
     entropy_result = _check_file_entropy(artifact_path)
     results["entropy"] = entropy_result
+
+    # 6. Weight distribution analysis (new, no external dep)
+    weight_result = _analyze_weight_distribution(artifact_path)
+    results["weight_stats"] = weight_result
 
     # Overall: fail if ANY scanner fails
     failed = [k for k, v in results.items() if not v.get("passed", True)]
