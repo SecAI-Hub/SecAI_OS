@@ -79,6 +79,37 @@ EOF
     chmod 644 "${SECURE_AI_ROOT}/registry/manifest.json"
 fi
 
+# Detect VM environment
+log "Running VM detection..."
+/usr/libexec/secure-ai/detect-vm.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: VM detection failed."
+    cat > "${SECURE_AI_ROOT}/vm.env" <<'VMEOF'
+IS_VM=false
+HYPERVISOR=unknown
+GPU_PASSTHROUGH=false
+VM_GPU_ENABLED=false
+VMEOF
+}
+
+# Log VM warnings if applicable
+if [ -f "${SECURE_AI_ROOT}/vm.env" ]; then
+    source "${SECURE_AI_ROOT}/vm.env"
+    if [ "${IS_VM:-false}" = "true" ]; then
+        log "============================================"
+        log "WARNING: Running inside a virtual machine (${HYPERVISOR})"
+        log "  - Host OS can inspect VM memory (decrypted vault, inference data)"
+        log "  - VM snapshots may capture decrypted secrets"
+        log "  - Disable clipboard sharing for better isolation"
+        if [ "${GPU_PASSTHROUGH:-false}" = "true" ]; then
+            log "  - GPU passthrough detected but DISABLED by default"
+            log "  - Enable via UI Settings or set VM_GPU_ENABLED=true in vm.env"
+            log "  - GPU passthrough exposes GPU memory to host hypervisor"
+        fi
+        log "  For maximum security, use bare-metal installation"
+        log "============================================"
+    fi
+fi
+
 # Detect GPU and write inference.env
 log "Running GPU detection..."
 /usr/libexec/secure-ai/detect-gpu.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
@@ -89,6 +120,19 @@ GPU_NAME=CPU (detection failed)
 GPU_LAYERS=0
 GPUEOF
 }
+
+# In VM mode with GPU passthrough disabled, force CPU-only
+if [ -f "${SECURE_AI_ROOT}/vm.env" ]; then
+    source "${SECURE_AI_ROOT}/vm.env"
+    if [ "${IS_VM:-false}" = "true" ] && [ "${VM_GPU_ENABLED:-false}" = "false" ]; then
+        log "VM mode: forcing CPU-only inference (GPU passthrough disabled)"
+        cat > "${SECURE_AI_ROOT}/inference.env" <<'CPUEOF'
+GPU_BACKEND=cpu
+GPU_NAME=CPU (VM mode - GPU disabled for security)
+GPU_LAYERS=0
+CPUEOF
+    fi
+fi
 
 # Disable swap (belt-and-suspenders alongside kernel arg)
 log "Ensuring swap is disabled..."

@@ -17,6 +17,13 @@ gpu:
   # backend: auto | cuda | rocm | xpu | vulkan | mps | cpu
   backend: "auto"
 
+vm:
+  # VM-specific settings (auto-detected by detect-vm.sh at first boot)
+  # gpu_passthrough: allow GPU acceleration in VMs (disabled by default for security)
+  # When disabled, inference and diffusion run on CPU only — safer but slower.
+  # When enabled, GPU memory is accessible to the host hypervisor.
+  gpu_passthrough: false
+
 inference:
   engine: "llama-cpp"
   bind: "127.0.0.1:8465"

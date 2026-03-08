@@ -213,7 +213,77 @@ sudo systemctl reboot
 
 Then follow **Step 5** and **Step 6** above to set up the encrypted vault.
 
-### Option C: Development / Testing (No Rebase)
+### Option C: Virtual Machine (VirtualBox / VMware / KVM)
+
+Run SecAI OS as a virtual appliance — no dedicated hardware needed.
+
+> [!CAUTION]
+> **VM Security Limitations:** Running in a VM means the host OS and hypervisor can inspect all VM memory, including decrypted vault contents, model weights, and inference data. VM snapshots may capture decrypted secrets. For maximum security, use bare-metal installation (Option A). The VM option trades some security for convenience.
+
+#### Quick Start: Import OVA
+
+1. Download the pre-built OVA from the [Releases](https://github.com/SecAI-Hub/SecAI_OS/releases) page
+2. Import into VirtualBox: **File > Import Appliance > secai-os.ova**
+   - Or VMware: **File > Open > secai-os.ova**
+3. Allocate resources (recommended: 4+ CPUs, 16 GB RAM, 64 GB disk)
+4. Start the VM
+5. Log in as `secai` (default password: `changeme`)
+6. **Immediately change passwords:**
+   ```bash
+   sudo passwd secai
+   sudo cryptsetup luksChangeKey /dev/sda4
+   ```
+7. Complete the SecAI OS rebase:
+   ```bash
+   sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
+   sudo systemctl reboot
+   ```
+8. Open `http://127.0.0.1:8480` in the VM's browser (or port-forward to host)
+
+#### Build Your Own VM Image
+
+```bash
+# Build QCOW2 (for KVM/QEMU/Proxmox)
+./scripts/vm/build-qcow2.sh
+
+# Convert to OVA (for VirtualBox/VMware)
+./scripts/vm/build-ova.sh ./output/secai-os.qcow2
+```
+
+#### GPU Passthrough in VMs
+
+GPU passthrough is **disabled by default** in VM mode for security. The system auto-detects that it's running in a VM and forces CPU-only inference.
+
+**To enable GPU passthrough:**
+
+1. Configure your hypervisor for PCI passthrough (IOMMU required)
+2. Pass your GPU through to the VM
+3. In the SecAI OS web UI, check the status page — it will show "GPU Passthrough Detected but Disabled"
+4. Enable via the API:
+   ```bash
+   curl -X POST http://127.0.0.1:8480/api/vm/gpu -H 'Content-Type: application/json' -d '{"enabled": true}'
+   ```
+5. Restart inference and diffusion services:
+   ```bash
+   sudo systemctl restart secure-ai-inference secure-ai-diffusion
+   ```
+
+> [!WARNING]
+> **GPU Passthrough Security Implications:**
+> - GPU memory (VRAM) is accessible to the host hypervisor — model weights, intermediate computations, and generated outputs stored in VRAM are visible to the host OS.
+> - GPU DMA (Direct Memory Access) can bypass some VM memory isolation boundaries.
+> - GPU drivers in the VM increase the attack surface.
+> - Only enable GPU passthrough if you trust the host machine, hypervisor, and all other VMs on the same host.
+
+#### VM-Specific Recommendations
+
+- **Disable clipboard sharing** between VM and host
+- **Disable shared folders** — use the quarantine pipeline for file transfer
+- **Don't take snapshots** while the vault is unlocked (snapshots capture memory state)
+- **Use NAT networking** (not bridged) to limit the VM's network exposure
+- **Allocate dedicated CPU cores** if possible (prevents timing side-channel leakage from co-located VMs)
+
+### Option D: Development / Testing (No Rebase)
 
 For development or testing without rebasing your OS, you can run the services directly:
 
@@ -613,6 +683,10 @@ tests/
   test_pipeline.py      Quarantine pipeline tests (48 tests)
   test_search.py        Search mediator tests (27 tests)
   test_ui.py            Web UI tests (7 tests)
+scripts/
+  vm/
+    build-qcow2.sh      QCOW2 image builder (KVM/QEMU/Proxmox)
+    build-ova.sh         OVA appliance builder (VirtualBox/VMware)
 docs/
   threat-model.md       Formal threat model and security invariants
 ```
@@ -646,7 +720,8 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 - [x] **M8 Image/Video Generation** -- Diffusion worker, one-click downloads, generate UI
 - [x] **M9 Multi-GPU Support** -- NVIDIA/AMD/Intel/Apple auto-detection, Vulkan fallback
 - [x] **M10 Tor-Routed Search** -- SearXNG + Tor, PII stripping, injection detection, audit
-- [ ] **M11 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
+- [x] **M11 VM Support** -- OVA/QCOW2 builds, VM detection, GPU passthrough toggle, security warnings
+- [ ] **M12 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
 
 ## Troubleshooting
 

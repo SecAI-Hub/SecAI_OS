@@ -616,6 +616,150 @@ def security_stats():
     return jsonify(stats)
 
 
+# --- API: VM Status and GPU Passthrough Toggle ---
+
+def _read_vm_env() -> dict:
+    """Read VM detection results."""
+    vm_env = SECURE_AI_ROOT / "vm.env"
+    result = {"is_vm": False, "hypervisor": "none", "gpu_passthrough": False, "vm_gpu_enabled": False}
+    if not vm_env.exists():
+        return result
+    try:
+        for line in vm_env.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip().lower()
+            val = val.strip()
+            if key == "is_vm":
+                result["is_vm"] = val.lower() == "true"
+            elif key == "hypervisor":
+                result["hypervisor"] = val
+            elif key == "gpu_passthrough":
+                result["gpu_passthrough"] = val.lower() == "true"
+            elif key == "vm_gpu_enabled":
+                result["vm_gpu_enabled"] = val.lower() == "true"
+            elif key == "vm_warnings":
+                result["warnings"] = [w.strip() for w in val.split("|") if w.strip()]
+    except Exception:
+        pass
+    return result
+
+
+@app.route("/api/vm/status")
+def vm_status():
+    """Return VM detection results and security warnings."""
+    info = _read_vm_env()
+    if info["is_vm"]:
+        info["security_notice"] = {
+            "level": "warning",
+            "title": f"Running in a Virtual Machine ({info['hypervisor']})",
+            "details": [
+                "The host OS and hypervisor can read all VM memory, including "
+                "decrypted vault contents, model weights, and inference data.",
+                "VM snapshots may capture decrypted secrets and active session data. "
+                "Avoid taking snapshots while the vault is unlocked.",
+                "Disable clipboard sharing between VM and host to prevent data leakage.",
+                "Co-located VMs on the same host may observe timing patterns from inference workloads.",
+            ],
+        }
+        if info["gpu_passthrough"] and not info["vm_gpu_enabled"]:
+            info["gpu_notice"] = {
+                "level": "info",
+                "title": "GPU Passthrough Detected but Disabled",
+                "details": [
+                    "A physical GPU is passed through to this VM but GPU acceleration "
+                    "is currently disabled for security.",
+                    "Enabling GPU passthrough allows the host hypervisor to access GPU memory, "
+                    "which may contain model weights, intermediate computations, and generated outputs.",
+                    "GPU DMA (Direct Memory Access) can bypass some VM memory isolation boundaries.",
+                    "Only enable GPU passthrough if you trust the host machine and hypervisor.",
+                ],
+                "action": "Use POST /api/vm/gpu to enable or disable GPU acceleration.",
+            }
+        elif info["gpu_passthrough"] and info["vm_gpu_enabled"]:
+            info["gpu_notice"] = {
+                "level": "warning",
+                "title": "GPU Passthrough ENABLED",
+                "details": [
+                    "GPU acceleration is active. The host hypervisor can access GPU memory.",
+                    "Model weights, computations, and generated outputs in GPU memory are "
+                    "visible to the host OS.",
+                ],
+            }
+    return jsonify(info)
+
+
+@app.route("/api/vm/gpu", methods=["POST"])
+def toggle_vm_gpu():
+    """Enable or disable GPU passthrough in VM mode.
+
+    Body: {"enabled": true/false}
+    Requires restart of inference/diffusion services to take effect.
+    """
+    vm_info = _read_vm_env()
+    if not vm_info["is_vm"]:
+        return jsonify({"error": "not running in a VM"}), 400
+
+    if not vm_info["gpu_passthrough"]:
+        return jsonify({"error": "no GPU passthrough detected"}), 400
+
+    body = request.get_json()
+    if not body or "enabled" not in body:
+        return jsonify({"error": "JSON body with 'enabled' (bool) required"}), 400
+
+    enabled = bool(body["enabled"])
+    vm_env_path = SECURE_AI_ROOT / "vm.env"
+
+    try:
+        content = vm_env_path.read_text()
+        new_lines = []
+        for line in content.splitlines():
+            if line.strip().startswith("VM_GPU_ENABLED="):
+                new_lines.append(f"VM_GPU_ENABLED={'true' if enabled else 'false'}")
+            else:
+                new_lines.append(line)
+        vm_env_path.write_text("\n".join(new_lines) + "\n")
+
+        # Rewrite inference.env based on new setting
+        if enabled:
+            # Re-run GPU detection to get real GPU info
+            try:
+                import subprocess
+                subprocess.run(
+                    ["/usr/libexec/secure-ai/detect-gpu.sh"],
+                    capture_output=True, timeout=30,
+                )
+            except Exception:
+                pass
+        else:
+            # Force CPU mode
+            inf_env = SECURE_AI_ROOT / "inference.env"
+            inf_env.write_text(
+                "GPU_BACKEND=cpu\n"
+                "GPU_NAME=CPU (VM mode - GPU disabled for security)\n"
+                "GPU_LAYERS=0\n"
+            )
+
+        action = "enabled" if enabled else "disabled"
+        log.info("VM GPU passthrough %s by user", action)
+
+        return jsonify({
+            "status": "ok",
+            "vm_gpu_enabled": enabled,
+            "message": f"GPU passthrough {action}. Restart inference and diffusion services to apply.",
+            "warning": (
+                "GPU memory is now accessible to the host hypervisor. "
+                "Model weights and inference data in VRAM are visible to the host OS."
+            ) if enabled else None,
+        })
+
+    except Exception as e:
+        log.exception("failed to toggle VM GPU")
+        return jsonify({"error": str(e)}), 500
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
