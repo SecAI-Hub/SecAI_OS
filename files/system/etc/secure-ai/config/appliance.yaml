@@ -165,6 +165,31 @@ canary:
     - "/var/lib/secure-ai/keys/.canary"
     - "/etc/secure-ai/.canary"
 
+emergency:
+  # Emergency wipe / panic system (M23).
+  # Three severity levels:
+  #   Level 1 — Lock: stop services, lock vault, invalidate sessions (reversible)
+  #   Level 2 — Wipe Keys: shred LUKS header, cosign keys, TPM2 keys, MOK key
+  #   Level 3 — Full Wipe: re-encrypt vault with random key (data unrecoverable),
+  #             clear memory, delete logs, registry, auth data
+  # Levels 2+ require passphrase confirmation.
+  # Countdown gives 5 seconds to cancel (skippable with --no-countdown).
+  countdown_seconds: 5
+  require_passphrase_level2: true
+  audit_log: "/var/lib/secure-ai/logs/panic-audit.jsonl"
+
+updates:
+  # Update verification + auto-rollback (M24).
+  # Cosign signature verification before applying rpm-ostree upgrades.
+  # Staged updates: check → stage → apply workflow via UI.
+  # Greenboot health checks: auto-rollback if post-update boot fails.
+  # Max 2 rollback attempts before halting for manual intervention.
+  cosign_verify: true
+  auto_check_interval: 6  # hours
+  max_rollback_attempts: 2
+  health_check_timeout: 300  # seconds
+  staged_updates: true  # require explicit user confirmation before applying
+
 logging:
   level: "info"
   store_raw_prompts: false

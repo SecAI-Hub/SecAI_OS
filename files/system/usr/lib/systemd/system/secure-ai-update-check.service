@@ -1,0 +1,16 @@
+[Unit]
+Description=Secure AI Update Check (cosign-verified)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/update-verify.sh check
+
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai

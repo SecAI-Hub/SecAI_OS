@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Update Check (every 6 hours)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

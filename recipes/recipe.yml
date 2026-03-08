@@ -37,6 +37,8 @@ modules:
       - sbsigntools                   # EFI binary signing
       - tpm2-tools                    # TPM2 key sealing/unsealing
       - tpm2-tss                      # TPM2 Software Stack
+      # Update verification + auto-rollback (M24)
+      - greenboot                         # Health-check-based auto-rollback
 
   # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
   - type: files
@@ -98,6 +100,10 @@ modules:
         - secure-ai-clipboard-clear.timer
         - secure-ai-canary.timer
         - secure-ai-canary-watch.service
+        - secure-ai-update-check.timer
+        - secure-ai-health-check.service
+        - greenboot-healthcheck.service
+        - greenboot-task-runner.service
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

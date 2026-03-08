@@ -1236,6 +1236,206 @@ def toggle_vm_gpu():
         return jsonify({"error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Emergency panic (M23)
+# ---------------------------------------------------------------------------
+PANIC_STATE_FILE = Path(os.getenv("PANIC_STATE_FILE", "/run/secure-ai/panic-state.json"))
+SECURECTL = "/usr/libexec/secure-ai/securectl"
+
+
+@app.route("/api/emergency/status")
+def emergency_status():
+    """Return current panic state."""
+    if PANIC_STATE_FILE.exists():
+        try:
+            return jsonify(json.loads(PANIC_STATE_FILE.read_text()))
+        except Exception:
+            return jsonify({"panic_active": False, "error": "failed to read state"})
+    return jsonify({"panic_active": False})
+
+
+@app.route("/api/emergency/panic", methods=["POST"])
+def emergency_panic():
+    """Trigger emergency panic at specified level.
+
+    Body: {"level": 1|2|3, "passphrase": "<passphrase>"}
+    Level 1 does not require passphrase.
+    Levels 2 and 3 require passphrase confirmation.
+    """
+    body = request.get_json()
+    if not body or "level" not in body:
+        return jsonify({"error": "JSON body with 'level' (1, 2, or 3) required"}), 400
+
+    level = body["level"]
+    if level not in (1, 2, 3):
+        return jsonify({"error": "level must be 1, 2, or 3"}), 400
+
+    passphrase = body.get("passphrase", "")
+
+    # Levels 2 and 3 require passphrase
+    if level >= 2 and not passphrase:
+        return jsonify({"error": f"Level {level} requires passphrase confirmation"}), 400
+
+    cmd = [SECURECTL, "panic", str(level), "--no-countdown"]
+    if level >= 2:
+        cmd.extend(["--confirm", passphrase])
+
+    log.warning("EMERGENCY PANIC LEVEL %d triggered via UI", level)
+    _ui_audit.append("emergency_panic", {
+        "level": level,
+        "source": "ui",
+        "severity": "CRITICAL",
+    })
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or result.stdout.strip()
+            return jsonify({"error": error_msg or "panic command failed"}), 500
+
+        return jsonify({
+            "status": "ok",
+            "level": level,
+            "message": f"Emergency panic level {level} executed successfully",
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "panic command timed out"}), 500
+    except Exception as e:
+        log.exception("emergency panic failed")
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Update verification + auto-rollback (M24)
+# ---------------------------------------------------------------------------
+UPDATE_VERIFY = "/usr/libexec/secure-ai/update-verify.sh"
+UPDATE_STATE_FILE = Path(os.getenv("UPDATE_STATE_FILE", "/run/secure-ai/update-state.json"))
+HEALTH_LOG_FILE = Path(os.getenv("HEALTH_LOG_FILE", "/var/lib/secure-ai/logs/health-check.json"))
+
+
+@app.route("/api/update/status")
+def update_status():
+    """Return current update state and deployment info."""
+    result = {}
+    if UPDATE_STATE_FILE.exists():
+        try:
+            result = json.loads(UPDATE_STATE_FILE.read_text())
+        except Exception:
+            result = {"status": "unknown"}
+    else:
+        result = {"status": "unknown", "detail": "no update check has run yet"}
+
+    # Include health check result
+    if HEALTH_LOG_FILE.exists():
+        try:
+            result["health_check"] = json.loads(HEALTH_LOG_FILE.read_text())
+        except Exception:
+            pass
+
+    return jsonify(result)
+
+
+@app.route("/api/update/check", methods=["POST"])
+def update_check():
+    """Check for available updates."""
+    _ui_audit.append("update_check", {"source": "ui"})
+    try:
+        result = subprocess.run(
+            [UPDATE_VERIFY, "check"],
+            capture_output=True, text=True, timeout=120,
+        )
+        # The script outputs JSON on stdout
+        try:
+            return jsonify(json.loads(result.stdout.strip()))
+        except (json.JSONDecodeError, ValueError):
+            return jsonify({"status": "checked", "output": result.stdout.strip()})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "update check timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/update/stage", methods=["POST"])
+def update_stage():
+    """Stage (download) an update without applying it."""
+    _ui_audit.append("update_stage", {"source": "ui"})
+    try:
+        result = subprocess.run(
+            [UPDATE_VERIFY, "stage"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip()
+            return jsonify({"error": error or "staging failed"}), 500
+        try:
+            return jsonify(json.loads(result.stdout.strip()))
+        except (json.JSONDecodeError, ValueError):
+            return jsonify({"status": "staged", "output": result.stdout.strip()})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "staging timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def update_apply():
+    """Apply a staged update and reboot."""
+    body = request.get_json() or {}
+    if not body.get("confirm"):
+        return jsonify({"error": "must include {\"confirm\": true} to apply update"}), 400
+
+    _ui_audit.append("update_apply", {"source": "ui", "severity": "WARNING"})
+    try:
+        result = subprocess.run(
+            [UPDATE_VERIFY, "apply"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip()
+            return jsonify({"error": error or "apply failed"}), 500
+        return jsonify({"status": "applied", "message": "Update applied. System is rebooting."})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "apply timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/update/rollback", methods=["POST"])
+def update_rollback():
+    """Roll back to the previous deployment."""
+    body = request.get_json() or {}
+    if not body.get("confirm"):
+        return jsonify({"error": "must include {\"confirm\": true} to rollback"}), 400
+
+    _ui_audit.append("update_rollback", {"source": "ui", "severity": "WARNING"})
+    try:
+        result = subprocess.run(
+            [UPDATE_VERIFY, "rollback"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip()
+            return jsonify({"error": error or "rollback failed"}), 500
+        return jsonify({"status": "rolled_back", "message": "Rollback applied. System is rebooting."})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "rollback timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/update/health")
+def update_health():
+    """Return last health check result."""
+    if HEALTH_LOG_FILE.exists():
+        try:
+            return jsonify(json.loads(HEALTH_LOG_FILE.read_text()))
+        except Exception:
+            return jsonify({"status": "unknown", "error": "failed to read health log"})
+    return jsonify({"status": "unknown", "detail": "no health check has run yet"})
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE

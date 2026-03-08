@@ -265,6 +265,28 @@ log "Running initial canary verification..."
     log "WARNING: initial canary check failed"
 }
 
+# --- Emergency wipe verification (M23) ---
+if [ -x /usr/libexec/secure-ai/securectl ]; then
+    log "Emergency wipe tool (securectl) available"
+    # Verify panic state directory exists
+    mkdir -p /run/secure-ai 2>/dev/null || true
+else
+    log "WARNING: securectl not found or not executable"
+fi
+
+# --- Update verification + greenboot (M24) ---
+if [ -x /usr/libexec/secure-ai/update-verify.sh ]; then
+    log "Update verification tool available"
+else
+    log "WARNING: update-verify.sh not found or not executable"
+fi
+
+if [ -x /etc/greenboot/check/required.d/01-secure-ai-health.sh ]; then
+    log "Greenboot health check script available"
+else
+    log "WARNING: greenboot health check not found"
+fi
+
 # Write marker (read-only to prevent tampering)
 date -Iseconds > "$MARKER"
 chmod 444 "$MARKER"

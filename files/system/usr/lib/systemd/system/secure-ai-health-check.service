@@ -1,0 +1,20 @@
+[Unit]
+Description=Secure AI Post-Update Health Check
+After=secure-ai-firstboot.service multi-user.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/greenboot/check/required.d/01-secure-ai-health.sh
+TimeoutStartSec=300
+
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+
+[Install]
+WantedBy=multi-user.target
