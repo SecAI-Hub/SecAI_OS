@@ -66,6 +66,41 @@ monitoring:
   # On mismatch: model is quarantined, removed from manifest, workers restarted.
   integrity_interval: 15  # minutes (5, 15, 30, or 60)
 
+  # Audit log chain verification interval (minutes). Walks every hash-chained
+  # audit log and verifies the chain is intact. On break: snapshots the broken
+  # log and raises a CRITICAL alert.
+  audit_interval: 30  # minutes
+
+vault:
+  # Auto-lock timeout in minutes. After this period of inactivity the vault
+  # is automatically locked (unmounted + LUKS closed), stopping all AI services.
+  # Set to 0 to disable auto-lock (not recommended).
+  auto_lock_timeout: 30
+  # How often the watchdog checks for inactivity (seconds).
+  check_interval: 30
+
+auth:
+  # Session timeout in minutes. After this period of inactivity the user
+  # must re-authenticate. Setting to 0 disables timeout (not recommended).
+  session_timeout: 30
+  # Maximum failed login attempts before lockout.
+  max_failed_attempts: 5
+  # Initial lockout duration in seconds after max_failed_attempts.
+  lockout_duration: 60
+  # Escalated lockout after 15 failed attempts (seconds).
+  escalated_lockout: 900
+
+sandbox:
+  # Per-service process isolation (M16).
+  # seccomp: JSON profiles in /etc/secure-ai/seccomp/ define allowed syscalls.
+  # landlock: YAML policy in /etc/secure-ai/policy/landlock.yaml restricts filesystem access.
+  # Both are enabled by default. If Landlock is unavailable (kernel < 5.13),
+  # enforcement is skipped with a warning.
+  seccomp_enabled: true
+  landlock_enabled: true
+  # Core dump prevention across all services (LimitCORE=0).
+  core_dumps_disabled: true
+
 logging:
   level: "info"
   store_raw_prompts: false

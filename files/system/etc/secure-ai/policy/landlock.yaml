@@ -1,0 +1,176 @@
+# Landlock LSM Filesystem Access Policies
+#
+# Per-service filesystem access allowlists. Each service is restricted to
+# only the paths listed here. Access types:
+#   ro  = read-only (LANDLOCK_ACCESS_FS_READ_FILE + READ_DIR)
+#   rw  = read-write (all read + WRITE_FILE + REMOVE_FILE + MAKE_REG + MAKE_DIR)
+#   exe = execute (LANDLOCK_ACCESS_FS_EXECUTE)
+#
+# These policies are applied by the landlock-apply helper at service start.
+# If Landlock is not available (kernel < 5.13), the policies are skipped
+# with a warning in the audit log.
+
+version: 1
+
+services:
+  inference:
+    description: "Inference worker — read-only model access, no output writes"
+    paths:
+      - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/bin/llama-server
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  diffusion:
+    description: "Diffusion worker — model read, output write"
+    paths:
+      - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /var/lib/secure-ai/vault/outputs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/bin/python3
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /opt/secure-ai/services
+        access: ro
+      - path: /tmp
+        access: rw
+
+  registry:
+    description: "Trusted registry — manifest + model store read-write, config read-only"
+    paths:
+      - path: /var/lib/secure-ai/registry
+        access: rw
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/registry
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  ui:
+    description: "Web UI — quarantine write, auth write, logs write, config read-only"
+    paths:
+      - path: /var/lib/secure-ai/quarantine
+        access: rw
+      - path: /var/lib/secure-ai/auth
+        access: rw
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /run/secure-ai
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/ui
+        access: exe
+      - path: /usr/bin/python3
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /opt/secure-ai/services
+        access: ro
+      - path: /tmp
+        access: rw
+
+  tool_firewall:
+    description: "Tool firewall — policy read, vault read-only, audit log write"
+    paths:
+      - path: /var/lib/secure-ai/vault
+        access: ro
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/tool-firewall
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  quarantine:
+    description: "Quarantine watcher — quarantine rw, registry rw, logs rw"
+    paths:
+      - path: /var/lib/secure-ai/quarantine
+        access: rw
+      - path: /var/lib/secure-ai/registry
+        access: rw
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/bin/python3
+        access: exe
+      - path: /usr/bin/llama-server
+        access: exe
+      - path: /usr/bin/sha256sum
+        access: exe
+      - path: /usr/bin/cosign
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /opt/secure-ai/services
+        access: ro
+      - path: /tmp
+        access: rw
+
+  airlock:
+    description: "Airlock — policy read, logs write, outbound network (not restricted by Landlock)"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/airlock
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  search_mediator:
+    description: "Search mediator — config read, logs write"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/search-mediator
+        access: exe
+      - path: /usr/bin/python3
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /opt/secure-ai/services
+        access: ro
+      - path: /tmp
+        access: rw

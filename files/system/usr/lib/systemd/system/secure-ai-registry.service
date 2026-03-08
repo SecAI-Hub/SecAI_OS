@@ -60,6 +60,7 @@ MemoryMax=512M
 CPUQuota=50%
 TasksMax=64
 LimitNOFILE=1024
+LimitCORE=0
 
 Restart=always
 RestartSec=2

@@ -61,6 +61,7 @@ MemoryMax=4G
 CPUQuota=100%
 TasksMax=128
 LimitNOFILE=4096
+LimitCORE=0
 
 Restart=always
 RestartSec=2

@@ -82,6 +82,8 @@ modules:
         - secure-ai-inference.service
         - secure-ai-diffusion.service
         - secure-ai-integrity.timer
+        - secure-ai-audit-verify.timer
+        - secure-ai-vault-watchdog.service
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

@@ -11,16 +11,27 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import requests
 import yaml
 from flask import Flask, Response, jsonify, render_template, request
 
+# Add services/ to path so we can import common.audit_chain
+_services_root = str(Path(__file__).resolve().parent.parent.parent)
+if _services_root not in sys.path:
+    sys.path.insert(0, _services_root)
+
+from common.audit_chain import AuditChain
+from common.auth import AuthManager
+
 log = logging.getLogger("ui")
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(32).hex())
 
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://127.0.0.1:8465")
 DIFFUSION_URL = os.getenv("DIFFUSION_URL", "http://127.0.0.1:8455")
@@ -30,6 +41,19 @@ AIRLOCK_URL = os.getenv("AIRLOCK_URL", "http://127.0.0.1:8490")
 SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
+VAULT_ACTIVITY_FILE = Path(os.getenv("VAULT_ACTIVITY_FILE", "/run/secure-ai/last-activity"))
+VAULT_STATE_FILE = Path(os.getenv("VAULT_STATE_FILE", "/run/secure-ai/vault-state"))
+
+_ui_audit = AuditChain(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/ui-audit.jsonl"))
+
+AUTH_DATA_DIR = os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")
+_auth = AuthManager(AUTH_DATA_DIR)
+
+# Endpoints that don't require authentication
+_PUBLIC_ENDPOINTS = {
+    "/api/auth/login", "/api/auth/setup", "/api/auth/status",
+    "/login", "/health",
+}
 
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
@@ -97,6 +121,163 @@ MODEL_CATALOG = [
 # Track active downloads
 _active_downloads = {}
 _download_lock = threading.Lock()
+
+
+def _get_session_token():
+    """Extract session token from cookie or Authorization header."""
+    token = request.cookies.get("session_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    return token
+
+
+def _touch_vault_activity():
+    """Update the vault last-activity timestamp on authenticated requests."""
+    try:
+        VAULT_ACTIVITY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VAULT_ACTIVITY_FILE.write_text(str(time.time()))
+    except OSError:
+        pass
+
+
+def _read_vault_state() -> dict:
+    """Read the current vault state from the watchdog state file."""
+    try:
+        return json.loads(VAULT_STATE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"state": "unknown", "timestamp": 0}
+
+
+@app.before_request
+def require_auth():
+    """Enforce authentication on all endpoints except public ones."""
+    # Skip auth for public endpoints
+    if request.path in _PUBLIC_ENDPOINTS:
+        return None
+
+    # Skip auth if not yet configured (first boot)
+    if not _auth.is_configured():
+        if request.path == "/login":
+            return None
+        return None  # Allow everything during first boot until passphrase is set
+
+    # Check for valid session
+    token = _get_session_token()
+    if _auth.validate_session(token):
+        _touch_vault_activity()
+        return None
+
+    # Not authenticated — redirect pages to login, return 401 for API
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "authentication required"}), 401
+    return render_template("login.html")
+
+
+# --- API: Authentication ---
+
+@app.route("/api/auth/status")
+def auth_status():
+    """Check if authentication is configured and current session state."""
+    token = _get_session_token()
+    return jsonify({
+        "configured": _auth.is_configured(),
+        "authenticated": _auth.validate_session(token) if token else False,
+        "session": _auth.get_session_info(token) if token else {},
+    })
+
+
+@app.route("/api/auth/setup", methods=["POST"])
+def auth_setup():
+    """Set the initial passphrase (first boot only)."""
+    if _auth.is_configured():
+        return jsonify({"success": False, "error": "already configured"}), 400
+
+    body = request.get_json()
+    passphrase = body.get("passphrase", "") if body else ""
+
+    if len(passphrase) < 8:
+        return jsonify({"success": False, "error": "passphrase must be at least 8 characters"}), 400
+
+    if _auth.setup_passphrase(passphrase):
+        _ui_audit.append("auth_setup", {"action": "passphrase_configured"})
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "setup failed"}), 500
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    """Authenticate with passphrase and receive a session cookie."""
+    body = request.get_json()
+    passphrase = body.get("passphrase", "") if body else ""
+
+    result = _auth.login(passphrase)
+
+    if result.get("success"):
+        _ui_audit.append("login", {"success": True})
+        resp = jsonify(result)
+        resp.set_cookie(
+            "session_token", result["token"],
+            httponly=True, samesite="Strict", secure=False,
+            max_age=_auth._session_timeout,
+        )
+        return resp
+
+    _ui_audit.append("login_failed", {
+        "locked": result.get("locked", False),
+    })
+    status = 423 if result.get("locked") else 401
+    return jsonify(result), status
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    """Invalidate the current session."""
+    token = _get_session_token()
+    if token:
+        _auth.logout(token)
+        _ui_audit.append("logout", {})
+    resp = jsonify({"success": True})
+    resp.delete_cookie("session_token")
+    return resp
+
+
+@app.route("/api/auth/change", methods=["POST"])
+def auth_change_passphrase():
+    """Change the passphrase. Requires current passphrase."""
+    token = _get_session_token()
+    if not _auth.validate_session(token):
+        return jsonify({"error": "authentication required"}), 401
+
+    body = request.get_json()
+    current = body.get("current", "") if body else ""
+    new_pass = body.get("new_passphrase", "") if body else ""
+
+    result = _auth.change_passphrase(current, new_pass)
+    if result.get("success"):
+        _ui_audit.append("passphrase_changed", {})
+        # Give them a new session
+        login_result = _auth.login(new_pass)
+        resp = jsonify({"success": True})
+        if login_result.get("token"):
+            resp.set_cookie(
+                "session_token", login_result["token"],
+                httponly=True, samesite="Strict", secure=False,
+                max_age=_auth._session_timeout,
+            )
+        return resp
+    return jsonify(result), 400
+
+
+@app.route("/login")
+def login_page():
+    return render_template("login.html")
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html")
 
 
 def is_first_boot() -> bool:
@@ -429,6 +610,7 @@ def chat():
     # Pre-inference integrity check
     check = _verify_active_model()
     if not check["safe"]:
+        _ui_audit.append("inference_blocked", {"reason": check["detail"]})
         return jsonify({
             "error": "inference blocked: model integrity check failed",
             "detail": check["detail"],
@@ -695,6 +877,181 @@ def integrity_verify_all():
         return jsonify({"error": "registry unreachable"}), 503
 
 
+# --- API: Audit Log Integrity ---
+
+@app.route("/api/audit/status")
+def audit_status():
+    """Return the last audit chain verification result."""
+    result_path = SECURE_AI_ROOT / "logs" / "audit-verify-last.json"
+    if not result_path.exists():
+        return jsonify({"status": "unknown", "detail": "no audit verification has run yet"})
+    try:
+        data = json.loads(result_path.read_text())
+        return jsonify(data)
+    except Exception:
+        return jsonify({"status": "unknown", "detail": "could not read verification result"})
+
+
+@app.route("/api/audit/verify", methods=["POST"])
+def audit_verify_now():
+    """Trigger an immediate audit chain verification."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/python3", "/usr/libexec/secure-ai/verify-audit-chains.py"],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "AUDIT_LOGS_DIR": str(SECURE_AI_ROOT / "logs")},
+        )
+        _ui_audit.append("audit_verify_triggered", {"exit_code": result.returncode})
+        # Read the fresh result
+        result_path = SECURE_AI_ROOT / "logs" / "audit-verify-last.json"
+        if result_path.exists():
+            return jsonify(json.loads(result_path.read_text()))
+        return jsonify({"status": "completed", "exit_code": result.returncode})
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "verification timed out"}), 504
+    except FileNotFoundError:
+        return jsonify({"error": "verification script not found"}), 500
+
+
+# --- API: Vault Auto-Lock ---
+
+@app.route("/api/vault/status")
+def vault_status():
+    """Return the current vault lock state and idle time."""
+    state = _read_vault_state()
+    last_activity = 0.0
+    try:
+        last_activity = float(VAULT_ACTIVITY_FILE.read_text().strip())
+    except (OSError, ValueError):
+        pass
+
+    idle_seconds = int(time.time() - last_activity) if last_activity > 0 else 0
+    return jsonify({
+        "state": state.get("state", "unknown"),
+        "detail": state.get("detail", ""),
+        "idle_seconds": idle_seconds,
+        "last_activity": last_activity,
+    })
+
+
+@app.route("/api/vault/lock", methods=["POST"])
+def vault_lock():
+    """Manually lock the vault immediately."""
+    token = _get_session_token()
+    if not _auth.validate_session(token):
+        return jsonify({"error": "authentication required"}), 401
+
+    _ui_audit.append("vault_manual_lock", {"user_initiated": True})
+
+    try:
+        result = subprocess.run(
+            ["/usr/bin/python3", "/usr/libexec/secure-ai/vault-watchdog.py"],
+            input="",  # not used, just need the module
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+    # Direct lock via systemctl — the watchdog will detect the state change
+    try:
+        # Stop services first
+        for svc in ["secure-ai-inference.service", "secure-ai-diffusion.service"]:
+            subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=30)
+
+        subprocess.run(["sync"], timeout=10)
+        subprocess.run(["umount", "/var/lib/secure-ai"], capture_output=True, timeout=30)
+        result = subprocess.run(
+            ["cryptsetup", "close", "secure-ai-vault"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return jsonify({"success": False, "error": result.stderr.strip()}), 500
+
+        # Update state file
+        VAULT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VAULT_STATE_FILE.write_text(json.dumps({
+            "state": "locked",
+            "timestamp": time.time(),
+            "detail": "manual_lock",
+        }))
+        return jsonify({"success": True, "state": "locked"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/vault/unlock", methods=["POST"])
+def vault_unlock():
+    """Unlock the vault with the LUKS passphrase."""
+    body = request.get_json()
+    passphrase = body.get("passphrase", "") if body else ""
+
+    if not passphrase:
+        return jsonify({"success": False, "error": "passphrase required"}), 400
+
+    # Find partition from crypttab
+    partition = ""
+    try:
+        for line in Path("/etc/crypttab").read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "secure-ai-vault":
+                device = parts[1]
+                if device.startswith("UUID="):
+                    uuid_path = Path(f"/dev/disk/by-uuid/{device[5:]}")
+                    if uuid_path.exists():
+                        partition = str(uuid_path.resolve())
+                else:
+                    partition = device
+                break
+    except OSError:
+        pass
+
+    if not partition:
+        return jsonify({"success": False, "error": "cannot determine vault partition"}), 500
+
+    try:
+        proc = subprocess.run(
+            ["cryptsetup", "open", partition, "secure-ai-vault"],
+            input=passphrase, capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            _ui_audit.append("vault_unlock_failed", {})
+            return jsonify({"success": False, "error": "incorrect passphrase or device error"}), 401
+
+        Path("/var/lib/secure-ai").mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["mount", "/dev/mapper/secure-ai-vault", "/var/lib/secure-ai"],
+            capture_output=True, check=True, timeout=30,
+        )
+
+        _touch_vault_activity()
+
+        # Restart services
+        for svc in ["secure-ai-inference.service", "secure-ai-diffusion.service", "secure-ai-ui.service"]:
+            subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
+
+        VAULT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VAULT_STATE_FILE.write_text(json.dumps({
+            "state": "unlocked",
+            "timestamp": time.time(),
+            "detail": "",
+        }))
+
+        _ui_audit.append("vault_unlock", {})
+        return jsonify({"success": True, "state": "unlocked"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/vault/keepalive", methods=["POST"])
+def vault_keepalive():
+    """Explicitly reset the idle timer (e.g., during long inference runs)."""
+    _touch_vault_activity()
+    return jsonify({"success": True})
+
+
 # --- API: VM Status and GPU Passthrough Toggle ---
 
 def _read_vm_env() -> dict:
@@ -823,6 +1180,7 @@ def toggle_vm_gpu():
 
         action = "enabled" if enabled else "disabled"
         log.info("VM GPU passthrough %s by user", action)
+        _ui_audit.append("vm_gpu_toggle", {"action": action})
 
         return jsonify({
             "status": "ok",

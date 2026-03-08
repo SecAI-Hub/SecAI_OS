@@ -1,0 +1,79 @@
+{
+  "_comment": "Seccomp profile for inference worker (llama-server). Allows ML-related syscalls (mmap, GPU ioctl), denies network and exec.",
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    { "architecture": "SCMP_ARCH_X86_64", "subArchitectures": ["SCMP_ARCH_X86"] },
+    { "architecture": "SCMP_ARCH_AARCH64", "subArchitectures": [] }
+  ],
+  "syscalls": [
+    {
+      "_comment": "Core process lifecycle",
+      "names": [
+        "read", "write", "close", "fstat", "lstat", "stat", "newfstatat",
+        "lseek", "mmap", "mprotect", "munmap", "brk", "mremap",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "pread64", "pwrite64", "readv", "writev",
+        "access", "pipe", "pipe2", "dup", "dup2", "dup3",
+        "getpid", "getuid", "getgid", "geteuid", "getegid",
+        "getppid", "gettid", "getdents64",
+        "clone", "clone3", "wait4", "waitid",
+        "exit", "exit_group",
+        "futex", "futex_waitv",
+        "set_robust_list", "get_robust_list",
+        "nanosleep", "clock_nanosleep", "clock_gettime", "clock_getres",
+        "gettimeofday",
+        "sched_yield", "sched_getaffinity", "sched_setaffinity",
+        "set_tid_address",
+        "arch_prctl", "prctl",
+        "getrandom", "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "File operations (read-only model access)",
+      "names": [
+        "open", "openat", "openat2", "fcntl",
+        "fadvise64", "fallocate",
+        "readlink", "readlinkat",
+        "statx", "statfs", "fstatfs",
+        "getcwd", "umask",
+        "eventfd", "eventfd2",
+        "epoll_create", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
+        "poll", "ppoll", "select", "pselect6",
+        "timerfd_create", "timerfd_settime", "timerfd_gettime"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "GPU ioctl — required for CUDA/ROCm/Vulkan",
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Memory-mapped I/O for model loading",
+      "names": ["madvise", "mincore", "msync"],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Thread management for parallel inference",
+      "names": [
+        "set_thread_area", "get_thread_area",
+        "tgkill", "tkill",
+        "sigaltstack"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Localhost socket for health check only (bound by PrivateNetwork)",
+      "names": [
+        "socket", "bind", "listen", "accept", "accept4",
+        "connect", "getsockopt", "setsockopt",
+        "getsockname", "getpeername",
+        "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "shutdown"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

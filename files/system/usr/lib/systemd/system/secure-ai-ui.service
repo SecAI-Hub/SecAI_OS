@@ -11,14 +11,21 @@ Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
 Environment=AIRLOCK_URL=http://127.0.0.1:8490
+Environment=SEARCH_MEDIATOR_URL=http://127.0.0.1:8485
+Environment=DIFFUSION_URL=http://127.0.0.1:8455
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine
 Environment=SECURE_AI_ROOT=/var/lib/secure-ai
+Environment=AUTH_DATA_DIR=/var/lib/secure-ai/auth
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/ui-audit.jsonl
 
 # Filesystem isolation
 DynamicUser=yes
 ReadOnlyPaths=/etc/secure-ai
 ReadWritePaths=/var/lib/secure-ai/quarantine
+ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/auth
+ReadWritePaths=/run/secure-ai
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -37,6 +44,7 @@ ProtectHostname=yes
 # Privilege restriction — needs localhost for service APIs
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
 LockPersonality=yes
 RestrictRealtime=yes
 
@@ -49,7 +57,7 @@ RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 # Syscall filtering
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service @network-io
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
@@ -59,6 +67,7 @@ MemoryMax=1G
 CPUQuota=50%
 TasksMax=128
 LimitNOFILE=4096
+LimitCORE=0
 
 Restart=always
 RestartSec=2

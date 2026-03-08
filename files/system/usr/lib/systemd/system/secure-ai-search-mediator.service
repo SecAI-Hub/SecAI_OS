@@ -15,27 +15,52 @@ Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AUDIT_DIR=/var/lib/secure-ai/logs
 
-# Sandboxing — mediator only talks to SearXNG on localhost
-ProtectSystem=strict
+# Filesystem isolation — only talks to SearXNG on localhost
+DynamicUser=yes
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
 ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
 
-# Only needs localhost network (to reach SearXNG)
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 
-# No GPU, no devices
-PrivateDevices=yes
+# Syscall filtering
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
 
 # Resource limits
 MemoryMax=256M
+CPUQuota=25%
 TasksMax=64
+LimitNOFILE=512
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

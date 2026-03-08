@@ -17,20 +17,47 @@ Environment=MAX_RESOLUTION=2048
 Environment=MAX_STEPS=100
 EnvironmentFile=-/var/lib/secure-ai/inference.env
 
-# Sandboxing
-ProtectSystem=strict
+# Filesystem isolation — needs GPU access, no network
+DynamicUser=yes
 ReadWritePaths=/var/lib/secure-ai/vault/outputs
 ReadOnlyPaths=/var/lib/secure-ai/registry /etc/secure-ai
 PrivateNetwork=yes
 PrivateTmp=yes
+ProtectSystem=strict
 ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=no
-# GPU access — NVIDIA (CUDA), AMD (ROCm), Intel (DRI/XPU)
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Syscall filtering — needs GPU ioctls for CUDA/ROCm, image write
+SystemCallFilter=@system-service @io-event
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# GPU access — NVIDIA (CUDA), AMD (ROCm via /dev/kfd + /dev/dri), Intel (DRI)
 DeviceAllow=/dev/nvidia* rw
 DeviceAllow=/dev/nvidiactl rw
 DeviceAllow=/dev/nvidia-uvm rw
@@ -38,6 +65,13 @@ DeviceAllow=/dev/nvidia-uvm-tools rw
 DeviceAllow=/dev/dri/* rw
 DeviceAllow=/dev/kfd rw
 SupplementaryGroups=video render
+
+# Resource limits — generous for image/video generation
+MemoryMax=32G
+CPUQuota=200%
+TasksMax=256
+LimitNOFILE=4096
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

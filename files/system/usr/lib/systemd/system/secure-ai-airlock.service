@@ -58,6 +58,7 @@ MemoryMax=256M
 CPUQuota=25%
 TasksMax=32
 LimitNOFILE=512
+LimitCORE=0
 
 # Disabled by default — enable only when online augmentation is needed.
 Restart=always

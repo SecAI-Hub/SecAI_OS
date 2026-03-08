@@ -121,6 +121,8 @@
         <h1>Secure AI Appliance</h1>
         <div style="display: flex; align-items: center; gap: 1rem;">
             <a href="/models" style="color: var(--accent); text-decoration: none; font-size: 0.9rem;">Models</a>
+            <a href="/settings" style="color: var(--accent); text-decoration: none; font-size: 0.9rem;">Settings</a>
+            <span id="vault-badge" style="font-size:0.75rem;padding:0.2rem 0.6rem;border-radius:999px;background:var(--surface);border:1px solid var(--border);cursor:help;" title="Vault status"></span>
             <span id="status-badge" class="offline">checking...</span>
         </div>
     </header>
@@ -213,8 +215,44 @@
             }
         }
 
+        async function checkVault() {
+            const vb = document.getElementById("vault-badge");
+            try {
+                const resp = await fetch("/api/vault/status");
+                const data = await resp.json();
+                const s = data.state;
+                if (s === "unlocked") {
+                    const idle = Math.floor((data.idle_seconds || 0) / 60);
+                    vb.textContent = "vault unlocked";
+                    vb.style.borderColor = "var(--success)";
+                    vb.style.color = "var(--success)";
+                    vb.title = `Vault unlocked. Idle: ${idle} min.`;
+                } else if (s === "locking_soon") {
+                    vb.textContent = "vault locking...";
+                    vb.style.borderColor = "#e0af68";
+                    vb.style.color = "#e0af68";
+                    vb.title = data.detail || "Vault will lock soon due to inactivity";
+                } else if (s === "locked") {
+                    vb.textContent = "vault locked";
+                    vb.style.borderColor = "var(--danger)";
+                    vb.style.color = "var(--danger)";
+                    vb.title = "Vault is locked. Unlock from Settings.";
+                } else {
+                    vb.textContent = "vault ?";
+                    vb.style.borderColor = "var(--border)";
+                    vb.style.color = "var(--text-dim)";
+                }
+            } catch {
+                vb.textContent = "vault ?";
+                vb.style.borderColor = "var(--border)";
+                vb.style.color = "var(--text-dim)";
+            }
+        }
+
         checkStatus();
+        checkVault();
         setInterval(checkStatus, 15000);
+        setInterval(checkVault, 10000);
     </script>
 </body>
 </html>

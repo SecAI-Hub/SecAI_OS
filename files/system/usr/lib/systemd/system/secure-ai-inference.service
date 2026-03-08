@@ -71,6 +71,7 @@ MemoryMax=32G
 CPUQuota=200%
 TasksMax=256
 LimitNOFILE=4096
+LimitCORE=0
 
 Restart=on-failure
 RestartSec=5
