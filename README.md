@@ -422,21 +422,40 @@ sudo systemctl restart secure-ai-inference
 sudo nft list ruleset
 ```
 
-### Panic Switch (Emergency Lockdown)
+### Emergency Panic (securectl)
 
-If you suspect a compromise or data leak in progress:
+If you suspect a compromise or data leak in progress, `securectl` provides three severity levels:
 
 ```bash
-sudo systemctl start secure-ai-panic
+# Level 1 — Lock (reversible)
+# Stops all AI services, kills workers, locks vault, invalidates sessions
+sudo securectl panic 1
+
+# Level 2 — Wipe Keys (requires passphrase)
+# Level 1 + shreds LUKS header backup, cosign keys, TPM2 keys, MOK key
+sudo securectl panic 2 --confirm "your-passphrase"
+
+# Level 3 — Full Wipe (requires passphrase, DATA UNRECOVERABLE)
+# Level 2 + re-encrypts vault with random key, clears memory, deletes all logs/registry/auth
+sudo securectl panic 3 --confirm "your-passphrase"
 ```
 
-This immediately:
-1. Replaces all firewall rules with a total-deny policy (loopback only)
-2. Flushes all network routes
-3. Stops the airlock and UI services
-4. Writes an audit record
+You can also trigger Level 1 from the Web UI via **Settings > Emergency Lock**, or Level 2/3 via the API:
 
-To recover from panic mode, reboot the system.
+```bash
+curl -X POST http://127.0.0.1:8480/api/emergency/panic \
+  -H 'Content-Type: application/json' \
+  -d '{"level": 1}'
+```
+
+A 5-second countdown with Ctrl+C cancel runs before any action (skip with `--no-countdown`). All panic events are audit-logged before execution.
+
+Check panic state:
+```bash
+sudo securectl status
+```
+
+To recover from Level 1, unlock the vault and restart services. Levels 2 and 3 require re-setup.
 
 ### Airlock (Optional Online Access)
 
@@ -460,6 +479,50 @@ To disable the airlock again:
 
 ```bash
 sudo systemctl stop secure-ai-airlock
+```
+
+### System Updates
+
+Updates are cosign-verified and use a staged workflow — the system never applies an update without your confirmation.
+
+```bash
+# Check for available updates
+sudo /usr/libexec/secure-ai/update-verify.sh check
+
+# Stage (download without applying)
+sudo /usr/libexec/secure-ai/update-verify.sh stage
+
+# Apply and reboot
+sudo /usr/libexec/secure-ai/update-verify.sh apply
+
+# Roll back to previous deployment
+sudo /usr/libexec/secure-ai/update-verify.sh rollback
+```
+
+You can also manage updates from the Web UI via **Settings > Updates**.
+
+**Auto-rollback:** If the system fails to boot after an update, the greenboot health check detects the failure and automatically rolls back via `rpm-ostree rollback`. After 2 failed rollback attempts, the system halts for manual intervention.
+
+The update check timer runs every 6 hours and notifies the UI when updates are available.
+
+### Vault Management
+
+The vault auto-locks after 30 minutes of inactivity. You can manage it from the Web UI or API:
+
+```bash
+# Check vault status
+curl http://127.0.0.1:8480/api/vault/status
+
+# Lock vault manually
+curl -X POST http://127.0.0.1:8480/api/vault/lock
+
+# Unlock vault
+curl -X POST http://127.0.0.1:8480/api/vault/unlock \
+  -H 'Content-Type: application/json' \
+  -d '{"passphrase": "your-passphrase"}'
+
+# Keep vault alive during long tasks
+curl -X POST http://127.0.0.1:8480/api/vault/keepalive
 ```
 
 ### Web Search (Tor-Routed, Optional)
@@ -526,18 +589,25 @@ Every model — whether downloaded from the catalog or imported by the user — 
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Boot** | Immutable OS image (rpm-ostree), signed updates (cosign) |
+| **Boot** | Immutable OS image (rpm-ostree), cosign-verified updates, greenboot auto-rollback |
+| **Secure Boot** | UEFI Secure Boot with MOK signing, TPM2 vault key sealing (PCR 0,2,4,7) |
 | **Kernel** | IOMMU forced, ASLR, slab_nomerge, init_on_alloc/free, lockdown=confidentiality |
-| **Network** | nftables default-deny egress, services use PrivateNetwork=yes |
-| **Swap** | Disabled (kernel arg + runtime check) — prevents secrets hitting disk |
+| **Memory** | vm.swappiness=0, zswap disabled, core dumps discarded, mlock for sensitive buffers, TEE detection (AMD SEV/Intel TDX/TME) |
+| **Network** | nftables default-deny egress, DNS rate-limited, traffic analysis countermeasures (query padding, timing randomization) |
 | **Filesystem** | Encrypted vault (LUKS2/AES-256/Argon2id), restrictive permissions |
 | **Models** | 7-stage quarantine: source, format, integrity, provenance, static scan, behavioral test, diffusion scan |
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
-| **Search** | Tor-routed, PII stripped from queries, injection detection on results, audit logged |
-| **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, syscall filters |
-| **GPU Isolation** | Vendor-specific DeviceAllow (NVIDIA `/dev/nvidia*`, AMD `/dev/kfd`, Intel `/dev/dri/*`), PrivateNetwork on all |
-| **Emergency** | Panic switch: instant network kill + route flush + service stop |
+| **Search** | Tor-routed with differential privacy (decoy queries, k-anonymity, batch timing), PII stripped, injection detection |
+| **Audit** | Hash-chained tamper-evident logs with periodic verification |
+| **Auth** | Local passphrase with scrypt hashing, rate-limited login, session management |
+| **Vault** | Auto-lock after 30 min idle, TPM2-sealed keys, manual lock/unlock via UI |
+| **Services** | Systemd sandboxing: ProtectSystem=strict, PrivateNetwork, seccomp-bpf, Landlock, PrivateUsers |
+| **GPU Isolation** | Vendor-specific DeviceAllow, PrivateNetwork on all workers |
+| **Clipboard** | VM clipboard agents disabled, auto-clear every 60s, PrivateUsers on non-UI services |
+| **Tripwire** | Canary files in sensitive dirs, 5-min timer checks, inotify real-time monitoring |
+| **Emergency** | 3-level panic (lock → wipe keys → full wipe) with passphrase gates and audit trail |
+| **Updates** | Cosign-verified rpm-ostree upgrades, staged workflow, greenboot health checks, auto-rollback (max 2 attempts) |
 
 ### Systemd Sandboxing
 
@@ -668,8 +738,9 @@ files/
     etc/secure-ai/      Policy and config files baked into image
     etc/nftables/        Firewall rules (default-deny egress)
     etc/sysctl.d/        Kernel hardening parameters
+    etc/greenboot/       Health check scripts for auto-rollback
     usr/lib/systemd/     Systemd service units (sandboxed)
-    usr/libexec/         Helper scripts (firstboot, vault, model select, panic)
+    usr/libexec/         Helper scripts (firstboot, vault, securectl, canary, update-verify)
 services/
   registry/             Go -- Trusted Registry
   tool-firewall/        Go -- Policy engine + tool gateway
@@ -682,7 +753,15 @@ services/
 tests/
   test_pipeline.py      Quarantine pipeline tests (48 tests)
   test_search.py        Search mediator tests (27 tests)
-  test_ui.py            Web UI tests (7 tests)
+  test_ui.py            Web UI tests (11 tests)
+  test_vault_watchdog.py   Vault auto-lock tests (18 tests)
+  test_memory_protection.py   Memory hardening tests (37 tests)
+  test_traffic_analysis.py    Traffic analysis protection tests (41 tests)
+  test_differential_privacy.py  Differential privacy tests (37 tests)
+  test_clipboard_isolation.py   Clipboard isolation tests (30 tests)
+  test_canary_tripwire.py   Canary/tripwire tests (49 tests)
+  test_emergency_wipe.py    Emergency wipe tests (65 tests)
+  test_update_rollback.py   Update verification tests (74 tests)
 scripts/
   vm/
     build-qcow2.sh      QCOW2 image builder (KVM/QEMU/Proxmox)
@@ -699,7 +778,7 @@ cd services/registry && go test -v -race ./...
 cd services/tool-firewall && go test -v -race ./...
 cd services/airlock && go test -v -race ./...
 
-# Python tests (82 total)
+# Python tests (547 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -721,7 +800,20 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 - [x] **M9 Multi-GPU Support** -- NVIDIA/AMD/Intel/Apple auto-detection, Vulkan fallback
 - [x] **M10 Tor-Routed Search** -- SearXNG + Tor, PII stripping, injection detection, audit
 - [x] **M11 VM Support** -- OVA/QCOW2 builds, VM detection, GPU passthrough toggle, security warnings
-- [ ] **M12 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
+- [x] **M12 Model Integrity Monitoring** -- Periodic hash verification, auto-quarantine on mismatch
+- [x] **M13 Tamper-Evident Audit Logs** -- Hash-chained JSONL logs with periodic chain verification
+- [x] **M14 Local Passphrase Auth** -- Scrypt hashing, rate-limited login, session management
+- [x] **M15 Vault Auto-Lock** -- Idle-based auto-lock watchdog, UI lock/unlock controls
+- [x] **M16 Process Isolation** -- Seccomp-BPF profiles, Landlock filesystem restrictions, systemd hardening
+- [x] **M17 Secure Boot Chain** -- MOK signing, TPM2 vault key sealing, measured boot (PCR 0,2,4,7)
+- [x] **M18 Memory Protection** -- Swap/zswap disabled, core dumps discarded, mlock, TEE detection (AMD SEV/Intel TDX/TME)
+- [x] **M19 Traffic Analysis Protection** -- Query timing randomization, fixed-size padding, Tor circuit rotation, DNS leak detection
+- [x] **M20 Differential Privacy** -- Decoy search queries, query generalization, k-anonymity, batch timing
+- [x] **M21 Clipboard Isolation** -- VM clipboard agent detection/disabling, auto-clear timer, PrivateUsers on services
+- [x] **M22 Canary/Tripwire** -- Canary files with hashed tokens, 5-min timer checks, inotify real-time monitoring, auto-lockdown
+- [x] **M23 Emergency Wipe** -- 3-level securectl panic (lock/wipe keys/full wipe), passphrase gates, audit trail
+- [x] **M24 Update Verification** -- Cosign-verified rpm-ostree upgrades, greenboot health checks, auto-rollback
+- [ ] **M25 Polish** -- OPA/Rego policy engine, appliance setup wizard, documentation site
 
 ## Troubleshooting
 
@@ -823,14 +915,27 @@ journalctl -k | grep secure-ai
 sudo nft -f /etc/nftables/secure-ai.nft
 ```
 
-### Recovering from Panic Mode
+### Recovering from Emergency Panic
 
-Panic mode blocks all network and stops services. To recover:
-
+**Level 1 (Lock):** Vault is locked, services stopped. To recover:
 ```bash
-# Simply reboot — the normal firewall rules and services are restored
+# Check panic state
+sudo securectl status
+
+# Unlock vault (prompts for passphrase)
+# Then restart services
 sudo systemctl reboot
 ```
+
+**Level 2 (Keys Wiped):** Signing keys destroyed. Data still recoverable with vault passphrase:
+```bash
+# Reboot and enter vault passphrase at boot
+sudo systemctl reboot
+# Re-generate signing keys after boot
+sudo /usr/libexec/secure-ai/firstboot.sh
+```
+
+**Level 3 (Full Wipe):** Data is unrecoverable. System boots to factory-reset state and runs first-boot setup again.
 
 ## License
 
