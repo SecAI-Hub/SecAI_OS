@@ -89,6 +89,18 @@ search:
     - wikipedia
     - stackoverflow
     - github
+  # Differential privacy for search queries (M20)
+  differential_privacy:
+    enabled: true
+    # Number of decoy searches per real search (0 to disable)
+    decoy_count: 2
+    # How to handle highly unique/identifying queries:
+    #   auto-block: silently block the query
+    #   warn: return a warning but still execute
+    #   allow: no check
+    uniqueness_mode: "warn"
+    # Batch timing window (seconds) — queries within this window are grouped
+    batch_window: 5.0
 
 airlock:
   enabled: false

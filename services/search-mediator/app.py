@@ -13,8 +13,10 @@ import hashlib
 import html
 import logging
 import os
+import random
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,6 +48,227 @@ MAX_QUERY_LENGTH = 200
 MAX_RESULTS = 5
 MAX_SNIPPET_LENGTH = 500
 MAX_CONTEXT_LENGTH = 4000
+
+# Traffic analysis protection (M19)
+QUERY_DELAY_MIN = float(os.getenv("QUERY_DELAY_MIN", "0.5"))   # seconds
+QUERY_DELAY_MAX = float(os.getenv("QUERY_DELAY_MAX", "3.0"))   # seconds
+QUERY_PAD_BUCKETS = [256, 512, 1024]  # fixed-size query padding buckets (bytes)
+
+# Differential privacy for search queries (M20)
+DECOY_QUERIES = [
+    "weather forecast today",
+    "world news headlines",
+    "popular recipes",
+    "movie reviews 2026",
+    "stock market update",
+    "sports scores today",
+    "technology news",
+    "book recommendations",
+    "travel destinations",
+    "music new releases",
+    "science discoveries",
+    "health tips",
+    "home improvement ideas",
+    "gardening basics",
+    "history facts",
+    "programming tutorials",
+    "fitness exercises",
+    "cooking techniques",
+    "photography tips",
+    "language learning",
+]
+
+# Words that make a query highly unique / identifying
+RARE_QUERY_PATTERNS = [
+    re.compile(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b"),       # Proper names (First Last)
+    re.compile(r"\b\d+\s+[A-Z][a-z]+\s+(?:St|Ave|Rd|Blvd|Dr|Ln|Ct)\b"),  # Street addresses
+    re.compile(r"\b[A-Z]{2,}\s*-?\s*\d{3,}\b"),           # Case/ID numbers
+    re.compile(r"\brare\s+disease\b", re.I),               # Rare medical terms
+    re.compile(r"\bcase\s+(?:no|number|#)\s*\d+\b", re.I), # Case references
+]
+
+# Query generalization: keyword → broader category term for cover traffic.
+# Before the real query, we search the category term first so that the specific
+# query is harder to isolate from network traffic.
+CATEGORY_KEYWORDS = {
+    "treatment": "medical conditions",
+    "symptom": "health information",
+    "disease": "medical conditions",
+    "diagnosis": "health information",
+    "medication": "pharmaceutical information",
+    "drug": "pharmaceutical information",
+    "lawyer": "legal services",
+    "attorney": "legal services",
+    "lawsuit": "legal news",
+    "court": "legal news",
+    "salary": "employment statistics",
+    "income": "financial planning",
+    "debt": "financial planning",
+    "invest": "financial news",
+    "crypto": "financial news",
+    "divorce": "family law",
+    "custody": "family law",
+    "arrest": "crime news",
+    "criminal": "crime news",
+    "immigration": "government services",
+    "visa": "travel documents",
+    "passport": "travel documents",
+    "addiction": "health information",
+    "rehab": "health information",
+    "therapy": "mental health",
+    "depression": "mental health",
+    "anxiety": "mental health",
+}
+
+# Batch timing state — tracks when the last search was sent
+_batch_lock = None  # initialized lazily
+_last_batch_time = 0.0
+
+# ---------------------------------------------------------------------------
+# Traffic analysis protection (M19)
+# ---------------------------------------------------------------------------
+
+def _random_delay() -> float:
+    """Sleep a random duration to decorrelate query timing."""
+    delay = random.uniform(QUERY_DELAY_MIN, QUERY_DELAY_MAX)
+    time.sleep(delay)
+    return delay
+
+
+def pad_query(query: str) -> str:
+    """Pad query to the next fixed-size bucket to obscure length patterns.
+
+    Padding uses URL-safe whitespace that SearXNG trims, so results are
+    unaffected.  Buckets: 256, 512, 1024 bytes.
+    """
+    encoded = query.encode("utf-8")
+    query_len = len(encoded)
+
+    target = QUERY_PAD_BUCKETS[-1]  # default to largest
+    for bucket in QUERY_PAD_BUCKETS:
+        if query_len <= bucket:
+            target = bucket
+            break
+
+    if query_len >= target:
+        return query  # already at or above largest bucket
+
+    # Pad with spaces (SearXNG collapses whitespace)
+    pad_len = target - query_len
+    return query + (" " * pad_len)
+
+
+# ---------------------------------------------------------------------------
+# Differential privacy for search queries (M20)
+# ---------------------------------------------------------------------------
+
+def _load_dp_config() -> dict:
+    """Load differential privacy settings from policy.yaml."""
+    policy = load_policy()
+    search = policy.get("search", {})
+    dp = search.get("differential_privacy", {})
+    return {
+        "enabled": dp.get("enabled", True),
+        "decoy_count": dp.get("decoy_count", 2),
+        "uniqueness_mode": dp.get("uniqueness_mode", "warn"),  # auto-block | warn | allow
+        "batch_window": dp.get("batch_window", 5.0),  # seconds
+    }
+
+
+def check_query_uniqueness(query: str) -> dict:
+    """Check if a query is highly unique/identifying (k-anonymity risk).
+
+    Returns:
+        {"unique": bool, "matches": list of matched patterns}
+    """
+    matches = []
+    for pattern in RARE_QUERY_PATTERNS:
+        found = pattern.findall(query)
+        if found:
+            matches.extend(found)
+
+    return {"unique": bool(matches), "matches": matches}
+
+
+def generate_decoy_queries(count: int) -> list:
+    """Select random decoy queries from the curated list."""
+    count = min(count, len(DECOY_QUERIES))
+    return random.sample(DECOY_QUERIES, count)
+
+
+def send_decoy_search(query: str) -> None:
+    """Fire-and-forget a decoy search to SearXNG. Results are discarded."""
+    try:
+        padded = pad_query(query)
+        requests.get(
+            f"{SEARXNG_URL}/search",
+            params={
+                "q": padded,
+                "format": "json",
+                "categories": "general",
+                "language": "en",
+                "safesearch": "1",
+            },
+            timeout=15,
+        )
+        log.debug("decoy search sent: %d chars", len(query))
+    except Exception:
+        pass  # decoys are best-effort
+
+
+def run_decoy_searches(count: int) -> int:
+    """Send decoy searches with random timing. Returns count sent."""
+    decoys = generate_decoy_queries(count)
+    for dq in decoys:
+        delay = random.uniform(0.2, 1.5)
+        time.sleep(delay)
+        send_decoy_search(dq)
+    return len(decoys)
+
+
+def generalize_query(query: str) -> str | None:
+    """Return a broader category term for the query, or None if not needed.
+
+    Scans the query for sensitive keywords and returns the matching category
+    so a cover search can be sent before the real query.
+    """
+    query_lower = query.lower()
+    for keyword, category in CATEGORY_KEYWORDS.items():
+        if keyword in query_lower:
+            return category
+    return None
+
+
+def send_cover_search(category_term: str) -> None:
+    """Send a cover search for a broad category term. Results are discarded."""
+    send_decoy_search(category_term)
+
+
+def apply_batch_delay(batch_window: float) -> float:
+    """Enforce batch timing: wait until at least *batch_window* seconds have
+    elapsed since the last search, so queries are grouped into fixed windows.
+
+    Returns the actual delay applied (0 if no wait was needed).
+    """
+    global _last_batch_time
+    import threading
+
+    global _batch_lock
+    if _batch_lock is None:
+        _batch_lock = threading.Lock()
+
+    with _batch_lock:
+        now = time.time()
+        elapsed = now - _last_batch_time
+        if elapsed < batch_window:
+            wait = batch_window - elapsed
+            time.sleep(wait)
+            _last_batch_time = time.time()
+            return wait
+        else:
+            _last_batch_time = now
+            return 0.0
+
 
 # ---------------------------------------------------------------------------
 # PII patterns to strip from outbound queries
@@ -308,12 +531,53 @@ def search():
             "redactions": len(san["redactions"]),
         }), 422
 
+    # Differential privacy checks (M20)
+    dp_config = _load_dp_config()
+    uniqueness_warning = None
+    decoys_sent = 0
+
+    if dp_config["enabled"]:
+        # Check query uniqueness (k-anonymity)
+        uq = check_query_uniqueness(san["query"])
+        if uq["unique"]:
+            mode = dp_config["uniqueness_mode"]
+            if mode == "auto-block":
+                audit_search(raw_query, san["query"], san["redactions"], 0, True)
+                return jsonify({
+                    "error": "query blocked: contains highly unique/identifying terms",
+                    "unique_matches": uq["matches"],
+                }), 422
+            elif mode == "warn":
+                uniqueness_warning = (
+                    f"This query contains potentially identifying terms: "
+                    f"{', '.join(uq['matches'][:3])}"
+                )
+                log.warning("unique query detected (warn mode): %s", uq["matches"][:3])
+
+        # Query generalization: send a broader cover search first
+        category = generalize_query(san["query"])
+        if category:
+            log.debug("cover search for category: %s", category)
+            send_cover_search(category)
+
+        # Send decoy searches before the real query
+        decoys_sent = run_decoy_searches(dp_config["decoy_count"])
+
+        # Batch timing: ensure queries are spaced by at least batch_window seconds
+        apply_batch_delay(dp_config["batch_window"])
+
+    # Traffic analysis protection: random delay before sending query
+    delay = _random_delay()
+
+    # Pad query to fixed-size bucket to obscure length
+    padded_query = pad_query(san["query"])
+
     # Query SearXNG (which routes through Tor)
     try:
         resp = requests.get(
             f"{SEARXNG_URL}/search",
             params={
-                "q": san["query"],
+                "q": padded_query,
                 "format": "json",
                 "categories": categories,
                 "language": "en",
@@ -338,16 +602,21 @@ def search():
 
     audit_search(raw_query, san["query"], san["redactions"], len(clean_results), False)
 
-    log.info("search completed: query_len=%d results=%d redactions=%d",
-             len(san["query"]), len(clean_results), len(san["redactions"]))
+    log.info("search completed: query_len=%d results=%d redactions=%d delay=%.2fs decoys=%d",
+             len(san["query"]), len(clean_results), len(san["redactions"]), delay, decoys_sent)
 
-    return jsonify({
+    result = {
         "results": clean_results,
         "context": context,
         "query_used": san["query"],
         "redactions": len(san["redactions"]),
         "tor_routed": True,
-    })
+        "decoys_sent": decoys_sent,
+    }
+    if uniqueness_warning:
+        result["uniqueness_warning"] = uniqueness_warning
+
+    return jsonify(result)
 
 
 @app.route("/v1/search/test", methods=["GET"])
