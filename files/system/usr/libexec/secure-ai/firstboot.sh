@@ -134,9 +134,62 @@ CPUEOF
     fi
 fi
 
-# Disable swap (belt-and-suspenders alongside kernel arg)
+# --- Memory protection checks (M18) ---
 log "Ensuring swap is disabled..."
 swapoff -a 2>/dev/null || true
+
+# Verify zswap is disabled
+if [ -f /sys/module/zswap/parameters/enabled ]; then
+    if [ "$(cat /sys/module/zswap/parameters/enabled 2>/dev/null)" = "Y" ]; then
+        log "WARNING: zswap is enabled — disabling to prevent secrets in compressed swap"
+        echo N > /sys/module/zswap/parameters/enabled 2>/dev/null || true
+    else
+        log "zswap is disabled (good)"
+    fi
+fi
+
+# Verify core dumps are disabled
+if [ -f /proc/sys/kernel/core_pattern ]; then
+    local_core_pattern=$(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo "")
+    if [ "$local_core_pattern" = "|/bin/false" ]; then
+        log "Core dumps: disabled via core_pattern (good)"
+    else
+        log "WARNING: core_pattern is '${local_core_pattern}', forcing to |/bin/false"
+        echo '|/bin/false' > /proc/sys/kernel/core_pattern 2>/dev/null || true
+    fi
+fi
+
+# Verify vm.swappiness=0
+current_swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "unknown")
+if [ "$current_swappiness" != "0" ]; then
+    log "WARNING: vm.swappiness=${current_swappiness}, setting to 0"
+    echo 0 > /proc/sys/vm/swappiness 2>/dev/null || true
+else
+    log "vm.swappiness=0 (good)"
+fi
+
+# Detect TEE (AMD SEV / Intel TDX / TME)
+log "Running TEE detection..."
+/usr/libexec/secure-ai/detect-tee.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: TEE detection failed"
+    cat > "${SECURE_AI_ROOT}/tee.env" <<'TEEEOF'
+TEE_TYPE=none
+TEE_ACTIVE=false
+TEE_DETAIL=detection failed
+MEM_ENCRYPT=false
+TEEEOF
+}
+
+# Log TEE results
+if [ -f "${SECURE_AI_ROOT}/tee.env" ]; then
+    source "${SECURE_AI_ROOT}/tee.env"
+    if [ "${MEM_ENCRYPT:-false}" = "true" ]; then
+        log "Hardware memory encryption: ACTIVE (${TEE_TYPE})"
+    else
+        log "Hardware memory encryption: NOT DETECTED"
+        log "Consider hardware with AMD SEV, Intel TDX/TME for maximum protection."
+    fi
+fi
 
 # Verify nftables is loaded
 if command -v nft &>/dev/null; then
@@ -175,10 +228,41 @@ if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
     fi
 fi
 
+# --- Clipboard isolation (M21) ---
+log "Running clipboard isolation..."
+/usr/libexec/secure-ai/clipboard-isolate.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: clipboard isolation check failed"
+}
+
+# Log clipboard results
+if [ -f "${SECURE_AI_ROOT}/clipboard.env" ]; then
+    source "${SECURE_AI_ROOT}/clipboard.env"
+    if [ "${CLIPBOARD_ISOLATED:-false}" = "true" ]; then
+        log "Clipboard isolation: ACTIVE"
+    else
+        log "WARNING: Clipboard may not be fully isolated"
+    fi
+    if [ -n "${CLIP_AGENTS_DISABLED:-}" ]; then
+        log "Disabled clipboard agents: ${CLIP_AGENTS_DISABLED}"
+    fi
+fi
+
 # Run boot chain verification
 log "Running boot chain integrity verification..."
 /usr/libexec/secure-ai/verify-boot-chain.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
     log "WARNING: boot chain verification failed"
+}
+
+# --- Canary / Tripwire placement (M22) ---
+log "Placing canary files in sensitive directories..."
+/usr/libexec/secure-ai/canary-place.sh 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: canary placement failed"
+}
+
+# Run initial canary verification
+log "Running initial canary verification..."
+/usr/libexec/secure-ai/canary-check.sh check 2>&1 | while IFS= read -r line; do log "$line"; done || {
+    log "WARNING: initial canary check failed"
 }
 
 # Write marker (read-only to prevent tampering)

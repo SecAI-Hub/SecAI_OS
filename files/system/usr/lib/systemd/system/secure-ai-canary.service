@@ -1,0 +1,18 @@
+[Unit]
+Description=Secure AI Canary / Tripwire Check
+After=secure-ai-firstboot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/canary-check.sh check
+
+# Needs root for vault lock, process kill, and file access
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+# Needs access to sensitive dirs and ability to lock vault
+ReadOnlyPaths=/etc/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai

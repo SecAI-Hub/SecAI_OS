@@ -1,0 +1,27 @@
+[Unit]
+Description=Secure AI Canary inotify Watcher (real-time tripwire)
+After=secure-ai-firstboot.service
+Wants=secure-ai-canary.timer
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/canary-check.sh watch
+Restart=on-failure
+RestartSec=30
+
+# Needs root for vault lock and process kill on trigger
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LimitCORE=0
+
+ReadOnlyPaths=/etc/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+
+# Resource limits — lightweight watcher
+MemoryMax=64M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

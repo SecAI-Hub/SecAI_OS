@@ -30,6 +30,8 @@ modules:
       # Tor + SearXNG (anonymous web search)
       - tor                         # Tor SOCKS5 proxy
       - python3-searxng             # SearXNG metasearch (or installed via pip)
+      # Canary / tripwire inotify watcher (M22)
+      - inotify-tools                   # inotifywait for real-time file monitoring
       # Secure Boot + TPM2 (M17)
       - mokutil                       # MOK enrollment
       - sbsigntools                   # EFI binary signing
@@ -71,6 +73,8 @@ modules:
       - page_alloc.shuffle=1
       - randomize_kstack_offset=on
       - vsyscall=none
+      # Memory protection (M18) — disable compressed swap
+      - zswap.enabled=0
       - lockdown=confidentiality
       - iommu=force
     delete:
@@ -90,6 +94,10 @@ modules:
         - secure-ai-audit-verify.timer
         - secure-ai-vault-watchdog.service
         - secure-ai-boot-verify.service
+        - secure-ai-dns-leak-check.timer
+        - secure-ai-clipboard-clear.timer
+        - secure-ai-canary.timer
+        - secure-ai-canary-watch.service
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount

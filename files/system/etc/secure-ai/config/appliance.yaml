@@ -55,6 +55,20 @@ services:
   tor:
     socks: "127.0.0.1:9050"
 
+traffic_analysis_protection:
+  # Network traffic analysis countermeasures (M19).
+  # Query timing randomization: random 0.5–3s delay before each search.
+  # Query padding: pad queries to fixed-size buckets (256/512/1024 bytes).
+  # Tor circuit rotation: MaxCircuitDirtiness 30s for faster circuit changes.
+  # Tor padding: ConnectionPadding enabled to add dummy cells.
+  # DNS leak detection: periodic check every 60 min (timer).
+  query_delay_min: 0.5
+  query_delay_max: 3.0
+  query_pad_buckets: [256, 512, 1024]
+  tor_max_circuit_dirtiness: 30
+  tor_connection_padding: true
+  dns_leak_check_interval: 60  # minutes
+
 session:
   mode: "normal"  # normal | sensitive | offline-only
   # sensitive mode: aggressive worker recycling after each task
@@ -113,6 +127,43 @@ sandbox:
   landlock_enabled: true
   # Core dump prevention across all services (LimitCORE=0).
   core_dumps_disabled: true
+
+memory_protection:
+  # Memory protection hardening (M18).
+  # Prevents secrets (vault keys, inference context) from leaking to disk.
+  # vm.swappiness=0: kernel avoids swapping (belt-and-suspenders with systemd.swap=0)
+  # zswap.enabled=0: no compressed swap in RAM (karg)
+  # core_pattern=|/bin/false: discard all core dumps
+  # mlock: sensitive buffers locked in RAM via SecureBuffer class
+  # TEE detection: AMD SEV / Intel TDX / TME checked at first boot
+  swap_disabled: true
+  zswap_disabled: true
+  core_dumps_disabled: true
+  mlock_sensitive_data: true
+  tee_detection: true
+
+clipboard:
+  # Clipboard isolation (M21).
+  # VM clipboard agents (spice-vdagent, vmware-user, VBoxClient) are detected
+  # and disabled at first boot. Non-UI services get PrivateUsers=yes to prevent
+  # clipboard access. Clipboard is auto-cleared every 60 seconds.
+  isolate_vm_clipboard: true
+  auto_clear_enabled: true
+  auto_clear_interval: 60  # seconds
+  private_users_non_ui: true
+
+canary:
+  # Canary / tripwire system (M22).
+  # Places canary files in sensitive directories and monitors them for tampering.
+  # Timer checks every 5 minutes; inotify watcher provides real-time detection.
+  # On tripwire: locks vault, kills workers, writes CRITICAL audit entry.
+  check_interval: 5  # minutes
+  inotify_enabled: true
+  locations:
+    - "/var/lib/secure-ai/vault/.canary"
+    - "/var/lib/secure-ai/registry/.canary"
+    - "/var/lib/secure-ai/keys/.canary"
+    - "/etc/secure-ai/.canary"
 
 logging:
   level: "info"
