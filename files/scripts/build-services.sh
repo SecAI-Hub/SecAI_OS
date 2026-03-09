@@ -83,17 +83,25 @@ echo "  -> /usr/bin/llama-server"
 
 # --- Python services (installed as wrapper scripts) ---
 
-# Quarantine watcher
+# --- ai-quarantine (standalone: seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
-pip3 install --prefix=/usr --no-cache-dir /tmp/services/quarantine 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/quarantine
-cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
+if [ -d "/tmp/ai-quarantine" ]; then
+    cp -r /tmp/ai-quarantine "${SRC_DIR}/ai-quarantine"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/ai-quarantine.git "${SRC_DIR}/ai-quarantine" 2>/dev/null || \
+        echo "WARNING: ai-quarantine clone failed — quarantine pipeline will not be available"
+fi
+if [ -d "${SRC_DIR}/ai-quarantine" ]; then
+    pip3 install --prefix=/usr --no-cache-dir "${SRC_DIR}/ai-quarantine" 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${SRC_DIR}/ai-quarantine"
+    cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
 #!/usr/bin/env python3
 from quarantine.watcher import main
 main()
 WRAPPER
-chmod +x "${INSTALL_DIR}/quarantine-watcher"
-echo "  -> ${INSTALL_DIR}/quarantine-watcher"
+    chmod +x "${INSTALL_DIR}/quarantine-watcher"
+    echo "  -> ${INSTALL_DIR}/quarantine-watcher"
+fi
 
 # Quarantine scanning tools (installed independently so one failure doesn't block others)
 echo "Installing: quarantine scanning tools"

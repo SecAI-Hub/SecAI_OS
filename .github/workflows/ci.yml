@@ -62,8 +62,6 @@ jobs:
 
       - name: Lint (syntax check)
         run: |
-          python -m py_compile services/quarantine/quarantine/pipeline.py
-          python -m py_compile services/quarantine/quarantine/watcher.py
           python -m py_compile services/ui/ui/app.py
           python -m py_compile services/diffusion-worker/app.py
           python -m py_compile services/common/audit_chain.py
