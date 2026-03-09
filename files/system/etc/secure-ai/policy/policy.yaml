@@ -24,12 +24,28 @@ quarantine:
     format_gate: true         # Stage 2: validate headers + reject unsafe formats
     integrity_check: true     # Stage 3: hash pinning verification
     provenance_check: true    # Stage 4: cosign / signature verification
-    static_scan: true         # Stage 5: modelscan + entropy analysis
+    static_scan: true         # Stage 5: modelscan + entropy + gguf-guard
     behavioral_test: true     # Stage 6: adversarial prompt suite (LLM only)
     diffusion_deep_scan: true # Stage 7: config integrity (diffusion only)
   # Smoke test threshold: fail if >30% prompts flagged OR >1 critical flag
   smoke_test_max_score: 0.3
   smoke_test_max_critical: 1
+
+# gguf-guard: GGUF model integrity and anomaly scanner
+# Provides deep weight-level analysis beyond modelscan/fickling:
+#   - Layered anomaly scoring (per-tensor, cross-layer, model-global, reference)
+#   - Quant-format-aware block analysis (scale entropy, repeated blocks)
+#   - Per-tensor SHA-256 integrity manifests with Merkle tree
+#   - Structural policy validation and model family identification
+gguf_guard:
+  # Whether gguf-guard is required (fail-closed if not installed)
+  required: false
+  # Generate per-tensor integrity manifest on promotion
+  generate_manifest: true
+  # Generate structural fingerprint on promotion
+  generate_fingerprint: true
+  # Verify manifest on periodic integrity checks (complements fs-verity)
+  verify_on_integrity_check: true
 
 tools:
   default: "deny"

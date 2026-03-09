@@ -159,6 +159,15 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
         "policy_version": _compute_policy_version(),
     }
 
+    # Include gguf-guard data if available from pipeline
+    if pipeline_details:
+        fp = pipeline_details.get("gguf_guard_fingerprint")
+        if fp:
+            payload["gguf_guard_fingerprint"] = fp
+        manifest_info = pipeline_details.get("gguf_guard_manifest", {})
+        if manifest_info.get("generated"):
+            payload["gguf_guard_manifest"] = manifest_info.get("manifest_path", "")
+
     try:
         req = Request(
             f"{REGISTRY_URL}/v1/model/promote",

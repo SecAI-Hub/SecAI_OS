@@ -114,6 +114,20 @@
             }
 
             container.innerHTML = models.map(function(m) {
+                var fp = m.gguf_guard_fingerprint;
+                var guardInfo = '';
+                if (fp) {
+                    guardInfo = '<div class="meta" style="margin-top:0.25rem">' +
+                        '<span>arch: ' + esc(fp.architecture || 'n/a') + '</span>' +
+                        '<span>quant: ' + esc(fp.quant_type || 'n/a') + '</span>' +
+                        '<span>tensors: ' + (fp.tensor_count || 'n/a') + '</span>' +
+                        '<span>params: ' + formatCount(fp.total_parameters) + '</span>' +
+                    '</div>';
+                }
+                var manifestBtn = '';
+                if (m.gguf_guard_manifest) {
+                    manifestBtn = '<button class="btn btn-sm btn-accent" onclick="verifyManifest(\'' + esc(m.name) + '\')">Verify Tensors</button>';
+                }
                 return '<div class="card">' +
                     '<div class="card-header">' +
                         '<span class="card-title">' + esc(m.name) + '</span>' +
@@ -124,8 +138,10 @@
                         '<span>sha256: ' + (m.sha256 ? esc(m.sha256.substring(0, 16)) + '...' : 'n/a') + '</span>' +
                         '<span>promoted: ' + esc(m.promoted_at || 'n/a') + '</span>' +
                     '</div>' +
+                    guardInfo +
                     '<div class="btn-group mt-md">' +
                         '<button class="btn btn-sm btn-success" onclick="verifyModel(\'' + esc(m.name) + '\')">Verify Hash</button>' +
+                        manifestBtn +
                         '<button class="btn btn-sm btn-danger" onclick="deleteModel(\'' + esc(m.name) + '\')">Delete</button>' +
                     '</div>' +
                 '</div>';
@@ -154,6 +170,34 @@
                 '</div>';
             }).join('');
         } catch(e) { }
+    }
+
+    function formatCount(n) {
+        if (!n) return 'n/a';
+        if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return '' + n;
+    }
+
+    async function verifyManifest(name) {
+        try {
+            var resp = await fetch('/api/models/verify-manifest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name}),
+            });
+            var data = await resp.json();
+            if (data.status === 'verified') {
+                toast(name + ': all tensors verified OK', 'success');
+            } else if (data.status === 'skipped') {
+                toast(name + ': no tensor manifest available', 'info');
+            } else {
+                toast(name + ': tensor verification FAILED', 'error');
+            }
+        } catch(e) {
+            toast('Could not reach registry.', 'error');
+        }
     }
 
     async function verifyModel(name) {

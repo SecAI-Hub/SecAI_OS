@@ -45,6 +45,7 @@ SOURCES_ALLOWLIST_PATH = Path(
     os.getenv("SOURCES_ALLOWLIST_PATH", "/etc/secure-ai/policy/sources.allowlist.yaml")
 )
 LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "/usr/bin/llama-server")
+GGUF_GUARD_BIN = os.getenv("GGUF_GUARD_BIN", "/usr/local/bin/gguf-guard")
 SMOKE_TEST_TIMEOUT = int(os.getenv("SMOKE_TEST_TIMEOUT", "120"))
 
 
@@ -961,8 +962,130 @@ def _check_weight_anomalies(tensor_name: str, stats: dict) -> list:
     return issues
 
 
+def _run_gguf_guard_scan(artifact_path: Path, policy: dict | None = None,
+                         reference_path: str | None = None) -> dict:
+    """Run gguf-guard static analysis on a GGUF model file.
+
+    gguf-guard provides deep weight-level anomaly detection including:
+    - Layered anomaly scoring (tensor-local, cross-layer, model-global, reference)
+    - Quant-format-aware block analysis (scale entropy, repeated blocks, saturation)
+    - Robust statistics (median/MAD, trimmed mean, Tukey fences)
+    - Structural policy validation (offsets, overlaps, metadata, tensor shapes)
+    - Model family identification (llama, mistral, mixtral, qwen2, gemma, phi)
+
+    Returns scan result with score, anomalies, and pass/fail verdict.
+    """
+    if artifact_path.suffix.lower() != ".gguf":
+        return {"passed": True, "scanner": "gguf-guard", "note": "not a GGUF file, skipped"}
+
+    if policy is None:
+        policy = {}
+    gguf_guard_policy = policy.get("gguf_guard", {})
+
+    try:
+        cmd = [GGUF_GUARD_BIN, "scan", "--quiet"]
+        if reference_path:
+            cmd.extend(["--reference", reference_path])
+        cmd.append(str(artifact_path))
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600,
+        )
+
+        output = result.stdout.strip()
+
+        if result.returncode == 0:
+            # PASS
+            return {
+                "passed": True,
+                "scanner": "gguf-guard",
+                "output": output,
+                "exit_code": 0,
+            }
+        elif result.returncode == 2:
+            # FAIL — score exceeded threshold
+            return {
+                "passed": False,
+                "scanner": "gguf-guard",
+                "reason": f"gguf-guard scan failed: {output}",
+                "output": output,
+                "exit_code": 2,
+            }
+        else:
+            # Error
+            log.warning("gguf-guard error (exit %d): %s", result.returncode, result.stderr[:500])
+            return {
+                "passed": True,
+                "scanner": "gguf-guard",
+                "note": f"gguf-guard error (exit {result.returncode}), non-fatal",
+                "exit_code": result.returncode,
+            }
+
+    except FileNotFoundError:
+        require = gguf_guard_policy.get("required", False)
+        if require:
+            return {"passed": False, "scanner": "gguf-guard", "reason": "gguf-guard required but not installed"}
+        log.info("gguf-guard not installed; skipping GGUF integrity scan")
+        return {"passed": True, "scanner": "gguf-guard", "note": "not installed, skipped"}
+    except subprocess.TimeoutExpired:
+        log.warning("gguf-guard timed out after 600s")
+        return {"passed": False, "scanner": "gguf-guard", "reason": "gguf-guard scan timed out"}
+    except Exception as e:
+        log.warning("gguf-guard error: %s", e)
+        return {"passed": True, "scanner": "gguf-guard", "note": f"error (non-fatal): {e}"}
+
+
+def _run_gguf_guard_manifest(artifact_path: Path, output_path: Path) -> dict:
+    """Generate a gguf-guard per-tensor integrity manifest for a GGUF file.
+
+    The manifest contains SHA-256 hashes for each tensor and a Merkle tree root,
+    enabling fine-grained integrity verification at any time.
+    """
+    if artifact_path.suffix.lower() != ".gguf":
+        return {"generated": False, "note": "not a GGUF file"}
+
+    try:
+        result = subprocess.run(
+            [GGUF_GUARD_BIN, "manifest", "--output", str(output_path), str(artifact_path)],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode == 0:
+            return {"generated": True, "manifest_path": str(output_path)}
+        else:
+            log.warning("gguf-guard manifest generation failed: %s", result.stderr[:500])
+            return {"generated": False, "error": result.stderr[:200]}
+    except FileNotFoundError:
+        return {"generated": False, "note": "gguf-guard not installed"}
+    except Exception as e:
+        log.warning("gguf-guard manifest error: %s", e)
+        return {"generated": False, "error": str(e)}
+
+
+def _run_gguf_guard_fingerprint(artifact_path: Path) -> dict | None:
+    """Generate a gguf-guard structural fingerprint for a GGUF file.
+
+    Returns fingerprint dict (file_hash, structure_hash, quant_type, etc.) or None.
+    """
+    if artifact_path.suffix.lower() != ".gguf":
+        return None
+
+    try:
+        result = subprocess.run(
+            [GGUF_GUARD_BIN, "fingerprint", str(artifact_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        return None
+    except (FileNotFoundError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return None
+    except Exception as e:
+        log.warning("gguf-guard fingerprint error: %s", e)
+        return None
+
+
 def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
-    """Stage 5: Run modelscan + fickling + modelaudit + entropy + weight analysis."""
+    """Stage 5: Run modelscan + fickling + modelaudit + entropy + weight analysis + gguf-guard."""
     if policy is None:
         policy = {}
     results = {}
@@ -990,6 +1113,10 @@ def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
     # 6. Weight distribution analysis (new, no external dep)
     weight_result = _analyze_weight_distribution(artifact_path)
     results["weight_stats"] = weight_result
+
+    # 7. gguf-guard deep integrity scan (GGUF files only)
+    gguf_guard_result = _run_gguf_guard_scan(artifact_path, policy=policy)
+    results["gguf_guard"] = gguf_guard_result
 
     # Overall: fail if ANY scanner fails
     failed = [k for k, v in results.items() if not v.get("passed", True)]
@@ -1703,6 +1830,18 @@ def run_pipeline(artifact_path: Path, file_hash: str, policy: dict,
             details["smoke_test"] = {"passed": True, "score": 0.0, "note": "skipped-by-policy"}
     else:
         details["smoke_test"] = {"passed": True, "note": "not applicable for safetensors"}
+
+    # Post-scan: generate gguf-guard artifacts for promotion metadata
+    if artifact_path.suffix.lower() == ".gguf":
+        # Structural fingerprint (stored in promotion metadata)
+        fp = _run_gguf_guard_fingerprint(artifact_path)
+        if fp:
+            details["gguf_guard_fingerprint"] = fp
+
+        # Per-tensor integrity manifest (stored alongside model in registry)
+        manifest_path = artifact_path.with_suffix(".gguf.manifest.json")
+        manifest_result = _run_gguf_guard_manifest(artifact_path, manifest_path)
+        details["gguf_guard_manifest"] = manifest_result
 
     return {"passed": True, "reason": "all_checks_passed", "details": details}
 

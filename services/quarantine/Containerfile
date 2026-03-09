@@ -6,8 +6,13 @@ COPY requirements.lock .
 COPY quarantine/ quarantine/
 
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock && \
-    pip install --no-cache-dir --no-deps . && \
-    pip install --no-cache-dir modelscan || true
+    pip install --no-cache-dir --no-deps .
+
+# Install scanning tools — each independently so one failure doesn't block others
+RUN pip install --no-cache-dir modelscan || echo "WARN: modelscan not available"
+RUN pip install --no-cache-dir fickling || echo "WARN: fickling not available"
+RUN pip install --no-cache-dir garak || echo "WARN: garak not available"
+RUN pip install --no-cache-dir modelaudit || echo "WARN: modelaudit not available"
 
 USER 65534:65534
 ENTRYPOINT ["secure-ai-quarantine"]

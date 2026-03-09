@@ -11,6 +11,8 @@ dependencies = [
 [project.optional-dependencies]
 scan = [
     "modelscan>=0.8",
+    "fickling>=0.1",
+    "garak>=0.9",
 ]
 
 [project.scripts]

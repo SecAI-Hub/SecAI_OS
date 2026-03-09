@@ -723,6 +723,17 @@ def verify_model():
         return jsonify({"error": "registry unreachable"}), 503
 
 
+@app.route("/api/models/verify-manifest", methods=["POST"])
+def verify_model_manifest():
+    """Verify per-tensor integrity manifest via gguf-guard."""
+    name = request.json.get("name", "")
+    try:
+        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify-manifest?name={name}", timeout=120)
+        return jsonify(resp.json()), resp.status_code
+    except requests.ConnectionError:
+        return jsonify({"error": "registry unreachable"}), 503
+
+
 @app.route("/api/models/delete", methods=["POST"])
 def delete_model():
     name = request.json.get("name", "")

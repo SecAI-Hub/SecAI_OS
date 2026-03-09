@@ -26,6 +26,9 @@ from quarantine.pipeline import (
     _compute_tensor_stats,
     _run_fickling_scan,
     _run_garak_scan,
+    _run_gguf_guard_scan,
+    _run_gguf_guard_manifest,
+    _run_gguf_guard_fingerprint,
     _run_modelaudit,
     _scan_gguf_chat_template,
     _stats_from_values,
@@ -983,3 +986,87 @@ class TestGarakIntegration:
         source = inspect.getsource(check_smoke_test)
         assert "_run_garak_scan" in source
         assert "garak" in source
+
+
+# ---------------------------------------------------------------------------
+# gguf-guard integration
+# ---------------------------------------------------------------------------
+
+class TestGGUFGuardIntegration:
+    def test_scan_not_installed_graceful(self, tmp_path):
+        """Graceful skip when gguf-guard is not installed."""
+        p = make_gguf_file(tmp_path)
+        # Use a nonexistent binary path to simulate not installed
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = _run_gguf_guard_scan(p)
+        assert result["passed"]
+        assert "not installed" in result.get("note", "")
+
+    def test_scan_not_installed_required_fails(self, tmp_path):
+        """When required=True and not installed, scan fails."""
+        p = make_gguf_file(tmp_path)
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = _run_gguf_guard_scan(p, policy={"gguf_guard": {"required": True}})
+        assert not result["passed"]
+        assert "required" in result.get("reason", "")
+
+    def test_scan_skips_non_gguf(self, tmp_path):
+        """Non-GGUF files are skipped."""
+        p = tmp_path / "model.safetensors"
+        p.write_bytes(b"\x00" * 100)
+        result = _run_gguf_guard_scan(p)
+        assert result["passed"]
+        assert "not a GGUF file" in result.get("note", "")
+
+    def test_scan_returns_scanner_name(self, tmp_path):
+        """Result always includes scanner identifier."""
+        p = make_gguf_file(tmp_path)
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = _run_gguf_guard_scan(p)
+        assert result.get("scanner") == "gguf-guard"
+
+    def test_manifest_not_installed(self, tmp_path):
+        """Manifest generation gracefully handles missing binary."""
+        p = make_gguf_file(tmp_path)
+        out = tmp_path / "manifest.json"
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = _run_gguf_guard_manifest(p, out)
+        assert not result["generated"]
+        assert "not installed" in result.get("note", "")
+
+    def test_manifest_skips_non_gguf(self, tmp_path):
+        """Manifest generation skips non-GGUF files."""
+        p = tmp_path / "model.safetensors"
+        p.write_bytes(b"\x00" * 100)
+        out = tmp_path / "manifest.json"
+        result = _run_gguf_guard_manifest(p, out)
+        assert not result["generated"]
+        assert "not a GGUF file" in result.get("note", "")
+
+    def test_fingerprint_not_installed(self, tmp_path):
+        """Fingerprint returns None when binary not installed."""
+        p = make_gguf_file(tmp_path)
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = _run_gguf_guard_fingerprint(p)
+        assert result is None
+
+    def test_fingerprint_skips_non_gguf(self, tmp_path):
+        """Fingerprint returns None for non-GGUF files."""
+        p = tmp_path / "model.safetensors"
+        p.write_bytes(b"\x00" * 100)
+        result = _run_gguf_guard_fingerprint(p)
+        assert result is None
+
+    def test_integrated_in_static_scan(self, tmp_path):
+        """gguf-guard runs as part of check_static_scan."""
+        p = make_gguf_file(tmp_path)
+        with patch("quarantine.pipeline.GGUF_GUARD_BIN", "/nonexistent/gguf-guard"):
+            result = check_static_scan(p, policy={"models": {"require_scan": False}})
+        assert "gguf_guard" in result.get("details", {})
+
+    def test_integrated_in_pipeline(self):
+        """run_pipeline references gguf-guard functions (code structure check)."""
+        import inspect
+        source = inspect.getsource(run_pipeline)
+        assert "_run_gguf_guard_fingerprint" in source
+        assert "_run_gguf_guard_manifest" in source

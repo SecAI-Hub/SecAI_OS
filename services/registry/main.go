@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os/exec"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,9 @@ type Artifact struct {
 	ScannerVersions map[string]string `json:"scanner_versions,omitempty" yaml:"scanner_versions,omitempty"`
 	PolicyVersion   string            `json:"policy_version,omitempty" yaml:"policy_version,omitempty"`
 	SourceRevision  string            `json:"source_revision,omitempty" yaml:"source_revision,omitempty"`
+	// gguf-guard integrity data (GGUF files only)
+	GGUFGuardFingerprint map[string]any `json:"gguf_guard_fingerprint,omitempty" yaml:"gguf_guard_fingerprint,omitempty"`
+	GGUFGuardManifest    string         `json:"gguf_guard_manifest,omitempty" yaml:"gguf_guard_manifest,omitempty"` // path to manifest file
 }
 
 // Manifest is the runtime registry manifest (stored as JSON on the vault).
@@ -56,6 +60,8 @@ type PromoteRequest struct {
 	ScannerVersions map[string]string `json:"scanner_versions,omitempty"`
 	PolicyVersion   string            `json:"policy_version,omitempty"`
 	SourceRevision  string            `json:"source_revision,omitempty"`
+	GGUFGuardFingerprint map[string]any `json:"gguf_guard_fingerprint,omitempty"`
+	GGUFGuardManifest    string         `json:"gguf_guard_manifest,omitempty"`
 }
 
 var (
@@ -292,6 +298,8 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		ScannerVersions: req.ScannerVersions,
 		PolicyVersion:   req.PolicyVersion,
 		SourceRevision:  req.SourceRevision,
+		GGUFGuardFingerprint: req.GGUFGuardFingerprint,
+		GGUFGuardManifest:    req.GGUFGuardManifest,
 	}
 
 	manifestMu.Lock()
@@ -501,6 +509,74 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ggufGuardBin is the path to the gguf-guard binary for manifest verification.
+var ggufGuardBin = "/usr/local/bin/gguf-guard"
+
+func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "missing ?name= parameter", http.StatusBadRequest)
+		return
+	}
+
+	manifestMu.RLock()
+	defer manifestMu.RUnlock()
+
+	for _, m := range manifest.Models {
+		if m.Name == name {
+			if m.GGUFGuardManifest == "" {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{
+					"status": "skipped",
+					"name":   name,
+					"reason": "no gguf-guard manifest available",
+				})
+				return
+			}
+
+			modelPath := filepath.Join(registryDir, m.Filename)
+			manifestFile := m.GGUFGuardManifest
+
+			cmd := fmt.Sprintf("%s", ggufGuardBin)
+			out, err := runGGUFGuardVerify(cmd, modelPath, manifestFile)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{
+					"status": "failed",
+					"name":   name,
+					"error":  out,
+				})
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "verified",
+				"name":   name,
+				"detail": out,
+			})
+			return
+		}
+	}
+	http.Error(w, "model not found", http.StatusNotFound)
+}
+
+// runGGUFGuardVerify runs gguf-guard verify-manifest and returns output and error.
+func runGGUFGuardVerify(bin, modelPath, manifestFile string) (string, error) {
+	out, err := exec.Command(bin, "verify-manifest", modelPath, manifestFile).CombinedOutput()
+	result := strings.TrimSpace(string(out))
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func main() {
 	registryDir = os.Getenv("REGISTRY_DIR")
 	if registryDir == "" {
@@ -530,6 +606,7 @@ func main() {
 	mux.HandleFunc("/v1/model/verify", handleVerifyModel)
 	mux.HandleFunc("/v1/models/verify-all", handleVerifyAll)
 	mux.HandleFunc("/v1/integrity/status", handleIntegrityStatus)
+	mux.HandleFunc("/v1/model/verify-manifest", handleVerifyGGUFManifest)
 	// Mutating endpoints — require service token
 	mux.HandleFunc("/v1/model/promote", requireServiceToken(handlePromote))
 	mux.HandleFunc("/v1/model/delete", requireServiceToken(handleDelete))
