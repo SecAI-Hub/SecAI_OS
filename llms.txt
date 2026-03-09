@@ -1,0 +1,56 @@
+# SecAI OS
+
+> Bootable local-first AI OS with sealed runtime, model quarantine pipeline, airlock egress controls, encrypted vault, and private Tor-routed search.
+
+SecAI OS is an immutable Linux appliance (Fedora Atomic/uBlue) designed for running large language models and diffusion models entirely on-device with defense-in-depth security. All AI compute — inference and generation — stays local. Network egress is denied by default.
+
+## Supported Hardware
+- NVIDIA GPUs (CUDA): RTX 5090/5080/4090/4080/3090/3080
+- AMD GPUs (ROCm/HIP): RX 7900 XTX/XT, RX 7800/7700, RDNA/CDNA
+- Intel GPUs (XPU/oneAPI): Arc A770/A750, Arc B-series
+- Apple Silicon (Metal/MPS): M4/M3/M2/M1
+- Any CPU: x86_64 (AVX2/AVX-512), ARM64 (NEON)
+
+## Architecture
+Five zones: Base OS (immutable, signed) -> Acquisition (allowlisted downloads) -> Quarantine (7-stage pipeline) -> Runtime (sealed, no internet) -> Airlock (optional sanitized egress).
+
+## Services
+- Registry (:8470, Go) -- Trusted artifact manifest
+- Tool Firewall (:8475, Go) -- Policy-gated tool invocation
+- Web UI (:8480, Python/Flask) -- Chat, image/video generation, model management
+- Airlock (:8490, Go) -- Sanitized egress proxy (disabled by default)
+- Inference Worker (:8465, llama.cpp) -- LLM inference
+- Diffusion Worker (:8455, Python) -- Image and video generation
+- Quarantine (Python) -- 7-stage scanning pipeline
+- Search Mediator (:8485, Python) -- Tor-routed web search with PII stripping
+- SearXNG (:8888) -- Self-hosted metasearch
+- Tor (:9050) -- Anonymous SOCKS5 proxy
+
+## Key Docs
+- docs/architecture.md -- System architecture and design decisions
+- docs/threat-model.md -- Threat model and security invariants
+- docs/api.md -- HTTP API reference
+- docs/policy-schema.md -- Policy YAML schema reference
+- docs/components/ -- Per-service documentation
+
+## Install Paths
+- /etc/secure-ai/config/appliance.yaml -- Appliance configuration
+- /etc/secure-ai/policy/policy.yaml -- Security policy
+- /var/lib/secure-ai/vault/ -- Encrypted vault (models, docs, outputs)
+- /var/lib/secure-ai/registry/ -- Trusted model registry
+- /var/lib/secure-ai/quarantine/ -- Quarantine staging area
+- /usr/libexec/secure-ai/ -- Service binaries and helper scripts
+
+## Policy Model
+- Default-deny egress: no internet unless explicitly enabled via airlock
+- Default-deny tools: all tool calls blocked unless allowlisted in policy
+- 7-stage quarantine: source -> format -> integrity -> provenance -> static scan -> behavioral test -> diffusion scan
+- Encrypted vault: LUKS2/AES-256/Argon2id
+- Signed updates: cosign-verified rpm-ostree with greenboot auto-rollback
+
+## Limitations and Non-Goals
+- Does NOT protect against firmware/UEFI compromise
+- Does NOT protect GPU memory side channels (requires datacenter-class GPUs)
+- Does NOT protect against a malicious user (single-user system)
+- Does NOT provide "impossible to leak" guarantees for data-in-use (RAM/VRAM)
+- Physical side-channel attacks are out of scope

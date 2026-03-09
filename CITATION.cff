@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: SecAI OS
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - name: "SecAI-Hub Contributors"
+repository-code: "https://github.com/SecAI-Hub/SecAI_OS"
+license: Apache-2.0
+keywords:
+  - secure-ai
+  - local-llm
+  - privacy
+  - model-scanning
+  - defense-in-depth
+  - air-gapped-ai
+  - supply-chain-security
+date-released: "2026-03-08"
+abstract: "Bootable local-first AI OS with sealed runtime, model quarantine pipeline, airlock egress controls, encrypted vault, and private Tor-routed search. Built on uBlue (Fedora Atomic)."

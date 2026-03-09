@@ -1,0 +1,311 @@
+# =============================================================================
+# SecAI OS Policy Configuration — Annotated Example
+# =============================================================================
+# This file controls security policy for the Secure AI Appliance.
+# Location: /etc/secure-ai/policy/policy.yaml
+#
+# All settings follow a secure-by-default philosophy:
+#   - Egress is denied
+#   - Tool calls are default-deny
+#   - Search is disabled
+#   - Airlock is disabled
+#   - All quarantine stages are enabled
+#
+# Modify with care. Every relaxation is a security tradeoff.
+# =============================================================================
+
+# Schema version. Used for forward compatibility.
+version: 1
+
+# ---------------------------------------------------------------------------
+# defaults — Global baseline settings
+# ---------------------------------------------------------------------------
+defaults:
+  network:
+    # Default network egress policy at runtime.
+    # "deny" means no outbound connections unless explicitly allowed.
+    # This is enforced by nftables at the OS level, not just application-level.
+    runtime_egress: "deny"
+
+  logging:
+    # Whether to store the raw text of user prompts in audit logs.
+    # Setting to true creates a privacy risk if logs are compromised.
+    # When false, only a SHA-256 hash of the prompt is logged.
+    store_raw_prompts: false
+
+    # Whether to store the raw text of LLM responses in audit logs.
+    # Same privacy considerations as store_raw_prompts.
+    store_raw_responses: false
+
+# ---------------------------------------------------------------------------
+# models — Model format and scanning requirements
+# ---------------------------------------------------------------------------
+models:
+  # File formats accepted by the quarantine pipeline.
+  # GGUF: used by llama.cpp for LLM inference.
+  # Safetensors: safe serialization format for diffusion models.
+  allowed_formats: ["gguf", "safetensors"]
+
+  # File formats explicitly rejected. These use Python pickle or similar
+  # unsafe serialization that can execute arbitrary code on deserialization.
+  deny_formats: ["pickle", "pt", "bin"]
+
+  # Require static scanning (modelscan, gguf-guard, entropy analysis)
+  # before a model can be promoted to the trusted registry.
+  require_scan: true
+
+  # Require behavioral testing (adversarial prompt suite) before promotion.
+  # Only applies to LLM models, not diffusion models.
+  require_behavior_tests: true
+
+  # Require source origin verification against sources.allowlist.yaml.
+  # If false, models from unknown sources can pass quarantine.
+  require_source_verification: true
+
+  # Require entropy analysis to detect anomalous weight distributions
+  # that may indicate steganographic payloads or data exfiltration.
+  require_entropy_analysis: true
+
+  # Allow multi-file diffusion model directories.
+  # These contain model_index.json + multiple safetensors components.
+  allow_diffusion_directories: true
+
+# ---------------------------------------------------------------------------
+# quarantine — Scanning pipeline configuration
+# ---------------------------------------------------------------------------
+quarantine:
+  # Toggle individual pipeline stages. Set to false to skip a stage.
+  # WARNING: Disabling stages weakens your security posture.
+  stages:
+    # Stage 1: Verify the model's download origin against
+    # sources.allowlist.yaml. Prevents models from untrusted sources.
+    source_policy: true
+
+    # Stage 2: Validate file headers match the claimed format.
+    # Rejects files with denied extensions (pickle, pt, bin).
+    format_gate: true
+
+    # Stage 3: SHA-256 hash pinning. On first download, the hash is
+    # recorded. On subsequent downloads, it must match. Detects
+    # supply-chain substitution attacks.
+    integrity_check: true
+
+    # Stage 4: Verify cosign or GPG signatures from the model source.
+    # Provides cryptographic proof of origin.
+    provenance_check: true
+
+    # Stage 5: Static analysis with modelscan + entropy analysis +
+    # gguf-guard (if installed). Catches known malicious patterns,
+    # anomalous weight distributions, and structural policy violations.
+    static_scan: true
+
+    # Stage 6: Adversarial prompt suite for LLM models.
+    # Runs 50 prompts testing for jailbreaks, harmful content,
+    # and instruction injection. Scored against thresholds below.
+    behavioral_test: true
+
+    # Stage 7: Deep scan for diffusion models only.
+    # Validates config integrity and component checksums.
+    diffusion_deep_scan: true
+
+  # Behavioral test thresholds:
+  # Fail if more than this fraction of prompts are flagged.
+  # 0.3 = 30% of prompts. Lower is stricter.
+  smoke_test_max_score: 0.3
+
+  # Fail if more than this number of CRITICAL flags are raised.
+  # 1 means a single critical finding is tolerated; 2+ fails.
+  smoke_test_max_critical: 1
+
+# ---------------------------------------------------------------------------
+# gguf_guard — Deep GGUF model integrity and anomaly scanner
+# ---------------------------------------------------------------------------
+# gguf-guard is an optional external tool that provides:
+#   - Per-tensor anomaly scoring (layered: per-tensor, cross-layer, model-global)
+#   - Quant-format-aware block analysis (scale entropy, repeated blocks)
+#   - Per-tensor SHA-256 integrity manifests with Merkle tree verification
+#   - Structural policy validation and model family identification
+gguf_guard:
+  # If true, quarantine fails (fail-closed) when gguf-guard is not installed.
+  # If false, gguf-guard stages are skipped with a warning.
+  required: false
+
+  # Generate a per-tensor SHA-256 manifest when a model is promoted.
+  # This manifest can later be verified to detect per-tensor tampering
+  # that whole-file SHA-256 would miss.
+  generate_manifest: true
+
+  # Generate a structural fingerprint on promotion.
+  # Used for model family identification and drift detection.
+  generate_fingerprint: true
+
+  # Verify the per-tensor manifest during periodic integrity checks.
+  # Complements fs-verity and whole-file hash verification.
+  verify_on_integrity_check: true
+
+# ---------------------------------------------------------------------------
+# tools — Tool firewall policy
+# ---------------------------------------------------------------------------
+# The tool firewall mediates every tool call the LLM attempts to make.
+# It evaluates the call against this policy before execution.
+tools:
+  # Default action for tools not explicitly in the allow or deny list.
+  # "deny" = deny by default, only allow explicitly listed tools.
+  # "allow" = allow by default (NOT recommended — use with caution).
+  default: "deny"
+
+  # Global rate limit across all tool calls.
+  rate_limit:
+    # Maximum tool calls per minute (sliding window).
+    requests_per_minute: 120
+    # Burst size for rate limiting. Allows short bursts above the rate.
+    burst_size: 20
+
+  # Tools explicitly allowed, with constraints.
+  allow:
+    - name: "filesystem.read"
+      # Only allow reading from the user documents directory.
+      paths_allowlist:
+        - "/vault/user_docs/**"
+      # Never allow reading these paths, even if they match the allowlist.
+      paths_denylist:
+        - "/etc/shadow"
+        - "/etc/passwd"
+        - "/etc/secure-ai/**"
+      # Maximum length of any single argument (bytes).
+      max_arg_length: 4096
+
+    - name: "filesystem.write"
+      # Only allow writing to the outputs directory.
+      paths_allowlist:
+        - "/vault/outputs/**"
+      # Block path traversal and writes to system directories.
+      paths_denylist:
+        - "/vault/outputs/../**"
+      args_blocklist:
+        - "../"
+        - "/etc/"
+        - "/usr/"
+      max_arg_length: 4096
+
+    - name: "filesystem.list"
+      # Allow listing files in user docs and outputs.
+      paths_allowlist:
+        - "/vault/user_docs/**"
+        - "/vault/outputs/**"
+
+  # Tools explicitly denied. Deny always wins over allow.
+  deny:
+    - name: "shell.exec"       # No shell command execution
+    - name: "network.fetch"    # No network access from tool calls
+    - name: "process.spawn"    # No process spawning
+    - name: "filesystem.delete"  # No file deletion
+
+# ---------------------------------------------------------------------------
+# search — Tor-routed web search via SearXNG
+# ---------------------------------------------------------------------------
+# When enabled, the LLM can augment its responses with web search results.
+# All queries are routed through Tor for anonymity.
+search:
+  # Master switch. Disabled by default — must be explicitly enabled.
+  enabled: false
+
+  # Maximum query length after PII stripping (characters).
+  # Queries longer than this are truncated.
+  max_query_length: 200
+
+  # Maximum search results returned per query.
+  max_results: 5
+
+  # Maximum context size injected into the LLM (characters).
+  # The context is a formatted summary of search results.
+  max_context_length: 4000
+
+  # Strip PII from outbound queries before sending through Tor.
+  # Detects: email, phone, SSN, credit cards, IP addresses, API keys.
+  # This should ALWAYS be true.
+  strip_pii: true
+
+  # Block queries where more than 50% of tokens are redacted PII.
+  # Prevents queries that are essentially just PII from being sent.
+  block_high_pii_queries: true
+
+  # Scan inbound search results for prompt injection patterns.
+  # Detects: "ignore previous instructions", script tags, etc.
+  # Matching results are silently dropped.
+  detect_injection: true
+
+  # Write a hash-chained audit record for every search attempt.
+  # Records: query hash, sanitized query, redaction count, result count.
+  audit: true
+
+  # SearXNG search engines to use. Only privacy-respecting engines.
+  allowed_engines:
+    - duckduckgo
+    - wikipedia
+    - stackoverflow
+    - github
+
+  # Differential privacy protections for search queries.
+  differential_privacy:
+    # Enable differential privacy (decoys, uniqueness checks, batch timing).
+    enabled: true
+
+    # Number of decoy searches sent before each real search.
+    # Decoys are random generic queries from a curated list.
+    # Set to 0 to disable decoy searches.
+    decoy_count: 2
+
+    # How to handle queries that contain highly unique/identifying terms
+    # (proper names, addresses, case numbers, rare medical terms).
+    #   "auto-block" — silently block the query.
+    #   "warn" — return a warning but still execute.
+    #   "allow" — no check.
+    uniqueness_mode: "warn"
+
+    # Batch timing window (seconds). Queries within this window are
+    # grouped together to prevent timing correlation between searches.
+    batch_window: 5.0
+
+# ---------------------------------------------------------------------------
+# airlock — Controlled egress proxy
+# ---------------------------------------------------------------------------
+# The airlock is the only way data leaves the appliance (aside from
+# Tor-routed search). It validates every outbound request against policy.
+# DISABLED BY DEFAULT — this is the largest privacy risk surface.
+airlock:
+  # Master switch. Must be explicitly enabled.
+  enabled: false
+
+  # URL prefixes allowed for outbound requests.
+  # The destination must start with one of these prefixes.
+  # Additional sources can be added via sources.allowlist.yaml.
+  allowed_destinations:
+    - "https://huggingface.co/"
+    - "https://registry.ollama.ai/"
+    - "https://cdn-lfs.huggingface.co/"
+    - "https://cdn-lfs-us-1.huggingface.co/"
+
+  # HTTP methods allowed for egress. Only GET and POST by default.
+  allowed_methods: ["GET", "POST"]
+
+  # Maximum request body size in bytes (10 MB).
+  # Prevents large data exfiltration.
+  max_body_size: 10485760
+
+  # Egress rate limit.
+  rate_limit:
+    # Maximum outbound requests per minute.
+    requests_per_minute: 30
+
+  # Content scanning rules for outbound request bodies.
+  content_rules:
+    # Substrings that cause the body to be blocked.
+    # Add sensitive terms specific to your use case.
+    block_if_contains: []
+
+    # Scan bodies for PII patterns (SSN, credit cards, email, phone, IP).
+    scan_for_pii: true
+
+    # Scan bodies for credential patterns (API keys, tokens, passwords).
+    scan_for_credentials: true

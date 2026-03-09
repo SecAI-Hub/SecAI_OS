@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secai-hub.github.io/SecAI_OS/schemas/policy.schema.json",
+  "title": "SecAI OS Policy",
+  "description": "JSON Schema for the SecAI OS policy configuration file (policy.yaml). Governs model acceptance, tool execution, web search, and egress behavior.",
+  "type": "object",
+  "required": ["version", "defaults", "models", "quarantine", "tools"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Schema version number for this policy file.",
+      "minimum": 1
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Global default settings.",
+      "required": ["network"],
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "object",
+          "required": ["runtime_egress"],
+          "additionalProperties": false,
+          "properties": {
+            "runtime_egress": {
+              "type": "string",
+              "enum": ["deny", "allow"],
+              "description": "Default network egress policy at runtime. Should always be 'deny' for security."
+            }
+          }
+        },
+        "logging": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "store_raw_prompts": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether to store raw user prompts in audit logs. Privacy-sensitive."
+            },
+            "store_raw_responses": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether to store raw LLM responses in audit logs. Privacy-sensitive."
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "Model format and scanning requirements.",
+      "required": ["allowed_formats", "deny_formats"],
+      "additionalProperties": false,
+      "properties": {
+        "allowed_formats": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "File formats accepted by the quarantine pipeline.",
+          "examples": [["gguf", "safetensors"]]
+        },
+        "deny_formats": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "File formats explicitly rejected (unsafe serialization).",
+          "examples": [["pickle", "pt", "bin"]]
+        },
+        "require_scan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require static scanning (modelscan, gguf-guard) before promotion."
+        },
+        "require_behavior_tests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require behavioral/adversarial prompt testing before promotion."
+        },
+        "require_source_verification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require source origin verification against the allowlist."
+        },
+        "require_entropy_analysis": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require entropy analysis to detect anomalous weight distributions."
+        },
+        "allow_diffusion_directories": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow multi-file diffusion model directories (model_index.json + safetensors)."
+        }
+      }
+    },
+    "quarantine": {
+      "type": "object",
+      "description": "Quarantine pipeline configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "stages": {
+          "type": "object",
+          "description": "Toggle individual pipeline stages on/off.",
+          "additionalProperties": false,
+          "properties": {
+            "source_policy": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 1: Verify origin against sources.allowlist.yaml."
+            },
+            "format_gate": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 2: Validate file headers and reject unsafe formats."
+            },
+            "integrity_check": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 3: SHA-256 hash pinning verification."
+            },
+            "provenance_check": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 4: Cosign/signature verification."
+            },
+            "static_scan": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 5: modelscan + entropy analysis + gguf-guard."
+            },
+            "behavioral_test": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 6: Adversarial prompt suite (LLM models only)."
+            },
+            "diffusion_deep_scan": {
+              "type": "boolean",
+              "default": true,
+              "description": "Stage 7: Config integrity check (diffusion models only)."
+            }
+          }
+        },
+        "smoke_test_max_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.3,
+          "description": "Fail if more than this fraction of prompts are flagged."
+        },
+        "smoke_test_max_critical": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "Fail if more than this number of critical flags are raised."
+        }
+      }
+    },
+    "gguf_guard": {
+      "type": "object",
+      "description": "gguf-guard integration settings for deep GGUF model analysis.",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, quarantine fails (fail-closed) when gguf-guard is not installed."
+        },
+        "generate_manifest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate a per-tensor SHA-256 integrity manifest on promotion."
+        },
+        "generate_fingerprint": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate a structural fingerprint on promotion."
+        },
+        "verify_on_integrity_check": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify the per-tensor manifest during periodic integrity checks."
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "Tool firewall policy governing LLM tool call permissions.",
+      "required": ["default"],
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": "string",
+          "enum": ["deny", "allow"],
+          "description": "Default action for tools not in the allow or deny list."
+        },
+        "rate_limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests_per_minute": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 120,
+              "description": "Maximum tool calls per minute across all tools."
+            },
+            "burst_size": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "description": "Maximum burst size for rate limiting."
+            }
+          }
+        },
+        "allow": {
+          "type": "array",
+          "description": "Tools explicitly allowed, with optional path and argument constraints.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Tool identifier (e.g., filesystem.read, filesystem.write)."
+              },
+              "paths_allowlist": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Glob patterns for allowed filesystem paths. Use trailing /** for recursive."
+              },
+              "paths_denylist": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Glob patterns for denied filesystem paths (checked before allowlist)."
+              },
+              "args_blocklist": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Substrings that cause an argument to be rejected."
+              },
+              "max_arg_length": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 4096,
+                "description": "Maximum allowed length for any single argument value."
+              }
+            }
+          }
+        },
+        "deny": {
+          "type": "array",
+          "description": "Tools explicitly denied. Deny always wins over allow.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Tool identifier to deny."
+              }
+            }
+          }
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "description": "Tor-routed web search configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch for web search. Disabled by default for privacy."
+        },
+        "max_query_length": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 200,
+          "description": "Maximum query length after PII stripping."
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Maximum number of results returned per search."
+        },
+        "max_context_length": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4000,
+          "description": "Maximum context size injected into LLM (characters)."
+        },
+        "strip_pii": {
+          "type": "boolean",
+          "default": true,
+          "description": "Strip PII patterns from outbound queries. Should always be true."
+        },
+        "block_high_pii_queries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Block queries where more than 50% of tokens are redacted PII."
+        },
+        "detect_injection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan inbound results for prompt injection patterns."
+        },
+        "audit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write a hash-chained audit record for every search attempt."
+        },
+        "allowed_engines": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "SearXNG search engines to enable (privacy-respecting only).",
+          "examples": [["duckduckgo", "wikipedia", "stackoverflow", "github"]]
+        },
+        "differential_privacy": {
+          "type": "object",
+          "description": "Differential privacy protections for search queries.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable differential privacy protections."
+            },
+            "decoy_count": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2,
+              "description": "Number of decoy searches sent per real search. 0 to disable."
+            },
+            "uniqueness_mode": {
+              "type": "string",
+              "enum": ["auto-block", "warn", "allow"],
+              "default": "warn",
+              "description": "How to handle highly unique/identifying queries."
+            },
+            "batch_window": {
+              "type": "number",
+              "minimum": 0.0,
+              "default": 5.0,
+              "description": "Batch timing window in seconds. Queries within this window are grouped."
+            }
+          }
+        }
+      }
+    },
+    "airlock": {
+      "type": "object",
+      "description": "Controlled egress proxy configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch for egress. Disabled by default (biggest privacy risk surface)."
+        },
+        "allowed_destinations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": "URL prefixes allowed for outbound requests."
+        },
+        "allowed_methods": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+          },
+          "default": ["GET", "POST"],
+          "description": "HTTP methods allowed for egress."
+        },
+        "max_body_size": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10485760,
+          "description": "Maximum request body size in bytes (default 10 MB)."
+        },
+        "rate_limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests_per_minute": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30,
+              "description": "Maximum egress requests per minute."
+            }
+          }
+        },
+        "content_rules": {
+          "type": "object",
+          "description": "Content scanning rules for outbound request bodies.",
+          "additionalProperties": false,
+          "properties": {
+            "block_if_contains": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Substrings that cause the request body to be blocked."
+            },
+            "scan_for_pii": {
+              "type": "boolean",
+              "default": true,
+              "description": "Scan outbound bodies for PII patterns (SSN, credit card, email, etc.)."
+            },
+            "scan_for_credentials": {
+              "type": "boolean",
+              "default": true,
+              "description": "Scan outbound bodies for credential patterns (API keys, tokens, passwords)."
+            }
+          }
+        }
+      }
+    }
+  }
+}

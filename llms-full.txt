@@ -1,0 +1,325 @@
+# SecAI OS
+
+> Bootable local-first AI OS with sealed runtime, model quarantine pipeline, airlock egress controls, encrypted vault, and private Tor-routed search.
+
+SecAI OS is an immutable Linux appliance (Fedora Atomic/uBlue) designed for running large language models and diffusion models entirely on-device with defense-in-depth security. All AI compute — inference and generation — stays local. Network egress is denied by default.
+
+## Supported Hardware
+- NVIDIA GPUs (CUDA): RTX 5090/5080/4090/4080/3090/3080
+- AMD GPUs (ROCm/HIP): RX 7900 XTX/XT, RX 7800/7700, RDNA/CDNA
+- Intel GPUs (XPU/oneAPI): Arc A770/A750, Arc B-series
+- Apple Silicon (Metal/MPS): M4/M3/M2/M1
+- Any CPU: x86_64 (AVX2/AVX-512), ARM64 (NEON)
+
+## Architecture
+Five zones: Base OS (immutable, signed) -> Acquisition (allowlisted downloads) -> Quarantine (7-stage pipeline) -> Runtime (sealed, no internet) -> Airlock (optional sanitized egress).
+
+## Services
+- Registry (:8470, Go) -- Trusted artifact manifest
+- Tool Firewall (:8475, Go) -- Policy-gated tool invocation
+- Web UI (:8480, Python/Flask) -- Chat, image/video generation, model management
+- Airlock (:8490, Go) -- Sanitized egress proxy (disabled by default)
+- Inference Worker (:8465, llama.cpp) -- LLM inference
+- Diffusion Worker (:8455, Python) -- Image and video generation
+- Quarantine (Python) -- 7-stage scanning pipeline
+- Search Mediator (:8485, Python) -- Tor-routed web search with PII stripping
+- SearXNG (:8888) -- Self-hosted metasearch
+- Tor (:9050) -- Anonymous SOCKS5 proxy
+
+## Key Docs
+- docs/architecture.md -- System architecture and design decisions
+- docs/threat-model.md -- Threat model and security invariants
+- docs/api.md -- HTTP API reference
+- docs/policy-schema.md -- Policy YAML schema reference
+- docs/components/ -- Per-service documentation
+
+## Install Paths
+- /etc/secure-ai/config/appliance.yaml -- Appliance configuration
+- /etc/secure-ai/policy/policy.yaml -- Security policy
+- /var/lib/secure-ai/vault/ -- Encrypted vault (models, docs, outputs)
+- /var/lib/secure-ai/registry/ -- Trusted model registry
+- /var/lib/secure-ai/quarantine/ -- Quarantine staging area
+- /usr/libexec/secure-ai/ -- Service binaries and helper scripts
+
+## Policy Model
+- Default-deny egress: no internet unless explicitly enabled via airlock
+- Default-deny tools: all tool calls blocked unless allowlisted in policy
+- 7-stage quarantine: source -> format -> integrity -> provenance -> static scan -> behavioral test -> diffusion scan
+- Encrypted vault: LUKS2/AES-256/Argon2id
+- Signed updates: cosign-verified rpm-ostree with greenboot auto-rollback
+
+## Limitations and Non-Goals
+- Does NOT protect against firmware/UEFI compromise
+- Does NOT protect GPU memory side channels (requires datacenter-class GPUs)
+- Does NOT protect against a malicious user (single-user system)
+- Does NOT provide "impossible to leak" guarantees for data-in-use (RAM/VRAM)
+- Physical side-channel attacks are out of scope
+
+## Quarantine Pipeline Details
+
+Every model artifact (LLM or diffusion) must pass all seven stages sequentially before promotion into the trusted registry. If any stage fails, the artifact is rejected and quarantined. No user intervention is required.
+
+### Stage 1: Source Policy Gate
+Verifies the download origin URL or registry against a YAML allowlist at /etc/secure-ai/policy/sources.allowlist.yaml. Rejects artifacts from unknown or untrusted origins. Prevents supply-chain attacks at the entry point.
+
+### Stage 2: Format Gate
+Validates file headers using magic bytes and rejects unsafe serialization formats. Allowed formats: GGUF, SafeTensors. Denied formats: pickle, .pt, .bin (arbitrary code execution risk). Diffusion model directories (model_index.json + safetensors components) are also validated.
+
+### Stage 3: Integrity Gate
+Hash-pins every artifact against values in /etc/secure-ai/policy/models.lock.yaml. Computes SHA-256 over the entire file and compares to the pinned digest. Detects tampering, MITM modification, or incomplete downloads.
+
+### Stage 4: Provenance Gate
+Verifies cryptographic signatures using cosign. Checks for SLSA provenance attestations where available. Confirms the artifact was built by the expected publisher and has not been altered since signing.
+
+### Stage 5: Static Scan
+Runs modelscan to detect suspicious constructs (embedded code, unusual ops). Performs entropy analysis across weight tensors to detect steganographic payloads. Runs gguf-guard for GGUF models: layered anomaly scoring (per-tensor, cross-layer, model-global, reference), quant-format-aware block analysis, per-tensor SHA-256 integrity manifests with Merkle tree, and structural policy validation.
+
+### Stage 6: Behavioral Smoke Test (LLM only)
+Loads the model in a CPU-only, network-blocked sandbox. Runs a comprehensive adversarial prompt suite including: canary string detection (checks if the model leaks planted markers), credential exfiltration probes, jailbreak resistance tests, and unsafe tool-call detection. Fails if >30% of prompts are flagged or >1 critical flag is raised.
+
+### Stage 7: Diffusion Model Deep Scan (diffusion only)
+Validates configuration integrity for diffusion models. Checks for embedded code in model config files (scheduler configs, pipeline configs). Verifies component structure matches expected architecture. Ensures no executable content is hidden in configuration or metadata.
+
+## Defense Layers
+
+SecAI OS implements defense-in-depth across 20 layers. Each layer operates independently so that a failure in one does not compromise the system.
+
+### Boot
+Immutable root filesystem via rpm-ostree (Fedora Atomic). The OS image is read-only and cannot be modified at runtime. Updates are staged, cosign-verified, and applied atomically with automatic rollback on failure.
+
+### Secure Boot (M17)
+UEFI Secure Boot with Machine Owner Key (MOK) signing. The bootloader and kernel are signed with a local MOK key. TPM2 seals the LUKS vault key to PCR values covering firmware (PCR 0), option ROM (PCR 2), bootloader (PCR 4), and Secure Boot state (PCR 7). If the boot chain is tampered, the TPM refuses to unseal and the user must enter the passphrase manually. Passphrase fallback is available for legitimate updates. Auto-reseal after rpm-ostree upgrade is supported with user passphrase confirmation.
+
+### Kernel Hardening
+Sysctl hardening via /etc/sysctl.d/90-secure-ai.conf: kernel pointer hiding (kptr_restrict=2), dmesg restriction, perf_event_paranoid=3, unprivileged BPF disabled, BPF JIT hardening, namespace restrictions, ptrace scope restricted (yama ptrace_scope=1), strict reverse path filtering, ICMP redirects disabled, source routing disabled, IP forwarding disabled, SYN cookies enabled, SUID dump disabled, hardlink/symlink protections.
+
+### Memory Protection (M18)
+Swap disabled at kernel level (vm.swappiness=0) and systemd level. Zswap disabled via kernel argument. Core dumps discarded (kernel.core_pattern=|/bin/false, LimitCORE=0 on all services). Sensitive buffers (vault keys, inference context) locked in RAM via mlock using a SecureBuffer Python class. Minimum mmap address enforced (vm.mmap_min_addr=65536). TEE detection at first boot checks for AMD SEV/SEV-ES/SEV-SNP, Intel TDX/TME/MKTME, and ARM CCA and logs whether hardware memory encryption is active.
+
+### Network (nftables)
+Default-deny firewall via /etc/nftables/secure-ai.nft. Policy: input drop, output drop, forward drop. Loopback allowed for inter-service communication. Outbound HTTPS allowed for host-level tools only (rpm-ostree, cosign). DNS rate-limited (10/min UDP, 5/min TCP) with excess DNS logged and dropped as a leak indicator. NTP allowed for certificate validation. All AI services run with PrivateNetwork=yes (isolated network namespace). Only the airlock service can reach the internet, and only to allowlisted destinations.
+
+### Filesystem
+Encrypted vault using LUKS2/AES-256 with Argon2id key derivation. Restrictive permissions: vault 700, keys 700, registry 750, quarantine 770, logs 750. SUID dumpable disabled. Protected hardlinks, symlinks, FIFOs, and regular files.
+
+### Models (Quarantine)
+7-stage quarantine pipeline (see Quarantine Pipeline Details above). Periodic integrity checks every 15 minutes verify SHA-256 hashes of all promoted models against the registry manifest. On mismatch: model is quarantined, removed from manifest, workers restarted. gguf-guard generates per-tensor integrity manifests and structural fingerprints on promotion.
+
+### Tools (Tool Firewall)
+Default-deny policy. All tool calls blocked unless explicitly allowlisted in policy.yaml. Per-tool path allowlists and denylists with traversal protection. Argument blocklists prevent path traversal (../, /etc/, /usr/). Maximum argument length enforced (4096 bytes). Explicitly denied tools: shell.exec, network.fetch, process.spawn, filesystem.delete. Rate limiting: 120 requests/minute, burst size 20.
+
+### Egress (Airlock)
+Disabled by default (biggest privacy risk surface). When enabled: allowlisted destinations only (huggingface.co, cdn-lfs.huggingface.co, registry.ollama.ai). Allowed methods: GET, POST. Maximum body size: 10 MB. Outbound PII scanning and credential scanning on all requests. Rate limited to 30 requests/minute.
+
+### Search (Search Mediator)
+Tor-routed web search via self-hosted SearXNG. Disabled by default. Outbound query sanitization strips PII (email, phone, SSN, credit card, IP address, DOB, API keys, hex tokens). Queries that are >50% redacted PII are blocked. Inbound result sanitization strips HTML, decodes entities, detects prompt injection patterns. Maximum query length: 200 chars. Maximum results: 5. Maximum context injected into LLM: 4000 chars. Allowed search engines: DuckDuckGo, Wikipedia, StackOverflow, GitHub. Every search is audited with query hash, sanitized query, and result count in a hash-chained log.
+
+### Audit (M13)
+Hash-chained audit logs (JSONL) with SHA-256 linking. Every entry contains a hash of the previous entry, forming a tamper-evident chain. Periodic chain verification (default every 30 minutes). On chain break: the broken log is snapshotted and a CRITICAL alert is raised. Tool calls, search queries, model promotions, panic events, and login attempts are all audited.
+
+### Web UI
+Flask-based web interface on port 8480. Chat, image/video generation, model management, vault lock/unlock controls, session mode switching, search toggle, and emergency panic controls. Accessible from local network only (firewall accepts port 8480 on input chain).
+
+### Auth (M14)
+Local passphrase authentication with scrypt hashing (N=32768, r=8, p=1, dklen=64). Session timeout: 30 minutes of inactivity. Maximum 5 failed login attempts before lockout (60-second initial lockout). Escalated lockout after 15 failed attempts (900 seconds). Sessions stored in /var/lib/secure-ai/auth/sessions/.
+
+### Vault
+LUKS2/AES-256/Argon2id encrypted vault at /var/lib/secure-ai/vault/. Auto-lock watchdog checks for inactivity every 30 seconds. After 30 minutes of inactivity, the vault is unmounted and LUKS closed, stopping all AI services. TPM2-sealed vault key enables auto-unlock when the boot chain is verified. Manual passphrase unlock required if TPM seal is broken.
+
+### Services (Process Isolation, M16)
+Per-service process isolation using seccomp-bpf (JSON profiles in /etc/secure-ai/seccomp/) and Landlock LSM (YAML policy in /etc/secure-ai/policy/landlock.yaml). Both enabled by default. If Landlock is unavailable (kernel < 5.13), enforcement is skipped with a warning. Core dumps disabled for all services (LimitCORE=0). DynamicUser=yes and PrivateNetwork=yes on AI services.
+
+### GPU Isolation
+VM GPU passthrough disabled by default for security (host hypervisor can inspect GPU memory). CPU-only inference in VM mode unless explicitly enabled. Bare-metal installation recommended for maximum security.
+
+### Clipboard Isolation (M21)
+VM clipboard agents (spice-vdagent, vmware-user, VBoxClient) detected and disabled at first boot. Non-UI services get PrivateUsers=yes to prevent clipboard access. Clipboard auto-cleared every 60 seconds.
+
+### Canary / Tripwire (M22)
+Canary files placed in sensitive directories: vault, registry, keys, /etc/secure-ai/. Timer checks every 5 minutes. Inotify watcher provides real-time detection. On tripwire trigger: vault locked, workers killed, CRITICAL audit entry written. Canary locations are configurable in appliance.yaml.
+
+### Emergency Panic (M23)
+Three severity levels via securectl (see CLI Tools section below). 5-second countdown with cancel option. Levels 2+ require passphrase confirmation. All panic events are audited.
+
+### Updates (M24)
+Cosign signature verification before applying rpm-ostree upgrades. Staged updates: check -> stage -> apply workflow via UI (requires explicit user confirmation). Greenboot health checks after update: auto-rollback if post-update boot fails. Maximum 2 rollback attempts before halting for manual intervention. Auto-check interval: 6 hours. Health check timeout: 300 seconds.
+
+## Traffic Analysis Protection (M19)
+
+Countermeasures to prevent network observers from identifying search queries by timing, length, or frequency patterns.
+
+### Query Timing Randomization
+Random 0.5-3 second delay injected before each search query. Prevents timing correlation between user action and network request.
+
+### Query Padding
+Queries padded to fixed-size buckets (256, 512, or 1024 bytes) using whitespace that SearXNG trims. Obscures query length from network observers.
+
+### Tor Circuit Rotation
+MaxCircuitDirtiness set to 30 seconds for faster circuit changes under active use. Each destination gets its own circuit (IsolateDestAddr, IsolateDestPort). ConnectionPadding enabled to add dummy cells that obscure traffic patterns.
+
+### DNS Leak Detection
+Periodic DNS leak check every 60 minutes via timer. Rate-limited DNS rules in nftables (10/min UDP, 5/min TCP). Excess DNS logged and dropped as a potential leak indicator. When search is enabled, DNS goes through Tor SOCKS5 (no direct DNS).
+
+## Differential Privacy for Search (M20)
+
+Privacy protections that make it difficult for an observer to determine which searches are real and which are noise.
+
+### Decoy Searches
+2 decoy searches sent per real search from a curated pool of 60+ common queries (weather, news, recipes, etc.). Decoys are sent with random timing (0.2-1.5 seconds apart) before the real query. Results are discarded.
+
+### Query Uniqueness Detection
+Queries scanned for identifying patterns: proper names (First Last), street addresses, case/ID numbers, rare medical terms, case references. Configurable handling: auto-block (silently block), warn (return warning but execute), or allow (no check). Default mode: warn.
+
+### Query Generalization
+Sensitive keywords (medical terms, legal terms, financial terms) trigger a broader cover search before the real query. For example, a query containing "treatment" first triggers a cover search for "medical conditions."
+
+### Batch Timing
+Queries within a configurable window (default 5 seconds) are grouped together so that individual query timing is obscured.
+
+## Configuration Files
+
+### appliance.yaml (/etc/secure-ai/config/appliance.yaml)
+
+Top-level structure:
+
+- version: Configuration schema version (integer)
+- appliance: Name and mode (local-only or online-augmented)
+- paths: Filesystem paths for vault, registry, quarantine, airlock audit, tmpdir, outputs
+- gpu: Backend selection (auto, cuda, rocm, xpu, vulkan, mps, cpu)
+- vm: VM-specific settings (gpu_passthrough toggle)
+- inference: Engine (llama-cpp), bind address, GPU layers (-1 = all), context size
+- diffusion: Bind address, max resolution, max steps, max frames
+- services: Bind addresses for registry, tool firewall, UI, airlock, diffusion, search mediator, SearXNG, Tor
+- traffic_analysis_protection: Query delay range, padding buckets, Tor circuit settings, DNS leak check interval
+- session: Mode (normal, sensitive, offline-only)
+- monitoring: Integrity check interval (minutes), audit log chain verification interval
+- vault: Auto-lock timeout (minutes), watchdog check interval (seconds)
+- auth: Session timeout, max failed attempts, lockout duration, escalated lockout
+- secure_boot: TPM2 PCR binding, passphrase fallback, auto-reseal on update
+- sandbox: Seccomp, Landlock, core dump toggles
+- memory_protection: Swap, zswap, core dumps, mlock, TEE detection toggles
+- clipboard: VM clipboard isolation, auto-clear interval, private users for non-UI services
+- canary: Check interval, inotify toggle, monitored locations
+- emergency: Countdown seconds, passphrase requirement for level 2+, audit log path
+- updates: Cosign verify, auto-check interval, max rollback attempts, health check timeout, staged updates toggle
+- logging: Level, raw prompt/response storage, tool call auditing
+
+### policy.yaml (/etc/secure-ai/policy/policy.yaml)
+
+Top-level structure:
+
+- version: Policy schema version (integer)
+- defaults: Network runtime egress (deny), logging settings
+- models: Allowed/denied formats, scan requirements (behavior tests, source verification, entropy analysis), diffusion directory support
+- quarantine: Per-stage enable toggles for all 7 stages, smoke test thresholds
+- gguf_guard: Required flag, manifest generation, fingerprint generation, verification on integrity check
+- tools: Default policy (deny), rate limits, per-tool allow rules with path allowlists/denylists and argument blocklists, explicit deny list
+- search: Enable toggle, max query length, max results, max context length, PII stripping, injection detection, allowed engines, differential privacy settings (decoy count, uniqueness mode, batch window)
+- airlock: Enable toggle, allowed destinations, allowed methods, max body size, rate limits, content rules (PII scan, credential scan)
+
+## CLI Tools
+
+### securectl
+
+Emergency data protection tool at /usr/libexec/secure-ai/securectl.
+
+Commands:
+- securectl panic 1 -- Lock vault, stop all AI services, invalidate sessions. Fully reversible. No passphrase required.
+- securectl panic 2 --confirm <passphrase> -- Wipe keys: shred LUKS header backup, cosign keys, TPM2 sealed keys, MOK private key. Data recoverable only with passphrase.
+- securectl panic 3 --confirm <passphrase> -- Full wipe: re-encrypt vault with random key (data unrecoverable), clear memory (drop caches), delete all logs, delete registry, delete auth data, delete canary database, remove firstboot marker.
+- securectl status -- Show current panic state (JSON).
+
+Options:
+- --confirm <passphrase> -- Required for levels 2 and 3. Verified against stored scrypt hash.
+- --no-countdown -- Skip the 5-second countdown before executing.
+
+### detect-gpu.sh
+GPU auto-detection script at /usr/libexec/secure-ai/detect-gpu.sh. Writes GPU_BACKEND, GPU_NAME, GPU_LAYERS to /var/lib/secure-ai/inference.env. Can be re-run manually to update.
+
+### detect-tee.sh
+TEE detection script at /usr/libexec/secure-ai/detect-tee.sh. Detects AMD SEV/SEV-ES/SEV-SNP, Intel TDX/TME/MKTME, ARM CCA. Writes results to /var/lib/secure-ai/tee.env.
+
+### detect-vm.sh
+VM environment detection at /usr/libexec/secure-ai/detect-vm.sh. Writes IS_VM, HYPERVISOR, GPU_PASSTHROUGH, VM_GPU_ENABLED to /var/lib/secure-ai/vm.env.
+
+### enroll-secureboot.sh
+Secure Boot MOK enrollment at /usr/libexec/secure-ai/enroll-secureboot.sh. Supports --check-only to verify status without changes.
+
+### tpm2-seal-vault.sh
+TPM2 vault key sealing at /usr/libexec/secure-ai/tpm2-seal-vault.sh. Commands: seal (bind vault key to boot chain), status (check seal state).
+
+### clipboard-isolate.sh
+Clipboard isolation at /usr/libexec/secure-ai/clipboard-isolate.sh. Detects and disables VM clipboard agents. Writes results to /var/lib/secure-ai/clipboard.env.
+
+### verify-boot-chain.sh
+Boot chain integrity verification at /usr/libexec/secure-ai/verify-boot-chain.sh. Run at first boot and can be re-run manually.
+
+### canary-place.sh / canary-check.sh
+Canary file management at /usr/libexec/secure-ai/. canary-place.sh places canary files in sensitive directories. canary-check.sh check verifies canary integrity.
+
+### update-verify.sh
+Update verification at /usr/libexec/secure-ai/update-verify.sh. Cosign signature verification for rpm-ostree upgrades.
+
+### check-dns-leak.sh
+DNS leak detection at /usr/libexec/secure-ai/check-dns-leak.sh. Run periodically by systemd timer.
+
+## Session Modes
+
+Three session modes control the security posture of the appliance. Set in appliance.yaml under session.mode or toggled via the Web UI.
+
+### normal
+Default mode. Standard security posture. Inference workers persist across tasks. Search and airlock are available if enabled in policy. All defense layers active.
+
+### sensitive
+Aggressive worker recycling: inference and diffusion workers are restarted after each task to clear GPU/CPU memory. Designed for handling sensitive documents or confidential prompts where residual data in memory is a concern.
+
+### offline-only
+Hard-blocks all network access regardless of airlock or search settings. Web search returns 403 ("blocked in offline-only mode"). Airlock requests are rejected. Only local inference with already-promoted models is available. Use this mode when network isolation is critical, such as when working with classified or highly sensitive material.
+
+## GPU Auto-Detection
+
+The detect-gpu.sh script runs at first boot (via secure-ai-firstboot.service) and writes /var/lib/secure-ai/inference.env with three variables: GPU_BACKEND, GPU_NAME, and GPU_LAYERS.
+
+### Detection Priority
+1. NVIDIA (CUDA): Checked first via nvidia-smi. If present and functional, sets backend=cuda, layers=-1 (full GPU offload).
+2. AMD (ROCm): Checked via /dev/kfd and /dev/dri/renderD128. Uses rocminfo for GPU name, falls back to sysfs. Sets backend=rocm, layers=-1.
+3. Intel (XPU): Checked via /dev/dri/renderD128 with vendor ID 0x8086. Discrete Arc GPUs get full offload (layers=-1). Integrated Intel GPUs default to CPU inference (layers=0) since CPU is typically faster.
+4. Vulkan (fallback): If no native compute backend is found, checks vulkaninfo. Any Vulkan-capable GPU gets backend=vulkan, layers=-1.
+5. CPU (final fallback): If nothing else is detected, sets backend=cpu, layers=0.
+
+### VM Override
+In VM mode with GPU passthrough disabled (the default), detection results are overridden to force CPU-only inference regardless of detected hardware. This prevents GPU memory from being accessible to the host hypervisor.
+
+### Manual Override
+The gpu.backend field in appliance.yaml can be set to any specific backend (cuda, rocm, xpu, vulkan, mps, cpu) to override auto-detection.
+
+## Emergency Panic
+
+The securectl panic command provides three escalating levels of emergency data protection. Each higher level includes all actions of the levels below it.
+
+### Level 1 -- Lock (reversible)
+- Stop all AI services (inference, diffusion, registry, tool firewall, quarantine watcher, search mediator)
+- Kill remaining worker processes (llama-server, diffusion-worker)
+- Lock vault (sync, unmount, LUKS close)
+- Invalidate all user sessions
+- Write panic state to /run/secure-ai/panic-state.json
+- Recovery: re-authenticate and unlock vault
+
+### Level 2 -- Wipe Keys (requires passphrase)
+- All Level 1 actions
+- Shred LUKS header backup (3-pass overwrite + zero)
+- Shred all cosign signing keys (.key, .pem, .pub)
+- Shred TPM2 sealed keys
+- Shred MOK private key
+- Recovery: data is recoverable only with the original LUKS passphrase (key material is destroyed)
+
+### Level 3 -- Full Wipe (requires passphrase, data unrecoverable)
+- All Level 2 actions
+- Re-encrypt vault with random key (original key destroyed, data unrecoverable)
+- Drop kernel caches to clear memory
+- Shred and delete all audit logs
+- Delete entire model registry
+- Shred and delete all auth data (passphrase hash, sessions)
+- Delete canary database
+- Remove firstboot marker (forces fresh setup on next boot)
+- System is left in a factory-reset state

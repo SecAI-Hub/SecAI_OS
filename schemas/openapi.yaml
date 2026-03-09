@@ -1,0 +1,1246 @@
+openapi: "3.0.3"
+info:
+  title: SecAI OS API
+  version: "0.1.0"
+  description: |
+    HTTP API specification for the Secure AI Appliance (SecAI OS).
+    All services bind to localhost and communicate over loopback only.
+    Mutating endpoints on the Registry, Tool Firewall, and Airlock require
+    a service-to-service Bearer token (loaded from /run/secure-ai/service-token).
+    The Web UI enforces session-based authentication and CSRF protection.
+  license:
+    name: MIT
+
+servers:
+  - url: http://127.0.0.1:8470
+    description: Registry
+  - url: http://127.0.0.1:8475
+    description: Tool Firewall
+  - url: http://127.0.0.1:8480
+    description: Web UI
+  - url: http://127.0.0.1:8485
+    description: Search Mediator
+  - url: http://127.0.0.1:8490
+    description: Airlock
+  - url: http://127.0.0.1:8465
+    description: Inference (llama-server)
+  - url: http://127.0.0.1:8455
+    description: Diffusion
+
+tags:
+  - name: Registry
+    description: Trusted model registry (Go, :8470)
+  - name: Tool Firewall
+    description: Policy-enforced tool call gateway (Go, :8475)
+  - name: Airlock
+    description: Controlled egress proxy (Go, :8490)
+  - name: UI
+    description: Web UI and orchestration layer (Python/Flask, :8480)
+  - name: Search
+    description: Tor-routed web search mediator (Python/Flask, :8485)
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Registry (:8470)
+  # ---------------------------------------------------------------------------
+  /v1/models:
+    get:
+      tags: [Registry]
+      operationId: listModels
+      summary: List all models in the trusted registry
+      responses:
+        "200":
+          description: Array of promoted model artifacts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Model"
+
+  /v1/model:
+    get:
+      tags: [Registry]
+      operationId: getModel
+      summary: Get a single model by name
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Model name as registered in the manifest
+      responses:
+        "200":
+          description: Model details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "400":
+          description: Missing name parameter
+        "404":
+          description: Model not found
+
+  /v1/model/path:
+    get:
+      tags: [Registry]
+      operationId: getModelPath
+      summary: Get the filesystem path of a model file
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Filesystem path
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    example: /var/lib/secure-ai/registry/model.gguf
+        "404":
+          description: Model not found or file missing on disk
+
+  /v1/model/promote:
+    post:
+      tags: [Registry]
+      operationId: promoteModel
+      summary: Promote a scanned artifact into the trusted registry
+      description: |
+        Called by the quarantine pipeline after all scans pass.
+        Requires a service-to-service Bearer token.
+        The file must already exist in the registry directory and its
+        SHA-256 hash must match the request.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromoteRequest"
+      responses:
+        "201":
+          description: Model promoted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Model"
+        "400":
+          description: Missing required fields
+        "403":
+          description: Invalid token or disallowed format
+        "409":
+          description: SHA-256 hash mismatch
+
+  /v1/model/delete:
+    delete:
+      tags: [Registry]
+      operationId: deleteModel
+      summary: Remove a model from the registry and disk
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Model deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+                  name:
+                    type: string
+        "404":
+          description: Model not found
+
+  /v1/model/verify:
+    post:
+      tags: [Registry]
+      operationId: verifyModel
+      summary: Verify a single model's SHA-256 hash against the manifest
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Hash verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: verified
+                  name:
+                    type: string
+                  sha256:
+                    type: string
+                  safe_to_use:
+                    type: string
+                    example: "true"
+        "404":
+          description: Model not found
+        "409":
+          description: Hash mismatch (integrity violation)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: failed
+                  name:
+                    type: string
+                  expected:
+                    type: string
+                  actual:
+                    type: string
+                  error:
+                    type: string
+                  safe_to_use:
+                    type: string
+                    example: "false"
+
+  /v1/model/verify-manifest:
+    post:
+      tags: [Registry]
+      operationId: verifyGGUFManifest
+      summary: Verify a GGUF model's per-tensor integrity manifest via gguf-guard
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Manifest verified or skipped (no manifest available)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [verified, skipped]
+                  name:
+                    type: string
+                  detail:
+                    type: string
+                  reason:
+                    type: string
+        "404":
+          description: Model not found
+        "409":
+          description: Manifest verification failed
+
+  /v1/models/verify-all:
+    post:
+      tags: [Registry]
+      operationId: verifyAllModels
+      summary: Verify hashes of all models in the registry
+      responses:
+        "200":
+          description: All models verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        status:
+                          type: string
+                        sha256:
+                          type: string
+                  checked:
+                    type: integer
+        "409":
+          description: One or more models failed verification
+
+  /v1/integrity/status:
+    get:
+      tags: [Registry]
+      operationId: integrityStatus
+      summary: Get the last periodic integrity check result
+      responses:
+        "200":
+          description: Last check result (or "unknown" if none have run)
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /health:
+    get:
+      tags: [Registry]
+      operationId: registryHealth
+      summary: Registry service health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  model_count:
+                    type: integer
+                  registry_dir:
+                    type: string
+
+  # ---------------------------------------------------------------------------
+  # Tool Firewall (:8475)
+  # ---------------------------------------------------------------------------
+  /v1/evaluate:
+    post:
+      tags: [Tool Firewall]
+      operationId: evaluateToolCall
+      summary: Evaluate whether a tool call is permitted by policy
+      description: |
+        The inference layer sends each tool call here before execution.
+        The firewall checks the deny list, allow list, path constraints,
+        argument validation, and rate limits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolInvokeRequest"
+      responses:
+        "200":
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolInvokeResponse"
+        "400":
+          description: Invalid request body
+
+  /v1/stats:
+    get:
+      tags: [Tool Firewall]
+      operationId: toolFirewallStats
+      summary: Get tool firewall statistics
+      responses:
+        "200":
+          description: Firewall statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  default_action:
+                    type: string
+                    example: deny
+                  allowed_tools:
+                    type: integer
+                  denied_tools:
+                    type: integer
+                  total_requests:
+                    type: integer
+                  denied_requests:
+                    type: integer
+
+  /v1/reload:
+    post:
+      tags: [Tool Firewall]
+      operationId: reloadPolicy
+      summary: Hot-reload policy from disk
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Policy reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: reloaded
+        "500":
+          description: Reload failed
+
+  # ---------------------------------------------------------------------------
+  # Airlock (:8490)
+  # ---------------------------------------------------------------------------
+  /v1/egress/check:
+    post:
+      tags: [Airlock]
+      operationId: checkEgress
+      summary: Check whether an outbound request is permitted
+      description: |
+        Validates the destination URL, HTTP method, body size,
+        PII/credential scanning, and rate limits against the airlock policy.
+        This is a check-only endpoint -- it does not proxy the request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EgressRequest"
+      responses:
+        "200":
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EgressResponse"
+        "400":
+          description: Invalid request body
+
+  # ---------------------------------------------------------------------------
+  # Web UI (:8480)
+  # ---------------------------------------------------------------------------
+  /api/chat:
+    post:
+      tags: [UI]
+      operationId: chat
+      summary: Send a chat completion request to the inference engine
+      description: |
+        Proxies to llama-server /v1/chat/completions. Performs a pre-inference
+        integrity check on the active model before forwarding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Chat completion response from llama-server
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          description: Inference blocked due to model integrity failure
+        "503":
+          description: Inference worker not available
+
+  /api/chat/stream:
+    post:
+      tags: [UI]
+      operationId: chatStream
+      summary: Send a streaming chat completion request
+      description: Returns a Server-Sent Events stream of completion tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: SSE stream of completion tokens
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "403":
+          description: Inference blocked due to model integrity failure
+
+  /api/chat/search:
+    post:
+      tags: [UI]
+      operationId: chatWithSearch
+      summary: Chat with optional Tor-routed web search augmentation
+      description: |
+        If "search" is true, the last user message is used to perform
+        a Tor-routed search. Results are injected as context before
+        sending to the LLM.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatSearchRequest"
+      responses:
+        "200":
+          description: Chat response with optional search context
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/models:
+    get:
+      tags: [UI]
+      operationId: uiListModels
+      summary: List models from the registry via the UI
+      responses:
+        "200":
+          description: Array of model objects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Model"
+
+  /api/models/import:
+    post:
+      tags: [UI]
+      operationId: importModel
+      summary: Import a model file into the quarantine pipeline
+      description: |
+        Accepts a file path or uploaded file. The file is copied into
+        quarantine/incoming for automatic scanning and promotion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  description: Filesystem path to the model file
+      responses:
+        "200":
+          description: Import accepted
+        "400":
+          description: Invalid file or format
+
+  /api/models/delete:
+    post:
+      tags: [UI]
+      operationId: uiDeleteModel
+      summary: Delete a model from the registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Model deleted
+        "404":
+          description: Model not found
+
+  /api/models/verify:
+    post:
+      tags: [UI]
+      operationId: uiVerifyModel
+      summary: Verify a model's hash via the registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Verification result
+        "409":
+          description: Integrity violation
+
+  /api/models/verify-manifest:
+    post:
+      tags: [UI]
+      operationId: uiVerifyManifest
+      summary: Verify a model's gguf-guard manifest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Manifest verification result
+
+  /api/catalog:
+    get:
+      tags: [UI]
+      operationId: getCatalog
+      summary: Get the pre-curated model catalog
+      responses:
+        "200":
+          description: Array of available models for download
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/catalog/download:
+    post:
+      tags: [UI]
+      operationId: catalogDownload
+      summary: Start a one-click model download from the catalog
+      description: |
+        Downloads the model through the airlock (if enabled), places
+        it in quarantine/incoming, and starts the scanning pipeline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, filename]
+              properties:
+                url:
+                  type: string
+                filename:
+                  type: string
+      responses:
+        "200":
+          description: Download started
+        "403":
+          description: Airlock disabled or destination not allowed
+
+  /api/search:
+    post:
+      tags: [UI]
+      operationId: uiSearch
+      summary: Perform a Tor-routed web search via the search mediator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "403":
+          description: Search disabled or offline-only mode
+        "422":
+          description: Query blocked (PII or uniqueness)
+        "502":
+          description: SearXNG/Tor unreachable
+        "503":
+          description: Search mediator not available
+
+  /api/search/status:
+    get:
+      tags: [UI]
+      operationId: searchStatus
+      summary: Check if Tor-routed search is available
+      responses:
+        "200":
+          description: Search stack status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  search_enabled:
+                    type: boolean
+                  searxng_reachable:
+                    type: boolean
+                  tor_routed:
+                    type: boolean
+
+  /api/vault/status:
+    get:
+      tags: [UI]
+      operationId: vaultStatus
+      summary: Get vault lock state and idle time
+      responses:
+        "200":
+          description: Vault status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VaultStatus"
+
+  /api/vault/lock:
+    post:
+      tags: [UI]
+      operationId: vaultLock
+      summary: Manually lock the vault
+      description: |
+        Stops AI services, unmounts the vault, and closes the LUKS device.
+        Requires an authenticated session.
+      responses:
+        "200":
+          description: Vault locked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  state:
+                    type: string
+                    example: locked
+        "401":
+          description: Authentication required
+        "500":
+          description: Lock operation failed
+
+  /api/vault/unlock:
+    post:
+      tags: [UI]
+      operationId: vaultUnlock
+      summary: Unlock the vault with a LUKS passphrase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passphrase]
+              properties:
+                passphrase:
+                  type: string
+                  maxLength: 256
+      responses:
+        "200":
+          description: Vault unlocked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  state:
+                    type: string
+                    example: unlocked
+        "400":
+          description: Missing passphrase
+        "401":
+          description: Incorrect passphrase
+
+  /api/vault/keepalive:
+    post:
+      tags: [UI]
+      operationId: vaultKeepalive
+      summary: Reset the vault idle timer
+      description: Prevents auto-lock during long inference runs.
+      responses:
+        "200":
+          description: Timer reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /api/emergency/status:
+    get:
+      tags: [UI]
+      operationId: emergencyStatus
+      summary: Get current emergency panic state
+      responses:
+        "200":
+          description: Panic state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  panic_active:
+                    type: boolean
+
+  /api/emergency/panic:
+    post:
+      tags: [UI]
+      operationId: emergencyPanic
+      summary: Trigger emergency panic at a specified severity level
+      description: |
+        Level 1: Lock vault, stop services, invalidate sessions (reversible).
+        Level 2: Shred LUKS header, cosign keys, TPM2 keys, MOK key.
+        Level 3: Full wipe -- re-encrypt vault with random key, clear memory,
+        delete logs/registry/auth data. Levels 2 and 3 require passphrase.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PanicRequest"
+      responses:
+        "200":
+          description: Panic executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  level:
+                    type: integer
+                  message:
+                    type: string
+        "400":
+          description: Invalid level or missing fields
+        "401":
+          description: Passphrase verification failed (levels 2-3)
+        "500":
+          description: Panic command failed
+
+  /api/status:
+    get:
+      tags: [UI]
+      operationId: applianceStatus
+      summary: Get overall appliance status
+      responses:
+        "200":
+          description: Aggregate status of all services
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/generate/image:
+    post:
+      tags: [UI]
+      operationId: generateImage
+      summary: Generate an image via the diffusion service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateRequest"
+      responses:
+        "200":
+          description: Generated image data
+        "503":
+          description: Diffusion service not available
+
+  /api/generate/video:
+    post:
+      tags: [UI]
+      operationId: generateVideo
+      summary: Generate a video via the diffusion service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+                image:
+                  type: string
+                  description: Base64-encoded source image
+                num_frames:
+                  type: integer
+      responses:
+        "200":
+          description: Generated video data
+        "503":
+          description: Diffusion service not available
+
+  # ---------------------------------------------------------------------------
+  # Search Mediator (:8485)
+  # ---------------------------------------------------------------------------
+  /v1/search:
+    post:
+      tags: [Search]
+      operationId: search
+      summary: Perform a sanitized, Tor-routed web search
+      description: |
+        Strips PII from the query, pads it to a fixed-size bucket, applies
+        differential privacy (decoy searches, batch timing, query generalization),
+        routes through SearXNG/Tor, sanitizes results (strip HTML, detect injection),
+        and returns a pre-built context string for LLM augmentation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Sanitized search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "403":
+          description: Search disabled or offline-only mode
+        "422":
+          description: Query blocked (too much PII or highly unique)
+        "502":
+          description: SearXNG request failed
+        "504":
+          description: Search timed out (Tor may be connecting)
+
+  /v1/search/test:
+    get:
+      tags: [Search]
+      operationId: searchTest
+      summary: Quick connectivity test for the Tor circuit
+      responses:
+        "200":
+          description: Tor circuit working
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  searxng_status:
+                    type: integer
+                  tor_routed:
+                    type: boolean
+        "403":
+          description: Web search is disabled
+        "502":
+          description: Tor/SearXNG unreachable
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Service-to-service token loaded from /run/secure-ai/service-token.
+        Required for mutating endpoints on Registry, Tool Firewall, and Airlock.
+        If the token file does not exist, auth is disabled (dev mode).
+
+  schemas:
+    Model:
+      type: object
+      description: A promoted model artifact in the trusted registry
+      properties:
+        name:
+          type: string
+          example: mistral-7b-instruct
+        format:
+          type: string
+          enum: [gguf, safetensors]
+        filename:
+          type: string
+          example: mistral-7b-instruct-v0.3.Q4_K_M.gguf
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        size_bytes:
+          type: integer
+          format: int64
+        source:
+          type: string
+          example: huggingface.co
+        promoted_at:
+          type: string
+          format: date-time
+        scan_results:
+          type: object
+          additionalProperties:
+            type: string
+        scanner_versions:
+          type: object
+          additionalProperties:
+            type: string
+        policy_version:
+          type: string
+        source_revision:
+          type: string
+        gguf_guard_fingerprint:
+          type: object
+          description: Structural fingerprint from gguf-guard (GGUF only)
+        gguf_guard_manifest:
+          type: string
+          description: Path to per-tensor integrity manifest file
+      required:
+        - name
+        - format
+        - filename
+        - sha256
+        - size_bytes
+        - promoted_at
+
+    PromoteRequest:
+      type: object
+      description: Request body for promoting an artifact into the registry
+      properties:
+        name:
+          type: string
+        filename:
+          type: string
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        size_bytes:
+          type: integer
+          format: int64
+        source:
+          type: string
+        scan_results:
+          type: object
+          additionalProperties:
+            type: string
+        scanner_versions:
+          type: object
+          additionalProperties:
+            type: string
+        policy_version:
+          type: string
+        source_revision:
+          type: string
+        gguf_guard_fingerprint:
+          type: object
+        gguf_guard_manifest:
+          type: string
+      required:
+        - name
+        - filename
+        - sha256
+
+    ToolInvokeRequest:
+      type: object
+      description: A tool call to evaluate against policy
+      properties:
+        tool:
+          type: string
+          description: Tool identifier (e.g., filesystem.read, shell.exec)
+          example: filesystem.read
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Key-value parameters for the tool call
+          example:
+            path: /vault/user_docs/notes.txt
+      required:
+        - tool
+        - params
+
+    ToolInvokeResponse:
+      type: object
+      description: Result of policy evaluation for a tool call
+      properties:
+        allowed:
+          type: boolean
+        reason:
+          type: string
+          description: Reason for denial (empty if allowed)
+
+    EgressRequest:
+      type: object
+      description: An outbound request to check against airlock policy
+      properties:
+        destination:
+          type: string
+          format: uri
+          example: https://huggingface.co/api/models
+        method:
+          type: string
+          enum: [GET, POST]
+        body:
+          type: string
+          description: Request body content (scanned for PII/credentials)
+      required:
+        - destination
+        - method
+
+    EgressResponse:
+      type: object
+      description: Result of airlock egress evaluation
+      properties:
+        allowed:
+          type: boolean
+        reason:
+          type: string
+
+    ChatRequest:
+      type: object
+      description: Chat completion request forwarded to llama-server
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant]
+              content:
+                type: string
+            required:
+              - role
+              - content
+      required:
+        - messages
+
+    ChatSearchRequest:
+      type: object
+      description: Chat request with optional search augmentation
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+              content:
+                type: string
+        search:
+          type: boolean
+          default: false
+          description: If true, perform a Tor-routed search on the last user message
+      required:
+        - messages
+
+    GenerateRequest:
+      type: object
+      description: Image generation request for the diffusion service
+      properties:
+        prompt:
+          type: string
+        negative_prompt:
+          type: string
+        width:
+          type: integer
+          default: 1024
+          maximum: 2048
+        height:
+          type: integer
+          default: 1024
+          maximum: 2048
+        steps:
+          type: integer
+          default: 30
+          maximum: 100
+        seed:
+          type: integer
+      required:
+        - prompt
+
+    SearchRequest:
+      type: object
+      description: Web search request sent to the search mediator
+      properties:
+        query:
+          type: string
+          maxLength: 200
+          description: Raw search query (PII will be stripped before sending)
+        categories:
+          type: string
+          default: general
+          description: SearXNG search category
+      required:
+        - query
+
+    SearchResponse:
+      type: object
+      description: Sanitized search results from the search mediator
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              snippet:
+                type: string
+              url:
+                type: string
+              source:
+                type: string
+        context:
+          type: string
+          description: Pre-built context string for LLM augmentation
+        query_used:
+          type: string
+          description: The sanitized query that was actually sent
+        redactions:
+          type: integer
+          description: Number of PII patterns redacted
+        tor_routed:
+          type: boolean
+        decoys_sent:
+          type: integer
+          description: Number of differential-privacy decoy searches sent
+        uniqueness_warning:
+          type: string
+          description: Warning if the query contained identifying terms
+
+    VaultStatus:
+      type: object
+      description: Current vault lock state
+      properties:
+        state:
+          type: string
+          enum: [locked, unlocked, unknown]
+        detail:
+          type: string
+        idle_seconds:
+          type: integer
+          description: Seconds since last activity
+        last_activity:
+          type: number
+          format: double
+          description: Unix timestamp of last activity
+
+    PanicRequest:
+      type: object
+      description: Emergency panic trigger request
+      properties:
+        level:
+          type: integer
+          enum: [1, 2, 3]
+          description: |
+            1 = Lock (reversible), 2 = Wipe keys, 3 = Full wipe (irreversible)
+        passphrase:
+          type: string
+          description: Required for levels 2 and 3
+      required:
+        - level

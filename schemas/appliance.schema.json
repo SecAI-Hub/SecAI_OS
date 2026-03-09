@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://secai-hub.github.io/SecAI_OS/schemas/appliance.schema.json",
+  "title": "SecAI OS Appliance Configuration",
+  "description": "JSON Schema for the SecAI OS appliance configuration file (appliance.yaml). Controls runtime behavior, service bindings, hardware settings, and security features.",
+  "type": "object",
+  "required": ["version", "appliance", "paths", "inference", "services"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Schema version number.",
+      "minimum": 1
+    },
+    "appliance": {
+      "type": "object",
+      "description": "Top-level appliance identity.",
+      "required": ["name", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable appliance name.",
+          "default": "Secure AI Appliance"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["local-only", "online-augmented"],
+          "description": "Appliance networking mode. 'local-only' blocks all egress; 'online-augmented' enables airlock and search."
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "description": "Filesystem paths for data storage.",
+      "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "type": "string",
+          "description": "Root path for the LUKS-encrypted vault.",
+          "default": "/var/lib/secure-ai/vault"
+        },
+        "registry": {
+          "type": "string",
+          "description": "Directory for promoted model files.",
+          "default": "/var/lib/secure-ai/registry"
+        },
+        "quarantine": {
+          "type": "string",
+          "description": "Directory for incoming models awaiting scanning.",
+          "default": "/var/lib/secure-ai/quarantine"
+        },
+        "airlock_audit": {
+          "type": "string",
+          "description": "Directory for airlock audit logs.",
+          "default": "/var/lib/secure-ai/airlock-audit"
+        },
+        "tmpdir": {
+          "type": "string",
+          "description": "Temporary directory on tmpfs (memory-backed).",
+          "default": "/run/secure-ai/tmp"
+        },
+        "outputs": {
+          "type": "string",
+          "description": "Directory for generated outputs (images, text).",
+          "default": "/var/lib/secure-ai/vault/outputs"
+        }
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "description": "GPU configuration. Auto-detected at first boot.",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["auto", "cuda", "rocm", "xpu", "vulkan", "mps", "cpu"],
+          "default": "auto",
+          "description": "GPU backend. 'auto' runs detect-gpu.sh at first boot."
+        }
+      }
+    },
+    "vm": {
+      "type": "object",
+      "description": "Virtual machine settings. Auto-detected at first boot.",
+      "additionalProperties": false,
+      "properties": {
+        "gpu_passthrough": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable GPU acceleration in VMs. Disabled by default because GPU memory is visible to the host hypervisor."
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "description": "LLM inference engine settings (llama-server).",
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "type": "string",
+          "default": "llama-cpp",
+          "description": "Inference engine identifier."
+        },
+        "bind": {
+          "type": "string",
+          "default": "127.0.0.1:8465",
+          "description": "Address and port for the inference server."
+        },
+        "gpu_layers": {
+          "type": "integer",
+          "default": -1,
+          "description": "Number of model layers to offload to GPU. -1 means all layers."
+        },
+        "context_size": {
+          "type": "integer",
+          "minimum": 512,
+          "default": 8192,
+          "description": "Maximum context window size in tokens."
+        },
+        "default_model": {
+          "type": "string",
+          "default": "",
+          "description": "Default model name to load. Set after first model is promoted."
+        }
+      }
+    },
+    "diffusion": {
+      "type": "object",
+      "description": "Diffusion model (image/video generation) settings.",
+      "additionalProperties": false,
+      "properties": {
+        "bind": {
+          "type": "string",
+          "default": "127.0.0.1:8455",
+          "description": "Address and port for the diffusion service."
+        },
+        "max_resolution": {
+          "type": "integer",
+          "minimum": 256,
+          "default": 2048,
+          "description": "Maximum image resolution (width or height)."
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "Maximum diffusion steps per generation."
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 120,
+          "description": "Maximum video frames per generation."
+        }
+      }
+    },
+    "services": {
+      "type": "object",
+      "description": "Service bind addresses.",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8470"
+            }
+          }
+        },
+        "tool_firewall": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8475"
+            }
+          }
+        },
+        "ui": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8480"
+            }
+          }
+        },
+        "airlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8490"
+            }
+          }
+        },
+        "diffusion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8455"
+            }
+          }
+        },
+        "search_mediator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8485"
+            }
+          }
+        },
+        "searxng": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "type": "string",
+              "default": "127.0.0.1:8888"
+            }
+          }
+        },
+        "tor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "socks": {
+              "type": "string",
+              "default": "127.0.0.1:9050"
+            }
+          }
+        }
+      }
+    },
+    "traffic_analysis_protection": {
+      "type": "object",
+      "description": "Countermeasures against network traffic analysis.",
+      "additionalProperties": false,
+      "properties": {
+        "query_delay_min": {
+          "type": "number",
+          "minimum": 0.0,
+          "default": 0.5,
+          "description": "Minimum random delay before each search (seconds)."
+        },
+        "query_delay_max": {
+          "type": "number",
+          "minimum": 0.0,
+          "default": 3.0,
+          "description": "Maximum random delay before each search (seconds)."
+        },
+        "query_pad_buckets": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "default": [256, 512, 1024],
+          "description": "Fixed-size query padding buckets (bytes)."
+        },
+        "tor_max_circuit_dirtiness": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Tor MaxCircuitDirtiness in seconds for faster circuit rotation."
+        },
+        "tor_connection_padding": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Tor ConnectionPadding to add dummy cells."
+        },
+        "dns_leak_check_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "DNS leak check interval in minutes."
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "description": "Session mode configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["normal", "sensitive", "offline-only"],
+          "default": "normal",
+          "description": "'sensitive' enables aggressive worker recycling. 'offline-only' hard-blocks all network."
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "description": "Periodic monitoring intervals.",
+      "additionalProperties": false,
+      "properties": {
+        "integrity_interval": {
+          "type": "integer",
+          "enum": [5, 15, 30, 60],
+          "default": 15,
+          "description": "Model integrity check interval in minutes."
+        },
+        "audit_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Audit log chain verification interval in minutes."
+        }
+      }
+    },
+    "vault": {
+      "type": "object",
+      "description": "LUKS-encrypted vault auto-lock settings.",
+      "additionalProperties": false,
+      "properties": {
+        "auto_lock_timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "Auto-lock after this many minutes of inactivity. 0 disables (not recommended)."
+        },
+        "check_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "How often the watchdog checks for inactivity (seconds)."
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "description": "Local authentication settings.",
+      "additionalProperties": false,
+      "properties": {
+        "session_timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "Session timeout in minutes. 0 disables (not recommended)."
+        },
+        "max_failed_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Failed login attempts before lockout."
+        },
+        "lockout_duration": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Initial lockout duration in seconds."
+        },
+        "escalated_lockout": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 900,
+          "description": "Escalated lockout after 15 failed attempts (seconds)."
+        }
+      }
+    },
+    "secure_boot": {
+      "type": "object",
+      "description": "UEFI Secure Boot and TPM2 measured boot settings.",
+      "additionalProperties": false,
+      "properties": {
+        "tpm2_pcr_binding": {
+          "type": "string",
+          "default": "sha256:0,2,4,7",
+          "description": "TPM2 PCR binding for vault key sealing. Format: hash_alg:pcr_list."
+        },
+        "passphrase_fallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow passphrase fallback when PCR values do not match."
+        },
+        "auto_reseal_on_update": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically reseal TPM2 after rpm-ostree upgrades."
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "description": "Process isolation settings (seccomp-bpf, Landlock).",
+      "additionalProperties": false,
+      "properties": {
+        "seccomp_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable seccomp-bpf syscall filtering."
+        },
+        "landlock_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Landlock filesystem access control."
+        },
+        "core_dumps_disabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prevent core dumps across all services."
+        }
+      }
+    },
+    "memory_protection": {
+      "type": "object",
+      "description": "Memory protection hardening to prevent secrets leaking to disk.",
+      "additionalProperties": false,
+      "properties": {
+        "swap_disabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set vm.swappiness=0 to avoid swapping."
+        },
+        "zswap_disabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Disable zswap (compressed swap in RAM)."
+        },
+        "core_dumps_disabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discard all core dumps via core_pattern."
+        },
+        "mlock_sensitive_data": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lock sensitive buffers in RAM via SecureBuffer class."
+        },
+        "tee_detection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Detect AMD SEV / Intel TDX / TME at first boot."
+        }
+      }
+    },
+    "clipboard": {
+      "type": "object",
+      "description": "Clipboard isolation to prevent data leakage in VMs.",
+      "additionalProperties": false,
+      "properties": {
+        "isolate_vm_clipboard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Detect and disable VM clipboard agents (spice-vdagent, vmware-user, etc.)."
+        },
+        "auto_clear_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-clear clipboard on a timer."
+        },
+        "auto_clear_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Clipboard auto-clear interval in seconds."
+        },
+        "private_users_non_ui": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run non-UI services with PrivateUsers=yes to prevent clipboard access."
+        }
+      }
+    },
+    "canary": {
+      "type": "object",
+      "description": "Canary / tripwire system for tamper detection.",
+      "additionalProperties": false,
+      "properties": {
+        "check_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Periodic check interval in minutes."
+        },
+        "inotify_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inotify watcher for real-time detection."
+        },
+        "locations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Filesystem paths for canary files.",
+          "default": [
+            "/var/lib/secure-ai/vault/.canary",
+            "/var/lib/secure-ai/registry/.canary",
+            "/var/lib/secure-ai/keys/.canary",
+            "/etc/secure-ai/.canary"
+          ]
+        }
+      }
+    },
+    "emergency": {
+      "type": "object",
+      "description": "Emergency wipe / panic system.",
+      "additionalProperties": false,
+      "properties": {
+        "countdown_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5,
+          "description": "Countdown before executing panic (can be skipped with --no-countdown)."
+        },
+        "require_passphrase_level2": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require passphrase confirmation for Level 2+ panic."
+        },
+        "audit_log": {
+          "type": "string",
+          "default": "/var/lib/secure-ai/logs/panic-audit.jsonl",
+          "description": "Path to the panic audit log."
+        }
+      }
+    },
+    "updates": {
+      "type": "object",
+      "description": "Update verification and auto-rollback settings.",
+      "additionalProperties": false,
+      "properties": {
+        "cosign_verify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify cosign signatures before applying updates."
+        },
+        "auto_check_interval": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 6,
+          "description": "Automatic update check interval in hours."
+        },
+        "max_rollback_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2,
+          "description": "Maximum rollback attempts before halting for manual intervention."
+        },
+        "health_check_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300,
+          "description": "Health check timeout in seconds after applying an update."
+        },
+        "staged_updates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require explicit user confirmation before applying staged updates."
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "description": "Global logging settings.",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["debug", "info", "warning", "error"],
+          "default": "info",
+          "description": "Log verbosity level."
+        },
+        "store_raw_prompts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Store raw user prompts in logs."
+        },
+        "store_raw_responses": {
+          "type": "boolean",
+          "default": false,
+          "description": "Store raw LLM responses in logs."
+        },
+        "audit_tool_calls": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write structured audit log entries for tool calls."
+        }
+      }
+    }
+  }
+}
