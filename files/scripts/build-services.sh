@@ -80,7 +80,7 @@ LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-b5200}"
 cd "$SRC_DIR"
 curl -fsSL "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_VERSION}.tar.gz" \
     | tar xz
-cd "llama.cpp-${LLAMA_CPP_VERSION#b}"
+cd "llama.cpp-${LLAMA_CPP_VERSION}"
 cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release 2>/dev/null || \
     cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release 2>/dev/null || \
