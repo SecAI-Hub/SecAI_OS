@@ -48,22 +48,22 @@ class TestKernelArgs:
     def test_init_on_free(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         kargs_module = next(m for m in recipe["modules"] if m.get("type") == "kargs")
-        assert "init_on_free=1" in kargs_module["append"]
+        assert "init_on_free=1" in kargs_module["kargs"]
 
     def test_init_on_alloc(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         kargs_module = next(m for m in recipe["modules"] if m.get("type") == "kargs")
-        assert "init_on_alloc=1" in kargs_module["append"]
+        assert "init_on_alloc=1" in kargs_module["kargs"]
 
     def test_zswap_disabled(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         kargs_module = next(m for m in recipe["modules"] if m.get("type") == "kargs")
-        assert "zswap.enabled=0" in kargs_module["append"]
+        assert "zswap.enabled=0" in kargs_module["kargs"]
 
     def test_swap_disabled(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         kargs_module = next(m for m in recipe["modules"] if m.get("type") == "kargs")
-        assert "systemd.swap=0" in kargs_module["append"]
+        assert "systemd.swap=0" in kargs_module["kargs"]
 
 
 class TestTEEDetection:

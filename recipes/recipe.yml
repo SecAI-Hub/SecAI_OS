@@ -1,6 +1,6 @@
 --- # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
-name: SecAI_OS
+name: secai_os
 description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
 
 # SECURITY: Base image should be digest-pinned in production.
