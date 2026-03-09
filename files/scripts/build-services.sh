@@ -115,20 +115,30 @@ mkdir -p "$DIFFUSION_DIR"
 cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
 echo "  -> ${DIFFUSION_DIR}/app.py"
 
-# Search mediator
-echo "Installing: search-mediator"
+# --- llm-search-mediator (standalone: privacy-preserving search bridge) ---
+echo "Installing: llm-search-mediator"
 SEARCH_DIR="/opt/secure-ai/services/search-mediator"
 mkdir -p "$SEARCH_DIR"
-cp /tmp/services/search-mediator/app.py "$SEARCH_DIR/app.py"
-cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
+if [ -d "/tmp/llm-search-mediator" ]; then
+    cp -r /tmp/llm-search-mediator "${SRC_DIR}/llm-search-mediator"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/llm-search-mediator.git "${SRC_DIR}/llm-search-mediator" 2>/dev/null || \
+        echo "WARNING: llm-search-mediator clone failed — search mediator will not be available"
+fi
+if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
+    cp -r "${SRC_DIR}/llm-search-mediator/search_mediator" "$SEARCH_DIR/"
+    pip3 install --prefix=/usr --no-cache-dir -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir -r "${SRC_DIR}/llm-search-mediator/requirements.txt"
+    cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
 #!/usr/bin/env python3
 import sys
 sys.path.insert(0, "/opt/secure-ai/services/search-mediator")
-from app import main
+from search_mediator.app import main
 main()
 WRAPPER
-chmod +x "${INSTALL_DIR}/search-mediator"
-echo "  -> ${INSTALL_DIR}/search-mediator"
+    chmod +x "${INSTALL_DIR}/search-mediator"
+    echo "  -> ${INSTALL_DIR}/search-mediator"
+fi
 
 # HuggingFace CLI (for model downloads)
 echo "Installing: huggingface-hub"
