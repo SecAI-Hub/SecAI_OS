@@ -16,7 +16,7 @@ dnf install -y golang python3 python3-pip cmake gcc gcc-c++ 2>/dev/null || true
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
 # --- Go services (built from monorepo) ---
-for svc in registry airlock; do
+for svc in airlock; do
     echo "Building: $svc"
     cp -r /tmp/services/${svc} "${SRC_DIR}/${svc}"
     cd "${SRC_DIR}/${svc}"
@@ -24,11 +24,21 @@ for svc in registry airlock; do
     echo "  -> ${INSTALL_DIR}/${svc}"
 done
 
-# Build securectl CLI
-echo "Building: securectl"
-cd "${SRC_DIR}/registry"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
-echo "  -> /usr/local/bin/securectl"
+# --- ai-model-registry (standalone: security-first artifact registry) ---
+echo "Building: ai-model-registry"
+if [ -d "/tmp/ai-model-registry" ]; then
+    cp -r /tmp/ai-model-registry "${SRC_DIR}/ai-model-registry"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/ai-model-registry.git "${SRC_DIR}/ai-model-registry" 2>/dev/null || \
+        echo "WARNING: ai-model-registry clone failed — registry will not be available"
+fi
+if [ -d "${SRC_DIR}/ai-model-registry" ]; then
+    cd "${SRC_DIR}/ai-model-registry"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
+    echo "  -> ${INSTALL_DIR}/registry"
+    echo "  -> /usr/local/bin/securectl"
+fi
 
 # --- agent-tool-firewall (standalone: policy gateway for LLM tool calls) ---
 echo "Building: agent-tool-firewall"
