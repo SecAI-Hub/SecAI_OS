@@ -25,6 +25,7 @@ from quarantine.pipeline import (
     _check_weight_anomalies,
     _compute_tensor_stats,
     _run_fickling_scan,
+    _run_garak_scan,
     _run_modelaudit,
     _scan_gguf_chat_template,
     _stats_from_values,
@@ -35,6 +36,7 @@ from quarantine.pipeline import (
     check_format_gate_directory,
     check_hash_pin,
     check_provenance,
+    check_smoke_test,
     check_source_policy,
     check_static_scan,
     run_pipeline,
@@ -956,3 +958,28 @@ class TestAnalyzeWeightDistribution:
         p = make_gguf_file(tmp_path)
         result = check_static_scan(p)
         assert "weight_stats" in result.get("details", {})
+
+
+# ---------------------------------------------------------------------------
+# Garak LLM vulnerability scanner integration
+# ---------------------------------------------------------------------------
+
+class TestGarakIntegration:
+    def test_garak_not_installed(self):
+        """Graceful skip when garak is not installed."""
+        # garak is almost certainly not installed in CI/test environments
+        result = _run_garak_scan(port=9999)
+        assert result["passed"]
+        assert "not installed" in result.get("note", "") or "skipped" in result.get("note", "")
+
+    def test_garak_returns_scanner_name(self):
+        """Result always includes scanner identifier."""
+        result = _run_garak_scan(port=9999)
+        assert result.get("scanner") == "garak"
+
+    def test_garak_integrated_in_smoke_test(self):
+        """check_smoke_test function references garak (code structure check)."""
+        import inspect
+        source = inspect.getsource(check_smoke_test)
+        assert "_run_garak_scan" in source
+        assert "garak" in source
