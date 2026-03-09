@@ -15,12 +15,20 @@ dnf install -y golang python3 python3-pip cmake gcc gcc-c++ 2>/dev/null || true
 
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
-# --- Airlock (built from monorepo) ---
+# --- Airlock (disabled by default — last monorepo service) ---
 echo "Building: airlock"
-cp -r /tmp/services/airlock "${SRC_DIR}/airlock"
-cd "${SRC_DIR}/airlock"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
-echo "  -> ${INSTALL_DIR}/airlock"
+if [ -d "/tmp/services/airlock" ]; then
+    cp -r /tmp/services/airlock "${SRC_DIR}/airlock"
+elif [ -d "/tmp/files/services/airlock" ]; then
+    cp -r /tmp/files/services/airlock "${SRC_DIR}/airlock"
+else
+    echo "WARNING: airlock source not found — airlock will not be available (disabled by default)"
+fi
+if [ -d "${SRC_DIR}/airlock" ]; then
+    cd "${SRC_DIR}/airlock"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
+    echo "  -> ${INSTALL_DIR}/airlock"
+fi
 
 # --- ai-model-registry (standalone: security-first artifact registry) ---
 echo "Building: ai-model-registry"
