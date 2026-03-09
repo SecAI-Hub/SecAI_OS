@@ -15,14 +15,12 @@ dnf install -y golang python3 python3-pip cmake gcc gcc-c++ 2>/dev/null || true
 
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
-# --- Go services (built from monorepo) ---
-for svc in airlock; do
-    echo "Building: $svc"
-    cp -r /tmp/services/${svc} "${SRC_DIR}/${svc}"
-    cd "${SRC_DIR}/${svc}"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/${svc}" .
-    echo "  -> ${INSTALL_DIR}/${svc}"
-done
+# --- Airlock (built from monorepo) ---
+echo "Building: airlock"
+cp -r /tmp/services/airlock "${SRC_DIR}/airlock"
+cd "${SRC_DIR}/airlock"
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
+echo "  -> ${INSTALL_DIR}/airlock"
 
 # --- ai-model-registry (standalone: security-first artifact registry) ---
 echo "Building: ai-model-registry"
