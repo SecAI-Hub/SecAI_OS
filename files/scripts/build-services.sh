@@ -15,8 +15,8 @@ dnf install -y golang python3 python3-pip cmake gcc gcc-c++ 2>/dev/null || true
 
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
-# --- Go services ---
-for svc in registry tool-firewall airlock; do
+# --- Go services (built from monorepo) ---
+for svc in registry airlock; do
     echo "Building: $svc"
     cp -r /tmp/services/${svc} "${SRC_DIR}/${svc}"
     cd "${SRC_DIR}/${svc}"
@@ -29,6 +29,20 @@ echo "Building: securectl"
 cd "${SRC_DIR}/registry"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
 echo "  -> /usr/local/bin/securectl"
+
+# --- agent-tool-firewall (standalone: policy gateway for LLM tool calls) ---
+echo "Building: agent-tool-firewall"
+if [ -d "/tmp/agent-tool-firewall" ]; then
+    cp -r /tmp/agent-tool-firewall "${SRC_DIR}/agent-tool-firewall"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/agent-tool-firewall.git "${SRC_DIR}/agent-tool-firewall" 2>/dev/null || \
+        echo "WARNING: agent-tool-firewall clone failed — tool firewall will not be available"
+fi
+if [ -d "${SRC_DIR}/agent-tool-firewall" ]; then
+    cd "${SRC_DIR}/agent-tool-firewall"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
+    echo "  -> ${INSTALL_DIR}/tool-firewall"
+fi
 
 # --- gguf-guard (GGUF model integrity scanner) ---
 echo "Building: gguf-guard"
