@@ -81,12 +81,14 @@ jobs:
           python -m py_compile services/quarantine/quarantine/pipeline.py
           python -m py_compile services/quarantine/quarantine/watcher.py
           python -m py_compile services/ui/ui/app.py
+          python -m py_compile services/search-mediator/app.py
+          python -m py_compile services/diffusion-worker/app.py
+          python -m py_compile services/common/audit_chain.py
+          python -m py_compile services/common/auth.py
+          python -m py_compile services/common/mlock_helper.py
 
-      - name: Test quarantine pipeline
-        run: python -m pytest tests/test_pipeline.py -v
-
-      - name: Test UI app
-        run: python -m pytest tests/test_ui.py -v
+      - name: Test
+        run: python -m pytest tests/ -v
 
   shellcheck:
     name: Shell Script Lint
@@ -99,11 +101,9 @@ jobs:
       - name: Lint shell scripts
         run: |
           shellcheck -s bash \
-            files/system/usr/libexec/secure-ai/firstboot.sh \
-            files/system/usr/libexec/secure-ai/panic.sh \
-            files/system/usr/libexec/secure-ai/setup-vault.sh \
-            files/system/usr/libexec/secure-ai/select-model.sh \
-            files/scripts/build-services.sh
+            files/system/usr/libexec/secure-ai/*.sh \
+            files/scripts/build-services.sh \
+            files/scripts/generate-mok.sh
 
   policy-validate:
     name: Validate YAML configs
