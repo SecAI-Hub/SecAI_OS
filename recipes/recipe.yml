@@ -34,9 +34,8 @@ modules:
       - git                           # Git for HuggingFace model cloning
       # Clipboard auto-clear (M21)
       - wl-clipboard                  # wl-copy/wl-paste for Wayland clipboard clearing
-      # Tor + SearXNG (anonymous web search)
+      # Tor (anonymous web search — SearXNG installed via pip in build-services.sh)
       - tor                         # Tor SOCKS5 proxy
-      - python3-searxng             # SearXNG metasearch (or installed via pip)
       # Model integrity (M27)
       - fsverity-utils                    # fs-verity Merkle tree integrity on model files
       # Canary / tripwire inotify watcher (M22)

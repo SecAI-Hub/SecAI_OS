@@ -126,7 +126,7 @@ pip3 install --prefix=/usr --no-cache-dir huggingface-hub 2>/dev/null || \
 echo "Installing: searxng"
 pip3 install --prefix=/usr --no-cache-dir searxng 2>/dev/null || \
     pip3 install --prefix=/usr --break-system-packages --no-cache-dir searxng 2>/dev/null || \
-    echo "WARNING: searxng pip install failed, relying on RPM package"
+    echo "WARNING: searxng pip install failed — SearXNG search will not be available"
 
 # Cleanup build artifacts
 rm -rf "$SRC_DIR"
