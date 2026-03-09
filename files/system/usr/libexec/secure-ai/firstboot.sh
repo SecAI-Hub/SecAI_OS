@@ -104,6 +104,7 @@ VMEOF
 
 # Log VM warnings if applicable
 if [ -f "${SECURE_AI_ROOT}/vm.env" ]; then
+    # shellcheck source=/dev/null
     source "${SECURE_AI_ROOT}/vm.env"
     if [ "${IS_VM:-false}" = "true" ]; then
         log "============================================"
@@ -134,6 +135,7 @@ GPUEOF
 
 # In VM mode with GPU passthrough disabled, force CPU-only
 if [ -f "${SECURE_AI_ROOT}/vm.env" ]; then
+    # shellcheck source=/dev/null
     source "${SECURE_AI_ROOT}/vm.env"
     if [ "${IS_VM:-false}" = "true" ] && [ "${VM_GPU_ENABLED:-false}" = "false" ]; then
         log "VM mode: forcing CPU-only inference (GPU passthrough disabled)"
@@ -193,6 +195,7 @@ TEEEOF
 
 # Log TEE results
 if [ -f "${SECURE_AI_ROOT}/tee.env" ]; then
+    # shellcheck source=/dev/null
     source "${SECURE_AI_ROOT}/tee.env"
     if [ "${MEM_ENCRYPT:-false}" = "true" ]; then
         log "Hardware memory encryption: ACTIVE (${TEE_TYPE})"
@@ -247,6 +250,7 @@ log "Running clipboard isolation..."
 
 # Log clipboard results
 if [ -f "${SECURE_AI_ROOT}/clipboard.env" ]; then
+    # shellcheck source=/dev/null
     source "${SECURE_AI_ROOT}/clipboard.env"
     if [ "${CLIPBOARD_ISOLATED:-false}" = "true" ]; then
         log "Clipboard isolation: ACTIVE"

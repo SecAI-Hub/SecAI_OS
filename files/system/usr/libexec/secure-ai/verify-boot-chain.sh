@@ -99,6 +99,7 @@ check_kernel_signature() {
     fi
 
     local kernel
+    # shellcheck disable=SC2012  # ls is fine here — vmlinuz filenames are predictable
     kernel=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || echo "")
     if [ -z "$kernel" ]; then
         checks[kernel_sig]="unchecked"

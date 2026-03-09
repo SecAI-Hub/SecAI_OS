@@ -108,6 +108,7 @@ cmd_check() {
     # Check if kernel is signed
     if command -v sbverify &>/dev/null; then
         local kernel
+        # shellcheck disable=SC2012  # ls is fine here — vmlinuz filenames are predictable
         kernel=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || echo "")
         if [ -n "$kernel" ]; then
             if sbverify --cert "$MOK_PEM" "$kernel" 2>/dev/null; then

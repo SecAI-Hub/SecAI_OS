@@ -109,7 +109,6 @@ else:
 
 # --- Verify cosign signature ---
 verify_signature() {
-    local commit="${1:-}"
     log "Verifying cosign signature..."
 
     if [ ! -f "$COSIGN_PUB_KEY" ]; then

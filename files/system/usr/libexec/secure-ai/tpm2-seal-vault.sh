@@ -38,7 +38,8 @@ log() {
 
 audit() {
     local event="$1"; shift
-    local entry="{\"timestamp\":\"$(date -Iseconds)\",\"event\":\"${event}\""
+    local entry
+    entry="{\"timestamp\":\"$(date -Iseconds)\",\"event\":\"${event}\""
     for kv in "$@"; do
         local key="${kv%%=*}"
         local val="${kv#*=}"

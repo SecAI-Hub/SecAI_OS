@@ -112,7 +112,6 @@ check_canary() {
     local expected_hash="$2"
     local expected_perms="$3"
     local expected_owner="$4"
-    local issues=""
 
     # Check existence
     if [ ! -f "$path" ]; then
