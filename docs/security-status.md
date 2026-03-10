@@ -2,7 +2,7 @@
 
 This document tracks the implementation status of all security features in SecAI_OS.
 
-Last updated: 2026-03-08
+Last updated: 2026-03-10
 
 ## Implemented Features
 
@@ -28,7 +28,7 @@ Last updated: 2026-03-08
 | Secure Boot + TPM2 measured boot | Implemented | M17 | MOK signing, TPM2 vault sealing, measured boot chain |
 | Memory protection (swap/zswap/core dumps/mlock/TEE) | Implemented | M18 | Swap encryption, zswap hardening, core dump prevention, mlock, TEE detection |
 | Traffic analysis protection | Implemented | M19 | Padding, timing jitter, dummy traffic for anonymity |
-| Differential privacy for search | Implemented | M20 | Noise injection for search queries |
+| Privacy-preserving query obfuscation for search | Implemented | M20 | Decoy queries, k-anonymity, timing randomization, query padding |
 | Clipboard isolation | Implemented | M21 | Clipboard access controls and sanitization |
 | Canary/tripwire system | Implemented | M22 | Canary tokens and filesystem tripwires |
 | Emergency wipe (3-level panic) | Implemented | M23 | Three escalation levels for emergency data destruction |
@@ -39,12 +39,16 @@ Last updated: 2026-03-08
 | Weight distribution fingerprinting | Implemented | M28 | Statistical fingerprinting of model weight distributions |
 | Garak LLM vulnerability scanner | Implemented | M29 | Garak integration for LLM vulnerability scanning |
 | gguf-guard deep GGUF integrity scanner | Implemented | M30 | Deep GGUF file format integrity and safety scanning |
+| Agent Mode (Phase 1: safe local autopilot) | Implemented | M31 | Policy-bound agent on :8476 with deny-by-default policy engine, capability tokens, hard budgets, storage gateway, 82 tests |
 
 ## Planned Features
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| OPA/Rego policy engine | Planned | Intended for declarative policy management |
+| OPA/Rego policy engine | Planned (high priority) | Declarative policy management — elevated priority now that Agent Mode introduces risk-tier approvals, workspace scope rules, sensitivity enforcement, and outbound gating |
+| Agent Mode Phase 2: Explainability | Planned | Detailed explanations for quarantine/registry/airlock decisions, per-workspace permissions, audit views |
+| Agent Mode Phase 3: Online-assisted | Planned | Airlock-mediated outbound, search mediation, redaction flows, approval UX for online steps |
+| Agent Mode Phase 4: Stronger isolation | Planned | Adversarial testing, signed releases, additional sandboxing profiles, policy bypass regression tests |
 | SBOMs for releases | Planned | Software Bill of Materials for each release artifact |
 | Signed release artifacts with provenance attestation | Planned | SLSA-compatible provenance for release binaries and images |
 | Hardware security module (HSM) support | Planned | External HSM integration for key management |

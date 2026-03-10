@@ -1,10 +1,12 @@
 # Policy YAML Schema Reference
 
-The policy file at `/etc/secure-ai/policy/policy.yaml` controls the behavior of all SecAI OS services. This document describes every section and field.
+Policy files at `/etc/secure-ai/policy/` control the behavior of all SecAI OS services. The main file is `policy.yaml`; the agent has a separate `agent.yaml`.
 
 ---
 
 ## Top-Level Structure
+
+### policy.yaml
 
 ```yaml
 defaults:
@@ -20,6 +22,29 @@ tools:
 search:
   ...
 airlock:
+  ...
+```
+
+### agent.yaml (separate file)
+
+```yaml
+version: 1
+default_mode: ...
+budgets:
+  ...
+workspace:
+  ...
+allowed_tools:
+  ...
+configurable_defaults:
+  ...
+always_deny:
+  ...
+hard_approval:
+  ...
+worker:
+  ...
+logging:
   ...
 ```
 
@@ -240,3 +265,139 @@ airlock:
   max_body_size_mb: 10
   https_only: true
 ```
+
+---
+
+## agent (separate file: `/etc/secure-ai/policy/agent.yaml`)
+
+Controls the Agent Mode service. This is a separate YAML file because the agent has its own lifecycle and policy model distinct from the tool firewall and airlock.
+
+### Top-level fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `version` | integer | `1` | Schema version |
+| `default_mode` | string | `"standard"` | Default operating mode: offline_only, standard, online_assisted, sensitive |
+
+### budgets
+
+Hard budget limits per session mode. Each mode key contains the same fields.
+
+| Field | Type | Default (standard) | Description |
+|---|---|---|---|
+| `max_steps` | integer | `30` | Maximum plan steps per task |
+| `max_tool_calls` | integer | `80` | Maximum tool firewall invocations per task |
+| `max_tokens` | integer | `32000` | Maximum LLM tokens consumed per task |
+| `max_wall_clock_seconds` | integer | `600` | Maximum wall-clock time in seconds |
+| `max_files_touched` | integer | `20` | Maximum files read or written per task |
+| `max_output_bytes` | integer | `1048576` | Maximum output size in bytes (1 MB) |
+
+**Example:**
+
+```yaml
+budgets:
+  standard:
+    max_steps: 30
+    max_tool_calls: 80
+    max_tokens: 32000
+    max_wall_clock_seconds: 600
+    max_files_touched: 20
+    max_output_bytes: 1048576
+  sensitive:
+    max_steps: 10
+    max_tool_calls: 20
+    max_tokens: 16000
+    max_wall_clock_seconds: 120
+    max_files_touched: 5
+    max_output_bytes: 524288
+```
+
+### workspace
+
+Registered workspace aliases that map to filesystem paths. Clients submit workspace IDs; the agent resolves them server-side.
+
+| Field | Type | Description |
+|---|---|---|
+| `readable` | list of strings | Glob patterns for directories the agent may read |
+| `writable` | list of strings | Glob patterns for directories the agent may write |
+
+**Example:**
+
+```yaml
+workspace:
+  readable:
+    - "/var/lib/secure-ai/vault/user_docs/**"
+  writable:
+    - "/var/lib/secure-ai/vault/outputs/**"
+```
+
+### allowed_tools
+
+List of tool identifiers the agent may invoke through the tool firewall. These must also be permitted in the main `policy.yaml` tools section.
+
+```yaml
+allowed_tools:
+  - "filesystem.read"
+  - "filesystem.write"
+  - "filesystem.list"
+```
+
+### configurable_defaults
+
+Default user preferences for medium-risk (configurable) actions. Values: `always` (auto-approve), `ask` (prompt user), `never` (auto-deny).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `read_file` | string | `"ask"` | Preference for file read actions |
+| `write_file` | string | `"ask"` | Preference for file write actions |
+| `overwrite_file` | string | `"ask"` | Preference for overwriting existing files |
+| `tool_invoke` | string | `"ask"` | Preference for tool firewall invocations |
+
+### always_deny
+
+List of action names that are always denied regardless of mode, approval, or user preferences. These represent hard security invariants.
+
+```yaml
+always_deny:
+  - "change_security"
+```
+
+### hard_approval
+
+Actions that always require explicit user approval. Cannot be set to `"always"` in configurable_defaults.
+
+```yaml
+hard_approval:
+  - "outbound_request"
+  - "export_data"
+  - "trust_change"
+  - "batch_delete"
+  - "widen_scope"
+  - "enable_tool"
+```
+
+### worker
+
+Worker isolation settings for task execution.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sensitive_mode_recycle` | boolean | `true` | Recycle worker after each task in sensitive mode |
+| `tmpfs_scratch` | boolean | `true` | Use tmpfs for scratch files (cleaned on task completion) |
+| `no_ambient_secrets` | boolean | `true` | Prevent secret leakage into worker environment |
+
+### logging
+
+Minimal-logging policy for agent audit records.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `log_policy_decisions` | boolean | `true` | Log allow/ask/deny decisions |
+| `log_step_actions` | boolean | `true` | Log which actions were executed |
+| `log_raw_prompts` | boolean | `false` | Log raw LLM prompts (privacy risk — keep false) |
+| `log_raw_content` | boolean | `false` | Log raw file content (privacy risk — keep false) |
+| `log_file_paths` | boolean | `true` | Log which files were accessed (not their content) |
+
+### audit retention
+
+Audit log retention is not yet configurable (planned for Phase 2). Current behavior: logs accumulate at `/var/lib/secure-ai/logs/agent-audit.jsonl` with no automatic rotation. Operators should configure logrotate or a cron job for retention management.

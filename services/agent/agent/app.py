@@ -41,6 +41,30 @@ _AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/agent-aud
 _VAULT_ROOT = os.getenv("VAULT_ROOT", "/var/lib/secure-ai/vault")
 _BIND_ADDR = os.getenv("BIND_ADDR", "127.0.0.1:8476")
 
+# --- Workspace registry (resolve IDs to real paths server-side) ------------
+
+_WORKSPACE_REGISTRY: dict[str, str] = {
+    "user_docs": "/var/lib/secure-ai/vault/user_docs/**",
+    "outputs": "/var/lib/secure-ai/vault/outputs/**",
+}
+
+
+def _resolve_workspaces(workspace_ids: list[str]) -> tuple[list[str], str | None]:
+    """Resolve workspace IDs to filesystem paths.
+
+    Returns (resolved_paths, error_message). If error_message is not None,
+    at least one workspace ID was unrecognised.
+    """
+    resolved = []
+    for ws_id in workspace_ids:
+        ws_id = ws_id.strip()
+        if ws_id in _WORKSPACE_REGISTRY:
+            resolved.append(_WORKSPACE_REGISTRY[ws_id])
+        else:
+            return [], f"unknown workspace: {ws_id}"
+    return resolved, None
+
+
 # --- Service layer ---------------------------------------------------------
 
 _policy = PolicyEngine(_POLICY_PATH)
@@ -99,7 +123,7 @@ def submit_task():
     Body: {
         "intent": "summarize the documents in my workspace",
         "mode": "standard",            // optional, default: standard
-        "workspace": ["/vault/user_docs"],  // optional extra readable paths
+        "workspace": ["user_docs"],    // optional workspace IDs (resolved server-side)
         "preferences": {}               // optional configurable_prefs
     }
     """
@@ -118,8 +142,14 @@ def submit_task():
     except ValueError:
         return jsonify({"error": f"invalid mode: {mode_str}"}), 400
 
-    # Create capability token
-    extra_readable = body.get("workspace", [])
+    # Resolve workspace IDs to filesystem paths (no raw paths from clients)
+    workspace_ids = body.get("workspace", [])
+    if not isinstance(workspace_ids, list):
+        return jsonify({"error": "workspace must be an array of workspace IDs"}), 400
+    extra_readable, ws_err = _resolve_workspaces(workspace_ids)
+    if ws_err:
+        return jsonify({"error": ws_err}), 400
+
     prefs = body.get("preferences", {})
     cap = create_token(mode, extra_readable=extra_readable, configurable_prefs=prefs)
     budgets = create_budgets(mode)

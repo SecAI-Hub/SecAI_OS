@@ -39,7 +39,7 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 
-# Privilege restriction — needs localhost for service APIs
+# Privilege restriction — loopback-only IPC to other services
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=yes
@@ -50,11 +50,18 @@ RestrictRealtime=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# Namespace restrictions
+# Network restriction — enforce loopback-only at IP level.
+# The agent needs AF_INET for HTTP to peer services on localhost,
+# but must never connect to external addresses.
+IPAddressDeny=any
+IPAddressAllow=localhost
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Syscall filtering
+# Syscall filtering — @system-service covers core operations;
+# @network-io is required for loopback HTTP (socket, connect, sendto,
+# recvfrom, bind, listen, accept). Additional deny groups block
+# everything else.
 SystemCallFilter=@system-service @network-io
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native

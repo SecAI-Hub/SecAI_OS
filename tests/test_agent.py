@@ -745,6 +745,137 @@ class TestAgentAPI:
         assert resp.headers.get("X-Frame-Options") == "DENY"
         assert resp.headers.get("Cache-Control") == "no-store"
 
+    @patch("agent.agent.planner.requests.post")
+    def test_workspace_ids_resolved(self, mock_post):
+        """Workspace IDs like 'user_docs' are accepted and resolved."""
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize my documents",
+            "workspace": ["user_docs"],
+        })
+        assert resp.status_code == 201
+
+    def test_workspace_raw_path_rejected(self):
+        """Raw filesystem paths are rejected — only workspace IDs allowed."""
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize",
+            "workspace": ["/var/lib/secure-ai/vault/user_docs"],
+        })
+        assert resp.status_code == 400
+        assert "unknown workspace" in resp.get_json()["error"]
+
+    def test_workspace_invalid_id_rejected(self):
+        """Unknown workspace IDs are rejected."""
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize",
+            "workspace": ["nonexistent_workspace"],
+        })
+        assert resp.status_code == 400
+
+    def test_workspace_not_array_rejected(self):
+        """Non-array workspace values are rejected."""
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize",
+            "workspace": "/vault/user_docs",
+        })
+        assert resp.status_code == 400
+
+
+# ============================================================================
+# Security invariant tests
+# ============================================================================
+
+class TestSecurityInvariants:
+    """Tests proving the agent cannot bypass airlock or widen scope silently."""
+
+    def test_cannot_bypass_airlock(self):
+        """Outbound requests fail when airlock is unreachable (fail-closed)."""
+        tmpdir = tempfile.mkdtemp()
+        storage = StorageGateway(tmpdir)
+        executor = Executor(storage)
+        cap = CapabilityToken(
+            allow_online=True,
+            sensitivity_ceiling=SensitivityLevel.HIGH,
+        )
+        step = Step(
+            action=StepAction.OUTBOUND_REQUEST,
+            status=StepStatus.APPROVED,
+            params={"url": "https://example.com", "method": "GET"},
+        )
+        budgets = Budgets()
+        with patch("agent.agent.executor.requests.post") as mock:
+            mock.side_effect = requests.ConnectionError("airlock unreachable")
+            result_step = executor.execute(step, cap, budgets)
+        assert result_step.result["ok"] is False
+        assert "airlock unreachable" in result_step.result["error"]
+
+    def test_cannot_bypass_tool_firewall(self):
+        """Tool invocations fail when tool firewall is unreachable (fail-closed)."""
+        tmpdir = tempfile.mkdtemp()
+        storage = StorageGateway(tmpdir)
+        executor = Executor(storage)
+        cap = CapabilityToken(
+            allowed_tools=["filesystem.read"],
+            sensitivity_ceiling=SensitivityLevel.HIGH,
+        )
+        step = Step(
+            action=StepAction.TOOL_INVOKE,
+            status=StepStatus.APPROVED,
+            params={"tool": "filesystem.read", "args": {"path": "/tmp/test"}},
+        )
+        budgets = Budgets()
+        with patch("agent.agent.executor.requests.post") as mock:
+            mock.side_effect = requests.ConnectionError("firewall unreachable")
+            result_step = executor.execute(step, cap, budgets)
+        assert result_step.result["ok"] is False
+        assert "firewall unreachable" in result_step.result["error"]
+
+    def test_cannot_widen_scope_silently(self):
+        """Widen-scope action is always classified as approval-required."""
+        assert classify_risk(StepAction.WIDEN_SCOPE) == RiskLevel.APPROVAL_REQUIRED
+
+    def test_cannot_change_security_settings(self):
+        """Security setting changes are always denied regardless of mode."""
+        engine = PolicyEngine()
+        for mode in SessionMode:
+            cap = CapabilityToken(session_mode=mode)
+            step = Step(action=StepAction.CHANGE_SECURITY)
+            decision, _ = engine.evaluate(step, cap)
+            assert decision == "deny", f"change_security should be denied in {mode.value}"
+
+    def test_outbound_denied_without_online_flag(self):
+        """Outbound requests are denied when the capability token has allow_online=False."""
+        engine = PolicyEngine()
+        cap = CapabilityToken(
+            allow_online=False,
+            session_mode=SessionMode.STANDARD,
+        )
+        step = Step(action=StepAction.OUTBOUND_REQUEST)
+        decision, _ = engine.evaluate(step, cap)
+        assert decision == "deny"
+
+    def test_offline_mode_blocks_all_online(self):
+        """Offline-only mode denies outbound and export even with allow_online."""
+        engine = PolicyEngine()
+        cap = CapabilityToken(
+            allow_online=True,
+            session_mode=SessionMode.OFFLINE_ONLY,
+        )
+        for action in [StepAction.OUTBOUND_REQUEST, StepAction.EXPORT_DATA]:
+            step = Step(action=action)
+            decision, _ = engine.evaluate(step, cap)
+            assert decision == "deny", f"{action.value} should be denied in offline_only"
+
+    def test_storage_blocks_system_paths(self):
+        """Storage gateway blocks access to sensitive system files."""
+        tmpdir = tempfile.mkdtemp()
+        gw = StorageGateway(tmpdir)
+        cap = CapabilityToken(readable_paths=["/etc/**"])
+        for blocked in ["/etc/shadow", "/etc/passwd", "/run/secure-ai/service-token"]:
+            result = gw.read_file(blocked, cap)
+            assert not result["ok"], f"{blocked} should be blocked"
+            assert "blocked" in result["error"]
+
 
 # ============================================================================
 # Data model tests

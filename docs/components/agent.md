@@ -109,13 +109,27 @@ All file access goes through the storage gateway, which:
 
 ## Sandboxing
 
-The agent systemd service uses the same defense-in-depth as other services:
+The agent systemd service uses the same defense-in-depth as other services, with additional network-level restrictions:
+
 - `DynamicUser=yes`, `ProtectSystem=strict`, `ProtectHome=yes`
 - `PrivateTmp=yes`, `PrivateDevices=yes`, `NoNewPrivileges=yes`
 - `MemoryDenyWriteExecute=yes`, `RestrictNamespaces=yes`
-- `SystemCallFilter=@system-service @network-io`
+- `IPAddressDeny=any`, `IPAddressAllow=localhost` — enforces loopback-only IPC at the network level
+- `RestrictAddressFamilies=AF_UNIX AF_INET` — no raw sockets or other families
+- `SystemCallFilter=@system-service @network-io` — @network-io required for loopback HTTP to peer services; combined with IPAddressDeny this prevents any non-loopback traffic
+- `SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete`
 - `MemoryMax=512M`, `CPUQuota=50%`, `TasksMax=64`
-- Read-only access to vault user docs; read-write only to outputs and logs
+- Read-only access to vault user docs and service tokens; read-write only to outputs and logs
+
+## Inter-service authentication
+
+The agent communicates with other services (registry, tool firewall, airlock, inference) over loopback HTTP. Authentication and access control:
+
+- **Loopback-only binding**: All services bind to `127.0.0.1`, never `0.0.0.0`. Only processes on the local machine can reach service endpoints.
+- **Service tokens**: The agent reads a shared service token from `/run/secure-ai/service-token` (mounted read-only). This Bearer token authenticates requests to peer services with mutating endpoints. If the token file is absent (dev mode), auth is bypassed.
+- **UI→Agent auth**: The UI proxies agent requests through `/api/agent/*` endpoints. These are protected by session-based authentication (scrypt passphrase) and are not in the public endpoint list. All state-changing endpoints (approve, deny, cancel) require an authenticated session.
+- **CSRF protection**: The UI applies CSRF token validation on all POST requests, including agent proxy endpoints. Direct agent-to-agent calls are backend-only (no browser origin).
+- **Fail-closed**: If any peer service is unreachable, the agent returns an error rather than bypassing the service (e.g., tool firewall unreachable → tool invocation fails, airlock unreachable → outbound request fails).
 
 ## Implementation phases
 

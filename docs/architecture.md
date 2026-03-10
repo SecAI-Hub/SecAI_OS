@@ -143,6 +143,8 @@ All outbound network traffic is blocked by nftables rules. The only exceptions a
 | Promotion boundary | Quarantine | Registry | 7-stage pipeline, SHA-256 pinning, cosign signatures |
 | Execution boundary | Registry | Inference Worker | Read-only model access, systemd sandboxing |
 | Tool boundary | Inference Worker | Tool Firewall | Default-deny policy, path allowlisting, rate limiting |
+| Agent boundary | UI / User | Agent | Capability tokens, deny-by-default policy, hard budgets, sensitivity ceiling |
+| Agent→Service boundary | Agent | Tool Firewall / Airlock | Loopback-only IPC, service tokens, IPAddressDeny=any, fail-closed |
 | Search boundary | Inference Worker | Search Mediator | PII stripping, injection detection, Tor routing |
 | User boundary | UI | User | Local passphrase auth, vault encryption |
 

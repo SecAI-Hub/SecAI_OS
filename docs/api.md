@@ -122,12 +122,14 @@ Submit a new task for the agent to plan and execute.
   {
     "intent": "summarize the documents in my workspace",
     "mode": "standard",
-    "workspace": ["/vault/user_docs/project"],
+    "workspace": ["user_docs"],
     "preferences": { "read_file": "always" }
   }
   ```
+- **Fields:**
+  - `workspace`: array of workspace IDs (not raw paths). Available IDs: `user_docs`, `outputs`. Resolved to filesystem paths server-side.
 - **Response:** `201 Created` -- task with planned steps
-- **Error:** `400 Bad Request` -- missing intent or invalid mode
+- **Error:** `400 Bad Request` -- missing intent, invalid mode, or unknown workspace ID
 
 ### GET /v1/task/{id}
 

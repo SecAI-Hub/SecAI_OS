@@ -87,12 +87,13 @@ journalctl -u secure-ai-quarantine-watcher -f  # watch pipeline
 | Airlock | 8490 | Go | Sanitized egress proxy (disabled by default) |
 | Inference Worker | 8465 | llama.cpp | LLM inference (CUDA / ROCm / Vulkan / Metal / CPU) |
 | Diffusion Worker | 8455 | Python | Image and video generation |
+| Agent | 8476 | Python | Policy-bound local autopilot (deny-by-default, capability tokens) |
 | Quarantine | -- | Python | 7-stage verify, scan, and promote pipeline |
 | Search Mediator | 8485 | Python | Tor-routed web search with PII stripping |
 | SearXNG | 8888 | Python | Self-hosted metasearch (privacy-respecting engines) |
 | Tor | 9050 | C | Anonymous SOCKS5 proxy |
 
-See [docs/architecture.md](docs/architecture.md) for design decisions and service dependencies. Per-service docs: [registry](docs/components/registry.md) | [tool-firewall](docs/components/tool-firewall.md) | [airlock](docs/components/airlock.md) | [quarantine](docs/components/quarantine.md) | [search-mediator](docs/components/search-mediator.md)
+See [docs/architecture.md](docs/architecture.md) for design decisions and service dependencies. Per-service docs: [registry](docs/components/registry.md) | [tool-firewall](docs/components/tool-firewall.md) | [agent](docs/components/agent.md) | [airlock](docs/components/airlock.md) | [quarantine](docs/components/quarantine.md) | [search-mediator](docs/components/search-mediator.md)
 
 ### 7-Stage Quarantine Pipeline
 
@@ -125,18 +126,19 @@ Every model passes through the same fully automatic pipeline:
 | **Models** | 7-stage quarantine pipeline with gguf-guard deep integrity scanning |
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
-| **Search** | Tor-routed, differential privacy (decoy queries, k-anonymity), injection detection |
+| **Search** | Tor-routed, privacy-preserving query obfuscation (decoy queries, k-anonymity), injection detection |
 | **Audit** | Hash-chained tamper-evident logs with periodic verification |
 | **Auth** | Scrypt passphrase hashing, rate-limited login, session management |
 | **Vault** | Auto-lock after 30 min idle, TPM2-sealed keys |
 | **Services** | Systemd sandboxing: ProtectSystem, PrivateNetwork, seccomp-bpf, Landlock |
+| **Agent** | Deny-by-default policy engine, capability tokens, hard budgets, loopback-only IPC, IPAddressDeny |
 | **GPU** | Vendor-specific DeviceAllow, PrivateNetwork on all workers |
 | **Clipboard** | VM clipboard agents disabled, auto-clear every 60s |
 | **Tripwire** | Canary files in sensitive dirs, inotify real-time monitoring |
 | **Emergency** | 3-level panic (lock / wipe keys / full wipe) with passphrase gates |
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 30 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 31 milestones.
 
 ### Verify Image Signatures
 
@@ -170,6 +172,7 @@ All config lives in `/etc/secure-ai/` (baked into the image, read-only at runtim
 |------|---------|
 | `config/appliance.yaml` | Mode, paths, inference/diffusion settings, service binds |
 | `policy/policy.yaml` | Tool firewall, airlock, quarantine stages, search settings |
+| `policy/agent.yaml` | Agent mode: operating modes, budgets, workspace scopes, allow/deny matrix |
 | `policy/models.lock.yaml` | Pinned model hashes (supply-chain verification) |
 | `policy/sources.allowlist.yaml` | Trusted model sources |
 
@@ -185,8 +188,8 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 30 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 620+ tests across Go, Python, shell |
+| [Security Status](docs/security-status.md) | Implementation status of all 31 milestones |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 700+ tests across Go, Python, shell |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -201,6 +204,7 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Tool Firewall](docs/components/tool-firewall.md) | Policy-gated tool invocation |
 | [Airlock](docs/components/airlock.md) | Sanitized egress proxy |
 | [Quarantine](docs/components/quarantine.md) | 7-stage scanning pipeline |
+| [Agent](docs/components/agent.md) | Policy-bound local autopilot |
 | [Search Mediator](docs/components/search-mediator.md) | Tor-routed web search |
 
 ### Install Guides
@@ -277,7 +281,7 @@ curl -X POST http://127.0.0.1:8480/api/vault/unlock \ # Unlock
 sudo systemctl start secure-ai-tor secure-ai-searxng secure-ai-search-mediator
 ```
 
-Privacy: Tor-routed, PII stripped, injection detection, differential privacy (decoy queries), audit logged. See [examples/enable-web-search.md](examples/enable-web-search.md).
+Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query obfuscation (decoy queries, k-anonymity), audit logged. See [examples/enable-web-search.md](examples/enable-web-search.md).
 
 ---
 
@@ -289,7 +293,7 @@ cd services/registry && go test -v -race ./...
 cd services/tool-firewall && go test -v -race ./...
 cd services/airlock && go test -v -race ./...
 
-# Python tests (620+ total)
+# Python tests (700+ total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -304,7 +308,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 30 milestones (click to expand)</summary>
+<summary>All 31 milestones (click to expand)</summary>
 
 - [x] **M0** -- Threat model, dataflow, invariants, policy files
 - [x] **M1** -- Bootable OS, encrypted vault, GPU drivers
@@ -326,7 +330,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **M17** -- Secure Boot + TPM2 measured boot
 - [x] **M18** -- Memory protection (swap/zswap/core dumps/mlock/TEE)
 - [x] **M19** -- Traffic analysis protection
-- [x] **M20** -- Differential privacy for search
+- [x] **M20** -- Privacy-preserving query obfuscation for search
 - [x] **M21** -- Clipboard isolation
 - [x] **M22** -- Canary/tripwire system
 - [x] **M23** -- Emergency wipe (3-level panic)
@@ -337,6 +341,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **M28** -- Weight distribution fingerprinting
 - [x] **M29** -- Garak LLM vulnerability scanner
 - [x] **M30** -- gguf-guard deep GGUF integrity scanner
+- [x] **M31** -- Agent Mode (Phase 1: safe local autopilot)
 
 </details>
 
@@ -356,11 +361,12 @@ services/
   registry/             Go -- Trusted Registry
   tool-firewall/        Go -- Policy engine + tool gateway
   airlock/              Go -- Online egress proxy
+  agent/                Python/Flask -- Policy-bound local autopilot
   quarantine/           Python -- 7-stage verification + scanning pipeline
   diffusion-worker/     Python -- Image/video generation
   search-mediator/      Python -- Tor-routed web search
   ui/                   Python/Flask -- Web UI
-tests/                  620+ Python tests, 26 Go tests
+tests/                  700+ Python tests, 26 Go tests
 docs/                   Architecture, API, threat model, install guides
 schemas/                OpenAPI spec, JSON Schema for config files
 examples/               Task-oriented walkthroughs

@@ -1088,7 +1088,7 @@ paths:
       summary: Perform a sanitized, Tor-routed web search
       description: |
         Strips PII from the query, pads it to a fixed-size bucket, applies
-        differential privacy (decoy searches, batch timing, query generalization),
+        privacy-preserving query obfuscation (decoy searches, batch timing, query generalization),
         routes through SearXNG/Tor, sanitizes results (strip HTML, detect injection),
         and returns a pre-built context string for LLM augmentation.
       requestBody:
@@ -1164,7 +1164,8 @@ components:
           type: array
           items:
             type: string
-          description: Extra readable path scopes
+            enum: [user_docs, outputs]
+          description: Workspace IDs to include (resolved to filesystem paths server-side; raw paths are not accepted)
         preferences:
           type: object
           additionalProperties:
