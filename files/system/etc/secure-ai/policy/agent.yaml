@@ -93,4 +93,4 @@ logging:
   log_step_actions: true
   log_raw_prompts: false
   log_raw_content: false
-  log_file_paths: true  # log which files were accessed (not content)
+  log_file_paths: false  # log which files were accessed (not content) — off by default to reduce audit sensitivity

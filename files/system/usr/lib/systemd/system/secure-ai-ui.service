@@ -11,7 +11,7 @@ Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
 Environment=AIRLOCK_URL=http://127.0.0.1:8490
-Environment=AGENT_URL=http://127.0.0.1:8476
+Environment=AGENT_SOCKET=/run/secure-ai/agent.sock
 Environment=SEARCH_MEDIATOR_URL=http://127.0.0.1:8485
 Environment=DIFFUSION_URL=http://127.0.0.1:8455
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml

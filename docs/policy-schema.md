@@ -396,7 +396,7 @@ Minimal-logging policy for agent audit records.
 | `log_step_actions` | boolean | `true` | Log which actions were executed |
 | `log_raw_prompts` | boolean | `false` | Log raw LLM prompts (privacy risk — keep false) |
 | `log_raw_content` | boolean | `false` | Log raw file content (privacy risk — keep false) |
-| `log_file_paths` | boolean | `true` | Log which files were accessed (not their content) |
+| `log_file_paths` | boolean | `false` | Log which files were accessed (not their content) — off by default to reduce audit sensitivity; enable explicitly if needed |
 
 ### audit retention
 

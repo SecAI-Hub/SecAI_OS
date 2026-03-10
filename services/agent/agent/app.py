@@ -471,16 +471,44 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    host, port_str = _BIND_ADDR.rsplit(":", 1)
-    port = int(port_str)
-
-    log.info("agent service starting on %s:%d", host, port)
     log.info("policy: %s", _POLICY_PATH)
     log.info("vault: %s", _VAULT_ROOT)
 
-    _audit_log("service_started", {"bind": _BIND_ADDR})
+    if _BIND_ADDR.startswith("unix:"):
+        # Production: listen on a Unix domain socket (no TCP attack surface).
+        import socket as _socket
+        from wsgiref.simple_server import WSGIServer, make_server
 
-    app.run(host=host, port=port, debug=False, threaded=True)
+        sock_path = _BIND_ADDR[len("unix:"):]
+
+        # Remove stale socket file if present (e.g. after unclean shutdown).
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
+
+        class _UnixWSGIServer(WSGIServer):
+            address_family = _socket.AF_UNIX
+
+        srv = make_server("", 0, app, server_class=_UnixWSGIServer)
+        # Replace the TCP socket with a Unix one bound to sock_path.
+        srv.socket.close()
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        sock.bind(sock_path)
+        os.chmod(sock_path, 0o660)
+        sock.listen(128)
+        srv.socket = sock
+
+        log.info("agent service starting on unix:%s", sock_path)
+        _audit_log("service_started", {"bind": _BIND_ADDR})
+        srv.serve_forever()
+    else:
+        # Dev / fallback: plain TCP on loopback.
+        host, port_str = _BIND_ADDR.rsplit(":", 1)
+        port = int(port_str)
+        log.info("agent service starting on %s:%d (TCP — dev mode)", host, port)
+        _audit_log("service_started", {"bind": _BIND_ADDR})
+        app.run(host=host, port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":

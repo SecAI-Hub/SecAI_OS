@@ -39,7 +39,7 @@ Last updated: 2026-03-10
 | Weight distribution fingerprinting | Implemented | M28 | Statistical fingerprinting of model weight distributions |
 | Garak LLM vulnerability scanner | Implemented | M29 | Garak integration for LLM vulnerability scanning |
 | gguf-guard deep GGUF integrity scanner | Implemented | M30 | Deep GGUF file format integrity and safety scanning |
-| Agent Mode (Phase 1: safe local autopilot) | Implemented | M31 | Policy-bound agent on :8476 with deny-by-default policy engine, capability tokens, hard budgets, storage gateway, 82 tests |
+| Agent Mode (Phase 1: safe local autopilot) | Implemented | M31 | Policy-bound agent with deny-by-default policy engine, capability tokens, hard budgets, storage gateway, workspace ID abstraction, Unix socket IPC (UI→Agent), 93 tests across 11 classes |
 
 ## Planned Features
 

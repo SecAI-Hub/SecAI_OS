@@ -35,7 +35,23 @@ Last updated: 2026-03-10
 | test_canary_tripwire.py | tests/ | ~49 | Canary token placement, tripwire monitoring, alerts |
 | test_emergency_wipe.py | tests/ | ~65 | 3-level panic wipe, secure deletion, escalation |
 | test_update_rollback.py | tests/ | ~74 | Signed update verification, rollback triggers, recovery |
-| test_agent.py | tests/ | ~93 | Agent policy engine, capability tokens, storage gateway, budgets, planner, executor, API, workspace validation, security invariants |
+| test_agent.py | tests/ | 93 | Agent policy engine, capability tokens, storage gateway, budgets, planner, executor, API, workspace validation, security invariants |
+
+### Agent test breakdown (test_agent.py)
+
+| Class | Tests | Category | Description |
+|-------|-------|----------|-------------|
+| TestClassifyRisk | 3 | Unit | Risk-level classification for agent actions |
+| TestPolicyEngine | 15 | Unit / Security | Deny-by-default evaluation, always-deny invariants, hard-approval gates |
+| TestCapabilityTokens | 8 | Unit | Token creation, workspace scoping, mode-specific capabilities |
+| TestBudgets | 7 | Unit | Budget enforcement, limit checking, sensitive-mode tighter limits |
+| TestStorageGateway | 14 | Unit / Security | Path scope validation, sensitive file blocking, sensitivity ceiling, file size limits |
+| TestPlannerHeuristic | 8 | Unit | Heuristic plan decomposition, keyword-to-action mapping |
+| TestPlannerLLMParsing | 4 | Unit | LLM response parsing, malformed plan rejection |
+| TestExecutor | 6 | Integration | Step execution dispatch, tool firewall calls, budget tracking |
+| TestAgentAPI | 17 | Integration | HTTP endpoint contracts, input validation, task CRUD lifecycle, workspace ID resolution |
+| TestSecurityInvariants | 7 | Security | Fail-closed behavior, airlock/firewall bypass prevention, service-down handling |
+| TestDataModels | 4 | Unit | Task/step serialisation, status enum coverage |
 
 ## Shell Checks
 

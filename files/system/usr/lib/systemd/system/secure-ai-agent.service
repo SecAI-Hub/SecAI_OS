@@ -6,7 +6,7 @@ Requires=secure-ai-registry.service secure-ai-tool-firewall.service
 [Service]
 Type=simple
 ExecStart=/usr/libexec/secure-ai/agent
-Environment=BIND_ADDR=127.0.0.1:8476
+Environment=BIND_ADDR=unix:/run/secure-ai/agent.sock
 Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
@@ -20,7 +20,8 @@ Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 # Filesystem isolation
 DynamicUser=yes
 ReadOnlyPaths=/etc/secure-ai
-ReadOnlyPaths=/run/secure-ai
+ReadOnlyPaths=/run/secure-ai/service-token
+ReadWritePaths=/run/secure-ai/agent.sock
 ReadOnlyPaths=/var/lib/secure-ai/vault/user_docs
 ReadWritePaths=/var/lib/secure-ai/vault/outputs
 ReadWritePaths=/var/lib/secure-ai/logs

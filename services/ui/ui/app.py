@@ -164,7 +164,8 @@ DIFFUSION_URL = os.getenv("DIFFUSION_URL", "http://127.0.0.1:8455")
 REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
 TOOL_FIREWALL_URL = os.getenv("TOOL_FIREWALL_URL", "http://127.0.0.1:8475")
 AIRLOCK_URL = os.getenv("AIRLOCK_URL", "http://127.0.0.1:8490")
-AGENT_URL = os.getenv("AGENT_URL", "http://127.0.0.1:8476")
+AGENT_SOCKET = os.getenv("AGENT_SOCKET", "")  # Unix socket path (production)
+AGENT_URL = os.getenv("AGENT_URL", "http://127.0.0.1:8476")  # TCP fallback (dev)
 SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
@@ -1695,7 +1696,51 @@ def update_health():
 
 
 # ---------------------------------------------------------------------------
-# Agent mode endpoints (proxy to agent service at :8476)
+# Agent IPC helper (Unix socket in production, TCP fallback for dev)
+# ---------------------------------------------------------------------------
+
+def _agent_request(method: str, path: str, *, json_body=None, params=None, timeout=10):
+    """Send an HTTP request to the agent service.
+
+    Uses a Unix domain socket when AGENT_SOCKET is set (production),
+    falls back to TCP via AGENT_URL for local development.
+    """
+    if AGENT_SOCKET:
+        import http.client
+        import json as _json
+        import socket as _socket
+
+        conn = http.client.HTTPConnection("localhost")
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(AGENT_SOCKET)
+        conn.sock = sock
+
+        headers = {"Host": "localhost"}
+        body = None
+        if json_body is not None:
+            body = _json.dumps(json_body).encode()
+            headers["Content-Type"] = "application/json"
+        if params:
+            from urllib.parse import urlencode
+            path = f"{path}?{urlencode(params)}"
+
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        return _json.loads(data), resp.status
+    else:
+        url = f"{AGENT_URL}{path}"
+        if method == "GET":
+            resp = requests.get(url, params=params, timeout=timeout)
+        else:
+            resp = requests.post(url, json=json_body, timeout=timeout)
+        return resp.json(), resp.status_code
+
+
+# ---------------------------------------------------------------------------
+# Agent mode endpoints (proxy to agent service)
 # ---------------------------------------------------------------------------
 
 @app.route("/api/agent/task", methods=["POST"])
@@ -1703,17 +1748,13 @@ def agent_submit_task():
     """Submit a task to the agent service."""
     body = request.get_json(silent=True) or {}
     try:
-        resp = requests.post(
-            f"{AGENT_URL}/v1/task",
-            json=body,
-            timeout=30,
-        )
+        data, status = _agent_request("POST", "/v1/task", json_body=body, timeout=30)
         _ui_audit.append("agent_task_submitted", {
             "intent_length": len(body.get("intent", "")),
             "mode": body.get("mode", "standard"),
         })
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1721,9 +1762,9 @@ def agent_submit_task():
 def agent_get_task(task_id):
     """Get task status from agent service."""
     try:
-        resp = requests.get(f"{AGENT_URL}/v1/task/{task_id}", timeout=10)
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        data, status = _agent_request("GET", f"/v1/task/{task_id}")
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1732,14 +1773,10 @@ def agent_approve_steps(task_id):
     """Approve pending steps in an agent task."""
     body = request.get_json(silent=True) or {}
     try:
-        resp = requests.post(
-            f"{AGENT_URL}/v1/task/{task_id}/approve",
-            json=body,
-            timeout=10,
-        )
+        data, status = _agent_request("POST", f"/v1/task/{task_id}/approve", json_body=body)
         _ui_audit.append("agent_steps_approved", {"task_id": task_id})
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1748,14 +1785,10 @@ def agent_deny_steps(task_id):
     """Deny pending steps in an agent task."""
     body = request.get_json(silent=True) or {}
     try:
-        resp = requests.post(
-            f"{AGENT_URL}/v1/task/{task_id}/deny",
-            json=body,
-            timeout=10,
-        )
+        data, status = _agent_request("POST", f"/v1/task/{task_id}/deny", json_body=body)
         _ui_audit.append("agent_steps_denied", {"task_id": task_id})
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1763,14 +1796,10 @@ def agent_deny_steps(task_id):
 def agent_cancel_task(task_id):
     """Cancel an agent task."""
     try:
-        resp = requests.post(
-            f"{AGENT_URL}/v1/task/{task_id}/cancel",
-            json={},
-            timeout=10,
-        )
+        data, status = _agent_request("POST", f"/v1/task/{task_id}/cancel", json_body={})
         _ui_audit.append("agent_task_cancelled", {"task_id": task_id})
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1779,13 +1808,9 @@ def agent_list_tasks():
     """List agent tasks."""
     limit = request.args.get("limit", 50)
     try:
-        resp = requests.get(
-            f"{AGENT_URL}/v1/tasks",
-            params={"limit": limit},
-            timeout=10,
-        )
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        data, status = _agent_request("GET", "/v1/tasks", params={"limit": limit})
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
@@ -1793,9 +1818,9 @@ def agent_list_tasks():
 def agent_list_modes():
     """List available agent operating modes."""
     try:
-        resp = requests.get(f"{AGENT_URL}/v1/modes", timeout=5)
-        return jsonify(resp.json()), resp.status_code
-    except requests.RequestException as e:
+        data, status = _agent_request("GET", "/v1/modes", timeout=5)
+        return jsonify(data), status
+    except Exception as e:
         return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 

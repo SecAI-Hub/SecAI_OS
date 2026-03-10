@@ -55,9 +55,9 @@ User Intent
 
 | Property | Value |
 |----------|-------|
-| Port | 8476 |
+| Socket | `/run/secure-ai/agent.sock` (Unix domain socket) |
 | Language | Python (Flask) |
-| Bind | 127.0.0.1 (loopback only) |
+| Bind | Unix socket in production; TCP 127.0.0.1:8476 in dev mode |
 | Systemd unit | `secure-ai-agent.service` |
 | Policy file | `/etc/secure-ai/policy/agent.yaml` |
 | Audit log | `/var/lib/secure-ai/logs/agent-audit.jsonl` |
@@ -125,8 +125,9 @@ The agent systemd service uses the same defense-in-depth as other services, with
 
 The agent communicates with other services (registry, tool firewall, airlock, inference) over loopback HTTP. Authentication and access control:
 
-- **Loopback-only binding**: All services bind to `127.0.0.1`, never `0.0.0.0`. Only processes on the local machine can reach service endpoints.
-- **Service tokens**: The agent reads a shared service token from `/run/secure-ai/service-token` (mounted read-only). This Bearer token authenticates requests to peer services with mutating endpoints. If the token file is absent (dev mode), auth is bypassed.
+- **Unix socket IPC (UI→Agent)**: The UI communicates with the agent over a Unix domain socket at `/run/secure-ai/agent.sock`, eliminating TCP attack surface for this channel. The agent still uses loopback TCP for outbound calls to Go services (registry, tool firewall, airlock) which do not support Unix sockets.
+- **Loopback-only binding**: Go services bind to `127.0.0.1`, never `0.0.0.0`. Only processes on the local machine can reach their endpoints.
+- **Service tokens**: The agent reads a shared service token from `/run/secure-ai/service-token` (mounted read-only). This Bearer token authenticates requests to peer services with mutating endpoints. **Production (appliance):** The token file MUST exist; if absent, the agent refuses to start. **Development only:** When `SECAI_DEV_MODE=1` is set explicitly, auth is bypassed to allow local testing without the full service stack. Dev-mode bypass is never enabled on the appliance image — the systemd unit does not set this variable, and the token file is provisioned at boot by `secure-ai-init.service`.
 - **UI→Agent auth**: The UI proxies agent requests through `/api/agent/*` endpoints. These are protected by session-based authentication (scrypt passphrase) and are not in the public endpoint list. All state-changing endpoints (approve, deny, cancel) require an authenticated session.
 - **CSRF protection**: The UI applies CSRF token validation on all POST requests, including agent proxy endpoints. Direct agent-to-agent calls are backend-only (no browser origin).
 - **Fail-closed**: If any peer service is unreachable, the agent returns an error rather than bypassing the service (e.g., tool firewall unreachable → tool invocation fails, airlock unreachable → outbound request fails).
