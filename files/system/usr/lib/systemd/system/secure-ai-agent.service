@@ -1,33 +1,29 @@
 [Unit]
-Description=Secure AI Web UI (local chat and management interface)
-After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service
+Description=Secure AI Agent (policy-bound local autopilot)
+After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-inference.service
 Requires=secure-ai-registry.service secure-ai-tool-firewall.service
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/ui
-Environment=BIND_ADDR=127.0.0.1:8480
+ExecStart=/usr/libexec/secure-ai/agent
+Environment=BIND_ADDR=127.0.0.1:8476
 Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
 Environment=AIRLOCK_URL=http://127.0.0.1:8490
-Environment=AGENT_URL=http://127.0.0.1:8476
 Environment=SEARCH_MEDIATOR_URL=http://127.0.0.1:8485
-Environment=DIFFUSION_URL=http://127.0.0.1:8455
-Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
-Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine
-Environment=SECURE_AI_ROOT=/var/lib/secure-ai
-Environment=AUTH_DATA_DIR=/var/lib/secure-ai/auth
-Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/ui-audit.jsonl
+Environment=AGENT_POLICY_PATH=/etc/secure-ai/policy/agent.yaml
+Environment=VAULT_ROOT=/var/lib/secure-ai/vault
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/agent-audit.jsonl
 Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes
 ReadOnlyPaths=/etc/secure-ai
-ReadWritePaths=/var/lib/secure-ai/quarantine
+ReadOnlyPaths=/run/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/vault/user_docs
+ReadWritePaths=/var/lib/secure-ai/vault/outputs
 ReadWritePaths=/var/lib/secure-ai/logs
-ReadWritePaths=/var/lib/secure-ai/auth
-ReadWritePaths=/run/secure-ai
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -56,7 +52,7 @@ AmbientCapabilities=
 
 # Namespace restrictions
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET
 
 # Syscall filtering
 SystemCallFilter=@system-service @network-io
@@ -65,10 +61,10 @@ SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
 # Resource limits
-MemoryMax=1G
+MemoryMax=512M
 CPUQuota=50%
-TasksMax=128
-LimitNOFILE=4096
+TasksMax=64
+LimitNOFILE=1024
 LimitCORE=0
 
 Restart=always

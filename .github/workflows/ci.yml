@@ -67,6 +67,13 @@ jobs:
           python -m py_compile services/common/audit_chain.py
           python -m py_compile services/common/auth.py
           python -m py_compile services/common/mlock_helper.py
+          python -m py_compile services/agent/agent/app.py
+          python -m py_compile services/agent/agent/models.py
+          python -m py_compile services/agent/agent/policy.py
+          python -m py_compile services/agent/agent/planner.py
+          python -m py_compile services/agent/agent/executor.py
+          python -m py_compile services/agent/agent/storage.py
+          python -m py_compile services/agent/agent/capabilities.py
 
       - name: Test
         run: python -m pytest tests/ -v

@@ -94,6 +94,7 @@ modules:
       enabled:
         - secure-ai-registry.service
         - secure-ai-tool-firewall.service
+        - secure-ai-agent.service
         - secure-ai-ui.service
         - secure-ai-quarantine-watcher.service
         - secure-ai-inference.service

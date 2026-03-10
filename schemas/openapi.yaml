@@ -22,6 +22,8 @@ servers:
     description: Search Mediator
   - url: http://127.0.0.1:8490
     description: Airlock
+  - url: http://127.0.0.1:8476
+    description: Agent (policy-bound autopilot)
   - url: http://127.0.0.1:8465
     description: Inference (llama-server)
   - url: http://127.0.0.1:8455
@@ -36,6 +38,8 @@ tags:
     description: Controlled egress proxy (Go, :8490)
   - name: UI
     description: Web UI and orchestration layer (Python/Flask, :8480)
+  - name: Agent
+    description: Policy-bound local autopilot (Python/Flask, :8476)
   - name: Search
     description: Tor-routed web search mediator (Python/Flask, :8485)
 
@@ -421,6 +425,196 @@ paths:
                 $ref: "#/components/schemas/EgressResponse"
         "400":
           description: Invalid request body
+
+  # ---------------------------------------------------------------------------
+  # Agent (:8476)
+  # ---------------------------------------------------------------------------
+  /v1/task:
+    post:
+      tags: [Agent]
+      operationId: submitTask
+      summary: Submit a new task for the agent to plan and execute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTaskRequest"
+      responses:
+        "201":
+          description: Task created and planned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "400":
+          description: Missing or invalid intent/mode
+        "500":
+          description: Planning failed
+
+  /v1/task/{taskId}:
+    get:
+      tags: [Agent]
+      operationId: getTask
+      summary: Get task status and step details
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "404":
+          description: Task not found
+
+  /v1/task/{taskId}/approve:
+    post:
+      tags: [Agent]
+      operationId: approveSteps
+      summary: Approve pending steps in a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                step_ids:
+                  type: array
+                  items:
+                    type: string
+                approve_all:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Steps approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "404":
+          description: Task not found
+        "409":
+          description: Task not in pending_approval state
+
+  /v1/task/{taskId}/deny:
+    post:
+      tags: [Agent]
+      operationId: denySteps
+      summary: Deny pending steps in a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                step_ids:
+                  type: array
+                  items:
+                    type: string
+                deny_all:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Steps denied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "404":
+          description: Task not found
+
+  /v1/task/{taskId}/cancel:
+    post:
+      tags: [Agent]
+      operationId: cancelTask
+      summary: Cancel a running or pending task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "404":
+          description: Task not found
+        "409":
+          description: Task already completed/failed/cancelled
+
+  /v1/tasks:
+    get:
+      tags: [Agent]
+      operationId: listTasks
+      summary: List tasks (most recent first)
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Array of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentTask"
+
+  /v1/modes:
+    get:
+      tags: [Agent]
+      operationId: listModes
+      summary: List available agent operating modes
+      responses:
+        "200":
+          description: Array of mode descriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
 
   # ---------------------------------------------------------------------------
   # Web UI (:8480)
@@ -954,6 +1148,123 @@ components:
         If the token file does not exist, auth is disabled (dev mode).
 
   schemas:
+    AgentTaskRequest:
+      type: object
+      description: Request to submit a task to the agent
+      properties:
+        intent:
+          type: string
+          maxLength: 2000
+          description: What the user wants the agent to do
+        mode:
+          type: string
+          enum: [offline_only, standard, online_assisted, sensitive]
+          default: standard
+        workspace:
+          type: array
+          items:
+            type: string
+          description: Extra readable path scopes
+        preferences:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [always, ask, never]
+          description: User preferences for configurable actions
+      required:
+        - intent
+
+    AgentTask:
+      type: object
+      description: An agent task with its planned steps and status
+      properties:
+        task_id:
+          type: string
+        intent:
+          type: string
+        status:
+          type: string
+          enum: [planning, pending_approval, running, completed, failed, cancelled]
+        mode:
+          type: string
+          enum: [offline_only, standard, online_assisted, sensitive]
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentStep"
+        capability:
+          type: object
+          properties:
+            token_id:
+              type: string
+            readable_paths:
+              type: array
+              items:
+                type: string
+            writable_paths:
+              type: array
+              items:
+                type: string
+            allowed_tools:
+              type: array
+              items:
+                type: string
+            allow_online:
+              type: boolean
+            sensitivity_ceiling:
+              type: string
+              enum: [low, medium, high]
+        created_at:
+          type: number
+          format: double
+        completed_at:
+          type: number
+          format: double
+          nullable: true
+
+    AgentStep:
+      type: object
+      description: A single step within an agent task
+      properties:
+        step_id:
+          type: string
+        action:
+          type: string
+          enum:
+            - local_search
+            - summarize
+            - draft
+            - classify
+            - report
+            - explain_security
+            - read_file
+            - write_file
+            - overwrite_file
+            - tool_invoke
+            - outbound_request
+            - export_data
+            - trust_change
+            - batch_delete
+            - widen_scope
+            - enable_tool
+            - change_security
+        description:
+          type: string
+        risk_level:
+          type: string
+          enum: [auto, configurable, approval_required]
+        status:
+          type: string
+          enum: [pending, approved, denied, running, completed, failed, skipped]
+        params:
+          type: object
+        result:
+          type: object
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
     Model:
       type: object
       description: A promoted model artifact in the trusted registry

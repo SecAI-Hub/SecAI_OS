@@ -120,6 +120,18 @@ for scanner in modelscan fickling garak modelaudit; do
         echo "  WARNING: ${scanner} install failed — scanner will be skipped at runtime"
 done
 
+# --- Agent service (policy-bound local autopilot) ---
+echo "Building: agent"
+pip3 install --prefix=/usr --no-cache-dir /tmp/services/agent 2>/dev/null || \
+    pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/agent
+cat > "${INSTALL_DIR}/agent" <<'WRAPPER'
+#!/usr/bin/env python3
+from agent.app import main
+main()
+WRAPPER
+chmod +x "${INSTALL_DIR}/agent"
+echo "  -> ${INSTALL_DIR}/agent"
+
 # Web UI
 echo "Building: ui"
 pip3 install --prefix=/usr --no-cache-dir /tmp/services/ui 2>/dev/null || \

@@ -22,7 +22,11 @@ A 7-stage verification pipeline that every model must pass before promotion. Che
 
 The active inference environment. llama-server runs promoted models from the trusted registry. The Tool Firewall gates all tool invocations through a default-deny policy. The Search Mediator (disabled by default) provides sanitized, Tor-routed web search.
 
-### 5. Airlock
+### 5. Agent Layer
+
+A policy-bound local autopilot that orchestrates bounded local workflows. The Agent (:8476) decomposes user intent into steps, evaluates each step against a deny-by-default policy engine with capability tokens and sensitivity labels, then executes approved steps through the storage gateway and tool firewall. Low-risk local actions (search, summarize, draft) run automatically; high-risk actions (outbound requests, exports, trust changes) require explicit approval. See [Agent Mode](components/agent.md) for full details.
+
+### 6. Airlock
 
 The controlled boundary between the appliance and the external network. Disabled by default because it represents the largest privacy risk surface. When enabled, it enforces destination allowlists, PII scanning, credential scanning, rate limiting, and HTTPS-only connections.
 
@@ -62,6 +66,13 @@ The controlled boundary between the appliance and the external network. Disabled
                               +--------+---------+
                                        |
                               +--------v---------+
+                              |   Agent Autopilot |
+                              |  :8476 (Py)       |
+                              | (planner, policy, |
+                              |  storage gateway) |
+                              +--------+---------+
+                                       |
+                              +--------v---------+
                               |     UI (Flask)    |
                               |  :8480 (Py)       |
                               +--------+---------+
@@ -85,6 +96,11 @@ The controlled boundary between the appliance and the external network. Disabled
 
 ```
 UI (:8480)
+  |-- Agent (:8476)                 [task orchestration, policy enforcement]
+  |     |-- Inference Worker         [planning via LLM]
+  |     |-- Tool Firewall (:8475)   [tool invocation gating]
+  |     |-- Storage Gateway          [mediated file access]
+  |     +-- Airlock (:8490)         [outbound requests, if enabled]
   |-- Inference Worker (llama-server)
   |     |-- Registry (:8470)        [model loading]
   |     |-- Tool Firewall (:8475)   [tool invocation]

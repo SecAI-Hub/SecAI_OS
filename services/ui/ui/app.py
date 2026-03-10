@@ -164,6 +164,7 @@ DIFFUSION_URL = os.getenv("DIFFUSION_URL", "http://127.0.0.1:8455")
 REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
 TOOL_FIREWALL_URL = os.getenv("TOOL_FIREWALL_URL", "http://127.0.0.1:8475")
 AIRLOCK_URL = os.getenv("AIRLOCK_URL", "http://127.0.0.1:8490")
+AGENT_URL = os.getenv("AGENT_URL", "http://127.0.0.1:8476")
 SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
@@ -1691,6 +1692,111 @@ def update_health():
         except Exception:
             return jsonify({"status": "unknown", "error": "failed to read health log"})
     return jsonify({"status": "unknown", "detail": "no health check has run yet"})
+
+
+# ---------------------------------------------------------------------------
+# Agent mode endpoints (proxy to agent service at :8476)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/agent/task", methods=["POST"])
+def agent_submit_task():
+    """Submit a task to the agent service."""
+    body = request.get_json(silent=True) or {}
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/v1/task",
+            json=body,
+            timeout=30,
+        )
+        _ui_audit.append("agent_task_submitted", {
+            "intent_length": len(body.get("intent", "")),
+            "mode": body.get("mode", "standard"),
+        })
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/task/<task_id>")
+def agent_get_task(task_id):
+    """Get task status from agent service."""
+    try:
+        resp = requests.get(f"{AGENT_URL}/v1/task/{task_id}", timeout=10)
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/task/<task_id>/approve", methods=["POST"])
+def agent_approve_steps(task_id):
+    """Approve pending steps in an agent task."""
+    body = request.get_json(silent=True) or {}
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/v1/task/{task_id}/approve",
+            json=body,
+            timeout=10,
+        )
+        _ui_audit.append("agent_steps_approved", {"task_id": task_id})
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/task/<task_id>/deny", methods=["POST"])
+def agent_deny_steps(task_id):
+    """Deny pending steps in an agent task."""
+    body = request.get_json(silent=True) or {}
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/v1/task/{task_id}/deny",
+            json=body,
+            timeout=10,
+        )
+        _ui_audit.append("agent_steps_denied", {"task_id": task_id})
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/task/<task_id>/cancel", methods=["POST"])
+def agent_cancel_task(task_id):
+    """Cancel an agent task."""
+    try:
+        resp = requests.post(
+            f"{AGENT_URL}/v1/task/{task_id}/cancel",
+            json={},
+            timeout=10,
+        )
+        _ui_audit.append("agent_task_cancelled", {"task_id": task_id})
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/tasks")
+def agent_list_tasks():
+    """List agent tasks."""
+    limit = request.args.get("limit", 50)
+    try:
+        resp = requests.get(
+            f"{AGENT_URL}/v1/tasks",
+            params={"limit": limit},
+            timeout=10,
+        )
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+
+
+@app.route("/api/agent/modes")
+def agent_list_modes():
+    """List available agent operating modes."""
+    try:
+        resp = requests.get(f"{AGENT_URL}/v1/modes", timeout=5)
+        return jsonify(resp.json()), resp.status_code
+    except requests.RequestException as e:
+        return jsonify({"error": f"agent service unavailable: {e}"}), 503
 
 
 def main():

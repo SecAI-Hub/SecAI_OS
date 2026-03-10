@@ -111,6 +111,79 @@ Proxy an outbound request through the Airlock.
 
 ---
 
+## Agent API (port 8476)
+
+### POST /v1/task
+
+Submit a new task for the agent to plan and execute.
+
+- **Request body:**
+  ```json
+  {
+    "intent": "summarize the documents in my workspace",
+    "mode": "standard",
+    "workspace": ["/vault/user_docs/project"],
+    "preferences": { "read_file": "always" }
+  }
+  ```
+- **Response:** `201 Created` -- task with planned steps
+- **Error:** `400 Bad Request` -- missing intent or invalid mode
+
+### GET /v1/task/{id}
+
+Get task status and step details.
+
+- **Response:** `200 OK` -- task object with steps
+- **Error:** `404 Not Found` -- task not found
+
+### POST /v1/task/{id}/approve
+
+Approve pending steps that require user confirmation.
+
+- **Request body:**
+  ```json
+  {
+    "step_ids": ["abc123"],
+    "approve_all": false
+  }
+  ```
+- **Response:** `200 OK` -- updated task
+
+### POST /v1/task/{id}/deny
+
+Deny pending steps.
+
+- **Request body:**
+  ```json
+  {
+    "step_ids": ["abc123"],
+    "deny_all": false
+  }
+  ```
+- **Response:** `200 OK` -- updated task
+
+### POST /v1/task/{id}/cancel
+
+Cancel a running or pending task.
+
+- **Response:** `200 OK` -- task cancelled
+- **Error:** `409 Conflict` -- task already completed/failed/cancelled
+
+### GET /v1/tasks
+
+List all tasks (most recent first).
+
+- **Query params:** `limit` (default 50, max 200)
+- **Response:** `200 OK` -- array of task objects
+
+### GET /v1/modes
+
+List available operating modes with descriptions.
+
+- **Response:** `200 OK` -- array of mode objects (offline_only, standard, online_assisted, sensitive)
+
+---
+
 ## UI API (port 8480)
 
 ### Model Management

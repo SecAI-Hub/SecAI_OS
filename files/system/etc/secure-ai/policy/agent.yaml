@@ -1,0 +1,96 @@
+version: 1
+
+# SecAI_OS Agent Mode policy configuration.
+# Controls operating modes, budgets, workspace scopes, and the
+# allow/deny matrix for agent actions.
+
+# Default operating mode when no mode is specified.
+# offline_only | standard | online_assisted | sensitive
+default_mode: "standard"
+
+# Hard budget defaults per session mode.
+# These can be overridden per-task at submission time.
+budgets:
+  standard:
+    max_steps: 30
+    max_tool_calls: 80
+    max_tokens: 32000
+    max_wall_clock_seconds: 600
+    max_files_touched: 20
+    max_output_bytes: 1048576
+  offline_only:
+    max_steps: 20
+    max_tool_calls: 50
+    max_tokens: 32000
+    max_wall_clock_seconds: 300
+    max_files_touched: 20
+    max_output_bytes: 1048576
+  online_assisted:
+    max_steps: 30
+    max_tool_calls: 80
+    max_tokens: 32000
+    max_wall_clock_seconds: 600
+    max_files_touched: 20
+    max_output_bytes: 1048576
+  sensitive:
+    max_steps: 10
+    max_tool_calls: 20
+    max_tokens: 16000
+    max_wall_clock_seconds: 120
+    max_files_touched: 5
+    max_output_bytes: 524288
+
+# Default workspace scopes.
+# Readable paths the agent may access; writable paths for output.
+workspace:
+  readable:
+    - "/var/lib/secure-ai/vault/user_docs/**"
+  writable:
+    - "/var/lib/secure-ai/vault/outputs/**"
+
+# Approved local tools the agent may invoke through the tool firewall.
+# These must also be allowed in policy.yaml tools section.
+allowed_tools:
+  - "filesystem.read"
+  - "filesystem.write"
+  - "filesystem.list"
+
+# User preference defaults for configurable (medium-risk) actions.
+# always | ask | never
+configurable_defaults:
+  read_file: "ask"
+  write_file: "ask"
+  overwrite_file: "ask"
+  tool_invoke: "ask"
+
+# Actions that are always denied regardless of mode or approval.
+# These cannot be overridden by user preferences.
+always_deny:
+  - "change_security"
+
+# Actions requiring hard approval (always ask, cannot be set to "always").
+hard_approval:
+  - "outbound_request"
+  - "export_data"
+  - "trust_change"
+  - "batch_delete"
+  - "widen_scope"
+  - "enable_tool"
+
+# Worker isolation settings.
+# sensitive_mode_recycle: recycle worker after each task in sensitive mode.
+# tmpfs_scratch: use tmpfs for scratch files (cleaned on task completion).
+worker:
+  sensitive_mode_recycle: true
+  tmpfs_scratch: true
+  no_ambient_secrets: true
+
+# Logging policy.
+# Minimal logging: log high-level actions and policy decisions,
+# not raw prompts or document content.
+logging:
+  log_policy_decisions: true
+  log_step_actions: true
+  log_raw_prompts: false
+  log_raw_content: false
+  log_file_paths: true  # log which files were accessed (not content)

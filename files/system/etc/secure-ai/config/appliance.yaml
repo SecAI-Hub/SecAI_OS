@@ -42,6 +42,8 @@ services:
     bind: "127.0.0.1:8470"
   tool_firewall:
     bind: "127.0.0.1:8475"
+  agent:
+    bind: "127.0.0.1:8476"
   ui:
     bind: "127.0.0.1:8480"
   airlock:
@@ -54,6 +56,18 @@ services:
     bind: "127.0.0.1:8888"
   tor:
     socks: "127.0.0.1:9050"
+
+# Agent mode configuration (spec: SecAI_OS Agent Mode Specification)
+# The agent is a supervised local autopilot — not an autonomous agent.
+# It automates bounded local workflows and treats every online action
+# as a policy-gated exception routed through the airlock.
+agent:
+  # Whether agent mode is available (default: true, per spec §1)
+  enabled: true
+  # Default operating mode: offline_only | standard | online_assisted | sensitive
+  default_mode: "standard"
+  # Policy file for agent-specific rules
+  policy_path: "/etc/secure-ai/policy/agent.yaml"
 
 traffic_analysis_protection:
   # Network traffic analysis countermeasures (M19).
