@@ -1,0 +1,27 @@
+version: 1
+
+# Required fields for deployment readiness evaluation.
+# A model BOM must have all of these to pass the "evaluate" check.
+required_fields:
+  - hash
+  - license
+  - model_card
+  - evidence
+  - trust_labels
+
+# Daemon settings.
+daemon:
+  bind_addr: "127.0.0.1:8515"
+  # Directories the /v1/generate endpoint is allowed to scan.
+  # Empty list permits all paths (backwards-compatible default).
+  allowed_paths: []
+  read_timeout_seconds: 30
+  write_timeout_seconds: 60
+
+# Privacy profile applied to evidence during export/redaction.
+# Set strip_* to true to redact the corresponding category.
+privacy_profile:
+  strip_emails: true
+  strip_paths: true
+  strip_hostnames: true
+  strip_usernames: true
