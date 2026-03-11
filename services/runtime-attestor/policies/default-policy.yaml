@@ -1,0 +1,87 @@
+version: 1
+
+attestation:
+  # Which collectors to enable
+  collectors:
+    model: true
+    container: true
+    network: true
+    mount: true
+    gpu: true
+    policy: true
+
+  # Model digest verification against registry
+  model:
+    vault_dir: /vault/models
+    registry_url: http://127.0.0.1:8470
+    # Environment variable holding a bearer token for registry auth (optional)
+    registry_token_env: ""
+    allowed_formats:
+      - gguf
+    # Max file size in bytes (default 10 GiB). Files larger are skipped.
+    max_file_size: 0
+
+  # Container image verification
+  container:
+    runtime: podman
+    expected_images: []
+
+  # Network state verification
+  network:
+    allowed_listeners:
+      - "127.0.0.1:8470"   # registry
+      - "127.0.0.1:8475"   # tool-firewall
+      - "127.0.0.1:8480"   # ui
+      - "127.0.0.1:8485"   # runtime-attestor
+      - "127.0.0.1:8490"   # airlock
+    deny_unexpected_listeners: true
+
+  # Mount point verification
+  mount:
+    expected:
+      - path: /vault
+        fstype: ""
+        readonly: false
+      - path: /etc/secure-ai/policy
+        fstype: ""
+        readonly: true
+
+  # GPU device exposure verification
+  gpu:
+    allowed_devices:
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+    deny_unexpected_devices: true
+
+  # Policy file integrity verification
+  policy:
+    files:
+      tool-firewall: /etc/secure-ai/policy/tool-firewall.yaml
+      airlock: /etc/secure-ai/policy/airlock.yaml
+    # approved_hashes populated from previous attestation or operator input
+    approved_hashes: {}
+
+  # Trust report output
+  report:
+    signing_key: /etc/secure-ai/keys/attestor.key
+    output_dir: /var/lib/secure-ai/reports
+    format: json
+
+  # Daemon mode settings
+  daemon:
+    interval_seconds: 300
+    bind_addr: "127.0.0.1:8485"
+    read_timeout_seconds: 30
+    write_timeout_seconds: 60
+
+  # Rate limiting for daemon API
+  rate_limit:
+    requests_per_minute: 60
+
+  # Privacy profile: controls what gets stripped from reports and audit logs.
+  privacy:
+    strip_hostname: false
+    strip_paths: false
+    strip_listeners: false
+    strip_policy_names: false
