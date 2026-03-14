@@ -11,7 +11,7 @@ SRC_DIR="/tmp/secure-ai-build"
 echo "=== Building Secure AI services ==="
 
 # Install build dependencies
-dnf install -y golang python3 python3-pip cmake gcc gcc-c++ 2>/dev/null || true
+dnf install -y golang python3 python3-pip cmake gcc gcc-c++ libcurl-devel 2>/dev/null || true
 
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
@@ -188,7 +188,7 @@ cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
     { rm -rf build && cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_BUILD_TYPE=Release 2>/dev/null; } || \
     { rm -rf build && cmake -B build -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_BUILD_TYPE=Release; }
+        -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release; }
 cmake --build build --target llama-server -j"$(nproc)"
 install -m 755 build/bin/llama-server /usr/bin/llama-server
 echo "  -> /usr/bin/llama-server"
