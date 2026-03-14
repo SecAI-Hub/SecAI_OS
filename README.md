@@ -1,6 +1,7 @@
 # SecAI OS
 
 [![CI](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml)
+[![Build](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/build.yml/badge.svg)](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/build.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Fedora 42](https://img.shields.io/badge/Fedora-42-blue)](https://fedoraproject.org/)
 [![uBlue](https://img.shields.io/badge/Built_on-uBlue-purple)](https://universal-blue.org/)
@@ -150,7 +151,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 43 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 44 milestones.
 
 ### Verify Image Signatures
 
@@ -192,6 +193,34 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 
 ---
 
+## Verification & Audit
+
+### Workflow Files
+
+- [CI Workflow](.github/workflows/ci.yml)
+- [Build Workflow](.github/workflows/build.yml)
+- [Release Workflow](.github/workflows/release.yml)
+
+### Security Documentation
+
+- [M5 Control Matrix](docs/m5-control-matrix.md)
+- [Supply Chain Provenance](docs/supply-chain-provenance.md)
+- [Security Status](docs/security-status.md)
+
+### CI Verification Evidence
+
+Each CI job produces specific security evidence:
+
+| Job | What It Proves |
+|-----|---------------|
+| `security-regression` | Adversarial test suite: prompt injection, policy bypass, containment |
+| `supply-chain-verify` | SBOM generation via Syft, cosign availability, provenance keywords |
+| `go-build-and-test` | 399 Go tests across 9 services with `-race` |
+| `python-test` | 718 Python tests (agent, adversarial, M5 acceptance, UI, pipeline) |
+| `test-count-check` | Prevents documented test counts from drifting below actual |
+
+---
+
 ## Documentation
 
 | Document | Description |
@@ -200,8 +229,8 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 43 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 1000+ tests across Go, Python, shell |
+| [Security Status](docs/security-status.md) | Implementation status of all 44 milestones |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,117 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -226,6 +255,9 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Incident Recorder](docs/components/incident-recorder.md) | Security event capture and auto-containment |
 | [M5 Control Matrix](docs/m5-control-matrix.md) | M5 acceptance criteria, enforcement paths, operator verification |
 | [Supply Chain Provenance](docs/supply-chain-provenance.md) | Provenance pipeline, SBOM coverage, key material |
+| [Audit Quick Path](docs/audit-quick-path.md) | External auditor step-by-step verification guide |
+| [Recovery Runbook](docs/recovery-runbook.md) | Operator procedures for degradation, containment, and recovery |
+| [Sample Release Bundle](docs/sample-release-bundle.md) | Release artifact structure and verification commands |
 
 ### Install Guides
 
@@ -308,13 +340,13 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (348 total across 9 services)
+# Go tests (399 total across 9 services)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd services/$svc && go test -v -race ./...)
 done
 
-# Python tests (658 total)
+# Python tests (718 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -329,52 +361,53 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 43 milestones (click to expand)</summary>
+<summary>All 44 project milestones (click to expand)</summary>
 
-- [x] **M0** -- Threat model, dataflow, invariants, policy files
-- [x] **M1** -- Bootable OS, encrypted vault, GPU drivers
-- [x] **M2** -- Trusted Registry, hash pinning, cosign verification
-- [x] **M3** -- 7-stage quarantine pipeline
-- [x] **M4** -- Tool Firewall, default-deny policy
-- [x] **M5** -- Online Airlock, sanitization
-- [x] **M6** -- Systemd sandboxing, kernel hardening, nftables
-- [x] **M7** -- CI/CD, Go/Python tests, shellcheck
-- [x] **M8** -- Image/video generation, diffusion worker
-- [x] **M9** -- Multi-GPU support (NVIDIA/AMD/Intel/Apple)
-- [x] **M10** -- Tor-routed search, SearXNG, PII stripping
-- [x] **M11** -- VM support, OVA/QCOW2 builds
-- [x] **M12** -- Model integrity monitoring
-- [x] **M13** -- Tamper-evident audit logs
-- [x] **M14** -- Local passphrase auth
-- [x] **M15** -- Vault auto-lock
-- [x] **M16** -- Seccomp-BPF + Landlock process isolation
-- [x] **M17** -- Secure Boot + TPM2 measured boot
-- [x] **M18** -- Memory protection (swap/zswap/core dumps/mlock/TEE)
-- [x] **M19** -- Traffic analysis protection
-- [x] **M20** -- Privacy-preserving query obfuscation for search
-- [x] **M21** -- Clipboard isolation
-- [x] **M22** -- Canary/tripwire system
-- [x] **M23** -- Emergency wipe (3-level panic)
-- [x] **M24** -- Update verification + auto-rollback
-- [x] **M25** -- UI polish + security hardening
-- [x] **M26** -- Fail-closed pipeline, service auth, CSRF, supply chain pinning
-- [x] **M27** -- Enhanced scanners, provenance manifests, fs-verity
-- [x] **M28** -- Weight distribution fingerprinting
-- [x] **M29** -- Garak LLM vulnerability scanner
-- [x] **M30** -- gguf-guard deep GGUF integrity scanner
-- [x] **M31** -- Agent Mode (Phase 1: safe local autopilot)
-- [x] **M32** -- GPU Integrity Watch (continuous GPU runtime verification)
-- [x] **M33** -- MCP Firewall (Model Context Protocol policy gateway)
-- [x] **M34** -- Release provenance + per-service SBOMs (SLSA3, CycloneDX, cosign)
-- [x] **M35** -- Unified policy decision engine (6 domains, OPA/Rego-upgradeable)
-- [x] **M36** -- Runtime attestation + startup gating (TPM2, HMAC state bundles)
-- [x] **M37** -- Continuous integrity monitor (baseline-verified file watcher)
-- [x] **M38** -- Incident recorder + containment automation (9 classes, 4-state lifecycle)
-- [x] **M39** -- GPU integrity deep integration (driver fingerprinting, attestor/incident wiring)
-- [x] **M40** -- Agent verified supervisor hardening (signed tokens, replay protection, two-phase approval)
-- [x] **M41** -- HSM-backed key handling (pluggable keystore: software/TPM2/PKCS#11)
-- [x] **M42** -- Enforcement wiring + CI supply chain verification
-- [x] **M43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
+- [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
+- [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
+- [x] **Milestone 2** -- Trusted Registry, hash pinning, cosign verification
+- [x] **Milestone 3** -- 7-stage quarantine pipeline
+- [x] **Milestone 4** -- Tool Firewall, default-deny policy
+- [x] **Milestone 5** -- Online Airlock, sanitization
+- [x] **Milestone 6** -- Systemd sandboxing, kernel hardening, nftables
+- [x] **Milestone 7** -- CI/CD, Go/Python tests, shellcheck
+- [x] **Milestone 8** -- Image/video generation, diffusion worker
+- [x] **Milestone 9** -- Multi-GPU support (NVIDIA/AMD/Intel/Apple)
+- [x] **Milestone 10** -- Tor-routed search, SearXNG, PII stripping
+- [x] **Milestone 11** -- VM support, OVA/QCOW2 builds
+- [x] **Milestone 12** -- Model integrity monitoring
+- [x] **Milestone 13** -- Tamper-evident audit logs
+- [x] **Milestone 14** -- Local passphrase auth
+- [x] **Milestone 15** -- Vault auto-lock
+- [x] **Milestone 16** -- Seccomp-BPF + Landlock process isolation
+- [x] **Milestone 17** -- Secure Boot + TPM2 measured boot
+- [x] **Milestone 18** -- Memory protection (swap/zswap/core dumps/mlock/TEE)
+- [x] **Milestone 19** -- Traffic analysis protection
+- [x] **Milestone 20** -- Privacy-preserving query obfuscation for search
+- [x] **Milestone 21** -- Clipboard isolation
+- [x] **Milestone 22** -- Canary/tripwire system
+- [x] **Milestone 23** -- Emergency wipe (3-level panic)
+- [x] **Milestone 24** -- Update verification + auto-rollback
+- [x] **Milestone 25** -- UI polish + security hardening
+- [x] **Milestone 26** -- Fail-closed pipeline, service auth, CSRF, supply chain pinning
+- [x] **Milestone 27** -- Enhanced scanners, provenance manifests, fs-verity
+- [x] **Milestone 28** -- Weight distribution fingerprinting
+- [x] **Milestone 29** -- Garak LLM vulnerability scanner
+- [x] **Milestone 30** -- gguf-guard deep GGUF integrity scanner
+- [x] **Milestone 31** -- Agent Mode (Phase 1: safe local autopilot)
+- [x] **Milestone 32** -- GPU Integrity Watch (continuous GPU runtime verification)
+- [x] **Milestone 33** -- MCP Firewall (Model Context Protocol policy gateway)
+- [x] **Milestone 34** -- Release provenance + per-service SBOMs (SLSA3, CycloneDX, cosign)
+- [x] **Milestone 35** -- Unified policy decision engine (6 domains, OPA/Rego-upgradeable)
+- [x] **Milestone 36** -- Runtime attestation + startup gating (TPM2, HMAC state bundles)
+- [x] **Milestone 37** -- Continuous integrity monitor (baseline-verified file watcher)
+- [x] **Milestone 38** -- Incident recorder + containment automation (9 classes, 4-state lifecycle)
+- [x] **Milestone 39** -- GPU integrity deep integration (driver fingerprinting, attestor/incident wiring)
+- [x] **Milestone 40** -- Agent verified supervisor hardening (signed tokens, replay protection, two-phase approval)
+- [x] **Milestone 41** -- HSM-backed key handling (pluggable keystore: software/TPM2/PKCS#11)
+- [x] **Milestone 42** -- Enforcement wiring + CI supply chain verification
+- [x] **Milestone 43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
+- [x] **Milestone 44** -- Auditability and documentation hardening: test-count drift CI check, CI evidence links and badges, M4/M5 terminology disambiguation, audit quick-path doc, recovery runbook, verify-release script, security/product roadmap split
 
 </details>
 
@@ -406,7 +439,7 @@ services/
   search-mediator/          Python -- Tor-routed web search (:8485)
   ui/                       Python/Flask -- Web UI (:8480)
   common/                   Python -- Shared utilities (audit, auth, mlock)
-tests/                      658 Python tests, 348 Go tests (~1006 total)
+tests/                      718 Python tests, 399 Go tests (1,117 total)
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs

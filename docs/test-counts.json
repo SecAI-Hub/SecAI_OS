@@ -1,0 +1,17 @@
+{
+  "generated": "2026-03-14",
+  "go": {
+    "airlock": 10,
+    "registry": 14,
+    "tool-firewall": 10,
+    "gpu-integrity-watch": 62,
+    "mcp-firewall": 71,
+    "policy-engine": 44,
+    "runtime-attestor": 55,
+    "integrity-monitor": 50,
+    "incident-recorder": 83
+  },
+  "go_total": 399,
+  "python_total": 718,
+  "grand_total": 1117
+}

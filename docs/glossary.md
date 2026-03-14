@@ -4,6 +4,52 @@ Key terms used in SecAI OS documentation.
 
 ---
 
+## Terminology Disambiguation
+
+Three uses of "M" numbering appear in this project. They refer to different
+things and must not be confused.
+
+### Project Milestones (Milestone 0 through Milestone 43)
+
+Sequential development checkpoints that track feature implementation. Each
+milestone represents a concrete deliverable (e.g., Milestone 3 = quarantine
+pipeline, Milestone 7 = CI/CD). The full list is in the README roadmap. In the
+codebase, milestones are always written as "Milestone N" (never abbreviated
+"MN") to avoid confusion with the M5 security assurance level.
+
+### M5 Security Assurance Level
+
+"M5" refers to the **Stronger Isolation** security bar -- the highest assurance
+level defined for SecAI OS. It is **not** the same as Milestone 5 (which
+implemented the Airlock). M5 assurance requires:
+
+- All 25+ defense layers enforced (see Security Model in README)
+- Adversarial test suite passing (prompt injection, policy bypass, containment)
+- Continuous integrity monitoring active
+- Automated incident containment operational
+- Supply chain provenance verified (SBOMs, cosign, SLSA3)
+
+The M5 security bar is defined in
+[docs/m5-control-matrix.md](m5-control-matrix.md) and verified by the
+`test_m5_acceptance.py` test suite.
+
+### Acceptance Criteria
+
+The M5 acceptance criteria are the specific conditions that must hold for the
+system to meet the M5 security assurance level. These are codified in two
+places:
+
+- **[docs/m5-control-matrix.md](m5-control-matrix.md)** -- the control matrix
+  listing every required security control, its enforcement mechanism, and how
+  an operator verifies it.
+- **[tests/test_m5_acceptance.py](../tests/test_m5_acceptance.py)** -- the
+  automated test suite that CI runs on every push to assert all M5 controls
+  are satisfied.
+
+---
+
+## General Terms
+
 **Airlock**
 The sanitized egress proxy service. Controls all outbound network traffic from the appliance. Disabled by default. Enforces destination allowlists, PII scanning, and credential scanning.
 

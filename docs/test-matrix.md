@@ -4,15 +4,18 @@ This document summarizes the test coverage for SecAI_OS across all languages and
 
 Last updated: 2026-03-14
 
+> **Canonical source of truth for test counts:** [`docs/test-counts.json`](test-counts.json).
+> CI enforces that actual counts never drift below documented values.
+
 ## Summary
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 348 | `go test -race ./...` |
-| Python | 658 | `pytest` |
+| Go | 399 | `go test -race ./...` |
+| Python | 718 | `pytest` |
 | Shell | All .sh files | `shellcheck` |
 
-## Go Tests (348 total)
+## Go Tests (399 total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
@@ -20,28 +23,30 @@ Last updated: 2026-03-14
 | Tool Firewall | services/tool-firewall/ | 10 | Default-deny egress policy, rule evaluation |
 | Airlock | services/airlock/ | 10 | Online airlock, request sanitization, policy enforcement |
 | GPU Integrity Watch | services/gpu-integrity-watch/ | 62 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
-| MCP Firewall | services/mcp-firewall/ | 44 | MCP tool call policy enforcement, input redaction, taint tracking, audit |
-| Policy Engine | services/policy-engine/ | 38 | Unified policy decisions across 6 domains, evidence generation, auth |
+| MCP Firewall | services/mcp-firewall/ | 71 | MCP tool call policy enforcement, input redaction, taint tracking, audit, adversarial tests (M43), trust tier isolation, session binding |
+| Policy Engine | services/policy-engine/ | 44 | Unified policy decisions across 6 domains, evidence generation, auth, adversarial tests (M43) |
 | Runtime Attestor | services/runtime-attestor/ | 55 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests, incident-recorder integration |
 | Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
-| Incident Recorder | services/incident-recorder/ | 65 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration |
+| Incident Recorder | services/incident-recorder/ | 83 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43) |
 
-## Python Tests (677+ total)
+## Python Tests (718 total)
 
-| Test File | Location | Approx. Tests | Description |
-|-----------|----------|---------------|-------------|
-| test_pipeline.py | tests/ | ~96 | Quarantine pipeline stages, scanning, pass/fail logic |
-| test_search.py | tests/ | ~27 | Search mediator, PII stripping, injection detection |
-| test_ui.py | tests/ | ~11 | Flask web UI routes, rendering, input handling |
-| test_vault_watchdog.py | tests/ | ~18 | Vault auto-lock, idle detection, timer controls |
-| test_memory_protection.py | tests/ | ~37 | Swap encryption, zswap, core dumps, mlock, TEE detection |
-| test_traffic_analysis.py | tests/ | ~41 | Padding, timing jitter, dummy traffic generation |
-| test_differential_privacy.py | tests/ | ~37 | Privacy-preserving query obfuscation: decoy queries, k-anonymity, timing randomization |
-| test_clipboard_isolation.py | tests/ | ~30 | Clipboard access controls, content sanitization |
-| test_canary_tripwire.py | tests/ | ~49 | Canary token placement, tripwire monitoring, alerts |
-| test_emergency_wipe.py | tests/ | ~65 | 3-level panic wipe, secure deletion, escalation |
-| test_update_rollback.py | tests/ | ~74 | Signed update verification, rollback triggers, recovery |
+| Test File | Location | Tests | Description |
+|-----------|----------|-------|-------------|
+| test_pipeline.py | tests/ | 96 | Quarantine pipeline stages, scanning, pass/fail logic |
+| test_search.py | tests/ | 27 | Search mediator, PII stripping, injection detection |
+| test_ui.py | tests/ | 12 | Flask web UI routes, rendering, input handling |
+| test_vault_watchdog.py | tests/ | 18 | Vault auto-lock, idle detection, timer controls |
+| test_memory_protection.py | tests/ | 37 | Swap encryption, zswap, core dumps, mlock, TEE detection |
+| test_traffic_analysis.py | tests/ | 41 | Padding, timing jitter, dummy traffic generation |
+| test_differential_privacy.py | tests/ | 37 | Privacy-preserving query obfuscation: decoy queries, k-anonymity, timing randomization |
+| test_clipboard_isolation.py | tests/ | 30 | Clipboard access controls, content sanitization |
+| test_canary_tripwire.py | tests/ | 49 | Canary token placement, tripwire monitoring, alerts |
+| test_emergency_wipe.py | tests/ | 65 | 3-level panic wipe, secure deletion, escalation |
+| test_update_rollback.py | tests/ | 74 | Signed update verification, rollback triggers, recovery |
 | test_agent.py | tests/ | 159 | Agent policy engine, capability tokens (HMAC signing, nonce replay, expiry), storage gateway, budgets, planner, executor, API, workspace validation, security invariants, two-phase approval, policy evidence, keystore abstraction (software/TPM2/PKCS#11) |
+| test_adversarial.py | tests/ | 28 | Prompt injection, policy bypass, step signature tampering, containment determinism, GPU runtime tamper, blocked paths (M43) |
+| test_m5_acceptance.py | tests/ | 32 | M5 acceptance certification: attestation, integrity, policy, key management, replay resistance, MCP taint, adversarial regression, supply chain, recovery, workspace isolation, step signatures (M43) |
 
 ### Agent test breakdown (test_agent.py)
 
