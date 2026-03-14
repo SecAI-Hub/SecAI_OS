@@ -41,11 +41,16 @@ jobs:
         if: github.event_name != 'pull_request'
         run: echo "IMAGE_REF=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
+      # Scan the source tree rather than the full OS image.
+      # The OS image is a multi-GB Fedora Silverblue base with thousands of
+      # system packages — scanning it via `syft scan <image>` exceeds the
+      # runner's memory/time limits. Fedora provides its own SBOMs for base
+      # packages. This SBOM covers our custom services and configuration.
       - name: Generate SBOM
         if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@57aae528053a48a3f6235f2d9461b05fbcb7366d # v0.23.1
         with:
-          image: ${{ env.IMAGE_REF }}
+          path: .
           format: cyclonedx-json
           output-file: sbom.cdx.json
 
