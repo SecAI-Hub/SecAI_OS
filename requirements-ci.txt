@@ -2,7 +2,7 @@
 # Update by running: pip install --upgrade <pkg> && pip freeze | grep <pkg>
 # All versions must be reviewed before bumping.
 PyYAML==6.0.2
-Flask==3.1.1
+Flask==3.1.3
 requests==2.32.5
 pytest==8.3.5
 ruff==0.11.6
