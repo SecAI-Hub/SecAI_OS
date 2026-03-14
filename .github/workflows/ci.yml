@@ -77,6 +77,8 @@ jobs:
           python -m py_compile services/agent/agent/sandbox.py
 
       - name: Test
+        env:
+          PYTHONPATH: services
         run: python -m pytest tests/ -v
 
   shellcheck:

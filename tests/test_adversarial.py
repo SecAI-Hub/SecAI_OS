@@ -21,10 +21,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Add services directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services", "agent"))
+# Add services/ to path (same convention as test_agent.py)
+_services_root = str(Path(__file__).resolve().parent.parent / "services")
+if _services_root not in sys.path:
+    sys.path.insert(0, _services_root)
 
-from agent.models import (
+from agent.agent.models import (
     Budgets,
     CapabilityToken,
     PolicyDecision,
@@ -38,16 +40,16 @@ from agent.models import (
     TaskStatus,
     TWO_PHASE_ACTIONS,
 )
-from agent.policy import PolicyEngine, classify_risk
-from agent.storage import StorageGateway
-from agent.capabilities import (
+from agent.agent.policy import PolicyEngine, classify_risk
+from agent.agent.storage import StorageGateway
+from agent.agent.capabilities import (
     clear_nonce_cache,
     create_token,
     sign_token,
     verify_token,
     _reset_signing_key,
 )
-from agent.sandbox import (
+from agent.agent.sandbox import (
     WorkspaceGuard,
     SubprocessIsolator,
     sign_step,

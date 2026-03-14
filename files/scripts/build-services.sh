@@ -185,8 +185,10 @@ curl -fsSL "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_
 cd "llama.cpp-${LLAMA_CPP_VERSION}"
 cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release 2>/dev/null || \
-    cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release 2>/dev/null || \
-    cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+    { rm -rf build && cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release 2>/dev/null; } || \
+    { rm -rf build && cmake -B build -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release; }
 cmake --build build --target llama-server -j"$(nproc)"
 install -m 755 build/bin/llama-server /usr/bin/llama-server
 echo "  -> /usr/bin/llama-server"
