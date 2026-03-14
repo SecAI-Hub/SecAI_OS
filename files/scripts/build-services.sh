@@ -226,34 +226,46 @@ done
 
 # --- Agent service (policy-bound local autopilot) ---
 echo "Building: agent"
-pip3 install --prefix=/usr --no-cache-dir /tmp/services/agent 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/agent
-cat > "${INSTALL_DIR}/agent" <<'WRAPPER'
+if [ -d "/tmp/services/agent" ]; then
+    pip3 install --prefix=/usr --no-cache-dir /tmp/services/agent 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/agent
+    cat > "${INSTALL_DIR}/agent" <<'WRAPPER'
 #!/usr/bin/env python3
 from agent.app import main
 main()
 WRAPPER
-chmod +x "${INSTALL_DIR}/agent"
-echo "  -> ${INSTALL_DIR}/agent"
+    chmod +x "${INSTALL_DIR}/agent"
+    echo "  -> ${INSTALL_DIR}/agent"
+else
+    echo "WARNING: /tmp/services/agent not found — agent service will not be available"
+fi
 
 # Web UI
 echo "Building: ui"
-pip3 install --prefix=/usr --no-cache-dir /tmp/services/ui 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/ui
-cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
+if [ -d "/tmp/services/ui" ]; then
+    pip3 install --prefix=/usr --no-cache-dir /tmp/services/ui 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/ui
+    cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
 #!/usr/bin/env python3
 from ui.app import main
 main()
 WRAPPER
-chmod +x "${INSTALL_DIR}/ui"
-echo "  -> ${INSTALL_DIR}/ui"
+    chmod +x "${INSTALL_DIR}/ui"
+    echo "  -> ${INSTALL_DIR}/ui"
+else
+    echo "WARNING: /tmp/services/ui not found — UI service will not be available"
+fi
 
 # Diffusion worker
 echo "Installing: diffusion-worker"
 DIFFUSION_DIR="/opt/secure-ai/services/diffusion-worker"
 mkdir -p "$DIFFUSION_DIR"
-cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
-echo "  -> ${DIFFUSION_DIR}/app.py"
+if [ -f "/tmp/services/diffusion-worker/app.py" ]; then
+    cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
+    echo "  -> ${DIFFUSION_DIR}/app.py"
+else
+    echo "WARNING: /tmp/services/diffusion-worker/app.py not found — diffusion worker will not be available"
+fi
 
 # --- llm-search-mediator (standalone: privacy-preserving search bridge) ---
 echo "Installing: llm-search-mediator"
