@@ -67,9 +67,11 @@ Replace `/dev/sdX` or `/dev/rdiskN` with your actual USB device. Double-check th
 
 After booting into the fresh Fedora Silverblue installation, open a terminal.
 
-### 4a. Verify image signature (before rebasing)
+### 4a. Verify image signature (mandatory)
 
-Before installing the image, verify its authenticity using cosign:
+Before installing the image, verify its authenticity using cosign.
+**Do not skip this step — it is the cryptographic attestation that the
+image you are about to install was built by the SecAI project.**
 
 ```bash
 # Install cosign (if not already present)
@@ -78,40 +80,58 @@ sudo dnf install -y cosign
 # Fetch the project's public key
 curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub -o /tmp/cosign.pub
 
-# Verify the image signature
+# Verify the image signature — STOP if this fails
 cosign verify --key /tmp/cosign.pub ghcr.io/sec_ai/secai_os:latest
 ```
 
-You should see `The following checks were performed on each of these signatures: ...`
+You must see `The following checks were performed on each of these signatures: ...`
 with a successful verification result. **Do not proceed if verification fails.**
 
-### 4b. Bootstrap rebase
+### 4b. First-time bootstrap (fresh Fedora Silverblue only)
 
-> **Note on the bootstrap trust gap:** The first rebase must use
-> `ostree-unverified-registry:` because the local ostree store does not yet
-> have the SecAI signing policy configured. This is a one-time bootstrapping
-> step — the cosign verification above provides out-of-band attestation
-> before the unverified pull. After the first boot, all subsequent updates
-> use `ostree-image-signed:` and are verified automatically.
+> **Why an unverified pull?** A fresh Fedora Silverblue installation does
+> not yet have the SecAI signing policy in its local ostree store. The very
+> first rebase therefore uses `ostree-unverified-registry:` as a one-time
+> bootstrapping step. This is safe because you verified the image signature
+> out-of-band in step 4a above. After this single unverified pull, all
+> future updates use the signed transport and are verified automatically
+> by rpm-ostree.
+>
+> **Risk acknowledgment:** If you skipped step 4a, this unverified pull
+> has no integrity guarantee. Go back and run the cosign verification first.
 
 ```bash
-# Initial rebase (signature verified out-of-band above)
+# One-time unverified pull (safe ONLY because you verified the signature in 4a)
 sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 ```
 
-### 4c. Switch to signed updates
+### 4c. Lock to signed transport (mandatory)
 
-After the first reboot, switch to the signed image transport so that all
-future updates are cryptographically verified by rpm-ostree:
+Immediately after the first reboot, switch to the signed image transport.
+**This step is not optional** — it ensures all future updates are
+cryptographically verified by rpm-ostree before they are applied.
 
 ```bash
-# Switch to the signed transport (all future updates verified automatically)
+# Lock to signed transport — all future updates verified automatically
 sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 ```
 
-After this reboot, the system is running SecAI OS with full signature verification enabled.
+After this reboot, the system is running SecAI OS with full signature
+verification enabled. All subsequent `rpm-ostree upgrade` commands will
+reject unsigned or tampered images.
+
+### Returning users / existing SecAI OS installs
+
+If you are upgrading an existing SecAI OS installation (already on the
+signed transport), simply run:
+
+```bash
+cosign verify --key /path/to/cosign.pub ghcr.io/sec_ai/secai_os:latest
+sudo rpm-ostree upgrade
+sudo systemctl reboot
+```
 
 ---
 

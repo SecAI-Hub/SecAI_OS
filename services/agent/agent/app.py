@@ -474,7 +474,8 @@ def _execute_task(task: Task):
             })
             break
 
-        # Execute step
+        # Execute step (capability guaranteed non-None by expiry check above)
+        assert task.capability is not None
         _executor.execute(step, task.capability, task.budgets)
 
         _audit_log("step_executed", {

@@ -174,7 +174,7 @@ class StorageGateway:
         if not real.is_dir():
             return {"ok": False, "error": f"not a directory: {norm}"}
 
-        files = []
+        files: list[dict[str, object]] = []
         try:
             for entry in sorted(real.iterdir()):
                 if len(files) >= max_results:

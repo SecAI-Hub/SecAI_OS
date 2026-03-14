@@ -53,8 +53,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install pyyaml flask requests pytest ruff bandit
+      - name: Install dependencies (pinned)
+        run: pip install -r requirements-ci.txt
 
       - name: Lint (syntax check)
         run: |
@@ -77,10 +77,35 @@ jobs:
 
       - name: Bandit security scan
         run: |
-          bandit -r services/ -ll --skip B101,B404,B603 -f txt || {
-            echo "::warning::Bandit found potential security issues (see above)"
-            true
-          }
+          # Fail on high-severity + high-confidence findings.
+          # Medium/low findings are reported as warnings.
+          bandit -r services/ -ll --skip B101,B404,B603 -f json -o /tmp/bandit.json || true
+          python3 -c "
+          import json, sys
+          with open('/tmp/bandit.json') as f:
+              data = json.load(f)
+          high = [r for r in data.get('results', [])
+                  if r['issue_severity'] == 'HIGH' and r['issue_confidence'] == 'HIGH']
+          for r in data.get('results', []):
+              sev = r['issue_severity']
+              msg = f\"{r['filename']}:{r['line_number']}: [{sev}] {r['issue_text']}\"
+              if sev == 'HIGH':
+                  print(f'::error ::{msg}')
+              else:
+                  print(f'::warning ::{msg}')
+          if high:
+              print(f'FAIL: {len(high)} high-severity/high-confidence finding(s)')
+              sys.exit(1)
+          print('OK: no high-severity/high-confidence findings')
+          "
+
+      - name: Mypy type check (security-sensitive services)
+        run: |
+          mypy --ignore-missing-imports \
+            services/common/ \
+            services/agent/agent/ \
+            services/quarantine/quarantine/ \
+            services/ui/ui/
 
       - name: Test (unit + integration)
         env:
@@ -233,7 +258,7 @@ jobs:
           go-version: "1.23"
 
       - name: Install Python dependencies
-        run: pip install pyyaml flask requests pytest
+        run: pip install -r requirements-ci.txt
 
       - name: Run adversarial Python tests
         run: python -m pytest tests/test_adversarial.py -v --tb=short
@@ -267,7 +292,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install pyyaml flask requests pytest
+        run: pip install -r requirements-ci.txt
 
       - name: Check test counts for drift
         run: bash .github/scripts/check-test-counts.sh
@@ -291,7 +316,7 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Go vulnerability scan
+      - name: Go vulnerability scan (enforced)
         run: |
           echo "=== Go Dependency Vulnerability Scan ==="
           VULN_ERRORS=0
@@ -299,18 +324,69 @@ jobs:
                      policy-engine runtime-attestor integrity-monitor incident-recorder; do
             echo "--- ${svc} ---"
             cd "services/${svc}"
-            govulncheck ./... || VULN_ERRORS=$((VULN_ERRORS + 1))
+            if ! govulncheck ./... 2>&1; then
+              VULN_ERRORS=$((VULN_ERRORS + 1))
+              echo "::error::${svc}: govulncheck found vulnerabilities"
+            fi
             cd ../..
           done
-          if [ $VULN_ERRORS -gt 0 ]; then
-            echo "WARNING: $VULN_ERRORS service(s) have known vulnerabilities"
+          # Check waivers
+          WAIVED=$(python3 -c "
+          import json, datetime
+          with open('.github/vuln-waivers.json') as f:
+              data = json.load(f)
+          today = datetime.date.today().isoformat()
+          active = [w for w in data.get('go', []) if w.get('expires', '') >= today]
+          print(len(active))
+          ")
+          EFFECTIVE=$((VULN_ERRORS - WAIVED))
+          if [ "$EFFECTIVE" -gt 0 ]; then
+            echo "FAIL: $VULN_ERRORS service(s) have vulnerabilities ($WAIVED waived, $EFFECTIVE unwaived)"
+            echo "To waive a reviewed finding, add it to .github/vuln-waivers.json"
+            exit 1
           fi
+          echo "OK: Go vulnerability scan passed ($WAIVED waiver(s) active)"
 
-      - name: Python dependency audit
+      - name: Python dependency audit (enforced)
         run: |
-          pip install pip-audit pyyaml flask requests
+          pip install -r requirements-ci.txt
           echo "=== Python Dependency Audit ==="
-          pip-audit --strict --desc || echo "WARNING: Python dependencies have known vulnerabilities"
+          # Run pip-audit, capture output
+          pip-audit --strict --desc -f json -o /tmp/pip-audit.json 2>/dev/null || true
+          python3 -c "
+          import json, sys, datetime
+          # Load audit results
+          try:
+              with open('/tmp/pip-audit.json') as f:
+                  data = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              print('OK: pip-audit produced no findings')
+              sys.exit(0)
+          vulns = data if isinstance(data, list) else data.get('dependencies', [])
+          findings = [d for d in vulns if d.get('vulns')]
+          if not findings:
+              print('OK: no Python dependency vulnerabilities')
+              sys.exit(0)
+          # Load waivers
+          with open('.github/vuln-waivers.json') as f:
+              waivers = json.load(f)
+          today = datetime.date.today().isoformat()
+          waived_ids = {w['id'] for w in waivers.get('python', []) if w.get('expires', '') >= today}
+          unwaived = 0
+          for dep in findings:
+              for v in dep.get('vulns', []):
+                  vid = v.get('id', '')
+                  if vid in waived_ids:
+                      print(f'WAIVED: {dep[\"name\"]} {vid}')
+                  else:
+                      print(f'::error::{dep[\"name\"]}: {vid} — {v.get(\"description\", \"\")}')
+                      unwaived += 1
+          if unwaived > 0:
+              print(f'FAIL: {unwaived} unwaived Python vulnerability finding(s)')
+              print('To waive a reviewed finding, add it to .github/vuln-waivers.json')
+              sys.exit(1)
+          print(f'OK: all Python findings waived ({len(waived_ids)} waiver(s) active)')
+          "
 
   docs-validation:
     name: Documentation Validation

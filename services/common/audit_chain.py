@@ -71,7 +71,7 @@ class AuditChain:
             except (json.JSONDecodeError, OSError) as e:
                 log.warning("could not resume chain from %s: %s", self._path, e)
 
-    def append(self, event: str, data: dict = None) -> str:
+    def append(self, event: str, data: dict | None = None) -> str:
         """Append a hash-chained entry. Returns the entry hash."""
         if data is None:
             data = {}

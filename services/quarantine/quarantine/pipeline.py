@@ -1631,7 +1631,7 @@ def check_smoke_test(artifact_path: Path) -> dict:
 
         # --- Custom adversarial prompt suite ---
         flags = []
-        category_flags = {}
+        category_flags: dict[str, list[dict[str, object]]] = {}
         total = len(SMOKE_PROMPTS)
 
         for i, prompt_entry in enumerate(SMOKE_PROMPTS):

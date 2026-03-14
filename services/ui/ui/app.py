@@ -1733,10 +1733,10 @@ def _agent_request(method: str, path: str, *, json_body=None, params=None, timeo
     else:
         url = f"{AGENT_URL}{path}"
         if method == "GET":
-            resp = requests.get(url, params=params, timeout=timeout)
+            r = requests.get(url, params=params, timeout=timeout)
         else:
-            resp = requests.post(url, json=json_body, timeout=timeout)
-        return resp.json(), resp.status_code
+            r = requests.post(url, json=json_body, timeout=timeout)
+        return r.json(), r.status_code
 
 
 # ---------------------------------------------------------------------------

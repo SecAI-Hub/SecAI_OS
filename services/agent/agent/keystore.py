@@ -379,6 +379,7 @@ def create_provider(config: dict[str, Any] | None = None) -> KeyProvider:
     backend = cfg.get("backend", "auto")
 
     # Explicit PKCS#11
+    provider: SoftwareKeyProvider | TPM2KeyProvider | PKCS11KeyProvider
     if backend == "pkcs11":
         pkcs_cfg = cfg.get("pkcs11", {})
         provider = PKCS11KeyProvider(

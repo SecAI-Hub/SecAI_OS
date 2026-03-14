@@ -463,10 +463,10 @@ def _write_provenance_manifest(
         log.info("no cosign key found, provenance manifest unsigned")
 
 
-def _build_scan_summary(details: dict) -> dict:
+def _build_scan_summary(details: dict) -> dict[str, object]:
     """Build a summary dict from pipeline details for the registry manifest."""
-    summary = {}
-    scanner_versions = {}
+    summary: dict[str, object] = {}
+    scanner_versions: dict[str, str] = {}
     if "source_policy" in details:
         summary["source_policy"] = "pass" if details["source_policy"].get("passed") else "fail"
     if "format_gate" in details:

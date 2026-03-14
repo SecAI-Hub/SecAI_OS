@@ -49,25 +49,22 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 ### Install (Fedora Atomic)
 
 ```bash
-# 1. Verify image signature before installing (requires cosign)
+# 1. Verify image signature BEFORE installing (mandatory)
 cosign verify --key cosign.pub ghcr.io/sec_ai/secai_os:latest
 
-# 2. Bootstrap rebase (one-time unverified pull, see install docs for rationale)
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
-sudo systemctl reboot
-
-# 3. Switch to signed transport (all future updates verified automatically)
+# 2. Rebase to the signed image
 sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 
-# 4. Set up encrypted vault
+# 3. Set up encrypted vault
 sudo /usr/libexec/secure-ai/setup-vault.sh /dev/sdX
 ```
 
-> **Why the two-step rebase?** The local ostree store doesn't have the signing policy
-> until the first boot. Step 1 provides out-of-band signature verification via cosign
-> before the unverified pull. Step 3 enables automatic verification for all future updates.
-> See [docs/install/bare-metal.md](docs/install/bare-metal.md) for full details.
+> **First install on a fresh Fedora Silverblue?** The signed transport requires that
+> the signing policy is already configured. On a fresh install, see
+> [docs/install/bare-metal.md](docs/install/bare-metal.md) for the one-time bootstrap
+> procedure (uses cosign verification + a single unverified pull, then locks to signed
+> transport permanently).
 
 See [docs/install/](docs/install/) for detailed guides: [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md)
 

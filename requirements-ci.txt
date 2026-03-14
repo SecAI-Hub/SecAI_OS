@@ -1,0 +1,13 @@
+# Pinned CI dependencies for reproducible builds.
+# Update by running: pip install --upgrade <pkg> && pip freeze | grep <pkg>
+# All versions must be reviewed before bumping.
+PyYAML==6.0.2
+Flask==3.1.1
+requests==2.32.5
+pytest==8.3.5
+ruff==0.11.6
+bandit==1.9.0
+mypy==1.15.0
+pip-audit==2.9.0
+types-PyYAML==6.0.12.20250402
+types-requests==2.32.0.20250328

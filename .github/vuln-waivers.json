@@ -1,0 +1,5 @@
+{
+  "_comment": "Vulnerability waivers for CI dependency-audit job. Each entry documents a reviewed finding that is temporarily accepted. Waivers MUST include: id, reason, reviewer, expires (YYYY-MM-DD). Expired waivers are ignored and the finding will fail CI again.",
+  "go": [],
+  "python": []
+}

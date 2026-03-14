@@ -35,7 +35,7 @@ DEFAULT_ESCALATED_LOCKOUT = 900  # 15 minutes
 DEFAULT_ESCALATION_THRESHOLD = 15
 
 
-def hash_passphrase(passphrase: str, salt: bytes = None) -> dict:
+def hash_passphrase(passphrase: str, salt: bytes | None = None) -> dict:
     """Hash a passphrase using scrypt. Returns {salt, hash} as hex strings."""
     if salt is None:
         salt = secrets.token_bytes(32)
@@ -81,7 +81,7 @@ class AuthManager:
         self._lock = threading.Lock()
 
         # In-memory state
-        self._sessions = {}  # token -> {"created": timestamp, "last_active": timestamp}
+        self._sessions: dict[str, dict[str, float]] = {}  # token -> {"created": ts, "last_active": ts}
         self._failed_attempts = 0
         self._last_failed = 0.0
         self._lockout_until = 0.0
