@@ -2,7 +2,7 @@
 
 This document tracks the implementation status of all security features in SecAI_OS.
 
-Last updated: 2026-03-14
+Last updated: 2026-03-15
 
 ## Implemented Features
 
@@ -51,6 +51,7 @@ Last updated: 2026-03-14
 | Agent Verified Supervisor hardening | Implemented | M40 | HMAC-SHA256 signed capability tokens bound to task/intent/policy, nonce replay protection, token expiry, two-phase approval for high-risk actions, per-step PolicyDecision evidence in audit trail, 128 agent tests (up from 93) |
 | HSM-backed key handling | Implemented | M41 | Keystore abstraction layer with pluggable backends (software/TPM2/PKCS#11), key rotation, PCR-sealed TPM2 key hierarchy, PKCS#11 HSM stub for external hardware, auto-detection of available backends, keystore.yaml config, 159 agent tests (up from 128) |
 | Enforcement wiring + CI supply chain verification | Implemented | M42 | Integrity monitor → incident recorder reporting, runtime attestor → incident recorder reporting, incident recorder → containment action execution (freeze agent, disable airlock, force vault relock, quarantine model), CI SBOM generation verification via Syft, cosign availability check, release workflow provenance validation |
+| Stronger isolation (M5 hardening) | Implemented | M43 | Per-service sandbox tightening (device cgroups, resource limits, namespace isolation), agent execution compartmentalization (step signatures, subprocess isolation, per-step capability re-validation), workspace hard walls (symlink/hardlink/FD-reuse detection), model worker isolation profiles, formal adversarial test suite (prompt injection, policy bypass, containment, GPU tamper), CI security regression gate, MCP-specific isolation (trust tier enforcement, per-tool profiles, session binding, dynamic registration denial), recovery ceremony (ack + re-attestation), latched degraded states, severity escalation rules, forensic bundle export (signed), M5 control matrix doc, supply chain provenance doc, M5 acceptance suite (30 tests) |
 
 ## Planned Features
 
@@ -58,4 +59,3 @@ Last updated: 2026-03-14
 |---------|--------|-------|
 | Agent Mode Phase 2: Explainability | Planned | Detailed explanations for quarantine/registry/airlock decisions, per-workspace permissions, audit views |
 | Agent Mode Phase 3: Online-assisted | Planned | Airlock-mediated outbound, search mediation, redaction flows, approval UX for online steps |
-| Agent Mode Phase 4: Stronger isolation | Planned | Adversarial testing, additional sandboxing profiles, policy bypass regression tests |

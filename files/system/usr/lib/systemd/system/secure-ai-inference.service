@@ -69,10 +69,11 @@ DeviceAllow=/dev/nvidia-uvm rw
 DeviceAllow=/dev/nvidia-uvm-tools rw
 DeviceAllow=/dev/kfd rw
 
-# Resource limits — generous for inference
+# Resource limits — generous for inference; model worker isolation (M43)
 MemoryMax=32G
 CPUQuota=200%
 TasksMax=256
+LimitNPROC=64
 LimitNOFILE=4096
 LimitCORE=0
 

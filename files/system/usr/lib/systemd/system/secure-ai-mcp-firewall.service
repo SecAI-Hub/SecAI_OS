@@ -58,10 +58,15 @@ SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
-# Resource limits
+# Device cgroup — deny all device access (M43/M5)
+DevicePolicy=closed
+DeviceAllow=
+
+# Resource limits (M43/M5 tightened)
 MemoryMax=256M
 CPUQuota=25%
 TasksMax=32
+LimitNPROC=32
 LimitNOFILE=512
 LimitCORE=0
 

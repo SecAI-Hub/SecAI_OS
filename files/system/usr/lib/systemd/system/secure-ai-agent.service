@@ -68,10 +68,15 @@ SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
-# Resource limits
+# Device cgroup — high-risk mode: agent must never access devices (M43/M5)
+DevicePolicy=closed
+DeviceAllow=
+
+# Resource limits — high-risk mode fork/fd caps (M43)
 MemoryMax=512M
 CPUQuota=50%
 TasksMax=64
+LimitNPROC=64
 LimitNOFILE=1024
 LimitCORE=0
 

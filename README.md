@@ -150,7 +150,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 42 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 43 milestones.
 
 ### Verify Image Signatures
 
@@ -200,7 +200,7 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 42 milestones |
+| [Security Status](docs/security-status.md) | Implementation status of all 43 milestones |
 | [Test Matrix](docs/test-matrix.md) | Test coverage: 1000+ tests across Go, Python, shell |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
@@ -224,6 +224,8 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Runtime Attestor](docs/components/runtime-attestor.md) | TPM2 attestation and startup gating |
 | [Integrity Monitor](docs/components/integrity-monitor.md) | Continuous file integrity verification |
 | [Incident Recorder](docs/components/incident-recorder.md) | Security event capture and auto-containment |
+| [M5 Control Matrix](docs/m5-control-matrix.md) | M5 acceptance criteria, enforcement paths, operator verification |
+| [Supply Chain Provenance](docs/supply-chain-provenance.md) | Provenance pipeline, SBOM coverage, key material |
 
 ### Install Guides
 
@@ -327,7 +329,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 42 milestones (click to expand)</summary>
+<summary>All 43 milestones (click to expand)</summary>
 
 - [x] **M0** -- Threat model, dataflow, invariants, policy files
 - [x] **M1** -- Bootable OS, encrypted vault, GPU drivers
@@ -372,6 +374,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **M40** -- Agent verified supervisor hardening (signed tokens, replay protection, two-phase approval)
 - [x] **M41** -- HSM-backed key handling (pluggable keystore: software/TPM2/PKCS#11)
 - [x] **M42** -- Enforcement wiring + CI supply chain verification
+- [x] **M43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
 
 </details>
 
