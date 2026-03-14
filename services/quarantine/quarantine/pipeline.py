@@ -334,8 +334,8 @@ def _scan_gguf_chat_template(filepath: Path) -> dict:
             if magic != b"GGUF":
                 return {"passed": True, "note": "not a GGUF file"}
 
-            version = struct.unpack("<I", f.read(4))[0]
-            tensor_count = struct.unpack("<Q", f.read(8))[0]
+            _version = struct.unpack("<I", f.read(4))[0]
+            _tensor_count = struct.unpack("<Q", f.read(8))[0]
             metadata_count = struct.unpack("<Q", f.read(8))[0]
 
             # Parse metadata KV pairs looking for chat template

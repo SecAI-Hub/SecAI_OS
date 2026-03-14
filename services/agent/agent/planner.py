@@ -18,11 +18,8 @@ import requests
 
 from .models import (
     CapabilityToken,
-    RiskLevel,
-    SessionMode,
     Step,
     StepAction,
-    StepStatus,
 )
 from .policy import PolicyEngine, classify_risk
 

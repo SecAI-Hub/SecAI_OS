@@ -221,10 +221,10 @@ class TestApplianceConfig:
         config = yaml.safe_load(CONFIG_PATH.read_text())
         locs = config["canary"]["locations"]
         assert len(locs) == 4
-        assert any("vault" in l for l in locs)
-        assert any("registry" in l for l in locs)
-        assert any("keys" in l for l in locs)
-        assert any("/etc/secure-ai" in l for l in locs)
+        assert any("vault" in loc for loc in locs)
+        assert any("registry" in loc for loc in locs)
+        assert any("keys" in loc for loc in locs)
+        assert any("/etc/secure-ai" in loc for loc in locs)
 
 
 class TestRecipeIncludes:

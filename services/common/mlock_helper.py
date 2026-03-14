@@ -16,9 +16,7 @@ Usage:
 import ctypes
 import ctypes.util
 import logging
-import os
 import platform
-import sys
 
 log = logging.getLogger(__name__)
 

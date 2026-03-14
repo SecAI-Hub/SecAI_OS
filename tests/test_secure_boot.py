@@ -11,7 +11,6 @@ Validates:
 - appliance.yaml has secure_boot config section
 """
 
-import json
 from pathlib import Path
 
 import yaml

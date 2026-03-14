@@ -65,19 +65,53 @@ Replace `/dev/sdX` or `/dev/rdiskN` with your actual USB device. Double-check th
 
 ## Step 4: Rebase to SecAI OS
 
-After booting into the fresh Fedora Silverblue installation, open a terminal and rebase to the SecAI OS image:
+After booting into the fresh Fedora Silverblue installation, open a terminal.
+
+### 4a. Verify image signature (before rebasing)
+
+Before installing the image, verify its authenticity using cosign:
 
 ```bash
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
+# Install cosign (if not already present)
+sudo dnf install -y cosign
+
+# Fetch the project's public key
+curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub -o /tmp/cosign.pub
+
+# Verify the image signature
+cosign verify --key /tmp/cosign.pub ghcr.io/sec_ai/secai_os:latest
 ```
 
-Wait for the rebase to complete, then reboot:
+You should see `The following checks were performed on each of these signatures: ...`
+with a successful verification result. **Do not proceed if verification fails.**
+
+### 4b. Bootstrap rebase
+
+> **Note on the bootstrap trust gap:** The first rebase must use
+> `ostree-unverified-registry:` because the local ostree store does not yet
+> have the SecAI signing policy configured. This is a one-time bootstrapping
+> step — the cosign verification above provides out-of-band attestation
+> before the unverified pull. After the first boot, all subsequent updates
+> use `ostree-image-signed:` and are verified automatically.
 
 ```bash
-systemctl reboot
+# Initial rebase (signature verified out-of-band above)
+sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
+sudo systemctl reboot
 ```
 
-After reboot, the system will be running SecAI OS.
+### 4c. Switch to signed updates
+
+After the first reboot, switch to the signed image transport so that all
+future updates are cryptographically verified by rpm-ostree:
+
+```bash
+# Switch to the signed transport (all future updates verified automatically)
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
+sudo systemctl reboot
+```
+
+After this reboot, the system is running SecAI OS with full signature verification enabled.
 
 ---
 
@@ -97,7 +131,18 @@ You will be prompted to set a vault passphrase. This passphrase encrypts the LUK
 
 ## Step 6: First Boot Verification
 
-After firstboot completes, verify the installation:
+After firstboot completes, run the automated health check:
+
+```bash
+# Comprehensive health check (validates all services, endpoints, security posture)
+sudo /usr/libexec/secure-ai/first-boot-check.sh
+```
+
+This validates all core services are running, health endpoints respond, attestation
+state is verified, no open incidents exist, and no services are exposed on public
+interfaces. See [docs/production-operations.md](../production-operations.md) for details.
+
+You can also verify manually:
 
 ```bash
 # Check that all services are running

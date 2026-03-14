@@ -9,9 +9,7 @@ Validates:
 - appliance.yaml has memory_protection config section
 """
 
-import ctypes
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import yaml
 

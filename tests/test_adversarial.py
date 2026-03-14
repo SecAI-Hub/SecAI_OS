@@ -10,16 +10,12 @@ security controls cannot be circumvented through:
 - Containment action determinism
 """
 
-import hashlib
-import hmac
-import json
 import os
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 # Add services/ to path (same convention as test_agent.py)
 _services_root = str(Path(__file__).resolve().parent.parent / "services")
@@ -27,20 +23,14 @@ if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
 from agent.agent.models import (
-    Budgets,
     CapabilityToken,
-    PolicyDecision,
-    RiskLevel,
     SensitivityLevel,
     SessionMode,
     Step,
     StepAction,
-    StepStatus,
-    Task,
-    TaskStatus,
     TWO_PHASE_ACTIONS,
 )
-from agent.agent.policy import PolicyEngine, classify_risk
+from agent.agent.policy import PolicyEngine
 from agent.agent.storage import StorageGateway
 from agent.agent.capabilities import (
     clear_nonce_cache,
@@ -56,7 +46,6 @@ from agent.agent.sandbox import (
     verify_step_signature,
     revalidate_step_capability,
     HIGH_RISK_ACTIONS,
-    recycle_worker_state,
 )
 
 

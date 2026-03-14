@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -31,7 +31,6 @@ from agent.agent.models import (
     StepAction,
     StepStatus,
     Task,
-    TaskStatus,
 )
 from agent.agent.policy import PolicyEngine, classify_risk
 from agent.agent.capabilities import (
@@ -40,7 +39,6 @@ from agent.agent.capabilities import (
     create_token,
     hash_intent,
     hash_policy_file,
-    sign_token,
     verify_token,
     _reset_signing_key,
 )

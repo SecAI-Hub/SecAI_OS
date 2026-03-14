@@ -3,11 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
   pull_request:
-    paths-ignore:
-      - "**.md"
   workflow_dispatch:
 
 concurrency:
@@ -58,7 +54,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pyyaml flask requests pytest
+        run: pip install pyyaml flask requests pytest ruff bandit
 
       - name: Lint (syntax check)
         run: |
@@ -76,10 +72,25 @@ jobs:
           python -m py_compile services/agent/agent/capabilities.py
           python -m py_compile services/agent/agent/sandbox.py
 
-      - name: Test
+      - name: Ruff lint
+        run: ruff check services/ tests/ --select E,F,W --ignore E501,E402
+
+      - name: Bandit security scan
+        run: |
+          bandit -r services/ -ll --skip B101,B404,B603 -f txt || {
+            echo "::warning::Bandit found potential security issues (see above)"
+            true
+          }
+
+      - name: Test (unit + integration)
         env:
           PYTHONPATH: services
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --ignore=tests/test_adversarial.py --ignore=tests/test_m5_acceptance.py -x
+
+      - name: Test (adversarial + acceptance)
+        env:
+          PYTHONPATH: services
+        run: python -m pytest tests/test_adversarial.py tests/test_m5_acceptance.py -v --tb=short
 
   shellcheck:
     name: Shell Script Lint
@@ -300,3 +311,89 @@ jobs:
           pip install pip-audit pyyaml flask requests
           echo "=== Python Dependency Audit ==="
           pip-audit --strict --desc || echo "WARNING: Python dependencies have known vulnerabilities"
+
+  docs-validation:
+    name: Documentation Validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check for broken internal links
+        run: |
+          echo "=== Checking internal doc links ==="
+          ERRORS=0
+          # Find all markdown links to local files
+          for md in $(find docs/ README.md CONTRIBUTING.md SECURITY.md -name '*.md' 2>/dev/null); do
+            # Extract relative links (not URLs, not anchors)
+            grep -oP '\[([^\]]*)\]\((?!https?://|#)([^)]+)\)' "$md" 2>/dev/null | \
+              grep -oP '\(([^)]+)\)' | tr -d '()' | while read -r link; do
+                # Strip anchor fragments
+                target="${link%%#*}"
+                [ -z "$target" ] && continue
+                # Resolve relative to file's directory
+                dir=$(dirname "$md")
+                resolved="${dir}/${target}"
+                if [ ! -f "$resolved" ] && [ ! -d "$resolved" ]; then
+                  echo "BROKEN: ${md} -> ${link} (resolved: ${resolved})"
+                  ERRORS=$((ERRORS + 1))
+                fi
+              done
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAIL: ${ERRORS} broken internal links found"
+            exit 1
+          fi
+          echo "OK: All internal doc links valid"
+
+      - name: Verify required docs exist
+        run: |
+          echo "=== Checking required documentation ==="
+          REQUIRED_DOCS=(
+            "docs/threat-model.md"
+            "docs/architecture.md"
+            "docs/api.md"
+            "docs/security-status.md"
+            "docs/production-operations.md"
+            "docs/production-readiness-checklist.md"
+            "docs/slos.md"
+            "docs/release-policy.md"
+            "docs/support-lifecycle.md"
+            "docs/test-counts.json"
+            "docs/install/bare-metal.md"
+            "SECURITY.md"
+            "CONTRIBUTING.md"
+            "LICENSE"
+          )
+          ERRORS=0
+          for doc in "${REQUIRED_DOCS[@]}"; do
+            if [ -f "$doc" ]; then
+              echo "OK: $doc"
+            else
+              echo "MISSING: $doc"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "FAIL: ${ERRORS} required document(s) missing"
+            exit 1
+          fi
+          echo "All required documents present"
+
+      - name: Validate test-counts.json format
+        run: |
+          python3 -c "
+          import json, sys
+          with open('docs/test-counts.json') as f:
+              data = json.load(f)
+          required = ['generated', 'go', 'go_total', 'python_total', 'grand_total']
+          for key in required:
+              if key not in data:
+                  print(f'FAIL: test-counts.json missing key: {key}')
+                  sys.exit(1)
+          if not isinstance(data['go'], dict):
+              print('FAIL: go field must be a dict of service -> count')
+              sys.exit(1)
+          print(f'OK: test-counts.json valid (total: {data[\"grand_total\"]} tests)')
+          "

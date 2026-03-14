@@ -14,13 +14,10 @@ from __future__ import annotations
 import abc
 import hashlib
 import hmac
-import json
 import logging
 import os
-import secrets
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -312,7 +309,7 @@ class PKCS11KeyProvider(KeyProvider):
 
         if module_path and os.path.isfile(module_path):
             try:
-                import pkcs11  # type: ignore[import-not-found]
+                import pkcs11  # type: ignore[import-not-found]  # noqa: F401
                 self._available = True
                 log.info("PKCS#11 module loaded: %s", module_path)
             except ImportError:

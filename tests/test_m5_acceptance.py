@@ -17,8 +17,6 @@ Verified areas:
   11. Step signature validation
 """
 
-import hashlib
-import json
 import os
 import sys
 import tempfile
@@ -32,35 +30,26 @@ if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
 from agent.agent.models import (
-    Budgets,
     CapabilityToken,
-    PolicyDecision,
     RiskLevel,
     SensitivityLevel,
     SessionMode,
     Step,
     StepAction,
-    StepStatus,
-    TWO_PHASE_ACTIONS,
 )
 from agent.agent.policy import PolicyEngine, classify_risk
 from agent.agent.storage import StorageGateway
 from agent.agent.capabilities import (
     clear_nonce_cache,
     create_token,
-    sign_token,
     verify_token,
     _reset_signing_key,
 )
 from agent.agent.sandbox import (
     WorkspaceGuard,
-    SubprocessIsolator,
     sign_step,
     verify_step_signature,
     revalidate_step_capability,
-    HIGH_RISK_ACTIONS,
-    recycle_worker_state,
-    ModelWorkerProfile,
 )
 
 
@@ -157,7 +146,7 @@ class TestM5_PolicyCentralization(unittest.TestCase):
 
     def test_agent_policy_engine_works(self):
         """Agent-side policy engine correctly classifies risk."""
-        engine = PolicyEngine()
+        _engine = PolicyEngine()  # Verify construction succeeds
         # Auto-allow actions
         for action in [StepAction.LOCAL_SEARCH, StepAction.SUMMARIZE, StepAction.DRAFT]:
             risk = classify_risk(action)

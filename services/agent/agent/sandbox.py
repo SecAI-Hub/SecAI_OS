@@ -14,7 +14,6 @@ import os
 import re
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +21,6 @@ from .models import (
     CapabilityToken,
     Step,
     StepAction,
-    StepStatus,
 )
 
 log = logging.getLogger("agent.sandbox")
@@ -93,7 +91,6 @@ def revalidate_step_capability(step: Step, cap: CapabilityToken) -> tuple[bool, 
     not just during policy evaluation.  Catches any in-memory mutation
     of step params between approval and execution.
     """
-    import fnmatch
 
     # Check token expiry
     if cap.is_expired():

@@ -233,3 +233,56 @@ cp /path/to/cosign.pub .
 ```
 
 The script prints PASS/FAIL for each step and exits non-zero if any check fails. See `--help` for configuration options.
+
+### Sample Verification Output
+
+A successful `verify-release.sh` run produces output like:
+
+```
+=== SecAI_OS Release Verification ===
+Image: ghcr.io/secai-hub/secai_os:v1.0.0
+
+[1/4] Verifying image signature (cosign)...
+  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+  The following checks were performed on each of these signatures:
+    - The cosign claims were validated
+    - The signatures were verified against the specified public key
+  [PASS] Image signature verified
+
+[2/4] Verifying CycloneDX SBOM attestation...
+  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+  The following checks were performed on each of these signatures:
+    - The cosign claims were validated
+    - The signatures were verified against the specified public key
+  [PASS] SBOM attestation verified
+
+[3/4] Verifying SLSA3 provenance attestation...
+  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+  The following checks were performed on each of these signatures:
+    - The cosign claims were validated
+    - The signatures were verified against the specified public key
+  [PASS] Provenance attestation verified
+
+[4/4] Verifying SHA256SUMS (local artifacts)...
+  airlock-linux-amd64: OK
+  airlock-linux-arm64: OK
+  registry-linux-amd64: OK
+  ... (18 artifacts verified)
+  [PASS] All checksums match
+
+=== Results ===
+  4/4 checks passed
+  Status: ALL VERIFIED
+```
+
+A failed run exits with code 1 and clearly identifies which step failed:
+
+```
+[1/4] Verifying image signature (cosign)...
+  Error: no matching signatures: crypto/rsa: verification error
+  [FAIL] Image signature verification FAILED
+
+=== Results ===
+  0/4 checks passed
+  Status: VERIFICATION FAILED — do not trust this release
+```

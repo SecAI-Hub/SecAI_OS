@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import yaml
-from flask import Flask, Response, jsonify, request
+from flask import Flask, jsonify, request
 
 log = logging.getLogger("diffusion-worker")
 

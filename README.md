@@ -49,17 +49,25 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 ### Install (Fedora Atomic)
 
 ```bash
-# Rebase to unsigned image first
+# 1. Verify image signature before installing (requires cosign)
+cosign verify --key cosign.pub ghcr.io/sec_ai/secai_os:latest
+
+# 2. Bootstrap rebase (one-time unverified pull, see install docs for rationale)
 sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 
-# Then rebase to signed image
+# 3. Switch to signed transport (all future updates verified automatically)
 sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 
-# Set up encrypted vault
+# 4. Set up encrypted vault
 sudo /usr/libexec/secure-ai/setup-vault.sh /dev/sdX
 ```
+
+> **Why the two-step rebase?** The local ostree store doesn't have the signing policy
+> until the first boot. Step 1 provides out-of-band signature verification via cosign
+> before the unverified pull. Step 3 enables automatic verification for all future updates.
+> See [docs/install/bare-metal.md](docs/install/bare-metal.md) for full details.
 
 See [docs/install/](docs/install/) for detailed guides: [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md)
 
@@ -151,7 +159,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 45 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 46 milestones.
 
 ### Verify Image Signatures
 
@@ -209,15 +217,20 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 
 ### CI Verification Evidence
 
-Each CI job produces specific security evidence:
+All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). View the [latest CI run](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml).
 
-| Job | What It Proves |
-|-----|---------------|
-| `security-regression` | Adversarial test suite: prompt injection, policy bypass, containment |
-| `supply-chain-verify` | SBOM generation via Syft, cosign availability, provenance keywords |
-| `go-build-and-test` | 399 Go tests across 9 services with `-race` |
-| `python-test` | 718 Python tests (agent, adversarial, M5 acceptance, UI, pipeline) |
-| `test-count-check` | Prevents documented test counts from drifting below actual |
+| Job | Workflow Link | What It Proves |
+|-----|--------------|---------------|
+| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 399 Go tests across 9 services with `-race` (build, test, vet) |
+| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 718 Python tests split into unit/integration + adversarial/acceptance, ruff lint, bandit security scan |
+| `security-regression` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Adversarial test suite: prompt injection, policy bypass, containment, recovery |
+| `supply-chain-verify` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | SBOM generation via Syft, cosign availability, provenance keywords in release/build workflows |
+| `test-count-check` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Prevents documented test counts from drifting below actual (source of truth: [test-counts.json](docs/test-counts.json)) |
+| `dependency-audit` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Go vulnerability scanning (govulncheck) + Python dependency audit (pip-audit) |
+| `shellcheck` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Static analysis of all shell scripts (first-boot, build, verify-release, etc.) |
+| `policy-validate` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | YAML schema validation for all policy and recipe files |
+| `check-pins` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Verifies all GitHub Actions are pinned to specific commit SHAs (not tags) |
+| `docs-validation` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Broken link detection, required docs presence, test-counts.json format validation |
 
 ---
 
@@ -229,7 +242,7 @@ Each CI job produces specific security evidence:
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 45 milestones |
+| [Security Status](docs/security-status.md) | Implementation status of all 46 milestones |
 | [Test Matrix](docs/test-matrix.md) | Test coverage: 1,117 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
@@ -259,6 +272,10 @@ Each CI job produces specific security evidence:
 | [Recovery Runbook](docs/recovery-runbook.md) | Operator procedures for degradation, containment, and recovery |
 | [Sample Release Bundle](docs/sample-release-bundle.md) | Release artifact structure and verification commands |
 | [Production Operations](docs/production-operations.md) | First-boot checks, upgrades, key rotation, monitoring, capacity |
+| [Production Readiness Checklist](docs/production-readiness-checklist.md) | Formal release gate checklist for production deployments |
+| [SLOs](docs/slos.md) | Service level objectives: availability, latency, correctness targets |
+| [Release Policy](docs/release-policy.md) | Release channels (stable/candidate/dev), versioning, upgrade paths |
+| [Support Lifecycle](docs/support-lifecycle.md) | Hardware matrix, driver versions, support windows, deprecation policy |
 
 ### Install Guides
 
@@ -362,7 +379,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 44 project milestones (click to expand)</summary>
+<summary>All 46 project milestones (click to expand)</summary>
 
 - [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
 - [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
@@ -410,6 +427,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
 - [x] **Milestone 44** -- Auditability and documentation hardening: test-count drift CI check, CI evidence links and badges, M4/M5 terminology disambiguation, audit quick-path doc, recovery runbook, verify-release script, security/product roadmap split
 - [x] **Milestone 45** -- Production readiness hardening: incident persistence (file-backed), graceful shutdown for all Go services, HTTP timeouts, systemd production hardening, first-boot validation, audit log rotation, CI vulnerability scanning, production operations guide
+- [x] **Milestone 46** -- Operational maturity: bootstrap trust gap fix (cosign verify before rebase), CI runs on all changes (removed paths-ignore for .md), Python quality gates (ruff + bandit + split test suites), docs-validation CI job, production-readiness checklist, SLOs, release channel policy, support lifecycle, sample verification output
 
 </details>
 
