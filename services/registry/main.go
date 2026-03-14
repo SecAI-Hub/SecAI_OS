@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -9,11 +10,13 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os/exec"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -612,7 +615,27 @@ func main() {
 	mux.HandleFunc("/v1/model/delete", requireServiceToken(handleDelete))
 
 	log.Printf("secure-ai-registry listening on %s", bind)
-	if err := http.ListenAndServe(bind, mux); err != nil {
-		log.Fatalf("server error: %v", err)
+	server := &http.Server{
+		Addr:         bind,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down registry...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	server.Shutdown(shutdownCtx)
+	log.Println("registry stopped")
 }

@@ -8,6 +8,7 @@ ExecStart=/usr/libexec/secure-ai/incident-recorder
 Environment=BIND_ADDR=127.0.0.1:8515
 Environment=CONTAINMENT_POLICY_PATH=/etc/secure-ai/policy/incident-containment.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/incident-recorder-audit.jsonl
+Environment=INCIDENT_STORE_PATH=/var/lib/secure-ai/data/incidents.jsonl
 Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
@@ -16,6 +17,7 @@ LogsDirectory=secure-ai
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/data
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -62,6 +64,12 @@ CPUQuota=10%
 TasksMax=32
 LimitNOFILE=512
 LimitCORE=0
+
+# Production timeouts and restart limits
+TimeoutStartSec=30
+TimeoutStopSec=15
+StartLimitInterval=300
+StartLimitBurst=5
 
 Restart=always
 RestartSec=2

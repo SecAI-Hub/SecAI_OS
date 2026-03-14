@@ -1,0 +1,26 @@
+# Log rotation for Secure AI OS audit logs.
+# Prevents unbounded disk growth from append-only JSONL audit trails.
+
+/var/lib/secure-ai/logs/*.jsonl {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 50M
+    su root root
+}
+
+/var/lib/secure-ai/data/*.jsonl {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 100M
+    su root root
+}

@@ -151,7 +151,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 44 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 45 milestones.
 
 ### Verify Image Signatures
 
@@ -229,7 +229,7 @@ Each CI job produces specific security evidence:
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 44 milestones |
+| [Security Status](docs/security-status.md) | Implementation status of all 45 milestones |
 | [Test Matrix](docs/test-matrix.md) | Test coverage: 1,117 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
@@ -258,6 +258,7 @@ Each CI job produces specific security evidence:
 | [Audit Quick Path](docs/audit-quick-path.md) | External auditor step-by-step verification guide |
 | [Recovery Runbook](docs/recovery-runbook.md) | Operator procedures for degradation, containment, and recovery |
 | [Sample Release Bundle](docs/sample-release-bundle.md) | Release artifact structure and verification commands |
+| [Production Operations](docs/production-operations.md) | First-boot checks, upgrades, key rotation, monitoring, capacity |
 
 ### Install Guides
 
@@ -408,6 +409,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 42** -- Enforcement wiring + CI supply chain verification
 - [x] **Milestone 43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
 - [x] **Milestone 44** -- Auditability and documentation hardening: test-count drift CI check, CI evidence links and badges, M4/M5 terminology disambiguation, audit quick-path doc, recovery runbook, verify-release script, security/product roadmap split
+- [x] **Milestone 45** -- Production readiness hardening: incident persistence (file-backed), graceful shutdown for all Go services, HTTP timeouts, systemd production hardening, first-boot validation, audit log rotation, CI vulnerability scanning, production operations guide
 
 </details>
 

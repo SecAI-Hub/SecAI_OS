@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -10,11 +12,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -278,7 +282,8 @@ func createIncident(report IncidentReport) Incident {
 
 	incidentCount.Add(1)
 
-	// Audit log
+	// Persist to disk and audit log
+	persistIncidents()
 	writeAudit(inc)
 
 	log.Printf("incident created: id=%s class=%s severity=%s state=%s actions=%v",
@@ -334,6 +339,7 @@ func resolveIncident(id string) (Incident, bool) {
 			incidents[i].State = StateResolved
 			incidents[i].ResolvedAt = time.Now().UTC().Format(time.RFC3339)
 			resolvedCount.Add(1)
+			go persistIncidents()
 			return incidents[i], true
 		}
 	}
@@ -346,6 +352,7 @@ func acknowledgeIncident(id string) (Incident, bool) {
 	for i := range incidents {
 		if incidents[i].ID == id {
 			incidents[i].State = StateAcknowledged
+			go persistIncidents()
 			return incidents[i], true
 		}
 	}
@@ -418,6 +425,101 @@ func writeAudit(inc Incident) {
 	auditMu.Lock()
 	defer auditMu.Unlock()
 	auditFile.Write(append(data, '\n'))
+}
+
+// =========================================================================
+// Incident persistence (file-backed)
+// =========================================================================
+
+var incidentStorePath string
+
+func initIncidentStore() {
+	incidentStorePath = os.Getenv("INCIDENT_STORE_PATH")
+	if incidentStorePath == "" {
+		incidentStorePath = "/var/lib/secure-ai/data/incidents.jsonl"
+	}
+	dir := filepath.Dir(incidentStorePath)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		log.Printf("warning: cannot create incident store dir: %v", err)
+	}
+}
+
+func loadIncidentsFromDisk() {
+	f, err := os.Open(incidentStorePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("warning: cannot open incident store: %v", err)
+		}
+		return
+	}
+	defer f.Close()
+
+	var loaded []Incident
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var inc Incident
+		if err := json.Unmarshal(scanner.Bytes(), &inc); err != nil {
+			continue
+		}
+		loaded = append(loaded, inc)
+	}
+
+	if len(loaded) > maxIncidents {
+		loaded = loaded[len(loaded)-maxIncidents:]
+	}
+
+	incidentsMu.Lock()
+	incidents = loaded
+	incidentsMu.Unlock()
+
+	// Restore counters
+	var open, contained, resolved int64
+	for _, inc := range loaded {
+		switch inc.State {
+		case StateOpen:
+			open++
+		case StateContained:
+			contained++
+		case StateResolved:
+			resolved++
+		}
+	}
+	incidentCount.Store(int64(len(loaded)))
+	containedCount.Store(contained)
+	resolvedCount.Store(resolved)
+
+	log.Printf("restored %d incidents from disk", len(loaded))
+}
+
+func persistIncidents() {
+	incidentsMu.RLock()
+	snapshot := make([]Incident, len(incidents))
+	copy(snapshot, incidents)
+	incidentsMu.RUnlock()
+
+	tmp := incidentStorePath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
+	if err != nil {
+		log.Printf("warning: cannot write incident store: %v", err)
+		return
+	}
+
+	w := bufio.NewWriter(f)
+	for _, inc := range snapshot {
+		data, err := json.Marshal(inc)
+		if err != nil {
+			continue
+		}
+		w.Write(data)
+		w.WriteByte('\n')
+	}
+	w.Flush()
+	f.Close()
+
+	if err := os.Rename(tmp, incidentStorePath); err != nil {
+		log.Printf("warning: cannot rename incident store: %v", err)
+	}
 }
 
 // =========================================================================
@@ -696,6 +798,8 @@ func main() {
 	}
 
 	initAuditLog()
+	initIncidentStore()
+	loadIncidentsFromDisk()
 	loadServiceToken()
 	loadServiceEndpoints()
 
@@ -724,7 +828,28 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("server error: %v", err)
+
+	// Graceful shutdown on SIGTERM/SIGINT
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down incident-recorder...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	server.Shutdown(shutdownCtx)
+
+	// Final persistence flush
+	persistIncidents()
+	if auditFile != nil {
+		auditFile.Close()
 	}
+	log.Println("incident-recorder stopped")
 }

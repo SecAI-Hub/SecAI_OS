@@ -69,6 +69,12 @@ TasksMax=32
 LimitNOFILE=1024
 LimitCORE=0
 
+# Production timeouts and restart limits
+TimeoutStartSec=30
+TimeoutStopSec=15
+StartLimitInterval=300
+StartLimitBurst=5
+
 Restart=always
 RestartSec=2
 

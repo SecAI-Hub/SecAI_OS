@@ -7,6 +7,16 @@ cosign.private
 
 # Go
 services/*/vendor/
+# Compiled Go binaries (match service directory name)
+services/airlock/airlock
+services/registry/registry
+services/tool-firewall/tool-firewall
+services/gpu-integrity-watch/gpu-integrity-watch
+services/mcp-firewall/mcp-firewall
+services/policy-engine/policy-engine
+services/runtime-attestor/runtime-attestor
+services/integrity-monitor/integrity-monitor
+services/incident-recorder/incident-recorder
 
 # Python
 __pycache__/
