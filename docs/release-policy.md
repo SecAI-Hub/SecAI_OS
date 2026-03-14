@@ -29,7 +29,7 @@ vMAJOR.MINOR.PATCH
 - **Tag format:** `v1.2.3`
 - **Image tag:** `ghcr.io/secai-hub/secai_os:latest`, `ghcr.io/secai-hub/secai_os:v1.2.3`
 - **Cadence:** As needed (security patches within 72 hours, features monthly)
-- **Quality gate:** Full [production-readiness checklist](production-readiness-checklist.md) must pass
+- **Quality gate:** Full [production-readiness checklist](production-readiness-checklist.md) must pass; all CI jobs green including enforced vulnerability scanning and mypy type checks
 - **Supply chain:** Cosign-signed, SBOM-attested, SLSA3 provenance
 - **Rollback:** Automatic via Greenboot; manual via `rpm-ostree rollback`
 
@@ -40,7 +40,7 @@ This is the only channel recommended for production use.
 - **Tag format:** `v1.2.3-rc.1`
 - **Image tag:** `ghcr.io/secai-hub/secai_os:candidate`
 - **Cadence:** Before each stable release
-- **Quality gate:** CI must pass; first-boot-check must pass; manual smoke testing required
+- **Quality gate:** CI must pass (including enforced govulncheck, pip-audit, bandit, mypy); first-boot-check must pass; manual smoke testing required
 - **Purpose:** Final validation before stable promotion
 - **Not for production use**
 
@@ -63,8 +63,11 @@ This is the only channel recommended for production use.
 # Ensure main is clean
 git checkout main && git pull
 
-# Verify CI is green
+# Verify CI is green (all 18 jobs must pass, including enforced vulnerability scans)
 gh run list --workflow=ci.yml --limit=1
+
+# Check for unexpired vulnerability waivers that may need review
+cat .github/vuln-waivers.json
 
 # Update version references (if any hardcoded)
 # Update CHANGELOG.md with release notes
@@ -156,14 +159,16 @@ Security patches are always released as patch versions (e.g., v1.2.3 → v1.2.4)
 
 ## Dependency Update Policy
 
-| Dependency Type | Update Frequency | Breaking Changes |
-|----------------|-----------------|------------------|
-| Go standard library | With Go version updates (semi-annual) | Major version only |
-| Go third-party | Monthly or on CVE | Patch/minor: auto; major: manual review |
-| Python packages | Monthly or on CVE | Pin to compatible ranges |
-| System packages (rpm-ostree) | With Fedora rebases | Follow Fedora release cycle |
-| GitHub Actions | Via Dependabot (auto-PR) | Review + CI must pass |
-| Container base image | With Fedora Atomic updates | Follow uBlue release cycle |
+| Dependency Type | Update Frequency | Breaking Changes | Enforcement |
+|----------------|-----------------|------------------|-------------|
+| Go standard library | With Go version updates (semi-annual) | Major version only | govulncheck fails CI on unwaived vulns |
+| Go third-party | Monthly or on CVE | Patch/minor: auto; major: manual review | govulncheck fails CI on unwaived vulns |
+| Python packages | Monthly or on CVE | Pinned in `requirements-ci.txt` | pip-audit fails CI on unwaived vulns |
+| System packages (rpm-ostree) | With Fedora rebases | Follow Fedora release cycle | -- |
+| GitHub Actions | Via Dependabot (auto-PR) | Review + CI must pass | check-pins verifies SHA pinning |
+| Container base image | With Fedora Atomic updates | Follow uBlue release cycle | cosign signature verification |
+
+Vulnerability waivers for reviewed/accepted findings are tracked in [`.github/vuln-waivers.json`](../.github/vuln-waivers.json) with mandatory expiry dates. Expired waivers automatically re-fail CI.
 
 ---
 

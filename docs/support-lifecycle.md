@@ -68,7 +68,7 @@ Last updated: 2026-03-14
 
 | Component | Version | Pinned | Notes |
 |-----------|---------|--------|-------|
-| Go (services) | 1.23 | Yes (go.mod) | 9 Go services |
+| Go (services) | 1.25 | Yes (go.mod) | 9 Go services |
 | Python | 3.12 | Yes (Fedora 42 default) | 6 Python services |
 | llama.cpp | Latest stable | Via build | LLM inference engine |
 | Flask | 3.x | Via pip | Web UI framework |

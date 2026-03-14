@@ -7,7 +7,7 @@ how to set up your development environment, run tests, and submit changes.
 
 | Tool | Minimum Version | Purpose |
 |---|---|---|
-| Go | 1.22+ | Build Go services (registry, tool-firewall, airlock) |
+| Go | 1.25+ | Build Go services (9 services, see below) |
 | Python | 3.11+ | Build Python services (quarantine, UI, search mediator) |
 | shellcheck | Latest | Lint shell scripts |
 | git | 2.x | Version control |
@@ -30,9 +30,10 @@ cd SecAI_OS
 ### 2. Build Go Services
 
 ```bash
-cd services/registry   && go build ./... && cd ../..
-cd services/tool-firewall && go build ./... && cd ../..
-cd services/airlock    && go build ./... && cd ../..
+for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
+           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+  (cd "services/$svc" && go build ./...)
+done
 ```
 
 ### 3. Install Python Dependencies
@@ -54,39 +55,59 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh
 
 ## Running Tests
 
-### Go Tests (26 tests)
+### Go Tests (399 tests across 9 services)
 
 ```bash
-cd services/registry      && go test ./... -v && cd ../..
-cd services/tool-firewall  && go test ./... -v && cd ../..
-cd services/airlock        && go test ./... -v && cd ../..
+for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
+           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+  (cd "services/$svc" && go test -v -race ./...)
+done
 ```
 
-### Python Tests (595+ tests)
+### Python Tests (718 tests)
 
 ```bash
-pytest tests/ -v
+pip install -r requirements-ci.txt
+PYTHONPATH=services python -m pytest tests/ -v
+```
+
+### Type Checking (mypy)
+
+```bash
+pip install -r requirements-ci.txt
+mypy --ignore-missing-imports \
+  services/common/ services/agent/agent/ \
+  services/quarantine/quarantine/ services/ui/ui/
 ```
 
 ### Shell Linting
 
 ```bash
-shellcheck files/system/usr/libexec/secure-ai/*.sh
+shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 ```
 
 ### Run Everything
 
 ```bash
-# Go
-for svc in registry tool-firewall airlock; do
-  (cd "services/$svc" && go test ./... -v)
+# Go (9 services, 399 tests)
+for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
+           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+  (cd "services/$svc" && go test -v -race ./...)
 done
 
-# Python
-pytest tests/ -v
+# Python (718 tests)
+PYTHONPATH=services python -m pytest tests/ -v
+
+# Type check
+mypy --ignore-missing-imports \
+  services/common/ services/agent/agent/ \
+  services/quarantine/quarantine/ services/ui/ui/
+
+# Lint
+ruff check services/ tests/ --select E,F,W --ignore E501,E402
 
 # Shell
-shellcheck files/system/usr/libexec/secure-ai/*.sh
+shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 ```
 
 ## Coding Standards
