@@ -1,0 +1,78 @@
+[Unit]
+Description=Secure AI Runtime Attestor (TPM2 quote verification, startup gating)
+# Attestor starts BEFORE policy-engine and all services that depend on trust.
+# This creates the startup gating chain:
+#   runtime-attestor → policy-engine → registry/tool-firewall/agent/airlock/mcp-firewall
+Before=secure-ai-policy-engine.service secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-airlock.service secure-ai-mcp-firewall.service secure-ai-inference.service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/runtime-attestor
+Environment=BIND_ADDR=127.0.0.1:8505
+Environment=ATTESTATION_POLICY_PATH=/etc/secure-ai/policy/attestation.yaml
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/runtime-attestor-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+
+# Filesystem isolation
+DynamicUser=yes
+LogsDirectory=secure-ai
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
+ReadOnlyPaths=/sys/firmware/efi
+ReadWritePaths=/var/lib/secure-ai/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions — needs AF_INET for localhost HTTP
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Private users (M21 clipboard isolation pattern)
+PrivateUsers=yes
+
+# PrivateNetwork=no — attestor needs localhost HTTP for /api/v1/verify startup gate,
+# and needs to exec tpm2_pcrread and rpm-ostree (external commands)
+PrivateNetwork=no
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+LimitNOFILE=512
+LimitCORE=0
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -60,6 +60,108 @@ if [ -d "${SRC_DIR}/agent-tool-firewall" ]; then
     echo "  -> ${INSTALL_DIR}/tool-firewall"
 fi
 
+# --- gpu-integrity-watch (continuous GPU runtime verification) ---
+echo "Building: gpu-integrity-watch"
+if [ -d "/tmp/services/gpu-integrity-watch" ]; then
+    cp -r /tmp/services/gpu-integrity-watch "${SRC_DIR}/gpu-integrity-watch"
+elif [ -d "/tmp/gpu-integrity-watch" ]; then
+    cp -r /tmp/gpu-integrity-watch "${SRC_DIR}/gpu-integrity-watch"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/gpu-integrity-watch.git "${SRC_DIR}/gpu-integrity-watch" 2>/dev/null || \
+        echo "WARNING: gpu-integrity-watch clone failed — GPU integrity monitoring will not be available"
+fi
+if [ -d "${SRC_DIR}/gpu-integrity-watch" ]; then
+    cd "${SRC_DIR}/gpu-integrity-watch"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
+    echo "  -> ${INSTALL_DIR}/gpu-integrity-watch"
+    # Install default profile and example baseline
+    mkdir -p /etc/secure-ai/gpu-integrity
+    cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || true
+fi
+
+# --- mcp-firewall (Model Context Protocol policy gateway) ---
+echo "Building: mcp-firewall"
+if [ -d "/tmp/services/mcp-firewall" ]; then
+    cp -r /tmp/services/mcp-firewall "${SRC_DIR}/mcp-firewall"
+elif [ -d "/tmp/mcp-firewall" ]; then
+    cp -r /tmp/mcp-firewall "${SRC_DIR}/mcp-firewall"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/mcp-firewall.git "${SRC_DIR}/mcp-firewall" 2>/dev/null || \
+        echo "WARNING: mcp-firewall clone failed — MCP firewall will not be available"
+fi
+if [ -d "${SRC_DIR}/mcp-firewall" ]; then
+    cd "${SRC_DIR}/mcp-firewall"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
+    echo "  -> ${INSTALL_DIR}/mcp-firewall"
+    # Install default policy
+    mkdir -p /etc/secure-ai/mcp-firewall
+    cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
+fi
+
+# --- policy-engine (unified OPA-style decision point) ---
+echo "Building: policy-engine"
+if [ -d "/tmp/services/policy-engine" ]; then
+    cp -r /tmp/services/policy-engine "${SRC_DIR}/policy-engine"
+elif [ -d "/tmp/policy-engine" ]; then
+    cp -r /tmp/policy-engine "${SRC_DIR}/policy-engine"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/policy-engine.git "${SRC_DIR}/policy-engine" 2>/dev/null || \
+        echo "WARNING: policy-engine clone failed — unified policy engine will not be available"
+fi
+if [ -d "${SRC_DIR}/policy-engine" ]; then
+    cd "${SRC_DIR}/policy-engine"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
+    echo "  -> ${INSTALL_DIR}/policy-engine"
+fi
+
+# --- runtime-attestor (TPM2 quote verification + startup gating) ---
+echo "Building: runtime-attestor"
+if [ -d "/tmp/services/runtime-attestor" ]; then
+    cp -r /tmp/services/runtime-attestor "${SRC_DIR}/runtime-attestor"
+elif [ -d "/tmp/runtime-attestor" ]; then
+    cp -r /tmp/runtime-attestor "${SRC_DIR}/runtime-attestor"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/runtime-attestor.git "${SRC_DIR}/runtime-attestor" 2>/dev/null || \
+        echo "WARNING: runtime-attestor clone failed — runtime attestation will not be available"
+fi
+if [ -d "${SRC_DIR}/runtime-attestor" ]; then
+    cd "${SRC_DIR}/runtime-attestor"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
+    echo "  -> ${INSTALL_DIR}/runtime-attestor"
+fi
+
+# --- integrity-monitor (continuous baseline-verified file watcher) ---
+echo "Building: integrity-monitor"
+if [ -d "/tmp/services/integrity-monitor" ]; then
+    cp -r /tmp/services/integrity-monitor "${SRC_DIR}/integrity-monitor"
+elif [ -d "/tmp/integrity-monitor" ]; then
+    cp -r /tmp/integrity-monitor "${SRC_DIR}/integrity-monitor"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/integrity-monitor.git "${SRC_DIR}/integrity-monitor" 2>/dev/null || \
+        echo "WARNING: integrity-monitor clone failed — continuous integrity monitoring will not be available"
+fi
+if [ -d "${SRC_DIR}/integrity-monitor" ]; then
+    cd "${SRC_DIR}/integrity-monitor"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
+    echo "  -> ${INSTALL_DIR}/integrity-monitor"
+fi
+
+# --- incident-recorder (security event capture and containment) ---
+echo "Building: incident-recorder"
+if [ -d "/tmp/services/incident-recorder" ]; then
+    cp -r /tmp/services/incident-recorder "${SRC_DIR}/incident-recorder"
+elif [ -d "/tmp/incident-recorder" ]; then
+    cp -r /tmp/incident-recorder "${SRC_DIR}/incident-recorder"
+else
+    git clone --depth 1 https://github.com/SecAI-Hub/incident-recorder.git "${SRC_DIR}/incident-recorder" 2>/dev/null || \
+        echo "WARNING: incident-recorder clone failed — incident recording will not be available"
+fi
+if [ -d "${SRC_DIR}/incident-recorder" ]; then
+    cd "${SRC_DIR}/incident-recorder"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
+    echo "  -> ${INSTALL_DIR}/incident-recorder"
+fi
+
 # --- gguf-guard (GGUF model integrity scanner) ---
 echo "Building: gguf-guard"
 if [ -d "/tmp/gguf-guard" ]; then

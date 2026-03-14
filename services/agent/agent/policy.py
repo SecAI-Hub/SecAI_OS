@@ -17,11 +17,13 @@ import yaml
 
 from .models import (
     CapabilityToken,
+    PolicyDecision,
     RiskLevel,
     SensitivityLevel,
     SessionMode,
     Step,
     StepAction,
+    TWO_PHASE_ACTIONS,
 )
 
 log = logging.getLogger("agent.policy")
@@ -81,17 +83,27 @@ def classify_risk(action: StepAction) -> RiskLevel:
 # ---------------------------------------------------------------------------
 
 class PolicyEngine:
-    """Deny-by-default step evaluator."""
+    """Deny-by-default step evaluator with token verification."""
 
     def __init__(self, policy_path: str | None = None):
         self._policy: dict[str, Any] = {}
+        self._policy_path = policy_path or ""
+        self._policy_digest = ""
         if policy_path and os.path.isfile(policy_path):
             try:
                 with open(policy_path) as f:
-                    self._policy = yaml.safe_load(f) or {}
+                    raw = f.read()
+                    self._policy = yaml.safe_load(raw) or {}
+                import hashlib
+                self._policy_digest = hashlib.sha256(raw.encode()).hexdigest()
                 log.info("loaded agent policy from %s", policy_path)
             except (yaml.YAMLError, OSError) as exc:
                 log.warning("failed to load agent policy: %s", exc)
+
+    @property
+    def policy_digest(self) -> str:
+        """SHA-256 digest of the loaded policy file."""
+        return self._policy_digest
 
     # --- public API --------------------------------------------------------
 
@@ -108,6 +120,10 @@ class PolicyEngine:
             "ask"     — step needs user approval before executing
             "deny"    — step is blocked by policy
         """
+        # 0. Token expiry check
+        if cap.is_expired():
+            return "deny", "capability token expired"
+
         # 1. Hard deny for always-denied actions
         if step.action in _ALWAYS_DENY:
             return "deny", f"action '{step.action.value}' is always denied by policy"
@@ -143,6 +159,39 @@ class PolicyEngine:
         if pref == "never":
             return "deny", f"user preference: never allow '{step.action.value}'"
         return "ask", f"configurable action '{step.action.value}' — awaiting approval"
+
+    def evaluate_with_evidence(
+        self,
+        step: Step,
+        cap: CapabilityToken,
+        token_valid: bool = True,
+    ) -> tuple[str, str, PolicyDecision]:
+        """Evaluate a step and return a full PolicyDecision evidence record.
+
+        This wraps evaluate() and captures the decision context for
+        the audit trail.
+        """
+        decision, reason = self.evaluate(step, cap)
+
+        # Two-phase actions: always escalate to "ask" even if policy
+        # would auto-allow (extra safety layer for M40).
+        if (step.action.value in TWO_PHASE_ACTIONS
+                and decision == "allow"):
+            decision = "ask"
+            reason = (f"two-phase approval required for "
+                      f"'{step.action.value}'")
+
+        evidence = PolicyDecision(
+            step_id=step.step_id,
+            action=step.action.value,
+            decision=decision,
+            reason=reason,
+            risk_level=classify_risk(step.action).value,
+            token_id=cap.token_id,
+            token_valid=token_valid,
+            policy_digest=self._policy_digest,
+        )
+        return decision, reason, evidence
 
     # --- internal checks ---------------------------------------------------
 

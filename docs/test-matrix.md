@@ -2,23 +2,29 @@
 
 This document summarizes the test coverage for SecAI_OS across all languages and test categories.
 
-Last updated: 2026-03-10
+Last updated: 2026-03-13
 
 ## Summary
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 26 | `go test ./...` |
-| Python | 677+ | `pytest` |
+| Go | 288+ | `go test ./...` |
+| Python | 743+ | `pytest` |
 | Shell | All .sh files | `shellcheck` |
 
-## Go Tests (26 total)
+## Go Tests (288+ total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
 | Registry | services/registry/ | 6 | Trusted model registry, hash pinning, cosign verification |
 | Tool Firewall | services/tool-firewall/ | 10 | Default-deny egress policy, rule evaluation |
 | Airlock | services/airlock/ | 10 | Online airlock, request sanitization, policy enforcement |
+| GPU Integrity Watch | services/gpu-integrity-watch/ | 81 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
+| MCP Firewall | services/mcp-firewall/ | 30+ | MCP tool call policy enforcement, input redaction, taint tracking, audit |
+| Policy Engine | services/policy-engine/ | 37 | Unified policy decisions across 6 domains, evidence generation, auth |
+| Runtime Attestor | services/runtime-attestor/ | 46 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests |
+| Integrity Monitor | services/integrity-monitor/ | 42 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines |
+| Incident Recorder | services/incident-recorder/ | 47 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading |
 
 ## Python Tests (677+ total)
 
@@ -35,7 +41,7 @@ Last updated: 2026-03-10
 | test_canary_tripwire.py | tests/ | ~49 | Canary token placement, tripwire monitoring, alerts |
 | test_emergency_wipe.py | tests/ | ~65 | 3-level panic wipe, secure deletion, escalation |
 | test_update_rollback.py | tests/ | ~74 | Signed update verification, rollback triggers, recovery |
-| test_agent.py | tests/ | 93 | Agent policy engine, capability tokens, storage gateway, budgets, planner, executor, API, workspace validation, security invariants |
+| test_agent.py | tests/ | 159 | Agent policy engine, capability tokens (HMAC signing, nonce replay, expiry), storage gateway, budgets, planner, executor, API, workspace validation, security invariants, two-phase approval, policy evidence, keystore abstraction (software/TPM2/PKCS#11) |
 
 ### Agent test breakdown (test_agent.py)
 
@@ -52,6 +58,15 @@ Last updated: 2026-03-10
 | TestAgentAPI | 17 | Integration | HTTP endpoint contracts, input validation, task CRUD lifecycle, workspace ID resolution |
 | TestSecurityInvariants | 7 | Security | Fail-closed behavior, airlock/firewall bypass prevention, service-down handling |
 | TestDataModels | 4 | Unit | Task/step serialisation, status enum coverage |
+| TestTokenSigning | 10 | Security | HMAC-SHA256 token signing, tamper detection, replay protection, expiry enforcement |
+| TestTokenBinding | 8 | Security | Intent hashing, policy digest, task context binding, token-to-dict serialisation |
+| TestTwoPhaseApproval | 6 | Security | Two-phase approval for high-risk actions (trust change, export, widen scope) |
+| TestPolicyEvidence | 8 | Security | Per-step PolicyDecision evidence, risk classification, token validity tracking |
+| TestVerifiedSupervisorAPI | 3 | Integration | Signed tokens in API responses, policy decisions in step params |
+| TestSoftwareKeyProvider | 13 | Unit / Security | Software key provider: sign/verify, key rotation, file persistence, key derivation |
+| TestTPM2KeyProvider | 5 | Unit | TPM2 provider: graceful degradation, PCR config, missing file handling |
+| TestPKCS11KeyProvider | 6 | Unit | PKCS#11 stub: NotImplementedError for all operations, status reporting |
+| TestKeystoreFactory | 7 | Integration | Provider factory, config loading, auto-detection, fallback chain |
 
 ## Shell Checks
 
@@ -84,6 +99,12 @@ Steps:
 cd services/registry && go test ./...
 cd services/tool-firewall && go test ./...
 cd services/airlock && go test ./...
+cd services/gpu-integrity-watch && go test ./...
+cd services/mcp-firewall && go test ./...
+cd services/policy-engine && go test ./...
+cd services/runtime-attestor && go test ./...
+cd services/integrity-monitor && go test ./...
+cd services/incident-recorder && go test ./...
 ```
 
 ### Python tests

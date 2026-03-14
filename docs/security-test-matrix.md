@@ -2,7 +2,7 @@
 
 This document maps each security feature to its corresponding test files, test counts, and coverage areas.
 
-Last updated: 2026-03-08
+Last updated: 2026-03-13
 
 ## Security Feature to Test Mapping
 
@@ -23,6 +23,13 @@ Last updated: 2026-03-08
 | Tool firewall | services/tool-firewall/*_test.go | Go | 10 | Default-deny policy, rule evaluation, egress filtering |
 | Airlock | services/airlock/*_test.go | Go | 10 | Request sanitization, policy enforcement, disabled-by-default |
 | Trusted registry | services/registry/*_test.go | Go | 6 | Hash pinning, cosign verification, model fetch authorization |
+| GPU integrity watch | services/gpu-integrity-watch/*_test.go | Go | 81 | GPU probe scoring, baseline verification, degradation actions, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
+| MCP firewall | services/mcp-firewall/*_test.go | Go | 30+ | MCP tool call policy, default-deny, input redaction, taint tracking |
+| Policy engine | services/policy-engine/*_test.go | Go | 37 | Unified decisions across 6 domains, evidence provenance, auth |
+| Runtime attestor | services/runtime-attestor/*_test.go | Go | 46 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digest verification |
+| Integrity monitor | services/integrity-monitor/*_test.go | Go | 42 | Baseline computation, continuous scanning, violation detection, state machine, model/binary/policy watching |
+| Incident recorder | services/incident-recorder/*_test.go | Go | 47 | Incident creation, auto-containment, lifecycle (open/contained/resolved/acknowledged), severity ranking, policy loading |
+| Agent verified supervisor + HSM keys | tests/test_agent.py | Python | 159 | HMAC-SHA256 token signing, nonce replay protection, expiry, tamper detection, two-phase approval, policy evidence, keystore abstraction (software/TPM2/PKCS#11), key rotation, key derivation |
 
 ## Coverage by Security Category
 
@@ -41,6 +48,7 @@ Last updated: 2026-03-08
 |------|-------|-------|
 | Tool firewall | 10 | Default-deny egress, allowlist enforcement |
 | Airlock | 10 | Controlled network access with sanitization |
+| MCP firewall | 30+ | MCP tool call policy, input redaction, taint tracking |
 | Traffic analysis resistance | ~41 | Prevents metadata-based surveillance |
 
 ### System Integrity
@@ -51,6 +59,11 @@ Last updated: 2026-03-08
 | Trusted registry | 6 | Hash pinning and signature verification |
 | Canary/tripwire system | ~49 | Tamper detection across filesystem |
 | Update verification | ~74 | Signed updates with automatic rollback |
+| GPU integrity | 81 | GPU probe scoring, baseline, degradation, driver fingerprint, device allowlist, attestor/incident integration |
+| Runtime attestation | 46 | TPM2 quotes, HMAC bundles, state machine, startup gating |
+| Continuous integrity | 42 | Baseline scanning, violation detection, model/binary/policy watching |
+| Incident recorder | 47 | Incident creation, auto-containment, lifecycle, severity ranking |
+| Agent verified supervisor + HSM keys | 159 | HMAC tokens, nonce replay, two-phase approval, policy evidence, keystore (software/TPM2/PKCS#11) |
 
 ### Runtime Protection
 
@@ -64,9 +77,9 @@ Last updated: 2026-03-08
 
 | Language | Security Tests | Non-Security Tests | Total |
 |----------|---------------|-------------------|-------|
-| Python | ~530+ | ~65 | ~595+ |
-| Go | 26 | 0 | 26 |
-| **Total** | **~556+** | **~65** | **~621+** |
+| Python | ~596+ | ~65 | ~661+ |
+| Go | 309+ | 0 | 309+ |
+| **Total** | **~905+** | **~65** | **~970+** |
 
 ## Running Security Tests
 
@@ -86,4 +99,10 @@ To run all Go security tests:
 cd services/registry && go test ./...
 cd services/tool-firewall && go test ./...
 cd services/airlock && go test ./...
+cd services/gpu-integrity-watch && go test ./...
+cd services/mcp-firewall && go test ./...
+cd services/policy-engine && go test ./...
+cd services/runtime-attestor && go test ./...
+cd services/integrity-monitor && go test ./...
+cd services/incident-recorder && go test ./...
 ```

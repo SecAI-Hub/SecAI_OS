@@ -1,0 +1,72 @@
+[Unit]
+Description=Secure AI Policy Engine (unified OPA-style decision point)
+Before=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-airlock.service secure-ai-mcp-firewall.service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/policy-engine
+Environment=BIND_ADDR=127.0.0.1:8500
+Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
+Environment=AGENT_POLICY_PATH=/etc/secure-ai/policy/agent.yaml
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/policy-engine-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+
+# Filesystem isolation
+DynamicUser=yes
+LogsDirectory=secure-ai
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+
+# Clipboard isolation (M21)
+PrivateUsers=yes
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=15%
+TasksMax=32
+LimitNOFILE=512
+LimitCORE=0
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

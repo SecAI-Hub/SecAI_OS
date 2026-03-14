@@ -174,3 +174,133 @@ services:
         access: ro
       - path: /tmp
         access: rw
+
+  gpu_integrity_watch:
+    description: "GPU integrity watch — GPU sysfs read, baseline rw, logs write, inference probe"
+    paths:
+      - path: /var/lib/secure-ai/gpu-integrity
+        access: rw
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /etc/secure-ai
+        access: ro
+      - path: /sys/class/drm
+        access: ro
+      - path: /sys/bus/pci/devices
+        access: ro
+      - path: /dev/dri
+        access: ro
+      - path: /usr/libexec/secure-ai/gpu-integrity-watch
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  mcp_firewall:
+    description: "MCP firewall — policy read, vault read-only, audit log write"
+    paths:
+      - path: /var/lib/secure-ai/vault
+        access: ro
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/mcp-firewall
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  integrity_monitor:
+    description: "Integrity monitor — reads binaries, policies, models, systemd units; writes audit logs"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/integrity-monitor
+        access: exe
+      - path: /usr/lib/systemd/system
+        access: ro
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  runtime_attestor:
+    description: "Runtime attestor — reads binaries, policies, EFI vars, TPM; writes audit logs"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /etc/secure-ai
+        access: ro
+      - path: /sys/firmware/efi
+        access: ro
+      - path: /sys/kernel/security
+        access: ro
+      - path: /proc/cmdline
+        access: ro
+      - path: /usr/libexec/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/runtime-attestor
+        access: exe
+      - path: /usr/bin/tpm2_pcrread
+        access: exe
+      - path: /usr/bin/rpm-ostree
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  policy_engine:
+    description: "Policy engine — policy read, audit log write, no vault or device access"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/policy-engine
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  incident_recorder:
+    description: "Incident recorder — containment policy read, audit log write"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /run/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/incident-recorder
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw

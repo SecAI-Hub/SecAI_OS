@@ -34,7 +34,23 @@ from agent.agent.models import (
     TaskStatus,
 )
 from agent.agent.policy import PolicyEngine, classify_risk
-from agent.agent.capabilities import create_budgets, create_token
+from agent.agent.capabilities import (
+    clear_nonce_cache,
+    create_budgets,
+    create_token,
+    hash_intent,
+    hash_policy_file,
+    sign_token,
+    verify_token,
+    _reset_signing_key,
+)
+from agent.agent.keystore import (
+    SoftwareKeyProvider,
+    TPM2KeyProvider,
+    PKCS11KeyProvider,
+    create_provider,
+    load_config,
+)
 from agent.agent.storage import StorageGateway
 from agent.agent.planner import Planner
 from agent.agent.executor import Executor
@@ -906,3 +922,549 @@ class TestDataModels:
         assert RiskLevel("auto") == RiskLevel.AUTO
         assert RiskLevel("configurable") == RiskLevel.CONFIGURABLE
         assert RiskLevel("approval_required") == RiskLevel.APPROVAL_REQUIRED
+
+
+# ============================================================================
+# M40 — Verified Supervisor: Token Signing & Verification
+# ============================================================================
+
+class TestTokenSigning:
+    """HMAC-SHA256 token signing and verification (M40)."""
+
+    def setup_method(self):
+        _reset_signing_key()
+        clear_nonce_cache()
+
+    def test_token_is_signed(self):
+        """Tokens created via create_token() have a non-empty signature."""
+        token = create_token(SessionMode.STANDARD)
+        assert token.signature != ""
+        assert len(token.signature) == 64  # SHA-256 hex
+
+    def test_token_has_nonce(self):
+        """Each token gets a unique nonce."""
+        t1 = create_token(SessionMode.STANDARD)
+        clear_nonce_cache()
+        t2 = create_token(SessionMode.STANDARD)
+        assert t1.nonce != t2.nonce
+
+    def test_verify_valid_token(self):
+        """A freshly signed token passes verification."""
+        token = create_token(SessionMode.STANDARD)
+        valid, reason = verify_token(token)
+        assert valid, f"expected valid, got: {reason}"
+        assert reason == "valid"
+
+    def test_verify_tampered_token_fails(self):
+        """Modifying token fields after signing invalidates the signature."""
+        token = create_token(SessionMode.STANDARD)
+        token.allow_online = True  # tamper
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "signature mismatch" in reason
+
+    def test_verify_tampered_paths_fails(self):
+        """Widening readable paths after signing invalidates the token."""
+        token = create_token(SessionMode.STANDARD)
+        token.readable_paths.append("/etc/shadow")
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "signature mismatch" in reason
+
+    def test_verify_unsigned_token_fails(self):
+        """A token without a signature is rejected."""
+        token = CapabilityToken()
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "not signed" in reason
+
+    def test_replay_protection(self):
+        """The same nonce cannot be used twice (replay attack)."""
+        token = create_token(SessionMode.STANDARD)
+        valid1, _ = verify_token(token)
+        assert valid1
+        # Second verify should fail (nonce already seen)
+        valid2, reason2 = verify_token(token)
+        assert not valid2
+        assert "replay" in reason2
+
+    def test_expired_token_rejected(self):
+        """A token past its expiry time is rejected."""
+        token = create_token(SessionMode.STANDARD, ttl_seconds=0.01)
+        time.sleep(0.05)  # wait for expiry
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "expired" in reason
+
+    def test_no_expiry_means_no_timeout(self):
+        """A token with expires_at=0 never expires."""
+        token = create_token(SessionMode.STANDARD, ttl_seconds=0)
+        assert token.expires_at == 0.0
+        assert not token.is_expired()
+
+    def test_token_bound_to_task(self):
+        """Token includes task_id and intent_hash when provided."""
+        token = create_token(
+            SessionMode.STANDARD,
+            task_id="task123",
+            intent="summarize documents",
+        )
+        assert token.task_id == "task123"
+        assert token.intent_hash == hash_intent("summarize documents")
+        assert token.intent_hash != ""
+
+
+class TestTokenBinding:
+    """Task context binding for capability tokens (M40)."""
+
+    def setup_method(self):
+        _reset_signing_key()
+        clear_nonce_cache()
+
+    def test_intent_hash_deterministic(self):
+        """Same intent always produces the same hash."""
+        h1 = hash_intent("summarize my docs")
+        h2 = hash_intent("summarize my docs")
+        assert h1 == h2
+
+    def test_intent_hash_different_for_different_intents(self):
+        h1 = hash_intent("summarize")
+        h2 = hash_intent("classify")
+        assert h1 != h2
+
+    def test_policy_digest_from_file(self):
+        """Policy digest is computed from the policy file."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("version: 1\ndefault_mode: standard\n")
+            f.flush()
+            digest = hash_policy_file(f.name)
+        os.unlink(f.name)
+        assert len(digest) == 64  # SHA-256 hex
+
+    def test_policy_digest_missing_file(self):
+        """Missing policy file returns empty digest."""
+        assert hash_policy_file("/nonexistent/policy.yaml") == ""
+
+    def test_token_includes_policy_digest(self):
+        """Token created with a policy path includes the digest."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("version: 1\n")
+            f.flush()
+            token = create_token(
+                SessionMode.STANDARD,
+                policy_path=f.name,
+            )
+        os.unlink(f.name)
+        assert token.policy_digest != ""
+
+    def test_to_dict_includes_new_fields(self):
+        """to_dict() includes all M40 fields."""
+        token = create_token(
+            SessionMode.STANDARD,
+            task_id="t1",
+            intent="test",
+        )
+        d = token.to_dict()
+        assert "task_id" in d
+        assert "intent_hash" in d
+        assert "policy_digest" in d
+        assert "nonce" in d
+        assert "issued_at" in d
+        assert "expires_at" in d
+        assert "signature" in d
+
+    def test_is_expired_false_when_fresh(self):
+        token = create_token(SessionMode.STANDARD, ttl_seconds=3600)
+        assert not token.is_expired()
+
+    def test_is_expired_true_when_past(self):
+        token = CapabilityToken(expires_at=time.time() - 10)
+        assert token.is_expired()
+
+
+# ============================================================================
+# M40 — Verified Supervisor: Two-Phase Approval & Policy Evidence
+# ============================================================================
+
+class TestTwoPhaseApproval:
+    """Two-phase approval for high-risk actions (M40)."""
+
+    def setup_method(self):
+        _reset_signing_key()
+        clear_nonce_cache()
+        self.engine = PolicyEngine()
+        self.cap = create_token(SessionMode.STANDARD)
+
+    def test_trust_change_requires_two_phase(self):
+        """TRUST_CHANGE always requires approval via two-phase."""
+        step = Step(action=StepAction.TRUST_CHANGE)
+        decision, reason, evidence = self.engine.evaluate_with_evidence(
+            step, self.cap
+        )
+        assert decision == "ask"
+        assert "approval" in reason.lower() or "two-phase" in reason.lower()
+
+    def test_export_data_requires_two_phase(self):
+        step = Step(action=StepAction.EXPORT_DATA)
+        decision, _, evidence = self.engine.evaluate_with_evidence(
+            step, self.cap
+        )
+        assert decision in ("ask", "deny")  # denied in offline, ask otherwise
+
+    def test_widen_scope_requires_two_phase(self):
+        step = Step(action=StepAction.WIDEN_SCOPE)
+        decision, _, _ = self.engine.evaluate_with_evidence(step, self.cap)
+        assert decision == "ask"
+
+    def test_enable_tool_requires_two_phase(self):
+        step = Step(action=StepAction.ENABLE_TOOL)
+        decision, _, _ = self.engine.evaluate_with_evidence(step, self.cap)
+        assert decision == "ask"
+
+    def test_change_security_always_denied(self):
+        """CHANGE_SECURITY is denied even with two-phase (always-deny)."""
+        step = Step(action=StepAction.CHANGE_SECURITY)
+        decision, _, evidence = self.engine.evaluate_with_evidence(
+            step, self.cap
+        )
+        assert decision == "deny"
+        assert evidence.decision == "deny"
+
+    def test_low_risk_not_escalated(self):
+        """Low-risk actions are not escalated to two-phase."""
+        step = Step(action=StepAction.SUMMARIZE)
+        decision, _, _ = self.engine.evaluate_with_evidence(step, self.cap)
+        assert decision == "allow"
+
+
+class TestPolicyEvidence:
+    """Per-step policy decision evidence recording (M40)."""
+
+    def setup_method(self):
+        _reset_signing_key()
+        clear_nonce_cache()
+        self.engine = PolicyEngine()
+        self.cap = create_token(SessionMode.STANDARD)
+
+    def test_evidence_includes_step_id(self):
+        step = Step(action=StepAction.SUMMARIZE)
+        _, _, evidence = self.engine.evaluate_with_evidence(step, self.cap)
+        assert evidence.step_id == step.step_id
+
+    def test_evidence_includes_action(self):
+        step = Step(action=StepAction.READ_FILE, params={"path": "/vault/doc.txt"})
+        _, _, evidence = self.engine.evaluate_with_evidence(step, self.cap)
+        assert evidence.action == "read_file"
+
+    def test_evidence_includes_risk_level(self):
+        step = Step(action=StepAction.SUMMARIZE)
+        _, _, evidence = self.engine.evaluate_with_evidence(step, self.cap)
+        assert evidence.risk_level == "auto"
+
+    def test_evidence_includes_token_id(self):
+        step = Step(action=StepAction.SUMMARIZE)
+        _, _, evidence = self.engine.evaluate_with_evidence(step, self.cap)
+        assert evidence.token_id == self.cap.token_id
+
+    def test_evidence_token_valid_flag(self):
+        step = Step(action=StepAction.SUMMARIZE)
+        _, _, ev_valid = self.engine.evaluate_with_evidence(
+            step, self.cap, token_valid=True
+        )
+        assert ev_valid.token_valid is True
+
+        _, _, ev_invalid = self.engine.evaluate_with_evidence(
+            step, self.cap, token_valid=False
+        )
+        assert ev_invalid.token_valid is False
+
+    def test_evidence_to_dict(self):
+        step = Step(action=StepAction.SUMMARIZE)
+        _, _, evidence = self.engine.evaluate_with_evidence(step, self.cap)
+        d = evidence.to_dict()
+        assert "step_id" in d
+        assert "action" in d
+        assert "decision" in d
+        assert "reason" in d
+        assert "risk_level" in d
+        assert "token_id" in d
+        assert "token_valid" in d
+        assert "timestamp" in d
+
+    def test_expired_token_denied_with_evidence(self):
+        """Expired tokens are denied and evidence records this."""
+        _reset_signing_key()
+        clear_nonce_cache()
+        cap = create_token(SessionMode.STANDARD, ttl_seconds=0.01)
+        time.sleep(0.05)
+        step = Step(action=StepAction.SUMMARIZE)
+        decision, reason, evidence = self.engine.evaluate_with_evidence(
+            step, cap
+        )
+        assert decision == "deny"
+        assert "expired" in reason
+
+    def test_policy_digest_in_engine(self):
+        """PolicyEngine exposes the digest of the loaded policy file."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("version: 1\ndefault_mode: standard\n")
+            f.flush()
+            engine = PolicyEngine(f.name)
+        os.unlink(f.name)
+        assert engine.policy_digest != ""
+        assert len(engine.policy_digest) == 64
+
+
+# ============================================================================
+# M40 — Verified Supervisor: API Integration Tests
+# ============================================================================
+
+class TestVerifiedSupervisorAPI:
+    """API endpoint tests for M40 token signing and two-phase approval."""
+
+    def setup_method(self):
+        _reset_signing_key()
+        clear_nonce_cache()
+        self.client = app.test_client()
+
+    @patch("agent.agent.planner.requests.post")
+    def test_submitted_task_has_signed_token(self, mock_post):
+        """Submitted tasks get tokens with signatures and binding fields."""
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize my documents",
+            "mode": "standard",
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        cap = data.get("capability", {})
+        assert cap.get("signature") != ""
+        assert cap.get("nonce") != ""
+        assert cap.get("intent_hash") != ""
+        assert cap.get("task_id") == data["task_id"]
+
+    @patch("agent.agent.planner.requests.post")
+    def test_high_risk_action_requires_approval(self, mock_post):
+        """Tasks with high-risk steps need user approval (two-phase)."""
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        # 'export' maps to EXPORT_DATA which is high-risk
+        resp = self.client.post("/v1/task", json={
+            "intent": "export my documents",
+        })
+        data = resp.get_json()
+        # Should be pending approval (export is high-risk)
+        assert data["status"] in ("pending_approval", "running", "completed", "failed")
+
+    @patch("agent.agent.planner.requests.post")
+    def test_policy_decisions_in_step_params(self, mock_post):
+        """Each step includes _policy_decision in its params."""
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "summarize my documents",
+        })
+        data = resp.get_json()
+        for step in data.get("steps", []):
+            params = step.get("params", {})
+            assert "_policy_decision" in params
+            assert params["_policy_decision"] in ("allow", "ask", "deny")
+
+
+# ============================================================================
+# M41 — HSM-Backed Key Handling: Keystore Abstraction
+# ============================================================================
+
+class TestSoftwareKeyProvider:
+    """Software key provider (default backend)."""
+
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.provider = SoftwareKeyProvider(key_dir=self.tmpdir)
+
+    def test_provider_name(self):
+        assert self.provider.provider_name() == "software"
+
+    def test_sign_and_verify(self):
+        data = b"test data to sign"
+        sig = self.provider.sign(data)
+        assert self.provider.verify(data, sig)
+
+    def test_verify_rejects_tampered(self):
+        data = b"test data"
+        sig = self.provider.sign(data)
+        assert not self.provider.verify(b"tampered data", sig)
+
+    def test_verify_rejects_bad_signature(self):
+        data = b"test data"
+        assert not self.provider.verify(data, b"bad-signature")
+
+    def test_get_key_generates_ephemeral(self):
+        key = self.provider.get_key("test-key")
+        assert len(key) == 64
+        # Same key returned on second call
+        assert self.provider.get_key("test-key") == key
+
+    def test_different_key_ids_different_keys(self):
+        k1 = self.provider.get_key("key1")
+        k2 = self.provider.get_key("key2")
+        assert k1 != k2
+
+    def test_rotate_creates_new_key(self):
+        old_key = self.provider.get_key("rotate-test")
+        result = self.provider.rotate("rotate-test")
+        new_key = self.provider.get_key("rotate-test")
+        assert old_key != new_key
+        assert "rotated" in result
+
+    def test_rotate_persists_to_disk(self):
+        self.provider.rotate("persist-test")
+        key_path = os.path.join(self.tmpdir, "persist-test.key")
+        assert os.path.isfile(key_path)
+        assert os.stat(key_path).st_mode & 0o777 == 0o600
+
+    def test_load_key_from_file(self):
+        key_data = os.urandom(64)
+        key_path = os.path.join(self.tmpdir, "preexisting.key")
+        Path(key_path).write_bytes(key_data)
+        loaded = self.provider.get_key("preexisting")
+        assert loaded == key_data
+
+    def test_derive_subkey(self):
+        k1 = self.provider.derive("context-a")
+        k2 = self.provider.derive("context-b")
+        assert k1 != k2
+        assert len(k1) == 32  # SHA-256 output
+
+    def test_derive_deterministic(self):
+        k1 = self.provider.derive("same-context")
+        k2 = self.provider.derive("same-context")
+        assert k1 == k2
+
+    def test_status(self):
+        s = self.provider.status()
+        assert s["provider"] == "software"
+        assert s["available"] is True
+
+    def test_default_key_path(self):
+        key_data = os.urandom(64)
+        key_path = os.path.join(self.tmpdir, "custom-default.key")
+        Path(key_path).write_bytes(key_data)
+        provider = SoftwareKeyProvider(
+            key_dir=self.tmpdir,
+            default_key_path=key_path,
+        )
+        assert provider.get_key("default") == key_data
+
+
+class TestTPM2KeyProvider:
+    """TPM2 key provider (degrades gracefully without hardware)."""
+
+    def test_provider_name(self):
+        provider = TPM2KeyProvider(key_dir="/nonexistent")
+        assert provider.provider_name() == "tpm2"
+
+    def test_unavailable_without_tools(self):
+        with patch("agent.agent.keystore.shutil.which", return_value=None):
+            provider = TPM2KeyProvider()
+        s = provider.status()
+        assert s["available"] is False
+
+    def test_rotate_skipped_without_tools(self):
+        with patch("agent.agent.keystore.shutil.which", return_value=None):
+            provider = TPM2KeyProvider()
+        result = provider.rotate()
+        assert "not available" in result
+
+    def test_unseal_missing_file_raises(self):
+        with patch("agent.agent.keystore.shutil.which",
+                    return_value="/usr/bin/tpm2_createprimary"):
+            provider = TPM2KeyProvider(key_dir="/nonexistent")
+        with pytest.raises(FileNotFoundError):
+            provider.get_key("missing-key")
+
+    def test_status_includes_pcr_list(self):
+        with patch("agent.agent.keystore.shutil.which",
+                    return_value="/usr/bin/tpm2_createprimary"):
+            provider = TPM2KeyProvider(pcr_list="sha256:0,7")
+        s = provider.status()
+        assert s["pcr_list"] == "sha256:0,7"
+
+
+class TestPKCS11KeyProvider:
+    """PKCS#11 HSM key provider (stub)."""
+
+    def test_provider_name(self):
+        provider = PKCS11KeyProvider()
+        assert provider.provider_name() == "pkcs11"
+
+    def test_sign_raises_not_implemented(self):
+        provider = PKCS11KeyProvider()
+        with pytest.raises(NotImplementedError):
+            provider.sign(b"data")
+
+    def test_verify_raises_not_implemented(self):
+        provider = PKCS11KeyProvider()
+        with pytest.raises(NotImplementedError):
+            provider.verify(b"data", b"sig")
+
+    def test_get_key_raises_not_implemented(self):
+        provider = PKCS11KeyProvider()
+        with pytest.raises(NotImplementedError):
+            provider.get_key()
+
+    def test_rotate_returns_not_implemented(self):
+        provider = PKCS11KeyProvider()
+        assert "not implemented" in provider.rotate()
+
+    def test_status_shows_unavailable(self):
+        provider = PKCS11KeyProvider()
+        s = provider.status()
+        assert s["available"] is False
+
+
+class TestKeystoreFactory:
+    """Provider factory and configuration loading."""
+
+    def test_load_config_missing_file(self):
+        cfg = load_config("/nonexistent/keystore.yaml")
+        assert cfg == {}
+
+    def test_load_config_from_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write("version: 1\nbackend: software\n")
+            f.flush()
+            cfg = load_config(f.name)
+        os.unlink(f.name)
+        assert cfg["backend"] == "software"
+
+    def test_create_provider_defaults_to_software(self):
+        provider = create_provider({})
+        assert provider.provider_name() == "software"
+
+    def test_create_provider_explicit_software(self):
+        provider = create_provider({"backend": "software"})
+        assert provider.provider_name() == "software"
+
+    def test_create_provider_auto_without_tpm2(self):
+        """Auto mode falls back to software when tpm2-tools absent."""
+        with patch("agent.agent.keystore.shutil.which", return_value=None):
+            provider = create_provider({"backend": "auto"})
+        assert provider.provider_name() == "software"
+
+    def test_create_provider_pkcs11_fallback(self):
+        """PKCS#11 falls back to software when unavailable."""
+        provider = create_provider({
+            "backend": "pkcs11",
+            "pkcs11": {"module_path": "/nonexistent.so"},
+        })
+        assert provider.provider_name() == "software"
+
+    def test_keystore_integrates_with_capabilities(self):
+        """Keystore provider is used by create_token for signing."""
+        _reset_signing_key()
+        clear_nonce_cache()
+        token = create_token(SessionMode.STANDARD)
+        assert token.signature != ""
+        valid, reason = verify_token(token)
+        assert valid, f"expected valid: {reason}"

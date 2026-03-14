@@ -1,0 +1,83 @@
+{
+  "_comment": "Seccomp profile for gpu-integrity-watch (Go binary). Needs GPU device access, localhost network for inference probes, read-only registry, write to audit logs.",
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    { "architecture": "SCMP_ARCH_X86_64", "subArchitectures": ["SCMP_ARCH_X86"] },
+    { "architecture": "SCMP_ARCH_AARCH64", "subArchitectures": [] }
+  ],
+  "syscalls": [
+    {
+      "_comment": "Core process lifecycle",
+      "names": [
+        "read", "write", "close", "fstat", "lstat", "stat", "newfstatat",
+        "lseek", "mmap", "mprotect", "munmap", "brk", "mremap",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "pread64", "pwrite64", "readv", "writev",
+        "access", "pipe", "pipe2", "dup", "dup2", "dup3",
+        "getpid", "getuid", "getgid", "geteuid", "getegid",
+        "getppid", "gettid", "getdents64",
+        "clone", "clone3", "wait4",
+        "exit", "exit_group",
+        "futex", "futex_waitv",
+        "set_robust_list", "get_robust_list",
+        "nanosleep", "clock_nanosleep", "clock_gettime", "clock_getres",
+        "gettimeofday",
+        "sched_yield", "sched_getaffinity",
+        "set_tid_address",
+        "arch_prctl", "prctl",
+        "getrandom", "rseq"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "File operations (baseline read, audit log write, GPU sysfs read)",
+      "names": [
+        "open", "openat", "openat2", "fcntl",
+        "fadvise64",
+        "ftruncate", "fsync", "fdatasync",
+        "readlink", "readlinkat",
+        "statx", "statfs", "fstatfs",
+        "getcwd", "umask"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Event polling (Go runtime)",
+      "names": [
+        "epoll_create", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
+        "poll", "ppoll", "select", "pselect6",
+        "eventfd", "eventfd2",
+        "timerfd_create", "timerfd_settime", "timerfd_gettime"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Localhost socket (:8495) + inference worker probes",
+      "names": [
+        "socket", "bind", "listen", "accept", "accept4",
+        "connect", "getsockopt", "setsockopt",
+        "getsockname", "getpeername",
+        "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "shutdown"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "GPU device node access (read-only ioctl for device interrogation)",
+      "names": [
+        "ioctl"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Go runtime internals",
+      "names": [
+        "madvise", "sigaltstack",
+        "tgkill", "tkill",
+        "set_thread_area", "get_thread_area"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

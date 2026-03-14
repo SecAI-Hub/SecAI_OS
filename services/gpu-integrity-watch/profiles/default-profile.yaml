@@ -1,0 +1,87 @@
+version: 1
+
+# Directory containing model weight files to monitor.
+model_dir: /var/lib/secure-ai/models
+
+# Inference endpoint for sentinel probes (llama-server).
+inference_url: "http://127.0.0.1:8080"
+
+# File to store/load baseline hashes.
+baseline_file: /var/lib/secure-ai/integrity/baseline.yaml
+
+# Probe configuration — probes run in order listed.
+probes:
+  - name: tensor-hash-check
+    type: tensor_hash
+    enabled: true
+    settings:
+      patterns: "*.gguf,*.bin,*.safetensors"
+
+  - name: sentinel-inference
+    type: sentinel_inference
+    enabled: true
+    settings:
+      similarity_threshold: "0.85"
+
+  - name: reference-drift
+    type: reference_drift
+    enabled: false           # enable after establishing baseline
+    settings:
+      iterations: "3"
+
+  - name: ecc-status
+    type: ecc_status
+    enabled: true
+
+  - name: driver-fingerprint
+    type: driver_fingerprint
+    enabled: true
+    # settings:
+    #   driver_version_path: /sys/module/nvidia/version
+    #   kernel_module: nvidia
+
+  - name: device-allowlist
+    type: device_allowlist
+    enabled: true
+    # settings:
+    #   device_dir: /dev/dri
+
+# Scoring weights (higher = more impact on composite score).
+scoring:
+  weights:
+    tensor_hash: 1.0
+    sentinel_inference: 1.0
+    reference_drift: 0.8
+    ecc_status: 0.6
+    driver_fingerprint: 1.0
+    device_allowlist: 0.8
+  max_history: 200
+
+# Automated response actions.
+actions:
+  - name: alert-warning
+    type: alert
+    trigger: warning
+
+  - name: reload-on-drift
+    type: reload
+    trigger: warning
+
+  - name: quarantine-critical
+    type: quarantine
+    trigger: critical
+    target_dir: /var/lib/secure-ai/quarantine
+
+  - name: fail-closed
+    type: fail_closed
+    trigger: critical
+
+# Daemon settings.
+daemon:
+  bind_addr: "127.0.0.1:8505"
+  interval: "5m"
+
+# Integration with other SecAI services.
+integrations:
+  incident_recorder_url: "http://127.0.0.1:8515"
+  runtime_attestor_url: "http://127.0.0.1:8505"

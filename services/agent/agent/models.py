@@ -137,6 +137,9 @@ class CapabilityToken:
     Defines exactly what a task run is allowed to do: which paths it
     can read/write, which tools it may invoke, whether online access
     is possible, and the maximum sensitivity level it may handle.
+
+    Tokens are cryptographically signed (HMAC-SHA256) and bound to
+    a specific task context to prevent reuse, replay, and tampering.
     """
     token_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     readable_paths: list[str] = field(default_factory=list)
@@ -149,6 +152,15 @@ class CapabilityToken:
     # User preferences for medium-risk actions: action -> "always" | "ask" | "never"
     configurable_prefs: dict[str, str] = field(default_factory=dict)
 
+    # --- Cryptographic binding (M40 — Verified Supervisor) ---
+    task_id: str = ""              # bound task ID
+    intent_hash: str = ""          # SHA-256 of the original intent string
+    policy_digest: str = ""        # SHA-256 of the policy file at token creation
+    nonce: str = field(default_factory=lambda: uuid.uuid4().hex)
+    issued_at: float = field(default_factory=time.time)
+    expires_at: float = 0.0        # 0 = inherit from budget wall-clock
+    signature: str = ""            # HMAC-SHA256 hex digest
+
     def to_dict(self) -> dict:
         return {
             "token_id": self.token_id,
@@ -158,7 +170,20 @@ class CapabilityToken:
             "allow_online": self.allow_online,
             "sensitivity_ceiling": self.sensitivity_ceiling.value,
             "session_mode": self.session_mode.value,
+            "task_id": self.task_id,
+            "intent_hash": self.intent_hash,
+            "policy_digest": self.policy_digest,
+            "nonce": self.nonce,
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+            "signature": self.signature,
         }
+
+    def is_expired(self) -> bool:
+        """Check whether this token has passed its expiry time."""
+        if self.expires_at <= 0:
+            return False
+        return time.time() > self.expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +213,47 @@ class Step:
             "result": self.result,
             "error": self.error,
         }
+
+
+@dataclass
+class PolicyDecision:
+    """Per-step policy decision evidence (M40 — Verified Supervisor).
+
+    Records the full decision context for each step so the audit trail
+    can prove exactly why an action was allowed, denied, or escalated.
+    """
+    step_id: str = ""
+    action: str = ""
+    decision: str = ""              # "allow" | "ask" | "deny"
+    reason: str = ""
+    risk_level: str = ""
+    token_id: str = ""
+    token_valid: bool = False
+    policy_digest: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "step_id": self.step_id,
+            "action": self.action,
+            "decision": self.decision,
+            "reason": self.reason,
+            "risk_level": self.risk_level,
+            "token_id": self.token_id,
+            "token_valid": self.token_valid,
+            "policy_digest": self.policy_digest,
+            "timestamp": self.timestamp,
+        }
+
+
+# High-risk actions that require two-phase approval (M40).
+TWO_PHASE_ACTIONS: set[str] = {
+    StepAction.TRUST_CHANGE.value,
+    StepAction.EXPORT_DATA.value,
+    StepAction.WIDEN_SCOPE.value,
+    StepAction.ENABLE_TOOL.value,
+    StepAction.CHANGE_SECURITY.value,
+}
 
 
 @dataclass

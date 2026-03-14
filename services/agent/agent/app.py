@@ -1,12 +1,14 @@
-"""Agent service Flask API (spec §8).
+"""Agent service Flask API (spec §8, M40 — Verified Supervisor).
 
 Endpoints for task submission, approval, and status.  The agent
-orchestrates planner → policy engine → executor with capability
-tokens and budget enforcement.
+orchestrates planner → policy engine → executor with HMAC-signed
+capability tokens, two-phase approval for high-risk actions, and
+per-step policy decision evidence in the audit trail.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -15,16 +17,24 @@ import time
 import yaml
 from flask import Flask, jsonify, request
 
-from .capabilities import create_budgets, create_token
+from .capabilities import (
+    clear_nonce_cache,
+    create_budgets,
+    create_token,
+    hash_intent,
+    verify_token,
+)
 from .executor import Executor
 from .models import (
     CapabilityToken,
+    PolicyDecision,
     RiskLevel,
     SessionMode,
     Step,
     StepStatus,
     Task,
     TaskStatus,
+    TWO_PHASE_ACTIONS,
 )
 from .planner import Planner
 from .policy import PolicyEngine
@@ -151,21 +161,37 @@ def submit_task():
         return jsonify({"error": ws_err}), 400
 
     prefs = body.get("preferences", {})
-    cap = create_token(mode, extra_readable=extra_readable, configurable_prefs=prefs)
-    budgets = create_budgets(mode)
 
-    # Create task
+    # Create task first to get task_id
     task = Task(
         intent=intent,
         mode=mode,
-        capability=cap,
-        budgets=budgets,
     )
+
+    # Create HMAC-signed capability token bound to this task
+    cap = create_token(
+        mode,
+        task_id=task.task_id,
+        intent=intent,
+        policy_path=_POLICY_PATH,
+        extra_readable=extra_readable,
+        configurable_prefs=prefs,
+    )
+    budgets = create_budgets(mode)
+
+    task.capability = cap
+    task.budgets = budgets
+
+    # Verify token immediately (proves signing is consistent)
+    token_valid, token_reason = verify_token(cap)
 
     _audit_log("task_submitted", {
         "task_id": task.task_id,
+        "intent_hash": hash_intent(intent),
         "intent_length": len(intent),
         "mode": mode.value,
+        "token_id": cap.token_id,
+        "token_valid": token_valid,
     })
 
     # Plan the task
@@ -180,11 +206,21 @@ def submit_task():
 
     task.steps = steps
 
-    # Evaluate each step against policy
+    # Compute plan hash for audit trail
+    plan_hash = hashlib.sha256(
+        "|".join(f"{s.action.value}:{s.description}" for s in steps).encode()
+    ).hexdigest()[:16]
+
+    # Evaluate each step against policy with decision evidence
     needs_approval = False
+    evidence_list: list[dict] = []
     for step in task.steps:
-        decision, reason = _policy.evaluate(step, cap)
+        decision, reason, evidence = _policy.evaluate_with_evidence(
+            step, cap, token_valid=token_valid
+        )
         step.params["_policy_reason"] = reason
+        step.params["_policy_decision"] = decision
+        evidence_list.append(evidence.to_dict())
 
         if decision == "allow":
             step.status = StepStatus.APPROVED
@@ -211,8 +247,10 @@ def submit_task():
 
     _audit_log("task_planned", {
         "task_id": task.task_id,
+        "plan_hash": plan_hash,
         "steps": len(steps),
         "needs_approval": needs_approval,
+        "policy_decisions": evidence_list,
     })
 
     return jsonify(task.to_dict()), 201
@@ -230,7 +268,7 @@ def get_task(task_id: str):
 
 @app.route("/v1/task/<task_id>/approve", methods=["POST"])
 def approve_steps(task_id: str):
-    """Approve pending steps in a task.
+    """Approve pending steps in a task (two-phase approval for high-risk).
 
     Body: {
         "step_ids": ["abc123", "def456"],  // specific steps, or omit for all
@@ -249,6 +287,18 @@ def approve_steps(task_id: str):
     if task.status != TaskStatus.PENDING_APPROVAL:
         return jsonify({"error": f"task is {task.status.value}, not pending_approval"}), 409
 
+    # Verify capability token is still valid before approving
+    if task.capability:
+        token_valid, token_reason = verify_token(task.capability)
+        if not token_valid:
+            _audit_log("approval_rejected", {
+                "task_id": task_id,
+                "reason": f"token invalid: {token_reason}",
+            })
+            return jsonify({
+                "error": f"capability token invalid: {token_reason}",
+            }), 403
+
     approved_count = 0
     for step in task.steps:
         if step.status != StepStatus.PENDING:
@@ -260,6 +310,7 @@ def approve_steps(task_id: str):
     _audit_log("steps_approved", {
         "task_id": task_id,
         "approved_count": approved_count,
+        "token_id": task.capability.token_id if task.capability else "",
     })
 
     # Check if all pending steps are now resolved
@@ -407,6 +458,17 @@ def _execute_task(task: Task):
             step.status = StepStatus.SKIPPED
             continue
 
+        # Token expiry check before each step
+        if task.capability and task.capability.is_expired():
+            step.status = StepStatus.FAILED
+            step.error = "capability token expired during execution"
+            task.status = TaskStatus.FAILED
+            _audit_log("token_expired_during_execution", {
+                "task_id": task.task_id,
+                "step_id": step.step_id,
+            })
+            break
+
         # Budget check
         budget_err = task.budgets.check()
         if budget_err:
@@ -427,6 +489,7 @@ def _execute_task(task: Task):
             "step_id": step.step_id,
             "action": step.action.value,
             "status": step.status.value,
+            "token_id": task.capability.token_id if task.capability else "",
         })
 
         # If step failed and it's critical, stop the task

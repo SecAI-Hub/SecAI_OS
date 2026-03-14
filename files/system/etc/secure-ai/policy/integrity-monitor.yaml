@@ -1,0 +1,66 @@
+# Continuous Integrity Monitor Policy
+#
+# Defines which files the integrity monitor watches for unauthorized changes.
+# On mismatch: the appliance enters degraded state; with enough violations,
+# it enters recovery_required state.
+#
+# State machine:
+#   trusted  → degraded           (1+ violations below threshold)
+#   trusted  → recovery_required  (violations >= degradation_threshold)
+#   degraded → trusted            (rebaseline or all violations resolved)
+#   degraded → recovery_required  (violations cross threshold)
+
+version: 1
+
+# How often to scan all watched files (30s = ~2x per minute, much faster than 15-min timer)
+scan_interval: "30s"
+
+# --- Service binaries ---
+# SHA-256 of each binary is compared against the baseline.
+# Missing or changed binaries degrade the appliance.
+service_binaries:
+  - /usr/libexec/secure-ai/registry
+  - /usr/libexec/secure-ai/tool-firewall
+  - /usr/libexec/secure-ai/airlock
+  - /usr/libexec/secure-ai/policy-engine
+  - /usr/libexec/secure-ai/runtime-attestor
+  - /usr/libexec/secure-ai/gpu-integrity-watch
+  - /usr/libexec/secure-ai/mcp-firewall
+  - /usr/libexec/secure-ai/integrity-monitor
+
+# --- Policy files ---
+# Changes to policy files trigger reload_policy action.
+policy_files:
+  - /etc/secure-ai/policy/policy.yaml
+  - /etc/secure-ai/policy/agent.yaml
+  - /etc/secure-ai/policy/attestation.yaml
+  - /etc/secure-ai/policy/landlock.yaml
+  - /etc/secure-ai/policy/integrity-monitor.yaml
+
+# --- Model directories ---
+# All files in these directories are watched. Changed models are quarantined.
+model_dirs:
+  - /var/lib/secure-ai/registry
+
+# --- Systemd units ---
+# Critical service units whose modification indicates tampering.
+systemd_units:
+  - /usr/lib/systemd/system/secure-ai-policy-engine.service
+  - /usr/lib/systemd/system/secure-ai-runtime-attestor.service
+  - /usr/lib/systemd/system/secure-ai-registry.service
+  - /usr/lib/systemd/system/secure-ai-tool-firewall.service
+  - /usr/lib/systemd/system/secure-ai-integrity-monitor.service
+
+# --- Trust material ---
+# Cosign public keys and other trust anchors.
+trust_material:
+  - /etc/secure-ai/cosign/cosign.pub
+
+# --- HMAC key ---
+# Path to the HMAC signing key for baseline manifests.
+hmac_key_path: /run/secure-ai/integrity-hmac-key
+
+# --- Degradation threshold ---
+# Number of simultaneous violations before state becomes recovery_required.
+# Below this, state is degraded; at or above, state is recovery_required.
+degradation_threshold: 3

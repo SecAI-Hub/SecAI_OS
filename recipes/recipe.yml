@@ -92,6 +92,10 @@ modules:
   - type: systemd
     system:
       enabled:
+        - secure-ai-runtime-attestor.service
+        - secure-ai-integrity-monitor.service
+        - secure-ai-incident-recorder.service
+        - secure-ai-policy-engine.service
         - secure-ai-registry.service
         - secure-ai-tool-firewall.service
         - secure-ai-agent.service
@@ -109,6 +113,8 @@ modules:
         - secure-ai-canary-watch.service
         - secure-ai-update-check.timer
         - secure-ai-health-check.service
+        - secure-ai-gpu-integrity-watch.service
+        - secure-ai-mcp-firewall.service
         - greenboot-healthcheck.service
         - greenboot-task-runner.service
         - nftables.service

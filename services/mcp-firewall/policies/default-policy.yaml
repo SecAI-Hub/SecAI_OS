@@ -1,0 +1,127 @@
+version: 1
+
+# Deny-by-default: any server/tool/resource not explicitly allowed is blocked.
+default_action: deny
+
+# --- Per-server allowlists ---
+servers:
+  - name: filesystem
+    trust_level: trusted
+    rate_limit: 60
+    allowed_tools:
+      - name: read_file
+        action: allow
+        taint_label: fs-read
+        arg_rules:
+          - name: path
+            required: true
+            pattern: "^/home/"
+            max_len: 512
+        path_restrict:
+          - /home/user
+
+      - name: write_file
+        action: require-approval
+        arg_rules:
+          - name: path
+            required: true
+            max_len: 512
+          - name: content
+            max_len: 100000
+        path_restrict:
+          - /home/user
+
+      - name: list_directory
+        action: allow
+        arg_rules:
+          - name: path
+            required: true
+        path_restrict:
+          - /home/user
+
+    allowed_resources:
+      - pattern: "file:///home/user/*"
+        action: allow
+
+  - name: web-search
+    trust_level: untrusted
+    rate_limit: 30
+    allowed_tools:
+      - name: search
+        action: allow
+        taint_label: external-data
+        arg_rules:
+          - name: query
+            required: true
+            max_len: 1000
+
+  - name: calculator
+    trust_level: trusted
+    allowed_tools:
+      - name: evaluate
+        action: allow
+        arg_rules:
+          - name: expression
+            required: true
+            pattern: "^[0-9+\\-*/().\\s]+$"
+            max_len: 200
+
+# --- Global rules (evaluated before server-specific rules) ---
+global_rules:
+  - name: block-shell-injection
+    description: "Block arguments containing shell metacharacters"
+    match:
+      arg_patterns:
+        - "[;&|`$]"
+    action: deny
+    reason: "shell metacharacters detected in arguments"
+
+  - name: block-prompt-injection-in-args
+    description: "Block arguments that look like prompt injection"
+    match:
+      arg_patterns:
+        - "(?i)(ignore|disregard)\\s+(all\\s+)?previous\\s+instructions"
+        - "(?i)you\\s+are\\s+now\\s+(an?\\s+)?unrestricted"
+    action: deny
+    reason: "prompt injection pattern detected in arguments"
+
+# --- Taint flow rules ---
+taint_rules:
+  - name: no-external-to-write
+    description: "Data from untrusted sources cannot be written to filesystem"
+    match:
+      source_taint: [external-data]
+      target_tools: [write_file]
+    action: deny
+    reason: "tainted external data cannot be used in file writes"
+
+  - name: no-external-to-eval
+    description: "External data cannot be passed to code evaluation"
+    match:
+      source_taint: [external-data]
+      target_tools: [evaluate, execute, run_code]
+    action: deny
+    reason: "tainted external data cannot be executed as code"
+
+# --- Secret redaction ---
+redaction:
+  enabled: true
+  patterns:
+    - api_key
+    - bearer_token
+    - password
+    - connection_string
+    - aws_key
+    - private_key
+    - ssn
+
+# --- Audit logging ---
+audit:
+  enabled: true
+  log_path: /var/lib/secure-ai/mcp-firewall/audit.jsonl
+  sign_reports: true
+  key_path: /var/lib/secure-ai/mcp-firewall/signing.key
+
+# --- Daemon settings ---
+daemon:
+  bind_addr: "127.0.0.1:8510"

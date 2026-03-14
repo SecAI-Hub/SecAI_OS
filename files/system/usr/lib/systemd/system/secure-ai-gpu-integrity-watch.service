@@ -1,0 +1,75 @@
+[Unit]
+Description=Secure AI GPU Integrity Watch (continuous GPU runtime verification)
+After=secure-ai-registry.service
+Wants=secure-ai-registry.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/gpu-integrity-watch
+Environment=BIND_ADDR=127.0.0.1:8495
+Environment=PROFILE_PATH=/etc/secure-ai/gpu-integrity/default-profile.yaml
+Environment=BASELINE_PATH=/var/lib/secure-ai/gpu-integrity/baseline.yaml
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+
+# Filesystem isolation
+DynamicUser=yes
+LogsDirectory=secure-ai
+StateDirectory=secure-ai/gpu-integrity
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/gpu-integrity
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# NOTE: PrivateNetwork=no — needs access to inference worker for health probes
+# NOTE: PrivateDevices=no — needs read access to GPU device nodes for verification
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding — needs SYS_RAWIO for GPU device interrogation
+CapabilityBoundingSet=CAP_SYS_RAWIO
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Clipboard isolation (M21)
+PrivateUsers=yes
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=15%
+TasksMax=32
+LimitNOFILE=512
+LimitCORE=0
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

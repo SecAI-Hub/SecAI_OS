@@ -1,0 +1,79 @@
+# Incident Containment Policy
+#
+# Defines automatic containment actions for each incident class.
+# When auto_contain is true, the incident recorder will automatically
+# mark the incident as "contained" and log the specified actions.
+#
+# Containment actions (executed by integrating services):
+#   freeze_agent        - Pause all agent task execution
+#   disable_airlock     - Block all outbound network requests
+#   force_vault_relock  - Lock the encrypted vault immediately
+#   quarantine_model    - Move suspicious model to quarantine
+#   log_alert           - Write critical alert to audit log
+
+version: 1
+
+rules:
+  attestation_failure:
+    auto_contain: true
+    actions:
+      - freeze_agent
+      - disable_airlock
+      - force_vault_relock
+    default_severity: critical
+
+  policy_bypass_attempt:
+    auto_contain: true
+    actions:
+      - freeze_agent
+      - log_alert
+    default_severity: high
+
+  manifest_mismatch:
+    auto_contain: true
+    actions:
+      - quarantine_model
+      - freeze_agent
+    default_severity: high
+
+  forbidden_airlock_request:
+    auto_contain: false
+    actions:
+      - log_alert
+    default_severity: medium
+
+  prompt_injection:
+    auto_contain: true
+    actions:
+      - freeze_agent
+      - log_alert
+    default_severity: high
+
+  tool_call_burst:
+    auto_contain: true
+    actions:
+      - freeze_agent
+    default_severity: medium
+
+  model_behavior_anomaly:
+    auto_contain: true
+    actions:
+      - quarantine_model
+      - log_alert
+    default_severity: high
+
+  integrity_violation:
+    auto_contain: true
+    actions:
+      - freeze_agent
+      - disable_airlock
+      - force_vault_relock
+    default_severity: critical
+
+  unauthorized_access:
+    auto_contain: true
+    actions:
+      - freeze_agent
+      - force_vault_relock
+      - log_alert
+    default_severity: critical

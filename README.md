@@ -89,11 +89,17 @@ journalctl -u secure-ai-quarantine-watcher -f  # watch pipeline
 | Diffusion Worker | 8455 | Python | Image and video generation |
 | Agent | 8476 | Python | Policy-bound local autopilot (deny-by-default, capability tokens) |
 | Quarantine | -- | Python | 7-stage verify, scan, and promote pipeline |
+| GPU Integrity Watch | 8495 | Go | Continuous GPU runtime verification and anomaly detection |
+| MCP Firewall | 8496 | Go | Model Context Protocol policy gateway (default-deny, taint tracking) |
+| Policy Engine | 8500 | Go | Unified policy decision point (6 domains, decision evidence, OPA-upgradeable) |
+| Runtime Attestor | 8505 | Go | TPM2 quote verification, HMAC-signed state bundles, startup gating |
+| Integrity Monitor | 8510 | Go | Continuous baseline-verified file watcher (binaries, policies, models, trust material) |
+| Incident Recorder | 8515 | Go | Security event capture, incident lifecycle, auto-containment |
 | Search Mediator | 8485 | Python | Tor-routed web search with PII stripping |
 | SearXNG | 8888 | Python | Self-hosted metasearch (privacy-respecting engines) |
 | Tor | 9050 | C | Anonymous SOCKS5 proxy |
 
-See [docs/architecture.md](docs/architecture.md) for design decisions and service dependencies. Per-service docs: [registry](docs/components/registry.md) | [tool-firewall](docs/components/tool-firewall.md) | [agent](docs/components/agent.md) | [airlock](docs/components/airlock.md) | [quarantine](docs/components/quarantine.md) | [search-mediator](docs/components/search-mediator.md)
+See [docs/architecture.md](docs/architecture.md) for design decisions and service dependencies. Per-service docs: [registry](docs/components/registry.md) | [tool-firewall](docs/components/tool-firewall.md) | [agent](docs/components/agent.md) | [airlock](docs/components/airlock.md) | [quarantine](docs/components/quarantine.md) | [search-mediator](docs/components/search-mediator.md) | [gpu-integrity-watch](docs/components/gpu-integrity-watch.md) | [mcp-firewall](docs/components/mcp-firewall.md) | [policy-engine](docs/components/policy-engine.md) | [runtime-attestor](docs/components/runtime-attestor.md) | [integrity-monitor](docs/components/integrity-monitor.md) | [incident-recorder](docs/components/incident-recorder.md)
 
 ### 7-Stage Quarantine Pipeline
 

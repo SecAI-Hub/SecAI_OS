@@ -1,0 +1,70 @@
+[Unit]
+Description=Secure AI Incident Recorder (security event capture and containment)
+After=secure-ai-runtime-attestor.service secure-ai-policy-engine.service network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/secure-ai/incident-recorder
+Environment=BIND_ADDR=127.0.0.1:8515
+Environment=CONTAINMENT_POLICY_PATH=/etc/secure-ai/policy/incident-containment.yaml
+Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/incident-recorder-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+
+# Filesystem isolation
+DynamicUser=yes
+LogsDirectory=secure-ai
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
+ReadWritePaths=/var/lib/secure-ai/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+# Capability bounding
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Namespace restrictions
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# Private users
+PrivateUsers=yes
+PrivateNetwork=no
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+LimitNOFILE=512
+LimitCORE=0
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+# Runtime Attestation Policy
+#
+# Controls what the runtime-attestor verifies at boot and periodically.
+# If a required check fails, the appliance enters degraded or failed state,
+# which prevents dependent services from starting.
+#
+# State machine:
+#   pending  → attested  (all checks pass)
+#   pending  → degraded  (non-critical failures: missing binary, hash drift)
+#   pending  → failed    (critical failures: TPM required but absent, Secure Boot required but off)
+#   attested → degraded  (refresh detects drift)
+#   degraded → attested  (refresh re-verifies successfully)
+
+version: 1
+
+# --- TPM2 ---
+# Set to true to require TPM2 hardware for attestation.
+# When true, attestation fails (state=failed) if tpm2_pcrread is unavailable.
+require_tpm: false
+
+# --- Secure Boot ---
+# Set to true to require UEFI Secure Boot enabled.
+# When true, attestation fails if SecureBoot EFI variable is not set.
+require_secure_boot: false
+
+# --- Expected PCR values ---
+# Map of PCR index to expected SHA-256 digest.
+# Leave empty to skip PCR verification (still reads values for the bundle).
+# Populate after first measured boot to lock down the expected state.
+# Example:
+#   "0": "0xabc123..."  (BIOS/UEFI firmware)
+#   "7": "0xdef456..."  (Secure Boot policy)
+expected_pcrs: {}
+
+# --- Service binaries ---
+# Map of service name to binary path. SHA-256 hash of each binary is
+# included in the attestation bundle. Missing binaries → degraded state.
+service_binaries:
+  registry: /usr/libexec/secure-ai/registry
+  tool-firewall: /usr/libexec/secure-ai/tool-firewall
+  airlock: /usr/libexec/secure-ai/airlock
+  policy-engine: /usr/libexec/secure-ai/policy-engine
+  gpu-integrity-watch: /usr/libexec/secure-ai/gpu-integrity-watch
+  mcp-firewall: /usr/libexec/secure-ai/mcp-firewall
+
+# --- Policy files ---
+# List of policy files to hash. Combined digest is included in the bundle
+# so downstream services can verify policy hasn't been tampered with.
+policy_files:
+  - /etc/secure-ai/policy/policy.yaml
+  - /etc/secure-ai/policy/agent.yaml
+  - /etc/secure-ai/policy/landlock.yaml
+  - /etc/secure-ai/policy/attestation.yaml
+
+# --- Refresh interval ---
+# How often the attestor re-checks the system state.
+# Accepted formats: "5m", "1h", "30s"
+refresh_interval: "5m"
+
+# --- HMAC key ---
+# Path to the HMAC signing key for runtime state bundles.
+# If absent, bundles are emitted unsigned (bundle_hmac = "unsigned").
+# In production, generate with: dd if=/dev/urandom bs=32 count=1 > /run/secure-ai/attestation-hmac-key
+hmac_key_path: /run/secure-ai/attestation-hmac-key
