@@ -2,7 +2,7 @@
 
 This document tracks the implementation status of all security features in SecAI_OS.
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 
 ## Implemented Features
 
@@ -44,12 +44,13 @@ Last updated: 2026-03-13
 | MCP Firewall (Model Context Protocol policy gateway) | Implemented | M33 | Go policy gateway for MCP tool calls with default-deny, input redaction, taint tracking, 30+ tests |
 | Release provenance + per-service SBOMs | Implemented | M34 | Dedicated release workflow with SLSA3 provenance attestation, per-service CycloneDX SBOMs, cosign-signed checksums |
 | Unified policy decision engine | Implemented | M35 | Go service on :8500, 6 decision domains (tool_access, path_access, egress, agent_risk, sensitivity, model_promotion), structured decision evidence, OPA/Rego-upgradeable, 37 tests |
-| Runtime attestation + startup gating | Implemented | M36 | Go service on :8505, TPM2 quote verification, HMAC-signed runtime state bundles, startup gating chain (attestor → policy-engine → all services), 4-state machine (pending/attested/degraded/failed), periodic refresh, 46 tests |
-| Continuous integrity monitor | Implemented | M37 | Go service on :8510, baseline-verified continuous file watcher (30s scans vs 15-min timer), signed baselines, 3-state machine (trusted/degraded/recovery_required), watches binaries+policies+models+units+trust material, 42 tests |
-| Incident recorder + containment automation | Implemented | M38 | Go service on :8515, 9 incident classes, 4-state lifecycle (open/contained/resolved/acknowledged), auto-containment per policy (freeze agent, disable airlock, force vault relock, quarantine model), severity-ranked listing, 47 tests |
+| Runtime attestation + startup gating | Implemented | M36 | Go service on :8505, TPM2 quote verification, HMAC-signed runtime state bundles, startup gating chain (attestor → policy-engine → all services), 4-state machine (pending/attested/degraded/failed), periodic refresh, incident-recorder integration, 55 tests |
+| Continuous integrity monitor | Implemented | M37 | Go service on :8510, baseline-verified continuous file watcher (30s scans vs 15-min timer), signed baselines, 3-state machine (trusted/degraded/recovery_required), watches binaries+policies+models+units+trust material, incident-recorder integration, 50 tests |
+| Incident recorder + containment automation | Implemented | M38 | Go service on :8515, 9 incident classes, 4-state lifecycle (open/contained/resolved/acknowledged), auto-containment per policy (freeze agent, disable airlock, force vault relock, quarantine model), severity-ranked listing, 65 tests |
 | GPU integrity deep integration | Implemented | M39 | 2 new probe types (driver fingerprint, device allowlist), /v1/attest-state for runtime attestor integration, incident-recorder auto-reporting on warning/critical verdicts, 81 tests (up from 61) |
 | Agent Verified Supervisor hardening | Implemented | M40 | HMAC-SHA256 signed capability tokens bound to task/intent/policy, nonce replay protection, token expiry, two-phase approval for high-risk actions, per-step PolicyDecision evidence in audit trail, 128 agent tests (up from 93) |
 | HSM-backed key handling | Implemented | M41 | Keystore abstraction layer with pluggable backends (software/TPM2/PKCS#11), key rotation, PCR-sealed TPM2 key hierarchy, PKCS#11 HSM stub for external hardware, auto-detection of available backends, keystore.yaml config, 159 agent tests (up from 128) |
+| Enforcement wiring + CI supply chain verification | Implemented | M42 | Integrity monitor → incident recorder reporting, runtime attestor → incident recorder reporting, incident recorder → containment action execution (freeze agent, disable airlock, force vault relock, quarantine model), CI SBOM generation verification via Syft, cosign availability check, release workflow provenance validation |
 
 ## Planned Features
 
@@ -57,5 +58,4 @@ Last updated: 2026-03-13
 |---------|--------|-------|
 | Agent Mode Phase 2: Explainability | Planned | Detailed explanations for quarantine/registry/airlock decisions, per-workspace permissions, audit views |
 | Agent Mode Phase 3: Online-assisted | Planned | Airlock-mediated outbound, search mediation, redaction flows, approval UX for online steps |
-| Agent Mode Phase 4: Stronger isolation | Planned | Adversarial testing, signed releases, additional sandboxing profiles, policy bypass regression tests |
-| Hardware security module (HSM) support | Planned | External HSM integration for key management |
+| Agent Mode Phase 4: Stronger isolation | Planned | Adversarial testing, additional sandboxing profiles, policy bypass regression tests |

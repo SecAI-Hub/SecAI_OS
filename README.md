@@ -39,7 +39,7 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 - **Hands-off security** -- All scanning, verification, and promotion happens automatically. Users never run security tools manually.
 - **Deterministic policy** -- Promotion to "trusted" is rule-based (signatures, hashes, scans, tests), not ad-hoc.
 - **Short-lived workers** -- No swap, tmpfs for temp data, inference workers restart between sessions.
-- **20+ defense layers** -- From UEFI Secure Boot and TPM2 to seccomp-BPF, Landlock, canary files, and 3-level emergency wipe.
+- **25+ defense layers** -- From UEFI Secure Boot and TPM2 to seccomp-BPF, Landlock, runtime attestation, continuous integrity monitoring, automated incident containment, and 3-level emergency wipe.
 
 ---
 
@@ -137,14 +137,20 @@ Every model passes through the same fully automatic pipeline:
 | **Auth** | Scrypt passphrase hashing, rate-limited login, session management |
 | **Vault** | Auto-lock after 30 min idle, TPM2-sealed keys |
 | **Services** | Systemd sandboxing: ProtectSystem, PrivateNetwork, seccomp-bpf, Landlock |
-| **Agent** | Deny-by-default policy engine, capability tokens, hard budgets, loopback-only IPC, IPAddressDeny |
-| **GPU** | Vendor-specific DeviceAllow, PrivateNetwork on all workers |
+| **Agent** | Deny-by-default policy engine, HMAC-signed capability tokens, hard budgets, loopback-only IPC |
+| **Policy Engine** | Unified decision point (6 domains), structured evidence, OPA/Rego-upgradeable |
+| **Attestation** | TPM2 quote verification, HMAC-signed runtime state bundles, startup gating |
+| **Integrity** | Continuous baseline-verified file watcher (30s scans), signed baselines, auto-degradation |
+| **Incident Response** | 9 incident classes, auto-containment (freeze agent, disable airlock, vault relock, quarantine model) |
+| **GPU** | Vendor-specific DeviceAllow, PrivateNetwork, driver fingerprinting, device allowlist |
+| **HSM/Keys** | Pluggable keystore (software/TPM2/PKCS#11), key rotation, PCR-sealed key hierarchy |
 | **Clipboard** | VM clipboard agents disabled, auto-clear every 60s |
 | **Tripwire** | Canary files in sensitive dirs, inotify real-time monitoring |
 | **Emergency** | 3-level panic (lock / wipe keys / full wipe) with passphrase gates |
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
+| **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 31 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 42 milestones.
 
 ### Verify Image Signatures
 
@@ -194,8 +200,8 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 31 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 700+ tests across Go, Python, shell |
+| [Security Status](docs/security-status.md) | Implementation status of all 42 milestones |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 1000+ tests across Go, Python, shell |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -210,8 +216,14 @@ See [docs/policy-schema.md](docs/policy-schema.md) for full schema reference. Se
 | [Tool Firewall](docs/components/tool-firewall.md) | Policy-gated tool invocation |
 | [Airlock](docs/components/airlock.md) | Sanitized egress proxy |
 | [Quarantine](docs/components/quarantine.md) | 7-stage scanning pipeline |
-| [Agent](docs/components/agent.md) | Policy-bound local autopilot |
+| [Agent](docs/components/agent.md) | Policy-bound local autopilot with verified supervisor |
 | [Search Mediator](docs/components/search-mediator.md) | Tor-routed web search |
+| [GPU Integrity Watch](docs/components/gpu-integrity-watch.md) | Continuous GPU runtime verification |
+| [MCP Firewall](docs/components/mcp-firewall.md) | Model Context Protocol policy gateway |
+| [Policy Engine](docs/components/policy-engine.md) | Unified policy decision point |
+| [Runtime Attestor](docs/components/runtime-attestor.md) | TPM2 attestation and startup gating |
+| [Integrity Monitor](docs/components/integrity-monitor.md) | Continuous file integrity verification |
+| [Incident Recorder](docs/components/incident-recorder.md) | Security event capture and auto-containment |
 
 ### Install Guides
 
@@ -294,12 +306,13 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (26 total)
-cd services/registry && go test -v -race ./...
-cd services/tool-firewall && go test -v -race ./...
-cd services/airlock && go test -v -race ./...
+# Go tests (348 total across 9 services)
+for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
+           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+  (cd services/$svc && go test -v -race ./...)
+done
 
-# Python tests (700+ total)
+# Python tests (658 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -314,7 +327,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 31 milestones (click to expand)</summary>
+<summary>All 42 milestones (click to expand)</summary>
 
 - [x] **M0** -- Threat model, dataflow, invariants, policy files
 - [x] **M1** -- Bootable OS, encrypted vault, GPU drivers
@@ -348,6 +361,17 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **M29** -- Garak LLM vulnerability scanner
 - [x] **M30** -- gguf-guard deep GGUF integrity scanner
 - [x] **M31** -- Agent Mode (Phase 1: safe local autopilot)
+- [x] **M32** -- GPU Integrity Watch (continuous GPU runtime verification)
+- [x] **M33** -- MCP Firewall (Model Context Protocol policy gateway)
+- [x] **M34** -- Release provenance + per-service SBOMs (SLSA3, CycloneDX, cosign)
+- [x] **M35** -- Unified policy decision engine (6 domains, OPA/Rego-upgradeable)
+- [x] **M36** -- Runtime attestation + startup gating (TPM2, HMAC state bundles)
+- [x] **M37** -- Continuous integrity monitor (baseline-verified file watcher)
+- [x] **M38** -- Incident recorder + containment automation (9 classes, 4-state lifecycle)
+- [x] **M39** -- GPU integrity deep integration (driver fingerprinting, attestor/incident wiring)
+- [x] **M40** -- Agent verified supervisor hardening (signed tokens, replay protection, two-phase approval)
+- [x] **M41** -- HSM-backed key handling (pluggable keystore: software/TPM2/PKCS#11)
+- [x] **M42** -- Enforcement wiring + CI supply chain verification
 
 </details>
 
@@ -356,26 +380,34 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Project Structure
 
 ```
-recipes/                BlueBuild recipe (image definition)
+recipes/                    BlueBuild recipe (image definition)
 files/
   system/
-    etc/secure-ai/      Policy and config files baked into image
-    etc/nftables/        Firewall rules (default-deny egress)
-    usr/lib/systemd/     Systemd service units (sandboxed)
-    usr/libexec/         Helper scripts (firstboot, vault, securectl, canary)
+    etc/secure-ai/          Policy and config files baked into image
+    etc/nftables/            Firewall rules (default-deny egress)
+    usr/lib/systemd/         Systemd service units (sandboxed)
+    usr/libexec/             Helper scripts (firstboot, vault, securectl, canary)
 services/
-  registry/             Go -- Trusted Registry
-  tool-firewall/        Go -- Policy engine + tool gateway
-  airlock/              Go -- Online egress proxy
-  agent/                Python/Flask -- Policy-bound local autopilot
-  quarantine/           Python -- 7-stage verification + scanning pipeline
-  diffusion-worker/     Python -- Image/video generation
-  search-mediator/      Python -- Tor-routed web search
-  ui/                   Python/Flask -- Web UI
-tests/                  700+ Python tests, 26 Go tests
-docs/                   Architecture, API, threat model, install guides
-schemas/                OpenAPI spec, JSON Schema for config files
-examples/               Task-oriented walkthroughs
+  registry/                 Go -- Trusted Registry (:8470)
+  tool-firewall/            Go -- Policy-gated tool gateway (:8475)
+  airlock/                  Go -- Online egress proxy (:8490)
+  gpu-integrity-watch/      Go -- GPU runtime verification (:8495)
+  mcp-firewall/             Go -- MCP policy gateway (:8496)
+  policy-engine/            Go -- Unified policy decisions (:8500)
+  runtime-attestor/         Go -- TPM2 attestation + startup gating (:8505)
+  integrity-monitor/        Go -- Continuous file integrity watcher (:8510)
+  incident-recorder/        Go -- Incident capture + containment (:8515)
+  agent/                    Python/Flask -- Verified supervisor autopilot (:8476)
+  quarantine/               Python -- 7-stage verification + scanning pipeline
+  diffusion-worker/         Python -- Image/video generation (:8455)
+  search-mediator/          Python -- Tor-routed web search (:8485)
+  ui/                       Python/Flask -- Web UI (:8480)
+  common/                   Python -- Shared utilities (audit, auth, mlock)
+tests/                      658 Python tests, 348 Go tests (~1006 total)
+docs/                       Architecture, API, threat model, install guides
+schemas/                    OpenAPI spec, JSON Schema for config files
+examples/                   Task-oriented walkthroughs
+.github/workflows/          CI (test/lint), build (image), release (SLSA3/SBOM)
 ```
 
 ---

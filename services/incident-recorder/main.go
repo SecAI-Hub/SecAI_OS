@@ -284,6 +284,14 @@ func createIncident(report IncidentReport) Incident {
 	log.Printf("incident created: id=%s class=%s severity=%s state=%s actions=%v",
 		inc.ID, inc.Class, inc.Severity, inc.State, containmentActions)
 
+	// Execute containment actions asynchronously (best-effort, non-blocking).
+	// Capture token and endpoints snapshot to avoid race conditions.
+	if len(containmentActions) > 0 {
+		token := serviceToken
+		ep := endpoints
+		go executeContainment(inc, ep, token)
+	}
+
 	return inc
 }
 
@@ -689,6 +697,7 @@ func main() {
 
 	initAuditLog()
 	loadServiceToken()
+	loadServiceEndpoints()
 
 	bind := os.Getenv("BIND_ADDR")
 	if bind == "" {

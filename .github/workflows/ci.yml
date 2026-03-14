@@ -132,3 +132,66 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: bash .github/scripts/check-action-pins.sh
+
+  supply-chain-verify:
+    name: Supply Chain & SBOM Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.23"
+
+      - name: Install Syft (SBOM generator)
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install cosign (signing & attestation)
+        uses: sigstore/cosign-installer@3454372be43ec08971210d50303c1018d382600b # v3.8.2
+
+      - name: Verify SBOM generation (Go services)
+        run: |
+          echo "=== SBOM generation verification ==="
+          for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
+                     policy-engine runtime-attestor integrity-monitor incident-recorder; do
+            echo "--- ${svc} ---"
+            syft dir:services/${svc} -o cyclonedx-json=/dev/null
+            echo "OK: ${svc} SBOM generated"
+          done
+
+      - name: Verify SBOM generation (Python services)
+        run: |
+          for svc in agent ui quarantine common diffusion-worker search-mediator; do
+            if [ -d "services/${svc}" ]; then
+              syft dir:services/${svc} -o cyclonedx-json=/dev/null
+              echo "OK: ${svc} SBOM generated"
+            fi
+          done
+
+      - name: Verify cosign is functional
+        run: |
+          cosign version
+          echo "OK: cosign available for signing and attestation"
+
+      - name: Verify release workflow has provenance steps
+        run: |
+          echo "=== Checking release.yml provenance pipeline ==="
+          # Verify release workflow exists and contains required supply-chain steps
+          test -f .github/workflows/release.yml || { echo "FAIL: release.yml missing"; exit 1; }
+
+          for keyword in "sbom-action" "attest-build-provenance" "cosign" "cyclonedx" "SHA256SUMS"; do
+            grep -q "${keyword}" .github/workflows/release.yml || \
+              { echo "FAIL: release.yml missing '${keyword}'"; exit 1; }
+            echo "OK: release.yml contains '${keyword}'"
+          done
+
+          # Verify build workflow has SBOM attestation
+          test -f .github/workflows/build.yml || { echo "FAIL: build.yml missing"; exit 1; }
+          for keyword in "sbom-action" "cosign attest" "cyclonedx"; do
+            grep -q "${keyword}" .github/workflows/build.yml || \
+              { echo "FAIL: build.yml missing '${keyword}'"; exit 1; }
+            echo "OK: build.yml contains '${keyword}'"
+          done
+
+          echo "=== Supply chain verification passed ==="

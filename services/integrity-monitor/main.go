@@ -428,6 +428,13 @@ func performScan() (IntegrityState, []IntegrityViolation) {
 	log.Printf("scan complete: state=%s violations=%d watched=%d",
 		state, len(violations), len(files))
 
+	// Report violations to the incident-recorder (async, non-blocking).
+	// Capture token to avoid race with global state reset.
+	if len(violations) > 0 {
+		token := serviceToken
+		go reportViolations(state, violations, token)
+	}
+
 	return state, violations
 }
 

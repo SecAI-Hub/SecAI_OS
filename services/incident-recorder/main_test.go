@@ -30,6 +30,14 @@ func resetGlobalState(t *testing.T) {
 	containmentPolicyMu.Lock()
 	containmentPolicy = defaultContainmentPolicy()
 	containmentPolicyMu.Unlock()
+
+	// Set endpoints to unreachable addresses to prevent async containment
+	// goroutines from racing with subsequent test state resets.
+	endpoints = ServiceEndpoints{
+		AgentURL:   "http://127.0.0.1:1",
+		AirlockURL: "http://127.0.0.1:1",
+		RegistryURL: "http://127.0.0.1:1",
+	}
 }
 
 func reportIncidentHTTP(t *testing.T, report IncidentReport) (*httptest.ResponseRecorder, Incident) {

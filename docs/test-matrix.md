@@ -2,29 +2,29 @@
 
 This document summarizes the test coverage for SecAI_OS across all languages and test categories.
 
-Last updated: 2026-03-13
+Last updated: 2026-03-14
 
 ## Summary
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 288+ | `go test ./...` |
-| Python | 743+ | `pytest` |
+| Go | 348 | `go test -race ./...` |
+| Python | 658 | `pytest` |
 | Shell | All .sh files | `shellcheck` |
 
-## Go Tests (288+ total)
+## Go Tests (348 total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
-| Registry | services/registry/ | 6 | Trusted model registry, hash pinning, cosign verification |
+| Registry | services/registry/ | 14 | Trusted model registry, hash pinning, cosign verification |
 | Tool Firewall | services/tool-firewall/ | 10 | Default-deny egress policy, rule evaluation |
 | Airlock | services/airlock/ | 10 | Online airlock, request sanitization, policy enforcement |
-| GPU Integrity Watch | services/gpu-integrity-watch/ | 81 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
-| MCP Firewall | services/mcp-firewall/ | 30+ | MCP tool call policy enforcement, input redaction, taint tracking, audit |
-| Policy Engine | services/policy-engine/ | 37 | Unified policy decisions across 6 domains, evidence generation, auth |
-| Runtime Attestor | services/runtime-attestor/ | 46 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests |
-| Integrity Monitor | services/integrity-monitor/ | 42 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines |
-| Incident Recorder | services/incident-recorder/ | 47 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading |
+| GPU Integrity Watch | services/gpu-integrity-watch/ | 62 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
+| MCP Firewall | services/mcp-firewall/ | 44 | MCP tool call policy enforcement, input redaction, taint tracking, audit |
+| Policy Engine | services/policy-engine/ | 38 | Unified policy decisions across 6 domains, evidence generation, auth |
+| Runtime Attestor | services/runtime-attestor/ | 55 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests, incident-recorder integration |
+| Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
+| Incident Recorder | services/incident-recorder/ | 65 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration |
 
 ## Python Tests (677+ total)
 
@@ -77,11 +77,13 @@ All shell scripts under `files/system/` are validated with `shellcheck`. This is
 CI is defined in `.github/workflows/ci.yml` and runs on every push and pull request.
 
 Steps:
-1. Lint shell scripts with shellcheck
-2. Run Go tests (`go test ./...`)
-3. Lint Python (py_compile for all service modules including agent)
-4. Run Python tests (`pytest tests/`) — includes agent tests
+1. Build and test all 9 Go services (`go test -race ./...`)
+2. Lint Python (py_compile for all service modules including agent)
+3. Run Python tests (`pytest tests/`) — includes agent tests
+4. Lint shell scripts with shellcheck
 5. Validate YAML configs (policy, agent, recipes)
+6. Verify action pins (SHA-256 pinned GitHub Actions)
+7. Supply chain verification: SBOM generation (Syft), cosign availability, release workflow provenance validation
 
 ## Test Categories
 

@@ -353,6 +353,13 @@ func performAttestation() RuntimeStateBundle {
 	// Audit log
 	writeAudit(bundle)
 
+	// Report degraded/failed attestation to the incident-recorder (async).
+	// Capture token to avoid race with global state reset in tests.
+	if state == StateDegraded || state == StateFailed {
+		token := serviceToken
+		go reportAttestationFailure(bundle, token)
+	}
+
 	return bundle
 }
 
