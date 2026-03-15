@@ -47,8 +47,11 @@ v1.0.0/
   diffusion-worker-sbom.cdx.json
   search-mediator-sbom.cdx.json
 
+  # Release manifest (machine-readable)
+  RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, provenance, build metadata
+
   # Checksums and signature
-  SHA256SUMS            # sha256sum of every artifact above
+  SHA256SUMS            # sha256sum of every artifact above (includes RELEASE_MANIFEST.json)
   SHA256SUMS.sig        # cosign detached signature over SHA256SUMS
 ```
 
@@ -79,6 +82,59 @@ cosign sign-blob --yes \
   --key cosign.key \
   --output-signature SHA256SUMS.sig \
   SHA256SUMS
+```
+
+## Release Manifest
+
+`RELEASE_MANIFEST.json` is a structured JSON file that catalogues every artifact in the release bundle. It is included in `SHA256SUMS` and is therefore transitively signed.
+
+Example structure:
+
+```json
+{
+  "schema_version": "1",
+  "tag": "v1.0.0",
+  "image": {
+    "ref": "ghcr.io/secai-hub/secai_os",
+    "digest": "sha256:a1b2c3d4e5f6...",
+    "ref_pinned": "ghcr.io/secai-hub/secai_os@sha256:a1b2c3d4e5f6..."
+  },
+  "binaries": [
+    {"name": "airlock-linux-amd64", "sha256": "e3b0c44298fc..."},
+    {"name": "airlock-linux-arm64", "sha256": "7d865e959b24..."}
+  ],
+  "sboms": [
+    "airlock-sbom.cdx.json",
+    "registry-sbom.cdx.json"
+  ],
+  "provenance": {
+    "type": "https://slsa.dev/provenance/v1",
+    "attested": true
+  },
+  "checksums": {
+    "file": "SHA256SUMS",
+    "signature": "SHA256SUMS.sig"
+  },
+  "build": {
+    "commit_sha": "abc123def456...",
+    "workflow_run": "12345678",
+    "workflow_ref": "SecAI-Hub/SecAI_OS/.github/workflows/release.yml@refs/tags/v1.0.0",
+    "timestamp": "2026-03-15T12:00:00Z"
+  }
+}
+```
+
+Use `jq` to inspect specific fields:
+
+```bash
+# Image digest
+jq -r '.image.digest' RELEASE_MANIFEST.json
+
+# List all binaries with their hashes
+jq '.binaries[] | .name + "  " + .sha256' RELEASE_MANIFEST.json
+
+# Build commit
+jq -r '.build.commit_sha' RELEASE_MANIFEST.json
 ```
 
 ## SBOM Files
@@ -228,8 +284,17 @@ gh release download v1.0.0 -R SecAI-Hub/SecAI_OS
 # Place cosign.pub in the directory (or set COSIGN_PUB_KEY)
 cp /path/to/cosign.pub .
 
-# Run full verification
+# Run full verification (colored terminal output)
 ../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+
+# Save a human-readable report
+../files/scripts/verify-release.sh --report report.txt ghcr.io/secai-hub/secai_os:v1.0.0
+
+# Machine-readable JSON (for CI pipelines or tooling)
+../files/scripts/verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
+
+# Or via Make target from the repo root
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
 ```
 
 The script prints PASS/FAIL for each step and exits non-zero if any check fails. See `--help` for configuration options.

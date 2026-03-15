@@ -108,6 +108,101 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      - name: Record release image digest
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null | jq -r '.Digest' || echo "")
+          if [ -n "$DIGEST" ] && [ "$DIGEST" != "null" ]; then
+            echo "${DIGEST}" > dist/IMAGE_DIGEST
+            echo "${IMAGE_REF}@${DIGEST}" > dist/IMAGE_REF_PINNED
+            echo "## Install with digest pinning" >> "$GITHUB_STEP_SUMMARY"
+            echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "WARNING: Could not extract image digest for tag ${TAG}"
+            echo "unknown" > dist/IMAGE_DIGEST
+          fi
+
+      - name: Generate release manifest
+        run: |
+          cd dist
+
+          # Collect binary names + SHA256 hashes
+          BINARIES_JSON="[]"
+          for bin in *-linux-*; do
+            [ -f "$bin" ] || continue
+            HASH=$(sha256sum "$bin" | awk '{print $1}')
+            BINARIES_JSON=$(echo "$BINARIES_JSON" | jq \
+              --arg name "$bin" --arg sha256 "$HASH" \
+              '. + [{"name": $name, "sha256": $sha256}]')
+          done
+
+          # Collect SBOM filenames
+          SBOMS_JSON="[]"
+          for sbom in *-sbom.cdx.json; do
+            [ -f "$sbom" ] || continue
+            SBOMS_JSON=$(echo "$SBOMS_JSON" | jq \
+              --arg name "$sbom" \
+              '. + [$name]')
+          done
+
+          # Read image digest
+          IMAGE_DIGEST="unknown"
+          if [ -f IMAGE_DIGEST ]; then
+            IMAGE_DIGEST=$(cat IMAGE_DIGEST)
+          fi
+          IMAGE_REF_PINNED=""
+          if [ -f IMAGE_REF_PINNED ]; then
+            IMAGE_REF_PINNED=$(cat IMAGE_REF_PINNED)
+          fi
+
+          # Build manifest JSON
+          jq -n \
+            --arg schema_version "1" \
+            --arg tag "${{ github.ref_name }}" \
+            --arg image_ref "ghcr.io/${{ github.repository }}" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg image_ref_pinned "$IMAGE_REF_PINNED" \
+            --argjson binaries "$BINARIES_JSON" \
+            --argjson sboms "$SBOMS_JSON" \
+            --arg provenance_type "https://slsa.dev/provenance/v1" \
+            --arg checksum_file "SHA256SUMS" \
+            --arg signature_file "SHA256SUMS.sig" \
+            --arg commit_sha "${{ github.sha }}" \
+            --arg workflow_run "${{ github.run_id }}" \
+            --arg workflow_ref "${{ github.workflow_ref }}" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              schema_version: $schema_version,
+              tag: $tag,
+              image: {
+                ref: $image_ref,
+                digest: $image_digest,
+                ref_pinned: $image_ref_pinned
+              },
+              binaries: $binaries,
+              sboms: $sboms,
+              provenance: {
+                type: $provenance_type,
+                attested: true
+              },
+              checksums: {
+                file: $checksum_file,
+                signature: $signature_file
+              },
+              build: {
+                commit_sha: $commit_sha,
+                workflow_run: $workflow_run,
+                workflow_ref: $workflow_ref,
+                timestamp: $timestamp
+              }
+            }' > RELEASE_MANIFEST.json
+
+          echo "--- RELEASE_MANIFEST.json ---"
+          cat RELEASE_MANIFEST.json
+
       - name: Generate SHA256 checksums
         run: |
           cd dist
@@ -141,23 +236,6 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
-      - name: Record release image digest
-        run: |
-          IMAGE_REF="ghcr.io/${{ github.repository }}"
-          TAG="${{ github.ref_name }}"
-          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null | jq -r '.Digest' || echo "")
-          if [ -n "$DIGEST" ] && [ "$DIGEST" != "null" ]; then
-            echo "${DIGEST}" > dist/IMAGE_DIGEST
-            echo "${IMAGE_REF}@${DIGEST}" > dist/IMAGE_REF_PINNED
-            echo "## Install with digest pinning" >> "$GITHUB_STEP_SUMMARY"
-            echo '```bash' >> "$GITHUB_STEP_SUMMARY"
-            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "WARNING: Could not extract image digest for tag ${TAG}"
-            echo "unknown" > dist/IMAGE_DIGEST
-          fi
-
       - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
@@ -169,5 +247,6 @@ jobs:
             dist/SHA256SUMS.sig
             dist/IMAGE_DIGEST
             dist/IMAGE_REF_PINNED
+            dist/RELEASE_MANIFEST.json
           generate_release_notes: true
           fail_on_unmatched_files: false

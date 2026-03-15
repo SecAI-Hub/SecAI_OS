@@ -230,6 +230,37 @@ cosign verify-blob \
 sha256sum -c SHA256SUMS
 ```
 
+### Automated Release Verification
+
+For a single-command verification of all supply-chain artifacts, use the `verify-release.sh` script:
+
+```bash
+# Download release artifacts
+mkdir release && cd release
+gh release download v1.0.0 -R SecAI-Hub/SecAI_OS
+
+# Place cosign.pub (or set COSIGN_PUB_KEY)
+cp /path/to/cosign.pub .
+
+# Run full verification (colored terminal output)
+../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+
+# Generate a human-readable report file
+../files/scripts/verify-release.sh --report verification-report.txt \
+  ghcr.io/secai-hub/secai_os:v1.0.0
+
+# Machine-readable JSON output (for CI pipelines or tooling)
+../files/scripts/verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
+```
+
+The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 provenance attestation, and SHA256 checksums. See `files/scripts/verify-release.sh --help` for configuration options.
+
+Or via Make:
+
+```bash
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
+```
+
 ### Forensic Bundle Integrity
 
 Export and verify a forensic bundle from a running appliance:
@@ -382,24 +413,33 @@ Run this all-in-one script to validate the test suite and artifact structure fro
 set -e
 echo "=== M5 Audit Quick Validation ==="
 
-echo "[1/5] M5 acceptance suite..."
+echo "[1/6] M5 acceptance suite..."
 PYTHONPATH=services python -m pytest tests/test_m5_acceptance.py -v --tb=short
 
-echo "[2/5] Adversarial tests..."
+echo "[2/6] Adversarial tests..."
 PYTHONPATH=services python -m pytest tests/test_adversarial.py -v --tb=short
 
-echo "[3/5] Incident recorder recovery/forensic tests..."
+echo "[3/6] Incident recorder recovery/forensic tests..."
 (cd services/incident-recorder && go test -v -race -run "TestRecovery|TestEscalation|TestForensic|TestLatched" ./...)
 
-echo "[4/5] MCP firewall adversarial tests..."
+echo "[4/6] MCP firewall adversarial tests..."
 (cd services/mcp-firewall && go test -v -race -run TestAdversarial ./...)
 
-echo "[5/5] All Go service tests..."
+echo "[5/6] All Go service tests..."
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   echo "--- ${svc} ---"
   (cd services/${svc} && go test -race -count=1 ./...)
 done
+
+echo "[6/6] Release artifact verification..."
+if [ -f SHA256SUMS ]; then
+  files/scripts/verify-release.sh --report /tmp/secai-verify-report.txt \
+    ghcr.io/secai-hub/secai_os:latest
+  echo "Report: /tmp/secai-verify-report.txt"
+else
+  echo "SKIP: No release artifacts found (download with 'gh release download')"
+fi
 
 echo "=== All M5 checks passed ==="
 ```
