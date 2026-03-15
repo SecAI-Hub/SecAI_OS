@@ -8,10 +8,10 @@
 # Checks:
 #   1. Critical systemd services are active
 #   2. Registry API is reachable
-#   3. Firewall rules are loaded
-#   4. Integrity check script exists
-#   5. Vault mapper device exists (if configured)
-#   6. securectl is executable
+#   3. Post-upgrade model integrity (SHA256 vs manifest)
+#   4. Firewall rules are loaded
+#   5. Integrity check script exists
+#   6. Vault mapper device exists (if configured)
 #
 # Timeout: 5 minutes (configured in greenboot.conf)
 #
@@ -123,7 +123,57 @@ if systemctl is-enabled --quiet secure-ai-registry.service 2>/dev/null; then
     done
 fi
 
-# ── Check 3: Firewall rules ──
+# ── Check 3: Post-upgrade model integrity ──
+# Verify promoted models match their manifest hashes. This closes the
+# 15-minute gap between boot and the periodic integrity check.
+log "Checking model integrity..."
+MANIFEST_DIR="/var/lib/secure-ai/registry/.manifests"
+if [ -d "$MANIFEST_DIR" ] && ls "$MANIFEST_DIR"/*.json 1>/dev/null 2>&1; then
+    MODEL_FAILURES=0
+    for manifest in "$MANIFEST_DIR"/*.json; do
+        # Extract model path and expected hash from manifest
+        MODEL_NAME=$(python3 -c "
+import json, sys
+m = json.load(open('${manifest}'))
+print(m.get('name', ''))
+" 2>/dev/null || echo "")
+        EXPECTED_HASH=$(python3 -c "
+import json, sys
+m = json.load(open('${manifest}'))
+print(m.get('sha256', m.get('hash', '')))
+" 2>/dev/null || echo "")
+        MODEL_FILE=$(python3 -c "
+import json, sys
+m = json.load(open('${manifest}'))
+print(m.get('path', m.get('file', '')))
+" 2>/dev/null || echo "")
+
+        if [ -z "$EXPECTED_HASH" ] || [ -z "$MODEL_FILE" ]; then
+            continue
+        fi
+
+        if [ ! -f "$MODEL_FILE" ]; then
+            log "  WARNING: model file missing: $MODEL_FILE"
+            continue
+        fi
+
+        ACTUAL_HASH=$(sha256sum "$MODEL_FILE" 2>/dev/null | cut -d' ' -f1)
+        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            log "  FAIL: hash mismatch for $MODEL_NAME ($MODEL_FILE)"
+            MODEL_FAILURES=$((MODEL_FAILURES + 1))
+        else
+            log "  $MODEL_NAME: integrity OK"
+        fi
+    done
+    if [ "$MODEL_FAILURES" -gt 0 ]; then
+        fail "model integrity check failed: $MODEL_FAILURES model(s) have hash mismatches"
+    fi
+    log "  model integrity: verified"
+else
+    log "  no model manifests found (new install or no models promoted yet)"
+fi
+
+# ── Check 4: Firewall rules ──
 log "Checking firewall rules..."
 if command -v nft &>/dev/null; then
     if ! nft list ruleset 2>/dev/null | grep -q "secure_ai"; then
@@ -134,7 +184,7 @@ else
     fail "nft command not found"
 fi
 
-# ── Check 4: Integrity scripts ──
+# ── Check 5: Integrity scripts ──
 log "Checking integrity scripts..."
 for script in \
     /usr/libexec/secure-ai/securectl \
@@ -146,7 +196,7 @@ for script in \
 done
 log "  integrity scripts: present"
 
-# ── Check 5: Vault device ──
+# ── Check 6: Vault device ──
 log "Checking vault configuration..."
 if [ -f /etc/crypttab ]; then
     if grep -q "secure-ai-vault" /etc/crypttab 2>/dev/null; then

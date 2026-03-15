@@ -11,11 +11,11 @@ Last updated: 2026-03-14
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 399 | `go test -race ./...` |
-| Python | 718 | `pytest` |
+| Go | 402 | `go test -race ./...` |
+| Python | 739 | `pytest` |
 | Shell | All .sh files | `shellcheck` |
 
-## Go Tests (399 total)
+## Go Tests (402 total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
@@ -27,15 +27,16 @@ Last updated: 2026-03-14
 | Policy Engine | services/policy-engine/ | 44 | Unified policy decisions across 6 domains, evidence generation, auth, adversarial tests (M43) |
 | Runtime Attestor | services/runtime-attestor/ | 55 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests, incident-recorder integration |
 | Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
-| Incident Recorder | services/incident-recorder/ | 83 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43) |
+| Incident Recorder | services/incident-recorder/ | 86 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43), persistence durability (fsync) |
 
-## Python Tests (718 total)
+## Python Tests (739 total)
 
 | Test File | Location | Tests | Description |
 |-----------|----------|-------|-------------|
 | test_pipeline.py | tests/ | 96 | Quarantine pipeline stages, scanning, pass/fail logic |
 | test_search.py | tests/ | 27 | Search mediator, PII stripping, injection detection |
-| test_ui.py | tests/ | 12 | Flask web UI routes, rendering, input handling |
+| test_ui.py | tests/ | 18 | Flask web UI routes, rendering, input handling, model catalog loading (YAML/fallback) |
+| test_circuit_breaker.py | tests/ | 15 | Circuit breaker state machine (closed/open/half-open), reset, error propagation |
 | test_vault_watchdog.py | tests/ | 18 | Vault auto-lock, idle detection, timer controls |
 | test_memory_protection.py | tests/ | 37 | Swap encryption, zswap, core dumps, mlock, TEE detection |
 | test_traffic_analysis.py | tests/ | 41 | Padding, timing jitter, dummy traffic generation |

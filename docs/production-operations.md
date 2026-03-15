@@ -90,9 +90,94 @@ The inter-service bearer token at `/run/secure-ai/service-token`:
    sudo systemctl restart secure-ai-runtime-attestor
    ```
 
-### Cosign Signing Key (Image & Release)
+### Cosign Signing Key (Image & Release Artifacts)
 
-Rotate via the GitHub repository secrets. Update `SIGNING_SECRET` in repository settings, then trigger a new build.
+The cosign signing key is used to sign:
+- OCI container images (`ghcr.io/secai-hub/secai_os:*`)
+- SBOM attestations (CycloneDX per-service)
+- Release checksums (`SHA256SUMS.sig`)
+- SLSA provenance attestations
+
+#### Key Generation
+
+```bash
+# Generate a new cosign key pair (interactive passphrase prompt)
+cosign generate-key-pair
+
+# This creates cosign.key (private) and cosign.pub (public)
+# Store cosign.key in a password manager or HSM — never commit to git
+```
+
+#### Rotation Schedule
+
+| Trigger | Action |
+|---------|--------|
+| **Annual** (recommended) | Proactive rotation, even with no incident |
+| **Key compromise** | Immediate emergency rotation |
+| **Personnel change** | Rotate if key holder leaves the project |
+| **CI provider breach** | Rotate if GitHub Actions secrets may be exposed |
+
+#### Rotation Procedure
+
+1. **Generate new key pair** (on an air-gapped machine if possible):
+   ```bash
+   cosign generate-key-pair
+   ```
+
+2. **Update GitHub repository secret**:
+   - Go to: Settings → Secrets and variables → Actions
+   - Update `SIGNING_SECRET` with the new `cosign.key` contents
+   - Verify the secret is updated (name shows "Updated just now")
+
+3. **Update the public key in deployed appliances**:
+   ```bash
+   # Copy the new cosign.pub to the appliance
+   scp cosign.pub admin@appliance:/tmp/cosign.pub
+   # On the appliance (requires local admin access):
+   sudo cp /tmp/cosign.pub /etc/secure-ai/cosign.pub
+   sudo chmod 0644 /etc/secure-ai/cosign.pub
+   ```
+
+4. **Tag a new release** to produce signed artifacts with the new key:
+   ```bash
+   git tag -s vX.Y.Z -m "Release vX.Y.Z (key rotation)"
+   git push origin vX.Y.Z
+   ```
+
+5. **Verify** the new signature:
+   ```bash
+   cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:vX.Y.Z
+   ```
+
+#### Emergency Revocation
+
+If the signing key is compromised:
+
+1. **Immediately** rotate the key (steps above)
+2. **Revoke trust** in old images: update all deployed appliances' `cosign.pub`
+3. **Re-sign** the latest stable release with the new key:
+   ```bash
+   cosign sign --key cosign.key ghcr.io/secai-hub/secai_os:latest
+   ```
+4. **Announce** the compromise via GitHub Security Advisory
+5. **Audit** CI logs for any unauthorized release activity during the exposure window
+
+#### Key Audit Checklist
+
+- [ ] Private key stored in encrypted vault or HSM (never on disk in plaintext)
+- [ ] Only CI (`SIGNING_SECRET`) and key custodian have access to private key
+- [ ] Public key shipped in OS image at `/etc/secure-ai/cosign.pub`
+- [ ] `verify-release.sh` uses the shipped public key, not a remote fetch
+- [ ] Key rotation date recorded in `CHANGELOG.md`
+- [ ] Previous public key archived (for verifying older releases)
+
+#### Future: HSM Migration
+
+When HSM support is implemented (planned milestone):
+- Private key will be generated inside the HSM and never exported
+- Cosign will use `--key` with a PKCS#11 URI instead of a file path
+- Rotation becomes: generate new key in HSM → update PKCS#11 URI in CI
+- See `docs/security-status.md` for HSM milestone tracking
 
 ## Monitoring
 

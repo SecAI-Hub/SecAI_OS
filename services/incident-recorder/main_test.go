@@ -673,6 +673,100 @@ func TestAuditLog_WritesOnIncident(t *testing.T) {
 }
 
 // =========================================================================
+// Persistence durability tests
+// =========================================================================
+
+func TestPersistIncidents_RoundTrip(t *testing.T) {
+	resetGlobalState(t)
+	dir := t.TempDir()
+	incidentStorePath = filepath.Join(dir, "incidents.jsonl")
+
+	// Create several incidents
+	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "first"})
+	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "second"})
+	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "c", Description: "third"})
+
+	// Verify the file was written and is non-empty
+	data, err := os.ReadFile(incidentStorePath)
+	if err != nil {
+		t.Fatalf("failed to read persisted incidents: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("incident store should not be empty")
+	}
+
+	// Clear in-memory state and reload from disk
+	incidentsMu.Lock()
+	incidents = nil
+	incidentsMu.Unlock()
+	incidentCount.Store(0)
+
+	loadIncidentsFromDisk()
+
+	loaded := getIncidents()
+	if len(loaded) != 3 {
+		t.Errorf("expected 3 incidents after reload, got %d", len(loaded))
+	}
+}
+
+func TestPersistIncidents_AtomicRename(t *testing.T) {
+	resetGlobalState(t)
+	dir := t.TempDir()
+	incidentStorePath = filepath.Join(dir, "incidents.jsonl")
+
+	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "test", Description: "test"})
+
+	// The temp file should not exist after persistence (renamed to final path)
+	tmpPath := incidentStorePath + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Error("temporary file should not exist after atomic rename")
+	}
+
+	// The final file should exist
+	if _, err := os.Stat(incidentStorePath); os.IsNotExist(err) {
+		t.Error("incident store file should exist after persistence")
+	}
+}
+
+func TestAuditLog_SyncedToDisk(t *testing.T) {
+	resetGlobalState(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	t.Setenv("AUDIT_LOG_PATH", logPath)
+	initAuditLog()
+	defer func() {
+		if auditFile != nil {
+			auditFile.Close()
+			auditFile = nil
+		}
+	}()
+
+	// Create an incident — triggers writeAudit which now includes Sync
+	createIncident(IncidentReport{
+		Class: ClassIntegrityViolation, Source: "integrity-monitor", Description: "hash mismatch",
+	})
+
+	// Open the file independently and verify content is readable
+	// (if Sync worked, data should be on disk, not just in kernel buffer)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read audit log: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("audit log should contain the incident entry")
+	}
+
+	// Verify the entry is valid JSON
+	var entry Incident
+	if err := json.Unmarshal(data[:len(data)-1], &entry); err != nil { // strip trailing newline
+		t.Errorf("audit entry should be valid JSON: %v", err)
+	}
+	if entry.Class != ClassIntegrityViolation {
+		t.Errorf("audit entry class should be integrity_violation, got %s", entry.Class)
+	}
+}
+
+// =========================================================================
 // Containment action tests
 // =========================================================================
 

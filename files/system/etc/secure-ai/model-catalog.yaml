@@ -1,0 +1,55 @@
+# Pre-curated model catalog — users can download these with one click.
+# All URLs point to Hugging Face (allowlisted source).
+#
+# To add a model: append an entry following the same structure.
+# To remove a model: delete or comment out its entry.
+# Changes take effect on next UI restart (or reload via /api/admin/reload).
+
+models:
+  - name: "Phi-3 Mini 3.8B (Q4_K_M)"
+    type: llm
+    filename: "Phi-3-mini-4k-instruct-q4.gguf"
+    url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
+    size_gb: 2.3
+    vram_gb: 4
+    description: "Fast, small LLM. Good for testing and low-VRAM systems."
+
+  - name: "Mistral 7B Instruct (Q4_K_M)"
+    type: llm
+    filename: "mistral-7b-instruct-v0.3.Q4_K_M.gguf"
+    url: "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"
+    size_gb: 4.4
+    vram_gb: 6
+    description: "General-purpose LLM. Good balance of speed and quality."
+
+  - name: "Llama 3.1 8B Instruct (Q4_K_M)"
+    type: llm
+    filename: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+    url: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+    size_gb: 4.9
+    vram_gb: 7
+    description: "Strong reasoning and instruction following."
+
+  - name: "Stable Diffusion XL Base"
+    type: diffusion
+    filename: "stable-diffusion-xl-base-1.0"
+    url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
+    size_gb: 6.9
+    vram_gb: 8
+    description: "Image generation. 1024x1024 output. Requires 8GB+ VRAM."
+
+  - name: "Stable Diffusion 1.5"
+    type: diffusion
+    filename: "stable-diffusion-v1-5"
+    url: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
+    size_gb: 4.3
+    vram_gb: 4
+    description: "Image generation. 512x512 output. Lower VRAM requirement."
+
+  - name: "Stable Video Diffusion XT"
+    type: diffusion
+    filename: "stable-video-diffusion-img2vid-xt"
+    url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
+    size_gb: 9.6
+    vram_gb: 16
+    description: "Video generation from image. 25 frames. Requires 16GB+ VRAM."

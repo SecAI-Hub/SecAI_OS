@@ -1,6 +1,8 @@
 """Tests for the Secure AI web UI Flask app."""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "ui"))
 
-from ui.app import app
+from ui.app import app, load_model_catalog, _FALLBACK_CATALOG
 
 
 @pytest.fixture
@@ -132,3 +134,87 @@ class TestIntegrityMonitoring:
         with patch("ui.app.requests.get", return_value=mock_models_resp):
             resp = client.post("/api/chat/stream", json={"messages": [{"role": "user", "content": "hi"}]})
             assert resp.status_code == 403
+
+
+class TestModelCatalog:
+    """Tests for the externalized model catalog loading."""
+
+    def test_load_from_yaml_file(self):
+        """Loading a valid YAML catalog returns its entries."""
+        content = """
+models:
+  - name: Test Model
+    type: llm
+    filename: test.gguf
+    url: https://example.com/test.gguf
+    size_gb: 1.0
+    vram_gb: 2
+    description: A test model.
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(content)
+            f.flush()
+            catalog = load_model_catalog(f.name)
+        os.unlink(f.name)
+        assert len(catalog) == 1
+        assert catalog[0]["name"] == "Test Model"
+        assert catalog[0]["filename"] == "test.gguf"
+        # Computed fields added automatically
+        assert catalog[0]["expected_sha256"] == "pin-on-first-download"
+        assert catalog[0]["expected_size_bytes"] == int(1.0 * 1024 * 1024 * 1024)
+
+    def test_fallback_on_missing_file(self):
+        """Missing YAML file returns the built-in fallback catalog."""
+        catalog = load_model_catalog("/nonexistent/model-catalog.yaml")
+        assert len(catalog) == len(_FALLBACK_CATALOG)
+        assert catalog[0]["name"] == _FALLBACK_CATALOG[0]["name"]
+
+    def test_fallback_on_malformed_yaml(self):
+        """Malformed YAML returns the fallback catalog."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("not: [valid: yaml: {{")
+            f.flush()
+            catalog = load_model_catalog(f.name)
+        os.unlink(f.name)
+        assert len(catalog) == len(_FALLBACK_CATALOG)
+
+    def test_fallback_on_missing_models_key(self):
+        """YAML without 'models' key returns fallback."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("version: 1\nother_key: value\n")
+            f.flush()
+            catalog = load_model_catalog(f.name)
+        os.unlink(f.name)
+        assert len(catalog) == len(_FALLBACK_CATALOG)
+
+    def test_skips_entries_missing_required_fields(self):
+        """Entries missing required fields are skipped."""
+        content = """
+models:
+  - name: Valid Model
+    type: llm
+    filename: valid.gguf
+    url: https://example.com/valid.gguf
+  - name: Invalid Model
+    type: llm
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(content)
+            f.flush()
+            catalog = load_model_catalog(f.name)
+        os.unlink(f.name)
+        assert len(catalog) == 1
+        assert catalog[0]["name"] == "Valid Model"
+
+    def test_fallback_when_all_entries_invalid(self):
+        """If all entries are invalid, returns fallback."""
+        content = """
+models:
+  - name: Bad Entry
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(content)
+            f.flush()
+            catalog = load_model_catalog(f.name)
+        os.unlink(f.name)
+        assert len(catalog) == len(_FALLBACK_CATALOG)

@@ -177,6 +177,19 @@ _ui_audit = AuditChain(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/ui-a
 AUTH_DATA_DIR = os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")
 _auth = AuthManager(AUTH_DATA_DIR)
 
+# ---------------------------------------------------------------------------
+# Circuit breakers — prevent cascading failures from downed services
+# ---------------------------------------------------------------------------
+from common.circuit_breaker import CircuitBreaker, CircuitOpenError  # noqa: E402
+
+_breakers = {
+    "registry": CircuitBreaker("registry", failure_threshold=3, recovery_timeout=30),
+    "inference": CircuitBreaker("inference", failure_threshold=3, recovery_timeout=30),
+    "search": CircuitBreaker("search-mediator", failure_threshold=3, recovery_timeout=30),
+    "diffusion": CircuitBreaker("diffusion", failure_threshold=3, recovery_timeout=30),
+    "agent": CircuitBreaker("agent", failure_threshold=3, recovery_timeout=30),
+}
+
 # Endpoints that don't require authentication
 _PUBLIC_ENDPOINTS = {
     "/api/auth/login", "/api/auth/setup", "/api/auth/status",
@@ -187,76 +200,106 @@ ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
 SECURE_AI_ROOT = Path(os.getenv("SECURE_AI_ROOT", "/var/lib/secure-ai"))
 
-# Pre-curated model catalog — users can download these with one click.
-# All URLs point to Hugging Face (allowlisted source).
-MODEL_CATALOG = [
+# ---------------------------------------------------------------------------
+# Model catalog — loaded from YAML file with hardcoded fallback
+# ---------------------------------------------------------------------------
+
+_MODEL_CATALOG_PATH = os.getenv(
+    "MODEL_CATALOG_PATH", "/etc/secure-ai/model-catalog.yaml"
+)
+
+# Hardcoded fallback catalog (used if YAML file is missing or malformed)
+_FALLBACK_CATALOG: list[dict] = [
     {
-        "name": "Phi-3 Mini 3.8B (Q4_K_M)",
-        "type": "llm",
+        "name": "Phi-3 Mini 3.8B (Q4_K_M)", "type": "llm",
         "filename": "Phi-3-mini-4k-instruct-q4.gguf",
         "url": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
-        "size_gb": 2.3,
-        "vram_gb": 4,
+        "size_gb": 2.3, "vram_gb": 4,
         "description": "Fast, small LLM. Good for testing and low-VRAM systems.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(2.3 * 1024 * 1024 * 1024),
     },
     {
-        "name": "Mistral 7B Instruct (Q4_K_M)",
-        "type": "llm",
+        "name": "Mistral 7B Instruct (Q4_K_M)", "type": "llm",
         "filename": "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
         "url": "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf",
-        "size_gb": 4.4,
-        "vram_gb": 6,
+        "size_gb": 4.4, "vram_gb": 6,
         "description": "General-purpose LLM. Good balance of speed and quality.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(4.4 * 1024 * 1024 * 1024),
     },
     {
-        "name": "Llama 3.1 8B Instruct (Q4_K_M)",
-        "type": "llm",
+        "name": "Llama 3.1 8B Instruct (Q4_K_M)", "type": "llm",
         "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-        "size_gb": 4.9,
-        "vram_gb": 7,
+        "size_gb": 4.9, "vram_gb": 7,
         "description": "Strong reasoning and instruction following.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(4.9 * 1024 * 1024 * 1024),
     },
     {
-        "name": "Stable Diffusion XL Base",
-        "type": "diffusion",
+        "name": "Stable Diffusion XL Base", "type": "diffusion",
         "filename": "stable-diffusion-xl-base-1.0",
         "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
-        "size_gb": 6.9,
-        "vram_gb": 8,
+        "size_gb": 6.9, "vram_gb": 8,
         "description": "Image generation. 1024x1024 output. Requires 8GB+ VRAM.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(6.9 * 1024 * 1024 * 1024),
     },
     {
-        "name": "Stable Diffusion 1.5",
-        "type": "diffusion",
+        "name": "Stable Diffusion 1.5", "type": "diffusion",
         "filename": "stable-diffusion-v1-5",
         "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
-        "size_gb": 4.3,
-        "vram_gb": 4,
+        "size_gb": 4.3, "vram_gb": 4,
         "description": "Image generation. 512x512 output. Lower VRAM requirement.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(4.3 * 1024 * 1024 * 1024),
     },
     {
-        "name": "Stable Video Diffusion XT",
-        "type": "diffusion",
+        "name": "Stable Video Diffusion XT", "type": "diffusion",
         "filename": "stable-video-diffusion-img2vid-xt",
         "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
-        "size_gb": 9.6,
-        "vram_gb": 16,
+        "size_gb": 9.6, "vram_gb": 16,
         "description": "Video generation from image. 25 frames. Requires 16GB+ VRAM.",
-        "expected_sha256": "pin-on-first-download",
-        "expected_size_bytes": int(9.6 * 1024 * 1024 * 1024),
     },
 ]
+
+
+def load_model_catalog(path: str = _MODEL_CATALOG_PATH) -> list[dict]:
+    """Load model catalog from YAML file, falling back to hardcoded defaults.
+
+    Each entry must have at minimum: name, type, filename, url.
+    Entries missing required fields are silently skipped.
+    """
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict) or "models" not in data:
+            log.warning("model catalog %s: missing 'models' key — using fallback", path)
+            return list(_FALLBACK_CATALOG)
+        models = data["models"]
+        if not isinstance(models, list) or len(models) == 0:
+            log.warning("model catalog %s: empty or invalid — using fallback", path)
+            return list(_FALLBACK_CATALOG)
+        # Validate required fields
+        required = {"name", "type", "filename", "url"}
+        valid: list[dict] = []
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
+            if not required.issubset(entry.keys()):
+                log.warning("model catalog: skipping entry missing fields: %s", entry.get("name", "?"))
+                continue
+            # Add computed fields for backward compat
+            if "expected_sha256" not in entry:
+                entry["expected_sha256"] = "pin-on-first-download"
+            if "expected_size_bytes" not in entry and "size_gb" in entry:
+                entry["expected_size_bytes"] = int(float(entry["size_gb"]) * 1024 * 1024 * 1024)
+            valid.append(entry)
+        if not valid:
+            log.warning("model catalog %s: no valid entries — using fallback", path)
+            return list(_FALLBACK_CATALOG)
+        log.info("model catalog loaded: %d models from %s", len(valid), path)
+        return valid
+    except FileNotFoundError:
+        log.info("model catalog %s not found — using built-in defaults", path)
+        return list(_FALLBACK_CATALOG)
+    except Exception:
+        log.warning("model catalog %s: load error — using fallback", path, exc_info=True)
+        return list(_FALLBACK_CATALOG)
+
+
+MODEL_CATALOG: list[dict] = load_model_catalog()
 
 # Track active downloads
 _active_downloads = {}
@@ -1075,6 +1118,11 @@ def diffusion_models():
 @app.route("/api/status")
 def status():
     checks = {}
+    # Map service names to their circuit breaker keys
+    svc_breaker_map = {
+        "registry": "registry", "inference": "inference",
+        "diffusion": "diffusion", "search": "search",
+    }
     for name, url in [
         ("registry", REGISTRY_URL),
         ("inference", INFERENCE_URL),
@@ -1083,9 +1131,15 @@ def status():
         ("airlock", AIRLOCK_URL),
         ("search", SEARCH_MEDIATOR_URL),
     ]:
+        breaker_key = svc_breaker_map.get(name)
         try:
-            r = requests.get(f"{url}/health", timeout=2)
+            if breaker_key and breaker_key in _breakers:
+                r = _breakers[breaker_key].call(requests.get, f"{url}/health", timeout=2)
+            else:
+                r = requests.get(f"{url}/health", timeout=2)
             checks[name] = r.json()
+        except CircuitOpenError:
+            checks[name] = {"status": "circuit_open"}
         except Exception:
             checks[name] = {"status": "unreachable"}
 

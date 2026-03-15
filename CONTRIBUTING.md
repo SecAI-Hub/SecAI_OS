@@ -55,7 +55,7 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh
 
 ## Running Tests
 
-### Go Tests (399 tests across 9 services)
+### Go Tests (402 tests across 9 services)
 
 ```bash
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
@@ -64,7 +64,7 @@ for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
 done
 ```
 
-### Python Tests (718 tests)
+### Python Tests (739 tests)
 
 ```bash
 pip install -r requirements-ci.txt
@@ -89,13 +89,13 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 ### Run Everything
 
 ```bash
-# Go (9 services, 399 tests)
+# Go (9 services, 402 tests)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd "services/$svc" && go test -v -race ./...)
 done
 
-# Python (718 tests)
+# Python (739 tests)
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Type check

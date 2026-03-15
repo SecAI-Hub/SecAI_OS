@@ -425,6 +425,7 @@ func writeAudit(inc Incident) {
 	auditMu.Lock()
 	defer auditMu.Unlock()
 	auditFile.Write(append(data, '\n'))
+	auditFile.Sync() // Security audit entries must be durable — sync each write
 }
 
 // =========================================================================
@@ -515,6 +516,7 @@ func persistIncidents() {
 		w.WriteByte('\n')
 	}
 	w.Flush()
+	f.Sync() // Force to disk before rename — prevents data loss on power failure
 	f.Close()
 
 	if err := os.Rename(tmp, incidentStorePath); err != nil {
@@ -849,6 +851,7 @@ func main() {
 	// Final persistence flush
 	persistIncidents()
 	if auditFile != nil {
+		auditFile.Sync()
 		auditFile.Close()
 	}
 	log.Println("incident-recorder stopped")

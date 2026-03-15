@@ -4,9 +4,10 @@ After=secure-ai-registry.service
 Wants=secure-ai-registry.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStartPre=/usr/libexec/secure-ai/select-model.sh
-ExecStart=/usr/bin/llama-server \
+ExecStart=/usr/libexec/secure-ai/inference-wrapper.sh \
     --host 127.0.0.1 \
     --port 8465 \
     --model ${MODEL_PATH} \
@@ -17,7 +18,9 @@ Environment=MODEL_PATH=
 Environment=GPU_LAYERS=-1
 Environment=CTX_SIZE=8192
 Environment=THREADS=4
+Environment=PORT=8465
 EnvironmentFile=-/var/lib/secure-ai/inference.env
+WatchdogSec=30
 
 # Filesystem isolation — needs GPU access, no network
 DynamicUser=yes

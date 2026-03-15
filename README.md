@@ -156,7 +156,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 47 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 48 milestones.
 
 ### Verify Image Signatures
 
@@ -218,8 +218,8 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Job | Workflow Link | What It Proves |
 |-----|--------------|---------------|
-| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 399 Go tests across 9 services with `-race` (build, test, vet) |
-| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 718 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
+| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 402 Go tests across 9 services with `-race` (build, test, vet) |
+| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 739 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
 | `security-regression` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Adversarial test suite: prompt injection, policy bypass, containment, recovery |
 | `supply-chain-verify` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | SBOM generation via Syft, cosign availability, provenance keywords in release/build workflows |
 | `test-count-check` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Prevents documented test counts from drifting below actual (source of truth: [test-counts.json](docs/test-counts.json)) |
@@ -239,8 +239,8 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 47 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,117 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
+| [Security Status](docs/security-status.md) | Implementation status of all 48 milestones |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,141 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -426,6 +426,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 45** -- Production readiness hardening: incident persistence (file-backed), graceful shutdown for all Go services, HTTP timeouts, systemd production hardening, first-boot validation, audit log rotation, CI vulnerability scanning, production operations guide
 - [x] **Milestone 46** -- Operational maturity: bootstrap trust gap fix (cosign verify before rebase), CI runs on all changes (removed paths-ignore for .md), Python quality gates (ruff + bandit + split test suites), docs-validation CI job, production-readiness checklist, SLOs, release channel policy, support lifecycle, sample verification output
 - [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.23→1.25 (12 stdlib CVE fixes), verification-first bootstrap docs
+- [x] **Milestone 48** -- Production hardening: build script fail-closed (fatal errors for 12 required services + binary verification gate), incident store fsync (crash-safe persistence), GPU backend metadata recording, llama-server watchdog (Type=notify + WatchdogSec=30), model catalog externalization (YAML with fallback), circuit breaker for inter-service HTTP calls, post-upgrade model verification in Greenboot, cosign key rotation documentation (full lifecycle)
 
 </details>
 
@@ -457,7 +458,7 @@ services/
   search-mediator/          Python -- Tor-routed web search (:8485)
   ui/                       Python/Flask -- Web UI (:8480)
   common/                   Python -- Shared utilities (audit, auth, mlock)
-tests/                      718 Python tests, 399 Go tests (1,117 total)
+tests/                      739 Python tests, 402 Go tests (1,141 total)
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs
