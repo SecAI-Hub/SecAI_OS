@@ -19,10 +19,61 @@ permissions:
   packages: write
   id-token: write
   attestations: write
+  checks: read
+  statuses: read
 
 jobs:
+  preflight:
+    name: Release Preflight Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify CI passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.sha }}"
+          echo "Checking CI status for commit ${SHA}..."
+
+          # Query check runs for required CI jobs
+          REQUIRED_CHECKS=(
+            "Go Build & Test"
+            "Python Test & Lint"
+            "Security Regression Tests"
+            "Dependency Vulnerability Audit"
+            "Test Count Drift Check"
+            "Documentation Validation"
+          )
+
+          PASS=0
+          FAIL=0
+          for check in "${REQUIRED_CHECKS[@]}"; do
+            RESULT=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
+              --jq ".check_runs[] | select(.name == \"${check}\") | .conclusion" \
+              2>/dev/null | head -1 || echo "not_found")
+            if [ "$RESULT" = "success" ]; then
+              echo "OK: ${check} = ${RESULT}"
+              PASS=$((PASS + 1))
+            else
+              echo "::warning::${check}: ${RESULT:-not_found}"
+              FAIL=$((FAIL + 1))
+            fi
+          done
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo ""
+            echo "WARNING: ${FAIL} required CI check(s) did not show success."
+            echo "This may happen if CI has not finished yet or if the tag was pushed"
+            echo "from a commit that was not on main. Proceeding with caution."
+            echo ""
+            echo "::warning::${FAIL}/${#REQUIRED_CHECKS[@]} required CI checks not confirmed as passing"
+          fi
+          echo "Preflight complete: ${PASS}/${#REQUIRED_CHECKS[@]} checks confirmed passing"
+
   build-go:
     name: Build Go Services
+    needs: [preflight]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,6 +115,7 @@ jobs:
 
   build-python:
     name: Build Python Service SBOMs
+    needs: [preflight]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

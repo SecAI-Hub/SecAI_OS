@@ -29,7 +29,7 @@ vMAJOR.MINOR.PATCH
 - **Tag format:** `v1.2.3`
 - **Image tag:** `ghcr.io/secai-hub/secai_os:latest`, `ghcr.io/secai-hub/secai_os:v1.2.3`
 - **Cadence:** As needed (security patches within 72 hours, features monthly)
-- **Quality gate:** Full [production-readiness checklist](production-readiness-checklist.md) must pass; all CI jobs green including enforced vulnerability scanning and mypy type checks
+- **Quality gate:** Full [production-readiness checklist](production-readiness-checklist.md) must pass; all CI jobs green including `release-gate` (zero-tolerance vuln scanning, CVE-ID govulncheck waivers, M5 acceptance re-verification)
 - **Supply chain:** Cosign-signed, SBOM-attested, SLSA3 provenance
 - **Rollback:** Automatic via Greenboot; manual via `rpm-ostree rollback`
 
@@ -40,7 +40,7 @@ This is the only channel recommended for production use.
 - **Tag format:** `v1.2.3-rc.1`
 - **Image tag:** `ghcr.io/secai-hub/secai_os:candidate`
 - **Cadence:** Before each stable release
-- **Quality gate:** CI must pass (including enforced govulncheck, pip-audit, bandit, mypy); first-boot-check must pass; manual smoke testing required
+- **Quality gate:** CI must pass including `release-gate` hardened checks (zero-tolerance bandit, CVE-ID govulncheck); first-boot-check must pass; manual smoke testing required
 - **Purpose:** Final validation before stable promotion
 - **Not for production use**
 

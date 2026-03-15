@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**', stable]
   pull_request:
   workflow_dispatch:
 
@@ -166,13 +166,14 @@ jobs:
           "
 
   check-pins:
-    name: Verify action pins
+    name: Verify action & container pins
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - run: bash .github/scripts/check-action-pins.sh
+      - run: bash .github/scripts/check-container-pins.sh
 
   supply-chain-verify:
     name: Supply Chain & SBOM Verification
@@ -473,3 +474,183 @@ jobs:
               sys.exit(1)
           print(f'OK: test-counts.json valid (total: {data[\"grand_total\"]} tests)')
           "
+
+      - name: Cross-check milestone counts
+        run: |
+          python3 -c "
+          import re, sys
+
+          # Count milestone rows in security-status.md
+          with open('docs/security-status.md') as f:
+              status_content = f.read()
+          status_rows = len(re.findall(r'^\|.*\| Implemented \|', status_content, re.MULTILINE))
+
+          # Count milestone references in README.md
+          with open('README.md') as f:
+              readme_content = f.read()
+
+          # Find 'All NN project milestones' text
+          readme_match = re.search(r'All (\d+) project milestones', readme_content)
+          if not readme_match:
+              print('FAIL: README.md missing \"All N project milestones\" text')
+              sys.exit(1)
+          readme_count = int(readme_match.group(1))
+
+          # Count actual checkbox items
+          checkbox_count = len(re.findall(r'- \[x\] \*\*Milestone \d+\*\*', readme_content))
+
+          # Check 'all NN milestones' prose reference
+          status_ref = re.search(r'all (\d+) milestones', readme_content)
+          status_ref_count = int(status_ref.group(1)) if status_ref else readme_count
+
+          errors = 0
+          if readme_count != status_rows:
+              print(f'FAIL: README says {readme_count} milestones, security-status.md has {status_rows} rows')
+              errors += 1
+          if checkbox_count != readme_count:
+              print(f'FAIL: README says {readme_count} milestones, but has {checkbox_count} checkboxes')
+              errors += 1
+          if status_ref_count != status_rows:
+              print(f'FAIL: README reference ({status_ref_count}) != security-status rows ({status_rows})')
+              errors += 1
+          if errors:
+              sys.exit(1)
+          print(f'OK: Milestone counts consistent ({status_rows} milestones)')
+          "
+
+      - name: Verify m5-control-matrix test references
+        run: |
+          python3 -c "
+          import re, sys, glob
+
+          with open('docs/m5-control-matrix.md') as f:
+              matrix = f.read()
+
+          # Extract backtick-quoted test names (Test* for Go, test_* for Python)
+          test_refs = set(re.findall(r'\x60((?:Test|test_)\w+)\x60', matrix))
+          print(f'Found {len(test_refs)} test name references in m5-control-matrix.md')
+
+          # Collect Go test function names
+          go_tests = set()
+          for gofile in glob.glob('services/**/*_test.go', recursive=True):
+              with open(gofile) as f:
+                  for m in re.finditer(r'func (Test\w+)\(', f.read()):
+                      go_tests.add(m.group(1))
+
+          # Collect Python test method and class names
+          py_tests = set()
+          for pyfile in glob.glob('tests/test_*.py'):
+              with open(pyfile) as f:
+                  content = f.read()
+                  for m in re.finditer(r'def (test_\w+)\(', content):
+                      py_tests.add(m.group(1))
+                  for m in re.finditer(r'class (Test\w+):', content):
+                      py_tests.add(m.group(1))
+
+          all_tests = go_tests | py_tests
+          missing = []
+          for ref in sorted(test_refs):
+              if ref not in all_tests:
+                  print(f'MISSING: {ref} cited in m5-control-matrix.md but not found')
+                  missing.append(ref)
+
+          if missing:
+              print(f'FAIL: {len(missing)} test reference(s) in m5-control-matrix.md not found')
+              sys.exit(1)
+          print(f'OK: All {len(test_refs)} test references verified')
+          "
+
+      - name: Check test-counts.json staleness
+        run: |
+          python3 -c "
+          import json, glob, re
+
+          with open('docs/test-counts.json') as f:
+              data = json.load(f)
+          documented = data.get('grand_total', 0)
+
+          # Estimate actual test count from source files
+          py_count = 0
+          for f in glob.glob('tests/test_*.py'):
+              with open(f) as fh:
+                  py_count += len(re.findall(r'def test_\w+', fh.read()))
+          go_count = 0
+          for f in glob.glob('services/**/*_test.go', recursive=True):
+              with open(f) as fh:
+                  go_count += len(re.findall(r'func Test\w+', fh.read()))
+          estimated = py_count + go_count
+          drift = estimated - documented
+
+          STALE_THRESHOLD = 20
+          if drift > STALE_THRESHOLD:
+              print(f'::warning::test-counts.json may be stale: ~{estimated} tests vs documented {documented} (drift: +{drift})')
+              print('Consider updating docs/test-counts.json')
+          elif drift > 0:
+              print(f'NOTE: ~{drift} undocumented test(s) detected (within threshold)')
+          else:
+              print(f'OK: test-counts.json is current (documented: {documented})')
+          "
+
+  release-gate:
+    name: Release Branch Hardened Gate
+    if: startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/stable'
+    needs:
+      - go-build-and-test
+      - python-test
+      - security-regression
+      - dependency-audit
+      - test-count-check
+      - docs-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-ci.txt
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Bandit (release-strict)
+        run: |
+          # On release branches: fail on ANY high-severity finding regardless of confidence
+          bandit -r services/ -ll --skip B101,B404,B603 -f json -o /tmp/bandit-release.json || true
+          python3 -c "
+          import json, sys
+          with open('/tmp/bandit-release.json') as f:
+              data = json.load(f)
+          high = [r for r in data.get('results', [])
+                  if r['issue_severity'] == 'HIGH']
+          critical = [r for r in data.get('results', [])
+                      if r.get('issue_severity') == 'CRITICAL']
+          for r in high + critical:
+              print(f'::error ::{r[\"filename\"]}:{r[\"line_number\"]}: [{r[\"issue_severity\"]}] {r[\"issue_text\"]}')
+          if high or critical:
+              print(f'RELEASE GATE FAIL: {len(high)} HIGH + {len(critical)} CRITICAL finding(s)')
+              print('Release branches require zero HIGH/CRITICAL bandit findings at any confidence level.')
+              sys.exit(1)
+          print('OK: release-strict bandit passed')
+          "
+
+      - name: govulncheck (release-strict, CVE-ID waivers)
+        run: bash .github/scripts/govulncheck-strict.sh
+
+      - name: M5 acceptance suite (re-run)
+        env:
+          PYTHONPATH: services
+        run: python -m pytest tests/test_m5_acceptance.py -v --tb=short
+
+      - name: Release gate summary
+        run: |
+          echo "## Release Gate: PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "Branch: ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "All hardened checks passed for release branch." >> "$GITHUB_STEP_SUMMARY"

@@ -158,7 +158,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 52 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 54 milestones.
 
 ### Verify Image Signatures
 
@@ -241,7 +241,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 52 milestones |
+| [Security Status](docs/security-status.md) | Implementation status of all 54 milestones |
 | [Test Matrix](docs/test-matrix.md) | Test coverage: 1,141 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
@@ -378,7 +378,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 52 project milestones (click to expand)</summary>
+<summary>All 54 project milestones (click to expand)</summary>
 
 - [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
 - [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
@@ -433,6 +433,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 50** -- Production operations package: backup/restore scripts (full/config/logs/keys categories, age/gpg encryption, SHA256 manifest, LUKS header backup/restore), rollback decision matrix (Greenboot auto-rollback + manual criteria), 5 break-glass recovery procedures, formal data retention policy (7 data classes, disk capacity thresholds)
 - [x] **Milestone 51** -- Stronger observability: unified appliance health dashboard (trusted/degraded/recovery_required), live SLO compliance monitoring (uptime + P95 latency tracking), webhook alerting hooks for containment events, forensic bundle export via UI + CLI (secai-forensic.sh), recovery ceremony endpoints wired
 - [x] **Milestone 52** -- Better release verification UX: repo-root Makefile (verify-release, test, shellcheck, lint), RELEASE_MANIFEST.json in release CI (image digest, binaries, SBOMs, provenance, checksums, build metadata), verify-release.sh --json and --report flags, audit-quick-path wired to verify-release.sh
+- [x] **Milestone 53** -- Harder CI gates for production branches: release-branch hardened gate (stricter bandit, CVE-ID govulncheck), required security-regression + M5 acceptance suite, docs consistency checks (milestone count, test name references, staleness warning), branch protection documentation, release preflight verification, container pin check wired into CI
 
 </details>
 

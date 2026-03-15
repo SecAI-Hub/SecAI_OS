@@ -20,6 +20,9 @@ Last updated: 2026-03-14
 - [ ] Test count drift check passes (no regression below [test-counts.json](test-counts.json))
 - [ ] Dependency vulnerability audit reviewed (govulncheck + pip-audit)
 - [ ] Action pins verified (all GitHub Actions pinned to commit SHAs)
+- [ ] Container base image pins verified (`check-container-pins.sh`)
+- [ ] Release-gate job passes if on release branch (zero-tolerance bandit + CVE-ID govulncheck)
+- [ ] Branch protection rules configured per `.github/branch-protection.md`
 
 ### Supply Chain
 
