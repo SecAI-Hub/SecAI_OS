@@ -401,20 +401,36 @@ func handleForensicExport(w http.ResponseWriter, r *http.Request) {
 	}
 	incidentsMu.RUnlock()
 
+	// Read audit log tail (last 1000 entries)
+	auditEntries := readAuditLogTail(1000)
+	if auditEntries == nil {
+		auditEntries = []string{}
+	}
+
+	// Compute policy digest from loaded containment policy
+	pol := getContainmentPolicy()
+	polData, _ := json.Marshal(pol)
+	polHash := sha256.Sum256(polData)
+	policyDigest := hex.EncodeToString(polHash[:])
+
+	openInc := getOpenIncidents()
+
 	bundle := ExportForensicBundle(
 		allIncidents,
-		[]string{}, // audit log entries collected separately
+		auditEntries,
 		map[string]string{
 			"export_time":     time.Now().UTC().Format(time.RFC3339),
 			"service":         "incident-recorder",
 			"total_incidents": fmt.Sprintf("%d", len(allIncidents)),
+			"open_incidents":  fmt.Sprintf("%d", len(openInc)),
 		},
-		"", // policy digest retrieved separately
+		policyDigest,
 		[]byte(serviceToken),
 	)
 
+	ts := time.Now().UTC().Format("20060102-150405")
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename=forensic-bundle.json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=forensic-bundle-%s.json", ts))
 	json.NewEncoder(w).Encode(bundle)
 }
 

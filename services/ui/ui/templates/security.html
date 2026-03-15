@@ -4,6 +4,21 @@
 {% block content_class %}content-wide{% endblock %}
 
 {% block content %}
+<!-- Appliance Health Banner -->
+<div class="card" id="appliance-banner" style="margin-bottom:1rem;border-left:4px solid var(--text-muted)">
+    <div class="card-header">
+        <span class="card-title" style="font-size:1.1rem">Appliance State</span>
+        <span class="badge badge-muted" id="appliance-state-badge">checking...</span>
+    </div>
+    <p class="meta" id="appliance-state-detail">Aggregating subsystem states...</p>
+    <div id="appliance-subsystems" style="margin-top:0.5rem;display:none">
+        <table class="data-table">
+            <thead><tr><th>Subsystem</th><th>State</th></tr></thead>
+            <tbody id="appliance-subsystems-tbody"></tbody>
+        </table>
+    </div>
+</div>
+
 <!-- Stats overview -->
 <div class="stats-grid" id="stats-grid">
     <div class="stat-card">
@@ -37,6 +52,23 @@
         </thead>
         <tbody id="services-tbody">
             <tr><td colspan="3" class="text-muted">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- SLO Compliance -->
+<div class="section-title">SLO Compliance</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Service Level Objectives</span>
+        <span class="badge badge-muted" id="slo-badge">loading</span>
+    </div>
+    <table class="data-table" id="slo-table">
+        <thead>
+            <tr><th>Metric</th><th>Target</th><th>Current</th><th>Status</th></tr>
+        </thead>
+        <tbody id="slo-tbody">
+            <tr><td colspan="4" class="text-muted">Loading SLO data...</td></tr>
         </tbody>
     </table>
 </div>
@@ -98,6 +130,16 @@
         </thead>
         <tbody id="fsverity-tbody"></tbody>
     </table>
+</div>
+
+<!-- Forensic Export -->
+<div class="section-title">Forensic Bundle</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Forensic Export</span>
+    </div>
+    <p class="meta mb-md">Download a signed forensic bundle containing all incidents, audit log entries, system state, and policy digest for offline analysis or external audit.</p>
+    <button class="btn btn-sm" onclick="downloadForensicBundle()">Download Bundle</button>
 </div>
 
 <!-- Emergency Controls -->
@@ -399,8 +441,134 @@
         }
     }
 
+    /* --- Appliance State Banner --- */
+    async function loadApplianceState() {
+        try {
+            var resp = await fetch('/api/observability/appliance-state');
+            var data = await resp.json();
+            var banner = document.getElementById('appliance-banner');
+            var badge = document.getElementById('appliance-state-badge');
+            var detail = document.getElementById('appliance-state-detail');
+            var subsDiv = document.getElementById('appliance-subsystems');
+            var subsTbody = document.getElementById('appliance-subsystems-tbody');
+            var state = data.appliance_state;
+
+            var colors = {
+                trusted: 'var(--success)',
+                degraded: 'var(--warning)',
+                recovery_required: 'var(--danger)',
+            };
+            var labels = {
+                trusted: 'TRUSTED',
+                degraded: 'DEGRADED',
+                recovery_required: 'RECOVERY REQUIRED',
+            };
+            var badgeClasses = {
+                trusted: 'badge badge-success',
+                degraded: 'badge badge-warning',
+                recovery_required: 'badge badge-danger',
+            };
+
+            banner.style.borderLeftColor = colors[state] || 'var(--text-muted)';
+            badge.className = badgeClasses[state] || 'badge badge-muted';
+            badge.textContent = labels[state] || state;
+
+            var subs = data.subsystems || {};
+            var detailParts = [];
+            var rows = '';
+
+            /* Attestor */
+            var att = subs.attestor || 'unknown';
+            detailParts.push('Attestor: ' + att);
+            rows += '<tr><td>Runtime Attestor</td><td><span class="badge ' +
+                (att === 'attested' ? 'badge-success' : att === 'degraded' ? 'badge-warning' : att === 'failed' ? 'badge-danger' : 'badge-muted') +
+                '">' + att + '</span></td></tr>';
+
+            /* Integrity Monitor */
+            var integ = subs.integrity_monitor || 'unknown';
+            detailParts.push('Integrity: ' + integ);
+            rows += '<tr><td>Integrity Monitor</td><td><span class="badge ' +
+                (integ === 'trusted' ? 'badge-success' : integ === 'degraded' ? 'badge-warning' : integ === 'recovery_required' ? 'badge-danger' : 'badge-muted') +
+                '">' + integ + '</span></td></tr>';
+
+            /* Incidents */
+            var inc = subs.incidents || {};
+            var incText = (inc.total_open || 0) + ' open (' + (inc.open_critical || 0) + ' critical, ' + (inc.open_high || 0) + ' high)';
+            detailParts.push('Incidents: ' + incText);
+            var incBadge = (inc.open_critical || 0) > 0 ? 'badge-danger' : (inc.open_high || 0) > 0 ? 'badge-warning' : 'badge-success';
+            rows += '<tr><td>Open Incidents</td><td><span class="badge ' + incBadge + '">' + incText + '</span></td></tr>';
+
+            detail.textContent = detailParts.join(' | ');
+            subsTbody.innerHTML = rows;
+            subsDiv.style.display = '';
+
+        } catch(e) {
+            document.getElementById('appliance-state-badge').textContent = 'error';
+            document.getElementById('appliance-state-detail').textContent = 'Could not reach observability endpoint.';
+        }
+    }
+
+    /* --- SLO Compliance --- */
+    async function loadSLOs() {
+        try {
+            var resp = await fetch('/api/observability/slos');
+            var data = await resp.json();
+            var slos = data.slos || [];
+            var tbody = document.getElementById('slo-tbody');
+            var badge = document.getElementById('slo-badge');
+
+            if (slos.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No SLO data collected yet</td></tr>';
+                badge.textContent = 'no data';
+                return;
+            }
+
+            var allCompliant = true;
+            var rows = '';
+            slos.forEach(function(s) {
+                if (!s.compliant) allCompliant = false;
+                rows += '<tr>' +
+                    '<td>' + esc(s.name) + '</td>' +
+                    '<td>' + esc(s.target) + '</td>' +
+                    '<td>' + esc(s.current_value) + '</td>' +
+                    '<td><span class="badge ' + (s.compliant ? 'badge-success' : 'badge-danger') + '">' +
+                        (s.compliant ? 'met' : 'breached') + '</span></td>' +
+                '</tr>';
+            });
+
+            tbody.innerHTML = rows;
+            badge.className = allCompliant ? 'badge badge-success' : 'badge badge-warning';
+            badge.textContent = allCompliant ? 'all met' : 'breach';
+        } catch(e) {
+            document.getElementById('slo-tbody').innerHTML = '<tr><td colspan="4" class="text-muted">Could not load SLO data</td></tr>';
+        }
+    }
+
+    /* --- Forensic Bundle Download --- */
+    async function downloadForensicBundle() {
+        try {
+            var resp = await fetch('/api/forensic/export');
+            if (!resp.ok) {
+                toast('Failed to export forensic bundle.', 'error');
+                return;
+            }
+            var blob = await resp.blob();
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'forensic-bundle-' + new Date().toISOString().slice(0,19).replace(/[T:]/g,'-') + '.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            toast('Forensic bundle downloaded.', 'success');
+        } catch(e) {
+            toast('Could not export forensic bundle.', 'error');
+        }
+    }
+
     /* Load all sections */
+    loadApplianceState();
     loadServiceHealth();
+    loadSLOs();
     loadModelsCount();
     loadIntegrity();
     loadAuditStatus();
@@ -409,7 +577,9 @@
     loadPanicStatus();
     loadFsverityStatus();
 
+    setInterval(loadApplianceState, 15000);
     setInterval(loadServiceHealth, 15000);
+    setInterval(loadSLOs, 30000);
     setInterval(loadPanicStatus, 10000);
 </script>
 {% endblock %}

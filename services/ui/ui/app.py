@@ -28,6 +28,7 @@ if _services_root not in sys.path:
 
 from common.audit_chain import AuditChain
 from common.auth import AuthManager
+from ui.slo_tracker import SLOTracker
 
 log = logging.getLogger("ui")
 
@@ -167,12 +168,16 @@ AIRLOCK_URL = os.getenv("AIRLOCK_URL", "http://127.0.0.1:8490")
 AGENT_SOCKET = os.getenv("AGENT_SOCKET", "")  # Unix socket path (production)
 AGENT_URL = os.getenv("AGENT_URL", "http://127.0.0.1:8476")  # TCP fallback (dev)
 SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
+ATTESTOR_URL = os.getenv("ATTESTOR_URL", "http://127.0.0.1:8505")
+INTEGRITY_MONITOR_URL = os.getenv("INTEGRITY_MONITOR_URL", "http://127.0.0.1:8510")
+INCIDENT_RECORDER_URL = os.getenv("INCIDENT_RECORDER_URL", "http://127.0.0.1:8515")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
 VAULT_ACTIVITY_FILE = Path(os.getenv("VAULT_ACTIVITY_FILE", "/run/secure-ai/last-activity"))
 VAULT_STATE_FILE = Path(os.getenv("VAULT_STATE_FILE", "/run/secure-ai/vault-state"))
 
 _ui_audit = AuditChain(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/ui-audit.jsonl"))
+_slo_tracker = SLOTracker()
 
 AUTH_DATA_DIR = os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")
 _auth = AuthManager(AUTH_DATA_DIR)
@@ -188,6 +193,9 @@ _breakers = {
     "search": CircuitBreaker("search-mediator", failure_threshold=3, recovery_timeout=30),
     "diffusion": CircuitBreaker("diffusion", failure_threshold=3, recovery_timeout=30),
     "agent": CircuitBreaker("agent", failure_threshold=3, recovery_timeout=30),
+    "attestor": CircuitBreaker("attestor", failure_threshold=3, recovery_timeout=30),
+    "integrity_monitor": CircuitBreaker("integrity-monitor", failure_threshold=3, recovery_timeout=30),
+    "incident_recorder": CircuitBreaker("incident-recorder", failure_threshold=3, recovery_timeout=30),
 }
 
 # Endpoints that don't require authentication
@@ -1132,16 +1140,21 @@ def status():
         ("search", SEARCH_MEDIATOR_URL),
     ]:
         breaker_key = svc_breaker_map.get(name)
+        t0 = time.time()
         try:
             if breaker_key and breaker_key in _breakers:
                 r = _breakers[breaker_key].call(requests.get, f"{url}/health", timeout=2)
             else:
                 r = requests.get(f"{url}/health", timeout=2)
+            latency_ms = (time.time() - t0) * 1000
             checks[name] = r.json()
+            _slo_tracker.record_health_check(name, r.status_code == 200, latency_ms)
         except CircuitOpenError:
             checks[name] = {"status": "circuit_open"}
+            _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
         except Exception:
             checks[name] = {"status": "unreachable"}
+            _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
 
     config = load_appliance_config()
     return jsonify({
@@ -1161,6 +1174,115 @@ def security_stats():
         except Exception:
             stats[name] = {"error": "unreachable"}
     return jsonify(stats)
+
+
+# --- API: Observability (M51) ---
+
+@app.route("/api/observability/appliance-state")
+def appliance_state():
+    """Compute unified appliance health: trusted / degraded / recovery_required."""
+    subsystems = {}
+
+    # Runtime Attestor state
+    try:
+        r = _breakers["attestor"].call(
+            requests.get, f"{ATTESTOR_URL}/api/v1/attest", timeout=3
+        )
+        data = r.json()
+        subsystems["attestor"] = data.get("attestation_state", "unknown")
+    except (CircuitOpenError, Exception):
+        subsystems["attestor"] = "unknown"
+
+    # Integrity Monitor state
+    try:
+        r = _breakers["integrity_monitor"].call(
+            requests.get, f"{INTEGRITY_MONITOR_URL}/api/v1/status", timeout=3
+        )
+        data = r.json()
+        subsystems["integrity_monitor"] = data.get("state", "unknown")
+    except (CircuitOpenError, Exception):
+        subsystems["integrity_monitor"] = "unknown"
+
+    # Incident Recorder — open incident counts
+    try:
+        r = _breakers["incident_recorder"].call(
+            requests.get, f"{INCIDENT_RECORDER_URL}/api/v1/stats", timeout=3
+        )
+        data = r.json()
+        open_sev = data.get("open_by_severity", {})
+        subsystems["incidents"] = {
+            "open_critical": open_sev.get("critical", 0),
+            "open_high": open_sev.get("high", 0),
+            "total_open": data.get("open_incidents", 0),
+        }
+    except (CircuitOpenError, Exception):
+        subsystems["incidents"] = {"open_critical": 0, "open_high": 0, "total_open": 0}
+
+    # Derive unified state
+    inc = subsystems.get("incidents", {})
+    recovery_triggers = [
+        subsystems["attestor"] in ("failed",),
+        subsystems["integrity_monitor"] in ("recovery_required",),
+        isinstance(inc, dict) and inc.get("open_critical", 0) > 0,
+    ]
+    degraded_triggers = [
+        subsystems["attestor"] in ("degraded", "pending", "unknown"),
+        subsystems["integrity_monitor"] in ("degraded", "unknown"),
+        isinstance(inc, dict) and inc.get("open_high", 0) > 0,
+    ]
+
+    if any(recovery_triggers):
+        state = "recovery_required"
+    elif any(degraded_triggers):
+        state = "degraded"
+    else:
+        state = "trusted"
+
+    return jsonify({
+        "appliance_state": state,
+        "subsystems": subsystems,
+        "timestamp": time.time(),
+    })
+
+
+@app.route("/api/observability/slos")
+def slo_status():
+    """Return current SLO compliance measurements from the in-process tracker."""
+    return jsonify({
+        "slos": _slo_tracker.get_all_slos(),
+        "window": "7d",
+        "timestamp": time.time(),
+    })
+
+
+@app.route("/api/forensic/export")
+def forensic_export():
+    """Proxy forensic bundle download from the incident recorder."""
+    token = _read_service_token()
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(
+            f"{INCIDENT_RECORDER_URL}/api/v1/forensic/export",
+            timeout=30, headers=headers,
+        )
+        from flask import Response
+        resp = Response(r.content, status=r.status_code, content_type="application/json")
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        resp.headers["Content-Disposition"] = f"attachment; filename=forensic-bundle-{ts}.json"
+        return resp
+    except Exception as e:
+        return jsonify({"error": f"incident recorder unreachable: {e}"}), 503
+
+
+def _read_service_token():
+    """Read the inter-service authentication token."""
+    token_path = os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
+    try:
+        return Path(token_path).read_text().strip()
+    except Exception:
+        return ""
 
 
 # --- API: Model Integrity Monitoring ---

@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "ui"))
 
-from ui.app import app, load_model_catalog, _FALLBACK_CATALOG
+from ui.app import app, load_model_catalog, _FALLBACK_CATALOG, _slo_tracker
 
 
 @pytest.fixture
@@ -218,3 +218,71 @@ models:
             catalog = load_model_catalog(f.name)
         os.unlink(f.name)
         assert len(catalog) == len(_FALLBACK_CATALOG)
+
+
+# =========================================================================
+# Observability endpoints (M51)
+# =========================================================================
+
+
+class TestApplianceState:
+    """Tests for the /api/observability/appliance-state endpoint."""
+
+    def test_appliance_state_returns_json(self, client):
+        with patch("ui.app.requests") as mock_req:
+            mock_req.get.side_effect = Exception("not running")
+            resp = client.get("/api/observability/appliance-state")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert "appliance_state" in data
+            assert data["appliance_state"] in ("trusted", "degraded", "recovery_required")
+            assert "subsystems" in data
+            assert "timestamp" in data
+
+    def test_appliance_state_degraded_when_unreachable(self, client):
+        """All security services unreachable -> degraded (unknown == degraded)."""
+        with patch("ui.app.requests") as mock_req:
+            mock_req.get.side_effect = Exception("not running")
+            resp = client.get("/api/observability/appliance-state")
+            data = resp.get_json()
+            assert data["appliance_state"] == "degraded"
+            assert data["subsystems"]["attestor"] == "unknown"
+            assert data["subsystems"]["integrity_monitor"] == "unknown"
+
+
+class TestSLOEndpoint:
+    """Tests for the /api/observability/slos endpoint."""
+
+    def test_slo_status_returns_json(self, client):
+        resp = client.get("/api/observability/slos")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "slos" in data
+        assert "window" in data
+        assert data["window"] == "7d"
+        assert isinstance(data["slos"], list)
+
+    def test_slo_records_and_reports(self, client):
+        """SLO tracker records checks and reports compliance."""
+        _slo_tracker.record_health_check("registry", True, 5.0)
+        _slo_tracker.record_health_check("registry", True, 8.0)
+        _slo_tracker.record_health_check("registry", False, 2000.0)
+        resp = client.get("/api/observability/slos")
+        data = resp.get_json()
+        # Find registry availability SLO
+        registry_slo = [s for s in data["slos"] if "registry" in s["name"] and "availability" in s["name"]]
+        assert len(registry_slo) > 0
+        # Should have a real current_value (not N/A)
+        assert registry_slo[0]["current_value"] != "N/A"
+
+
+class TestForensicExportProxy:
+    """Tests for the /api/forensic/export proxy endpoint."""
+
+    def test_forensic_proxy_handles_unreachable(self, client):
+        """503 when incident recorder is unreachable."""
+        with patch("ui.app.requests.get", side_effect=Exception("connection refused")):
+            resp = client.get("/api/forensic/export")
+            assert resp.status_code == 503
+            data = resp.get_json()
+            assert "error" in data

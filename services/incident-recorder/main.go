@@ -89,8 +89,9 @@ type IncidentReport struct {
 
 // ContainmentPolicy defines automatic containment rules per incident class.
 type ContainmentPolicy struct {
-	Version int                             `yaml:"version"`
-	Rules   map[IncidentClass]ContainmentRule `yaml:"rules"`
+	Version  int                              `yaml:"version"`
+	Rules    map[IncidentClass]ContainmentRule `yaml:"rules"`
+	Alerting AlertingConfig                    `yaml:"alerting"`
 }
 
 // ContainmentRule defines what actions to take for a given incident class.
@@ -155,13 +156,15 @@ func loadContainmentPolicy() error {
 	containmentPolicyMu.Lock()
 	containmentPolicy = pol
 	containmentPolicyMu.Unlock()
-	log.Printf("containment policy loaded: %d rules", len(pol.Rules))
+	setAlertingConfig(pol.Alerting)
+	log.Printf("containment policy loaded: %d rules, %d webhooks", len(pol.Rules), len(pol.Alerting.Webhooks))
 	return nil
 }
 
 func defaultContainmentPolicy() ContainmentPolicy {
 	return ContainmentPolicy{
-		Version: 1,
+		Version:  1,
+		Alerting: AlertingConfig{},
 		Rules: map[IncidentClass]ContainmentRule{
 			ClassAttestationFailure: {
 				AutoContain: true,
@@ -295,6 +298,8 @@ func createIncident(report IncidentReport) Incident {
 		token := serviceToken
 		ep := endpoints
 		go executeContainment(inc, ep, token)
+		// Fire alerting webhooks for containment events
+		go fireWebhooks("containment", inc, containmentActions)
 	}
 
 	return inc
@@ -566,6 +571,33 @@ func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // =========================================================================
+// Audit log tail reader (for forensic export)
+// =========================================================================
+
+// readAuditLogTail returns the last n lines from the audit JSONL file.
+func readAuditLogTail(n int) []string {
+	if auditPath == "" {
+		return nil
+	}
+	f, err := os.Open(auditPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
+}
+
+// =========================================================================
 // HTTP handlers
 // =========================================================================
 
@@ -821,6 +853,12 @@ func main() {
 	mux.HandleFunc("/api/v1/incidents/resolve", requireServiceToken(handleResolve))
 	mux.HandleFunc("/api/v1/incidents/acknowledge", requireServiceToken(handleAcknowledge))
 	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
+	// Recovery ceremony endpoints (implemented in recovery.go)
+	mux.HandleFunc("/api/v1/recovery/ack", requireServiceToken(handleRecoveryAck))
+	mux.HandleFunc("/api/v1/recovery/reattest", requireServiceToken(handleRecoveryReattest))
+	mux.HandleFunc("/api/v1/recovery/status", handleRecoveryStatus)
+	// Forensic bundle export
+	mux.HandleFunc("/api/v1/forensic/export", requireServiceToken(handleForensicExport))
 
 	log.Printf("secure-ai-incident-recorder listening on %s", bind)
 	server := &http.Server{

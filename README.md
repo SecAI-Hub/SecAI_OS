@@ -158,7 +158,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 50 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 51 milestones.
 
 ### Verify Image Signatures
 
@@ -378,7 +378,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 50 project milestones (click to expand)</summary>
+<summary>All 51 project milestones (click to expand)</summary>
 
 - [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
 - [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
@@ -431,6 +431,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 48** -- Production hardening: build script fail-closed (fatal errors for 12 required services + binary verification gate), incident store fsync (crash-safe persistence), GPU backend metadata recording, llama-server watchdog (Type=notify + WatchdogSec=30), model catalog externalization (YAML with fallback), circuit breaker for inter-service HTTP calls, post-upgrade model verification in Greenboot, cosign key rotation documentation (full lifecycle)
 - [x] **Milestone 49** -- Signed-first install path: bootstrap script configures signing policy before first rebase (eliminates unverified transport), digest-pinned install flow (CI publishes digests in build summary + release assets), first-boot setup wizard (interactive integrity verification + vault + TPM2 + health check), recovery/dev path separated into dedicated doc
 - [x] **Milestone 50** -- Production operations package: backup/restore scripts (full/config/logs/keys categories, age/gpg encryption, SHA256 manifest, LUKS header backup/restore), rollback decision matrix (Greenboot auto-rollback + manual criteria), 5 break-glass recovery procedures, formal data retention policy (7 data classes, disk capacity thresholds)
+- [x] **Milestone 51** -- Stronger observability: unified appliance health dashboard (trusted/degraded/recovery_required), live SLO compliance monitoring (uptime + P95 latency tracking), webhook alerting hooks for containment events, forensic bundle export via UI + CLI (secai-forensic.sh), recovery ceremony endpoints wired
 
 </details>
 

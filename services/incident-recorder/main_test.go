@@ -806,3 +806,111 @@ func TestContainmentActions_ModelAnomaly(t *testing.T) {
 		t.Error("model anomaly should include quarantine_model action")
 	}
 }
+
+// =========================================================================
+// Forensic export tests (M51)
+// =========================================================================
+
+func TestHTTP_ForensicExport(t *testing.T) {
+	resetGlobalState(t)
+	// Create an incident so the bundle is non-empty
+	createIncident(IncidentReport{
+		Class: ClassPolicyBypass, Source: "test", Description: "test incident for forensic export",
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/forensic/export", nil)
+	w := httptest.NewRecorder()
+	handleForensicExport(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("forensic export returned %d: %s", w.Code, w.Body.String())
+	}
+
+	var bundle ForensicBundle
+	if err := json.Unmarshal(w.Body.Bytes(), &bundle); err != nil {
+		t.Fatalf("invalid JSON in forensic bundle: %v", err)
+	}
+	if bundle.BundleHash == "" {
+		t.Error("bundle should have a hash")
+	}
+	if bundle.ExportedAt == "" {
+		t.Error("bundle should have an exported_at timestamp")
+	}
+	if len(bundle.Incidents) != 1 {
+		t.Errorf("expected 1 incident in bundle, got %d", len(bundle.Incidents))
+	}
+	if bundle.PolicyDigest == "" {
+		t.Error("bundle should have a policy digest")
+	}
+}
+
+func TestHTTP_ForensicExport_MethodNotAllowed(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/forensic/export", nil)
+	w := httptest.NewRecorder()
+	handleForensicExport(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHTTP_RecoveryStatus(t *testing.T) {
+	resetGlobalState(t)
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/recovery/status", nil)
+	w := httptest.NewRecorder()
+	handleRecoveryStatus(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery status returned %d: %s", w.Code, w.Body.String())
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := data["pending_recoveries"]; !ok {
+		t.Error("response should have pending_recoveries field")
+	}
+	if _, ok := data["count"]; !ok {
+		t.Error("response should have count field")
+	}
+}
+
+// =========================================================================
+// Audit log tail reader tests (M51)
+// =========================================================================
+
+func TestReadAuditLogTail(t *testing.T) {
+	resetGlobalState(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	auditPath = path
+
+	// Write 5 lines
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		f.WriteString("{\"line\":" + string(rune('0'+i)) + "}\n")
+	}
+	f.Close()
+
+	lines := readAuditLogTail(3)
+	if len(lines) != 3 {
+		t.Errorf("expected 3 tail lines, got %d", len(lines))
+	}
+
+	all := readAuditLogTail(100)
+	if len(all) != 5 {
+		t.Errorf("expected 5 total lines, got %d", len(all))
+	}
+}
+
+func TestReadAuditLogTail_NoFile(t *testing.T) {
+	resetGlobalState(t)
+	auditPath = "/nonexistent/audit.jsonl"
+	lines := readAuditLogTail(10)
+	if lines != nil {
+		t.Errorf("expected nil for nonexistent file, got %v", lines)
+	}
+}
