@@ -1,0 +1,6 @@
+## SecAI OS — enable sigstore signature attachments for cosign-signed images.
+## This allows rpm-ostree to verify cosign signatures during rebase/upgrade.
+
+docker:
+  ghcr.io/sec_ai/secai_os:
+    use-sigstore-attachments: true

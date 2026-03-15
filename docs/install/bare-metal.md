@@ -67,117 +67,85 @@ Replace `/dev/sdX` or `/dev/rdiskN` with your actual USB device. Double-check th
 
 After booting into the fresh Fedora Silverblue installation, open a terminal.
 
-### 4a. Verify image signature (mandatory)
+### Production Install (Recommended)
 
-Before installing the image, verify its authenticity using cosign.
-**Do not skip this step — it is the cryptographic attestation that the
-image you are about to install was built by the SecAI project.**
+The bootstrap script configures the container signing policy **before** pulling the image, so the very first rebase uses the signed transport. No unverified pull is ever performed.
 
 ```bash
-# Install cosign (if not already present)
-sudo dnf install -y cosign
+# 1. Download the bootstrap script
+curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
+  -o /tmp/secai-bootstrap.sh
 
-# Fetch the project's public key
-curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub -o /tmp/cosign.pub
+# 2. Review the script before running (ALWAYS review downloaded scripts)
+less /tmp/secai-bootstrap.sh
 
-# Verify the image signature — STOP if this fails
-cosign verify --key /tmp/cosign.pub ghcr.io/sec_ai/secai_os:latest
+# 3. Run the bootstrap (use the digest from the latest release for production)
+sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
 ```
 
-You must see `The following checks were performed on each of these signatures: ...`
-with a successful verification result. **Do not proceed if verification fails.**
+> **Where do I find the digest?** Check the
+> [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest)
+> for the `IMAGE_DIGEST` asset, or the build workflow summary.
+> For evaluation, you can omit `--digest` to use `:latest`.
 
-### 4b. First-time bootstrap (fresh Fedora Silverblue only)
+The script will:
 
-> **Why an unverified pull?** A fresh Fedora Silverblue installation does
-> not yet have the SecAI signing policy in its local ostree store. The very
-> first rebase therefore uses `ostree-unverified-registry:` as a one-time
-> bootstrapping step. This is safe because you verified the image signature
-> out-of-band in step 4a above. After this single unverified pull, all
-> future updates use the signed transport and are verified automatically
-> by rpm-ostree.
->
-> **Risk acknowledgment:** If you skipped step 4a, this unverified pull
-> has no integrity guarantee. Go back and run the cosign verification first.
+1. Install cosign (if needed) and fetch the SecAI public signing key
+2. Verify the key's SHA256 fingerprint against a hardcoded value
+3. Configure the signing policy on your system (`policy.json` + `registries.d`)
+4. Verify the image signature using cosign
+5. Rebase using the **signed** transport (`ostree-image-signed:docker://`)
+6. Prompt you to reboot
+
+After the script completes:
 
 ```bash
-# One-time unverified pull (safe ONLY because you verified the signature in 4a)
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
 sudo systemctl reboot
 ```
 
-### 4c. Lock to signed transport (mandatory)
-
-Immediately after the first reboot, switch to the signed image transport.
-**This step is not optional** — it ensures all future updates are
-cryptographically verified by rpm-ostree before they are applied.
-
-```bash
-# Lock to signed transport — all future updates verified automatically
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
-sudo systemctl reboot
-```
-
-After this reboot, the system is running SecAI OS with full signature
-verification enabled. All subsequent `rpm-ostree upgrade` commands will
-reject unsigned or tampered images.
-
-### Returning users / existing SecAI OS installs
+### Returning Users / Existing SecAI OS Installs
 
 If you are upgrading an existing SecAI OS installation (already on the
 signed transport), simply run:
 
 ```bash
-cosign verify --key /path/to/cosign.pub ghcr.io/sec_ai/secai_os:latest
 sudo rpm-ostree upgrade
 sudo systemctl reboot
 ```
 
----
+All upgrades are automatically verified against the cosign signing key
+baked into the image.
 
-## Step 5: Set Up the Encrypted Vault
+### Recovery / Development Install
 
-On first boot after rebasing, the firstboot script runs automatically. It will:
-
-1. Create the encrypted vault partition at `/var/lib/secure-ai/vault` (if not already present).
-2. Initialize the registry manifest.
-3. Set up systemd service dependencies.
-4. Configure nftables firewall rules.
-5. Run Greenboot health checks.
-
-You will be prompted to set a vault passphrase. This passphrase encrypts the LUKS volume that stores your models and configuration. Store it securely -- there is no recovery mechanism.
+> **WARNING**: The recovery path uses an unverified container transport.
+> Use it **only** when the signing policy is broken or for development/CI.
+> See [Recovery Bootstrap](recovery-bootstrap.md) for instructions.
 
 ---
 
-## Step 6: First Boot Verification
+## Step 5: First-Boot Setup Wizard
 
-After firstboot completes, run the automated health check:
+After rebooting into SecAI OS, run the interactive setup wizard:
 
 ```bash
-# Comprehensive health check (validates all services, endpoints, security posture)
-sudo /usr/libexec/secure-ai/first-boot-check.sh
+sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
 ```
 
-This validates all core services are running, health endpoints respond, attestation
-state is verified, no open incidents exist, and no services are exposed on public
-interfaces. See [docs/production-operations.md](../production-operations.md) for details.
+The wizard walks you through:
 
-You can also verify manually:
+1. **System identity** — OS version, deployment origin, Secure Boot + TPM2 status
+2. **Image integrity** — Cosign signature verification of the running image
+3. **Transport check** — Confirms you are on signed transport (offers to switch if not)
+4. **Vault setup** — Creates the encrypted LUKS volume for models and secrets
+5. **TPM2 sealing** (optional) — Seals the vault key to TPM2 PCRs for auto-unlock on trusted boots
+6. **Health check** — Validates all services are running and endpoints are reachable
+7. **Summary** — Security posture card and next steps
+
+You can also run the health check independently at any time:
 
 ```bash
-# Check that all services are running
-systemctl status secure-ai-registry
-systemctl status secure-ai-tool-firewall
-systemctl status secure-ai-ui
-
-# Check firewall rules
-sudo nft list ruleset
-
-# Check vault status
-curl http://localhost:8480/api/vault/status
-
-# Open the UI
-xdg-open http://localhost:8480
+sudo /usr/libexec/secure-ai/first-boot-check.sh
 ```
 
 ---
@@ -220,3 +188,5 @@ nvidia-smi
 ```bash
 sudo cryptsetup status secure-ai-vault
 ```
+
+**Bootstrap script fails:** See [Recovery Bootstrap](recovery-bootstrap.md) for the manual fallback procedure.

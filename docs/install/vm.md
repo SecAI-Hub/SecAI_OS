@@ -46,7 +46,7 @@ If an OVA image is available:
 4. In Settings > System, enable EFI.
 5. In Settings > Storage, attach the Fedora Silverblue 42 ISO.
 6. Start the VM and follow the standard Fedora Silverblue installation.
-7. After installation, rebase to SecAI OS (see bare metal guide, Step 4).
+7. After installation, rebase to SecAI OS using the [bootstrap script](bare-metal.md#production-install-recommended).
 
 ### GPU Passthrough (VirtualBox)
 
@@ -76,7 +76,7 @@ For reliable GPU passthrough, use KVM/QEMU instead.
 3. Allocate at least 4 CPUs and 16 GB RAM.
 4. Set disk size to 100 GB.
 5. In VM Settings > Options > Advanced, select "UEFI" firmware.
-6. Install Fedora Silverblue, then rebase to SecAI OS.
+6. Install Fedora Silverblue, then rebase to SecAI OS using the [bootstrap script](bare-metal.md#production-install-recommended).
 
 ### GPU Passthrough (VMware)
 
@@ -109,7 +109,7 @@ KVM with QEMU and libvirt provides the best VM experience for SecAI OS, includin
 3. Allocate at least 4 CPUs and 16 GB RAM.
 4. Create a 100 GB qcow2 disk.
 5. Before starting, go to Overview > Firmware and select UEFI (OVMF).
-6. Install Fedora Silverblue, then rebase to SecAI OS.
+6. Install Fedora Silverblue, then rebase to SecAI OS using the [bootstrap script](bare-metal.md#production-install-recommended).
 
 ### Setup with virsh/command line
 

@@ -63,3 +63,26 @@ jobs:
             "$IMAGE_REF"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+      # Publish the image digest so users can pin installs to an exact build.
+      # The digest appears in the workflow summary and as an artifact.
+      - name: Extract and publish image digest
+        if: github.event_name != 'pull_request'
+        id: digest
+        run: |
+          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:latest" 2>/dev/null | jq -r '.Digest' || echo "")
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "WARNING: Could not extract image digest"
+            echo "digest=unknown" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "${DIGEST}" > IMAGE_DIGEST
+            echo "## Image Digest" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Pinned install reference:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Full image ref: \`${IMAGE_REF}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

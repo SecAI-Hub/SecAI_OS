@@ -361,6 +361,50 @@ if [ "$MISSING" -gt 0 ]; then
 fi
 echo "All ${#REQUIRED_BINARIES[@]} required binaries verified."
 
+# ---------------------------------------------------------------------------
+# Configure container signing policy for cosign-verified SecAI images.
+# This ensures rpm-ostree verifies cosign signatures on all future upgrades
+# when using the ostree-image-signed: transport.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Configuring container signing policy ==="
+
+POLICY_JSON="/etc/containers/policy.json"
+COSIGN_PUB="/etc/pki/containers/secai-cosign.pub"
+REGISTRIES_D="/etc/containers/registries.d/secai-os.yaml"
+
+if [ -f "$COSIGN_PUB" ] && [ -f "$REGISTRIES_D" ]; then
+    if [ -f "$POLICY_JSON" ]; then
+        python3 -c "
+import json, sys
+
+with open('${POLICY_JSON}') as f:
+    policy = json.load(f)
+
+policy.setdefault('transports', {})
+policy['transports'].setdefault('docker', {})
+
+policy['transports']['docker']['ghcr.io/sec_ai/secai_os'] = [{
+    'type': 'sigstoreSigned',
+    'keyPath': '${COSIGN_PUB}',
+    'signedIdentity': {'type': 'matchRepository'}
+}]
+
+with open('${POLICY_JSON}', 'w') as f:
+    json.dump(policy, f, indent=2)
+    f.write('\n')
+
+print('  -> policy.json updated: sigstoreSigned entry for ghcr.io/sec_ai/secai_os')
+" || fail_build "Failed to update container signing policy"
+    else
+        echo "WARNING: ${POLICY_JSON} not found — signing policy not configured"
+    fi
+    echo "  -> ${COSIGN_PUB}: installed"
+    echo "  -> ${REGISTRIES_D}: installed"
+else
+    echo "WARNING: signing policy files missing from image — cosign verification may not work"
+fi
+
 # Cleanup build artifacts
 rm -rf "$SRC_DIR"
 dnf remove -y golang cmake gcc gcc-c++ 2>/dev/null || true

@@ -49,24 +49,26 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 ### Install (Fedora Atomic)
 
 ```bash
-# 1. Verify image signature BEFORE installing (mandatory)
-cosign verify --key cosign.pub ghcr.io/sec_ai/secai_os:latest
+# 1. Download and review the signed bootstrap script
+curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
+  -o /tmp/secai-bootstrap.sh
+less /tmp/secai-bootstrap.sh
 
-# 2. Rebase to the signed image
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
+# 2. Run the bootstrap (configures signing policy + verified rebase)
+#    Use --digest from the latest release for production installs
+sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+
+# 3. Reboot and run the setup wizard
 sudo systemctl reboot
-
-# 3. Set up encrypted vault
-sudo /usr/libexec/secure-ai/setup-vault.sh /dev/sdX
+sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
 ```
 
-> **First install on a fresh Fedora Silverblue?** The signed transport requires that
-> the signing policy is already configured. On a fresh install, see
-> [docs/install/bare-metal.md](docs/install/bare-metal.md) for the one-time bootstrap
-> procedure (uses cosign verification + a single unverified pull, then locks to signed
-> transport permanently).
+The bootstrap script verifies the image signature and configures the signing policy
+**before** the rebase, so the first pull uses the signed transport — no unverified
+pull is ever performed. See the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest)
+for the digest, or omit `--digest` for evaluation.
 
-See [docs/install/](docs/install/) for detailed guides: [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md)
+See [docs/install/](docs/install/) for detailed guides: [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
 
 ### Get Your First Model
 
@@ -156,7 +158,7 @@ Every model passes through the same fully automatic pipeline:
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
-See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 48 milestones.
+See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 49 milestones.
 
 ### Verify Image Signatures
 
@@ -239,7 +241,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [Threat Model](docs/threat-model.md) | Threat classes, invariants, residual risks |
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
-| [Security Status](docs/security-status.md) | Implementation status of all 48 milestones |
+| [Security Status](docs/security-status.md) | Implementation status of all 49 milestones |
 | [Test Matrix](docs/test-matrix.md) | Test coverage: 1,141 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
@@ -376,7 +378,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 47 project milestones (click to expand)</summary>
+<summary>All 49 project milestones (click to expand)</summary>
 
 - [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
 - [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
@@ -427,6 +429,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 46** -- Operational maturity: bootstrap trust gap fix (cosign verify before rebase), CI runs on all changes (removed paths-ignore for .md), Python quality gates (ruff + bandit + split test suites), docs-validation CI job, production-readiness checklist, SLOs, release channel policy, support lifecycle, sample verification output
 - [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.23→1.25 (12 stdlib CVE fixes), verification-first bootstrap docs
 - [x] **Milestone 48** -- Production hardening: build script fail-closed (fatal errors for 12 required services + binary verification gate), incident store fsync (crash-safe persistence), GPU backend metadata recording, llama-server watchdog (Type=notify + WatchdogSec=30), model catalog externalization (YAML with fallback), circuit breaker for inter-service HTTP calls, post-upgrade model verification in Greenboot, cosign key rotation documentation (full lifecycle)
+- [x] **Milestone 49** -- Signed-first install path: bootstrap script configures signing policy before first rebase (eliminates unverified transport), digest-pinned install flow (CI publishes digests in build summary + release assets), first-boot setup wizard (interactive integrity verification + vault + TPM2 + health check), recovery/dev path separated into dedicated doc
 
 </details>
 

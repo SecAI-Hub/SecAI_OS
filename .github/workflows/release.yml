@@ -141,6 +141,23 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
+      - name: Record release image digest
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null | jq -r '.Digest' || echo "")
+          if [ -n "$DIGEST" ] && [ "$DIGEST" != "null" ]; then
+            echo "${DIGEST}" > dist/IMAGE_DIGEST
+            echo "${IMAGE_REF}@${DIGEST}" > dist/IMAGE_REF_PINNED
+            echo "## Install with digest pinning" >> "$GITHUB_STEP_SUMMARY"
+            echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "WARNING: Could not extract image digest for tag ${TAG}"
+            echo "unknown" > dist/IMAGE_DIGEST
+          fi
+
       - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
@@ -150,5 +167,7 @@ jobs:
             dist/*-sbom.cdx.json
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
+            dist/IMAGE_DIGEST
+            dist/IMAGE_REF_PINNED
           generate_release_notes: true
           fail_on_unmatched_files: false
