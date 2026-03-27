@@ -11,11 +11,16 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
+import uuid
+from datetime import timedelta
 from pathlib import Path
+
+from werkzeug.utils import secure_filename
 
 import requests
 import yaml
@@ -63,6 +68,28 @@ def _load_or_create_secret_key() -> str:
 
 app.secret_key = _load_or_create_secret_key()
 
+# --- Cookie security (explicit modes, no auto/header-trust) ---
+# "false" = direct loopback HTTP (default for BIND_ADDR=127.0.0.1)
+# "true"  = behind TLS terminator or local reverse proxy
+_cookie_secure_raw = os.getenv("COOKIE_SECURE", "false").lower()
+if _cookie_secure_raw not in ("true", "false"):
+    raise ValueError(
+        f"COOKIE_SECURE must be 'true' or 'false', got '{_cookie_secure_raw}'"
+    )
+_COOKIE_SECURE = _cookie_secure_raw == "true"
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.config["SESSION_COOKIE_SECURE"] = _COOKIE_SECURE
+
+# --- Session timeout (single source of truth) ---
+_session_timeout = int(os.getenv("SESSION_TIMEOUT", "1800"))
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(seconds=_session_timeout)
+
+# --- Import staging directory for local model imports ---
+IMPORT_STAGING_DIR = Path(os.getenv(
+    "IMPORT_STAGING_DIR", "/var/lib/secure-ai/import-staging"
+))
 
 # --- CSRF Protection (double-submit cookie pattern) ---
 
@@ -156,7 +183,7 @@ def add_security_headers(response):
     if csrf_token:
         response.set_cookie(
             "csrf_token", csrf_token,
-            httponly=False, samesite="Strict", secure=False,
+            httponly=False, samesite="Strict", secure=_COOKIE_SECURE,
         )
     return response
 
@@ -207,6 +234,10 @@ _PUBLIC_ENDPOINTS = {
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
 SECURE_AI_ROOT = Path(os.getenv("SECURE_AI_ROOT", "/var/lib/secure-ai"))
+
+# Set MAX_CONTENT_LENGTH at module level so it applies whether started
+# via gunicorn (production) or app.run() (dev mode).
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
 
 # ---------------------------------------------------------------------------
 # Model catalog — loaded from YAML file with hardcoded fallback
@@ -422,7 +453,7 @@ def auth_login():
         resp = jsonify(result)
         resp.set_cookie(
             "session_token", result["token"],
-            httponly=True, samesite="Strict", secure=False,
+            httponly=True, samesite="Strict", secure=_COOKIE_SECURE,
             max_age=_auth._session_timeout,
         )
         return resp
@@ -436,13 +467,15 @@ def auth_login():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
-    """Invalidate the current session."""
+    """Invalidate the current session and clear all cookies."""
     token = _get_session_token()
     if token:
         _auth.logout(token)
         _ui_audit.append("logout", {})
+    session.clear()
     resp = jsonify({"success": True})
     resp.delete_cookie("session_token")
+    resp.delete_cookie("csrf_token")
     return resp
 
 
@@ -482,7 +515,7 @@ def auth_change_passphrase():
         if login_result.get("token"):
             resp.set_cookie(
                 "session_token", login_result["token"],
-                httponly=True, samesite="Strict", secure=False,
+                httponly=True, samesite="Strict", secure=_COOKIE_SECURE,
                 max_age=_auth._session_timeout,
             )
         return resp
@@ -804,6 +837,9 @@ def import_model():
     Accepts either:
     - A file upload (multipart form)
     - A local filesystem path (JSON body with "path" field)
+      Local paths are restricted to IMPORT_STAGING_DIR (default:
+      /var/lib/secure-ai/import-staging). This directory must be 0700
+      root-only; untrusted users must not have write access.
 
     The file goes into quarantine and is automatically scanned and promoted.
     """
@@ -812,31 +848,66 @@ def import_model():
         if not uploaded.filename:
             return jsonify({"error": "no file selected"}), 400
 
-        ext = Path(uploaded.filename).suffix.lower()
+        raw_name = uploaded.filename
+
+        # Reject path separators before sanitizing
+        if "/" in raw_name or "\\" in raw_name or ".." in raw_name:
+            _ui_audit.append("import_rejected", {
+                "reason": "path_separator", "raw_name": raw_name,
+            })
+            return jsonify({"error": "path separators not allowed in filename"}), 400
+
+        safe_name = secure_filename(raw_name)
+        if not safe_name or safe_name in (".", ".."):
+            return jsonify({"error": "invalid filename"}), 400
+
+        ext = Path(safe_name).suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({
                 "error": "file format not allowed",
                 "allowed": list(ALLOWED_EXTENSIONS),
             }), 400
 
-        dest = QUARANTINE_DIR / uploaded.filename
+        # UUID prefix prevents collision (secure_filename can collapse names)
+        dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        dest = QUARANTINE_DIR / dest_name
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         uploaded.save(str(dest))
-        log.info("imported via upload: %s -> %s", uploaded.filename, dest)
+        _ui_audit.append("model_imported", {
+            "original_name": raw_name, "safe_name": dest_name,
+        })
+        log.info("imported via upload: %s -> %s", raw_name, dest)
         return jsonify({
             "status": "queued",
-            "filename": uploaded.filename,
+            "filename": dest_name,
             "message": "File is in quarantine. It will be automatically scanned and promoted.",
         }), 202
 
     body = request.get_json(silent=True) or {}
     local_path = body.get("path", "")
     if local_path:
-        src = Path(local_path)
-        if not src.exists():
+        src = Path(local_path).resolve()
+
+        # Restrict to staging directory only
+        try:
+            src.relative_to(IMPORT_STAGING_DIR.resolve())
+        except ValueError:
+            _ui_audit.append("import_rejected", {
+                "reason": "outside_staging_dir", "path": str(src),
+            })
+            return jsonify({
+                "error": "local imports restricted to staging directory",
+                "staging_dir": str(IMPORT_STAGING_DIR),
+            }), 403
+
+        # Require regular file — reject symlinks, FIFOs, device nodes, sockets.
+        # Uses lstat (follow_symlinks=False) as the single check.
+        try:
+            st = os.lstat(str(src))
+        except OSError:
             return jsonify({"error": "file not found"}), 404
-        if not src.is_file():
-            return jsonify({"error": "path is not a file"}), 400
+        if not stat.S_ISREG(st.st_mode):
+            return jsonify({"error": "path is not a regular file"}), 400
 
         ext = src.suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
@@ -845,13 +916,22 @@ def import_model():
                 "allowed": list(ALLOWED_EXTENSIONS),
             }), 400
 
-        dest = QUARANTINE_DIR / src.name
+        safe_name = secure_filename(src.name)
+        if not safe_name or safe_name in (".", ".."):
+            return jsonify({"error": "invalid filename"}), 400
+
+        dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        dest = QUARANTINE_DIR / dest_name
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(src), str(dest))
+        _ui_audit.append("model_imported", {
+            "original_name": src.name, "safe_name": dest_name,
+            "source": "local_path",
+        })
         log.info("imported from path: %s -> %s", src, dest)
         return jsonify({
             "status": "queued",
-            "filename": src.name,
+            "filename": dest_name,
             "message": "File is in quarantine. It will be automatically scanned and promoted.",
         }), 202
 
@@ -1119,6 +1199,243 @@ def diffusion_models():
         return jsonify(resp.json())
     except requests.ConnectionError:
         return jsonify([])
+
+
+# --- API: Diffusion Runtime On-Demand Acquisition ---
+#
+# Contract:
+#   GET /api/diffusion/runtime/status   — source of truth for installed/failed/available/missing.
+#                                          Always safe to call; does not trigger any side effects.
+#   POST /api/diffusion/runtime/enable  — requests runtime installation by writing a marker file.
+#                                          The path-unit activates the privileged installer.
+#   GET /api/diffusion/runtime/progress — only meaningful AFTER enable has been requested.
+#                                          Returns installer phase from the progress file.
+#                                          Callers should poll status first to decide whether
+#                                          to show the progress UI.
+#
+# Valid progress phases: detecting, downloading, verifying, installing,
+#                        smoke_testing, enabling, complete, failed.
+# The progress endpoint never invents an active phase when no install
+# is in progress — it returns "complete" or "failed" based on markers,
+# or "detecting" only when a request has actually been made.
+
+# Paths for the request-file / path-unit privilege handoff
+_DIFFUSION_READY_MARKER = Path("/var/lib/secure-ai/.diffusion-ready")
+_DIFFUSION_FAILED_MARKER = Path("/var/lib/secure-ai/.diffusion-failed")
+_DIFFUSION_REQUEST_MARKER = Path("/run/secure-ai-ui/diffusion-request")
+_DIFFUSION_PROGRESS_FILE = Path("/run/secure-ai/diffusion-progress.json")
+_DIFFUSION_MANIFEST = Path("/usr/libexec/secure-ai/diffusion-runtime-manifest.yaml")
+
+
+def _detect_gpu_backend():
+    """Best-effort GPU backend detection from the UI process.
+
+    Returns "cuda", "rocm", "cpu", or None if detection fails entirely.
+    """
+    try:
+        lspci = subprocess.run(
+            ["lspci"], capture_output=True, text=True, timeout=5,
+        )
+        output = lspci.stdout.lower() if lspci.returncode == 0 else ""
+        if "nvidia" in output or Path("/proc/driver/nvidia").is_dir():
+            return "cuda"
+        if Path("/dev/kfd").exists():
+            return "rocm"
+        return "cpu"
+    except Exception:
+        return None
+
+
+def _load_diffusion_manifest():
+    """Load the diffusion runtime manifest (cached on first call)."""
+    if not hasattr(_load_diffusion_manifest, "_cache"):
+        _load_diffusion_manifest._cache = None
+    if _load_diffusion_manifest._cache is not None:
+        return _load_diffusion_manifest._cache
+    try:
+        if _DIFFUSION_MANIFEST.exists():
+            data = yaml.safe_load(_DIFFUSION_MANIFEST.read_text())
+            _load_diffusion_manifest._cache = data
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _diffusion_install_in_progress() -> bool:
+    """Check whether an install is in progress using only UI-readable signals."""
+    if _DIFFUSION_REQUEST_MARKER.exists():
+        return True
+    if _DIFFUSION_PROGRESS_FILE.exists():
+        try:
+            data = json.loads(_DIFFUSION_PROGRESS_FILE.read_text())
+            phase = data.get("phase", "")
+            if phase and phase not in ("complete", "failed"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+@app.route("/api/diffusion/runtime/status")
+def diffusion_runtime_status():
+    """Return diffusion runtime state for the first-use flow.
+
+    Status priority (per plan):
+    1. .diffusion-ready → installed
+    2. .diffusion-failed → failed (error detail)
+    3. request marker / progress file → in-progress
+    4. None → not installed
+    """
+    installed = _DIFFUSION_READY_MARKER.exists()
+    error = None
+    backend_info = None
+
+    # Priority 2: failed marker (suppresses in-progress signals)
+    failed = _DIFFUSION_FAILED_MARKER.exists() and not installed
+    if failed:
+        try:
+            error = _DIFFUSION_FAILED_MARKER.read_text().strip()
+        except OSError:
+            error = "unknown failure"
+
+    # Priority 3: in-progress (suppressed if failed marker exists)
+    installing = not failed and _diffusion_install_in_progress()
+
+    # Also surface error from progress file if no .diffusion-failed marker
+    if not error and _DIFFUSION_PROGRESS_FILE.exists():
+        try:
+            progress_data = json.loads(_DIFFUSION_PROGRESS_FILE.read_text())
+            if progress_data.get("phase") == "failed":
+                error = progress_data.get("error") or progress_data.get("detail")
+        except Exception:
+            pass
+
+    if installed:
+        try:
+            marker = _DIFFUSION_READY_MARKER.read_text().strip()
+            for part in marker.split():
+                if part.startswith("backend="):
+                    backend_info = part.split("=", 1)[1]
+        except OSError:
+            pass
+
+    detected_backend = backend_info or _detect_gpu_backend()
+    estimated_size_mb = None
+    manifest = _load_diffusion_manifest()
+    if manifest and detected_backend:
+        backend_cfg = manifest.get("backends", {}).get(detected_backend, {})
+        estimated_size_mb = backend_cfg.get("estimated_size_mb")
+
+    # Check if verified cache has any wheels
+    cache_available = Path("/var/lib/secure-ai/diffusion-cache/verified").is_dir()
+
+    return jsonify({
+        "installed": installed,
+        "detected_backend": detected_backend,
+        "estimated_size_mb": estimated_size_mb,
+        "cache_available": cache_available,
+        "installing": installing,
+        "error": error,
+    })
+
+
+@app.route("/api/diffusion/runtime/enable", methods=["POST"])
+def diffusion_runtime_enable():
+    """Write the request marker to trigger the privileged installer via path unit."""
+    if _DIFFUSION_READY_MARKER.exists():
+        return jsonify({"status": "already_installed"}), 200
+
+    if _diffusion_install_in_progress():
+        return jsonify({"status": "already_installing"}), 409
+
+    # Atomically create the request marker
+    try:
+        fd = os.open(
+            str(_DIFFUSION_REQUEST_MARKER),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        os.close(fd)
+    except FileExistsError:
+        return jsonify({"status": "already_installing"}), 409
+    except OSError as e:
+        log.error("Failed to create diffusion request marker: %s", e)
+        return jsonify({"error": f"failed to request install: {e}"}), 500
+
+    _ui_audit.append("diffusion_runtime_enable_requested", {
+        "backend": _detect_gpu_backend(),
+    })
+
+    return jsonify({"status": "installing"}), 202
+
+
+_VALID_PROGRESS_PHASES = frozenset({
+    "detecting", "downloading", "verifying", "installing",
+    "smoke_testing", "enabling", "complete", "failed",
+})
+
+
+@app.route("/api/diffusion/runtime/progress")
+def diffusion_runtime_progress():
+    """Return current install progress from the installer's progress file."""
+    # Consistent response shape for all branches
+    _empty_progress = {
+        "phase": None, "percent": 0, "backend": None, "detail": None,
+        "total_packages": None, "downloaded": None, "verified": None,
+        "cached_hits": None, "error": None,
+    }
+
+    if not _DIFFUSION_PROGRESS_FILE.exists():
+        if _DIFFUSION_REQUEST_MARKER.exists():
+            return jsonify({
+                **_empty_progress,
+                "phase": "detecting",
+                "detail": "Waiting for installer to start...",
+            })
+        # No progress file and no request marker — infer state from markers
+        if _DIFFUSION_READY_MARKER.exists():
+            return jsonify({
+                **_empty_progress,
+                "phase": "complete", "percent": 100,
+                "detail": "Runtime installed",
+            })
+        if _DIFFUSION_FAILED_MARKER.exists():
+            return jsonify({
+                **_empty_progress,
+                "phase": "failed",
+                "detail": "Install failed",
+            })
+        # Nothing has ever been requested — no active install phase
+        return jsonify(_empty_progress)
+
+    try:
+        data = json.loads(_DIFFUSION_PROGRESS_FILE.read_text())
+        # Validate phase against allowed values
+        phase = data.get("phase", "")
+        if phase not in _VALID_PROGRESS_PHASES:
+            data["phase"] = "failed"
+            data.setdefault("error", f"unrecognized phase: {phase}")
+        # Return only the expected fields
+        return jsonify({
+            "phase": data.get("phase", "detecting"),
+            "percent": data.get("percent", 0),
+            "backend": data.get("backend"),
+            "detail": data.get("detail", ""),
+            "total_packages": data.get("total_packages"),
+            "downloaded": data.get("downloaded"),
+            "verified": data.get("verified"),
+            "cached_hits": data.get("cached_hits"),
+            "error": data.get("error"),
+        })
+    except Exception:
+        return jsonify({
+            "phase": "failed",
+            "percent": 0,
+            "backend": None,
+            "detail": "Could not read progress file",
+            "error": "progress file unreadable",
+        })
 
 
 # --- API: Status ---
@@ -2001,10 +2318,11 @@ def agent_list_modes():
 
 
 def main():
+    """Dev-mode entry point. Production uses gunicorn via systemd wrapper."""
     logging.basicConfig(level=logging.INFO)
-    app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
-    bind = os.getenv("BIND_ADDR", "0.0.0.0:8480")
+    bind = os.getenv("BIND_ADDR", "127.0.0.1:8480")
     host, port = bind.rsplit(":", 1)
+    log.warning("Running Flask dev server — use gunicorn in production")
     log.info("secure-ai-ui starting on %s", bind)
     app.run(host=host, port=int(port), debug=False)
 

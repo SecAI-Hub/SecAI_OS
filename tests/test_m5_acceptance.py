@@ -373,6 +373,7 @@ class TestM5_WorkspaceIsolation(unittest.TestCase):
             valid, _ = guard.validate_path(test_file, "ws_b")
             self.assertFalse(valid)
 
+    @unittest.skipIf(sys.platform == "win32", "symlinks require admin privileges on Windows")
     def test_symlink_escape_blocked(self):
         """Symlink escape from workspace must be detected."""
         with tempfile.TemporaryDirectory() as tmpdir:

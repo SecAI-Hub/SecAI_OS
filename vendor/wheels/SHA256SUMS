@@ -1,0 +1,23 @@
+# PLACEHOLDER — Core image Python wheelhouse not yet populated.
+#
+# SCOPE: This wheelhouse contains ONLY core image build/runtime Python
+# dependencies needed for the base appliance (UI, agent, inference proxy,
+# tool firewall, etc.). Diffusion runtime wheels (~5 GB) are NOT checked
+# into the repo — they are acquired on demand by the diffusion installer
+# using committed backend-specific manifests and lockfiles under
+# files/scripts/diffusion-runtime-manifest.yaml.
+#
+# This file must contain real SHA256 checksums before HERMETIC_BUILD=true
+# can succeed. To populate:
+#
+#   1. Create per-service requirements.lock files with hashes:
+#      pip-compile --generate-hashes -o services/<svc>/requirements.lock services/<svc>/pyproject.toml
+#
+#   2. Build the wheelhouse:
+#      scripts/refresh-wheels.sh
+#
+#   3. Commit vendor/wheels/ and the updated lockfiles.
+#
+# Without a populated wheelhouse, the build falls back to online pip install
+# (non-hermetic mode). CI with HERMETIC_BUILD=true will fail, which is the
+# intended behavior — hermetic builds require all dependencies to be vendored.

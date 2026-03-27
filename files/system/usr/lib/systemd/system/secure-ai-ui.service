@@ -23,6 +23,8 @@ Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation
 DynamicUser=yes
+RuntimeDirectory=secure-ai-ui
+RuntimeDirectoryMode=0700
 ReadOnlyPaths=/etc/secure-ai
 ReadWritePaths=/var/lib/secure-ai/quarantine
 ReadWritePaths=/var/lib/secure-ai/logs
@@ -73,7 +75,7 @@ LimitCORE=0
 
 # Production timeouts and restart limits
 TimeoutStartSec=30
-TimeoutStopSec=15
+TimeoutStopSec=20
 StartLimitInterval=300
 StartLimitBurst=5
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=SecAI Diffusion Runtime Installer (one-shot)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/secai-enable-diffusion.sh --progress-file /run/secure-ai/diffusion-progress.json
+# Backstop cleanup — installer script also removes in trap handler
+ExecStopPost=-/bin/rm -f /run/secure-ai-ui/diffusion-request
+TimeoutStartSec=3600
+
+# Needs network for wheel downloads (unlike the diffusion worker itself)
+# Needs /var/lib/secure-ai write access for venv + cache
+# Needs /etc/systemd/system write access for overrides
+# Needs systemctl for daemon-reload + enable

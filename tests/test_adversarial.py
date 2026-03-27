@@ -129,6 +129,7 @@ class TestPolicyBypass(unittest.TestCase):
         result = gw.read_file("/var/lib/secure-ai/vault/file\x00.txt", cap)
         self.assertFalse(result["ok"])
 
+    @unittest.skipIf(sys.platform == "win32", "symlinks require admin privileges on Windows")
     def test_symlink_traversal_blocked(self):
         """Symlink traversal should be detected by WorkspaceGuard."""
         with tempfile.TemporaryDirectory() as tmpdir:

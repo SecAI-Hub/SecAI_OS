@@ -5,6 +5,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "services"))
 
@@ -60,6 +62,7 @@ class TestAuthManagerSetup:
             assert auth.setup_passphrase("firstpass123") is True
             assert auth.setup_passphrase("secondpass123") is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not enforce POSIX file modes")
     def test_credentials_file_permissions(self):
         import os
         import stat

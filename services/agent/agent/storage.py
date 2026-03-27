@@ -227,8 +227,8 @@ class StorageGateway:
             if fnmatch.fnmatch(norm_path, norm_pattern):
                 return True
             # Also check if path is the directory itself or under it
-            dir_pattern = norm_pattern.rstrip("*").rstrip("/")
-            if norm_path == dir_pattern or norm_path.startswith(dir_pattern + "/"):
+            dir_pattern = norm_pattern.rstrip("*").rstrip("/").rstrip(os.sep)
+            if norm_path == dir_pattern or norm_path.startswith(dir_pattern + os.sep):
                 return True
         return False
 

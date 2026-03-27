@@ -22,6 +22,7 @@ modules:
       - python3-pyyaml
       - python3-flask
       - python3-requests
+      - python3-gunicorn       # Production WSGI server (replaces Flask dev server)
       - golang
       # GPU compute support
       - mesa-dri-drivers          # Intel/AMD OpenGL + Vulkan
@@ -102,7 +103,6 @@ modules:
         - secure-ai-ui.service
         - secure-ai-quarantine-watcher.service
         - secure-ai-inference.service
-        - secure-ai-diffusion.service
         - secure-ai-integrity.timer
         - secure-ai-audit-verify.timer
         - secure-ai-vault-watchdog.service
@@ -120,7 +120,11 @@ modules:
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount
+        # Path unit watches for UI-triggered diffusion install request
+        - secure-ai-enable-diffusion.path
       disabled:
+        # Diffusion requires torch/diffusers — opt-in via UI or secai-enable-diffusion.sh
+        - secure-ai-diffusion.service
         - secure-ai-airlock.service
         # Search stack disabled by default (user enables via policy)
         - secure-ai-tor.service

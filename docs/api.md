@@ -255,6 +255,78 @@ Generate text from a prompt (non-chat completion).
   ```
 - **Response:** `200 OK` -- generated text
 
+### Diffusion Runtime (On-Demand Acquisition)
+
+The diffusion runtime (PyTorch, diffusers, etc.) is not included in the base OS image. These endpoints manage the one-click install flow.
+
+**Contract:**
+- `GET /api/diffusion/runtime/status` is the source of truth for whether the runtime is installed, failed, or available for install. Always safe to call.
+- `POST /api/diffusion/runtime/enable` requests installation by writing a marker file. A systemd path unit triggers the privileged installer.
+- `GET /api/diffusion/runtime/progress` is only meaningful after `enable` has been called. Callers should check `status` first.
+
+#### GET /api/diffusion/runtime/status
+
+Return the current diffusion runtime state.
+
+- **Response:** `200 OK`
+  ```json
+  {
+    "installed": false,
+    "detected_backend": "cuda",
+    "estimated_size_mb": 4500,
+    "cache_available": false,
+    "installing": false,
+    "error": null
+  }
+  ```
+- **Fields:**
+  - `installed` -- true if the runtime is installed and the service is enabled
+  - `detected_backend` -- auto-detected GPU backend: `"cuda"`, `"rocm"`, `"cpu"`, or `null` if detection failed
+  - `estimated_size_mb` -- estimated download size from manifest for the detected backend; `null` if backend unknown
+  - `cache_available` -- true if verified wheel cache exists (faster re-install)
+  - `installing` -- true if an install is in progress (request marker or active progress)
+  - `error` -- error detail from the last failed install, or `null`
+- **Status priority:** installed > failed (suppresses installing) > in-progress > not installed
+
+#### POST /api/diffusion/runtime/enable
+
+Request diffusion runtime installation.
+
+- **Response:** `202 Accepted` -- install requested
+  ```json
+  { "status": "installing" }
+  ```
+- **Response:** `200 OK` -- already installed
+  ```json
+  { "status": "already_installed" }
+  ```
+- **Error:** `409 Conflict` -- install already in progress
+  ```json
+  { "status": "already_installing" }
+  ```
+- **Notes:** Does not directly run the installer. Atomically creates a request marker file (`O_CREAT|O_EXCL`, mode `0600`). A systemd path unit detects the marker and starts the privileged oneshot installer.
+
+#### GET /api/diffusion/runtime/progress
+
+Return current install progress from the installer's progress file.
+
+- **Response:** `200 OK`
+  ```json
+  {
+    "phase": "downloading",
+    "percent": 45,
+    "backend": "cuda",
+    "detail": "Downloading torch-2.3.1+cu121...",
+    "total_packages": 42,
+    "downloaded": 19,
+    "verified": 19,
+    "cached_hits": 5,
+    "error": null
+  }
+  ```
+- **Valid phases:** `detecting`, `downloading`, `verifying`, `installing`, `smoke_testing`, `enabling`, `complete`, `failed`, or `null`
+- **Notes:** Only meaningful after `POST /api/diffusion/runtime/enable` has been called. When no install has ever been requested, returns `phase: null`. When the install completed, returns `complete`; when it failed, returns `failed`. Invalid phases from the progress file are normalized to `failed`. All branches return the same field set.
+
 ### Vault Management
 
 #### GET /api/vault/status

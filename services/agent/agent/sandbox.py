@@ -132,8 +132,8 @@ def _path_in_scope(path: str, allowed: list[str]) -> bool:
         norm_pat = os.path.normpath(pattern)
         if fnmatch.fnmatch(norm, norm_pat):
             return True
-        dir_pat = norm_pat.rstrip("*").rstrip("/")
-        if norm == dir_pat or norm.startswith(dir_pat + "/"):
+        dir_pat = norm_pat.rstrip("*").rstrip("/").rstrip(os.sep)
+        if norm == dir_pat or norm.startswith(dir_pat + os.sep):
             return True
     return False
 
@@ -233,7 +233,7 @@ class WorkspaceGuard:
         if not mount:
             return False
         mount_real = os.path.realpath(mount)
-        return real_path == mount_real or real_path.startswith(mount_real + "/")
+        return real_path == mount_real or real_path.startswith(mount_real + os.sep)
 
     def check_no_cross_workspace_fd(self, workspace_id: str, fd: int) -> bool:
         """Verify a file descriptor doesn't cross workspace boundaries.
