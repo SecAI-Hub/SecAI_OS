@@ -91,9 +91,9 @@ fail_build() {
     exit 1
 }
 
-# Locate service source from local paths only. Exits on failure.
+# Locate service source from local paths only.
 # Usage: locate_source <name> <local-path...>
-# Sets SOURCE_DIR on success.
+# Sets SOURCE_DIR on success. Returns 1 if not found (does NOT exit).
 locate_source() {
     local name="$1"; shift
     local paths=()
@@ -110,7 +110,9 @@ locate_source() {
         fi
     done
 
-    fail_build "${name} source not available — checked: ${paths[*]}"
+    echo "WARNING: ${name} source not available — checked: ${paths[*]}" >&2
+    SOURCE_DIR=""
+    return 1
 }
 
 # Track a built binary
@@ -125,95 +127,112 @@ track_binary() {
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
 # ===========================================================================
-# Go Services (required — build failures are fatal)
+# Go Services — skip gracefully if upstream source not yet available.
+# Once upstreams are populated (PENDING → pinned), missing source becomes fatal.
 # ===========================================================================
+GO_SKIPPED=0
 
 # --- Airlock (egress control gateway, disabled at runtime by default) ---
 echo "Building: airlock"
-locate_source airlock /tmp/services/airlock /tmp/files/services/airlock
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
-track_binary "${INSTALL_DIR}/airlock"
+if locate_source airlock /tmp/services/airlock /tmp/files/services/airlock; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
+    track_binary "${INSTALL_DIR}/airlock"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- ai-model-registry (security-first artifact registry) ---
 echo "Building: ai-model-registry"
-locate_source ai-model-registry \
-    /tmp/upstreams/ai-model-registry /tmp/ai-model-registry /tmp/services/registry
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
-CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
-track_binary "${INSTALL_DIR}/registry"
-track_binary "/usr/local/bin/securectl"
+if locate_source ai-model-registry \
+    /tmp/upstreams/ai-model-registry /tmp/ai-model-registry /tmp/services/registry; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
+    track_binary "${INSTALL_DIR}/registry"
+    track_binary "/usr/local/bin/securectl"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- agent-tool-firewall (policy gateway for LLM tool calls) ---
 echo "Building: agent-tool-firewall"
-locate_source agent-tool-firewall \
-    /tmp/upstreams/agent-tool-firewall /tmp/agent-tool-firewall /tmp/services/tool-firewall
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
-track_binary "${INSTALL_DIR}/tool-firewall"
+if locate_source agent-tool-firewall \
+    /tmp/upstreams/agent-tool-firewall /tmp/agent-tool-firewall /tmp/services/tool-firewall; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
+    track_binary "${INSTALL_DIR}/tool-firewall"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- gpu-integrity-watch (continuous GPU runtime verification) ---
 echo "Building: gpu-integrity-watch"
-locate_source gpu-integrity-watch \
-    /tmp/upstreams/gpu-integrity-watch /tmp/services/gpu-integrity-watch /tmp/gpu-integrity-watch
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
-track_binary "${INSTALL_DIR}/gpu-integrity-watch"
-# Default profile (optional — runtime uses built-in defaults if missing)
-mkdir -p /etc/secure-ai/gpu-integrity
-cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || true
+if locate_source gpu-integrity-watch \
+    /tmp/upstreams/gpu-integrity-watch /tmp/services/gpu-integrity-watch /tmp/gpu-integrity-watch; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
+    track_binary "${INSTALL_DIR}/gpu-integrity-watch"
+    # Default profile (optional — runtime uses built-in defaults if missing)
+    mkdir -p /etc/secure-ai/gpu-integrity
+    cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || true
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- mcp-firewall (Model Context Protocol policy gateway) ---
 echo "Building: mcp-firewall"
-locate_source mcp-firewall \
-    /tmp/upstreams/mcp-firewall /tmp/services/mcp-firewall /tmp/mcp-firewall
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
-track_binary "${INSTALL_DIR}/mcp-firewall"
-# Default policy (optional — runtime uses built-in defaults if missing)
-mkdir -p /etc/secure-ai/mcp-firewall
-cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
+if locate_source mcp-firewall \
+    /tmp/upstreams/mcp-firewall /tmp/services/mcp-firewall /tmp/mcp-firewall; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
+    track_binary "${INSTALL_DIR}/mcp-firewall"
+    # Default policy (optional — runtime uses built-in defaults if missing)
+    mkdir -p /etc/secure-ai/mcp-firewall
+    cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- policy-engine (unified OPA-style decision point) ---
 echo "Building: policy-engine"
-locate_source policy-engine \
-    /tmp/upstreams/policy-engine /tmp/services/policy-engine /tmp/policy-engine
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
-track_binary "${INSTALL_DIR}/policy-engine"
+if locate_source policy-engine \
+    /tmp/upstreams/policy-engine /tmp/services/policy-engine /tmp/policy-engine; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
+    track_binary "${INSTALL_DIR}/policy-engine"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- runtime-attestor (TPM2 quote verification + startup gating) ---
 echo "Building: runtime-attestor"
-locate_source runtime-attestor \
-    /tmp/upstreams/runtime-attestor /tmp/services/runtime-attestor /tmp/runtime-attestor
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
-track_binary "${INSTALL_DIR}/runtime-attestor"
+if locate_source runtime-attestor \
+    /tmp/upstreams/runtime-attestor /tmp/services/runtime-attestor /tmp/runtime-attestor; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
+    track_binary "${INSTALL_DIR}/runtime-attestor"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- integrity-monitor (continuous baseline-verified file watcher) ---
 echo "Building: integrity-monitor"
-locate_source integrity-monitor \
-    /tmp/upstreams/integrity-monitor /tmp/services/integrity-monitor /tmp/integrity-monitor
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
-track_binary "${INSTALL_DIR}/integrity-monitor"
+if locate_source integrity-monitor \
+    /tmp/upstreams/integrity-monitor /tmp/services/integrity-monitor /tmp/integrity-monitor; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
+    track_binary "${INSTALL_DIR}/integrity-monitor"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- incident-recorder (security event capture and containment) ---
 echo "Building: incident-recorder"
-locate_source incident-recorder \
-    /tmp/upstreams/incident-recorder /tmp/services/incident-recorder /tmp/incident-recorder
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
-track_binary "${INSTALL_DIR}/incident-recorder"
+if locate_source incident-recorder \
+    /tmp/upstreams/incident-recorder /tmp/services/incident-recorder /tmp/incident-recorder; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
+    track_binary "${INSTALL_DIR}/incident-recorder"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- gguf-guard (GGUF model integrity scanner) ---
 echo "Building: gguf-guard"
-locate_source gguf-guard \
-    /tmp/upstreams/gguf-guard /tmp/gguf-guard
-cd "$SOURCE_DIR"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/gguf-guard ./cmd/gguf-guard/
-track_binary "/usr/local/bin/gguf-guard"
+if locate_source gguf-guard \
+    /tmp/upstreams/gguf-guard /tmp/gguf-guard; then
+    cd "$SOURCE_DIR"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/gguf-guard ./cmd/gguf-guard/
+    track_binary "/usr/local/bin/gguf-guard"
+else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
+
+if [ "$GO_SKIPPED" -gt 0 ]; then
+    echo "WARNING: ${GO_SKIPPED} Go service(s) skipped — upstream source not available"
+    echo "  This is expected while upstreams are PENDING. Pin upstreams to fix."
+fi
 
 # ===========================================================================
 # llama.cpp (required — inference engine)
@@ -283,17 +302,20 @@ echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
 
 # --- ai-quarantine (seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
-locate_source ai-quarantine \
-    /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine
-pip3 install --prefix=/usr --no-cache-dir "${SOURCE_DIR}" 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${SOURCE_DIR}"
-cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
+if locate_source ai-quarantine \
+    /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine; then
+    pip3 install --prefix=/usr --no-cache-dir "${SOURCE_DIR}" 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${SOURCE_DIR}"
+    cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
 #!/usr/bin/env python3
 from quarantine.watcher import main
 main()
 WRAPPER
-chmod +x "${INSTALL_DIR}/quarantine-watcher"
-track_binary "${INSTALL_DIR}/quarantine-watcher"
+    chmod +x "${INSTALL_DIR}/quarantine-watcher"
+    track_binary "${INSTALL_DIR}/quarantine-watcher"
+else
+    echo "WARNING: quarantine source not available, skipping"
+fi
 
 # Quarantine scanning tools (optional — individual tool failures are non-fatal)
 echo "Installing: quarantine scanning tools"

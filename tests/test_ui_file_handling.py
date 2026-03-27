@@ -29,10 +29,16 @@ def ui_client(tmp_path):
     staging_dir = tmp_path / "import-staging"
     staging_dir.mkdir(mode=0o700)
 
+    # Ensure temp dirs exist for module-level initialization
+    (tmp_path / "auth").mkdir(exist_ok=True)
+    (tmp_path / "logs").mkdir(exist_ok=True)
+
     with mock.patch.dict(os.environ, {
         "QUARANTINE_DIR": str(quarantine_dir),
         "IMPORT_STAGING_DIR": str(staging_dir),
         "AUTH_DATA_DIR": str(tmp_path / "auth"),
+        "AUDIT_LOG_PATH": str(tmp_path / "logs" / "ui-audit.jsonl"),
+        "SECURE_AI_ROOT": str(tmp_path),
         "BIND_ADDR": "127.0.0.1:18480",
         "COOKIE_SECURE": "false",
         "SESSION_TIMEOUT": "1800",
@@ -40,8 +46,10 @@ def ui_client(tmp_path):
         from ui.app import app
         app.config["TESTING"] = True
         app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
-        # Patch the module-level IMPORT_STAGING_DIR since it's set at import time
-        with mock.patch("ui.app.IMPORT_STAGING_DIR", staging_dir):
+        # Patch module-level vars since they are set at import time
+        with mock.patch("ui.app.IMPORT_STAGING_DIR", staging_dir), \
+             mock.patch("ui.app.QUARANTINE_DIR", quarantine_dir), \
+             mock.patch("ui.app.SECURE_AI_ROOT", tmp_path):
             with app.test_client() as client:
                 yield client, quarantine_dir, staging_dir
 
