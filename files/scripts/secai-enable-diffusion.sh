@@ -67,7 +67,10 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --backend)
-            BACKEND_OVERRIDE="$2"
+            case "$2" in
+                cpu|cuda|rocm) BACKEND_OVERRIDE="$2" ;;
+                *) echo "ERROR: --backend must be cpu, cuda, or rocm (got: $2)" >&2; exit 1 ;;
+            esac
             shift 2
             ;;
         --force)
@@ -116,36 +119,44 @@ _progress() {
     local percent="$2"
     local detail="${3:-}"
     if [ -n "$PROGRESS_FILE" ]; then
-        python3 -c "
-import json
+        _PROG_PHASE="$phase" _PROG_PERCENT="$percent" \
+        _PROG_BACKEND="${GPU_BACKEND:-unknown}" _PROG_DETAIL="$detail" \
+        _PROG_FILE="$PROGRESS_FILE" \
+        python3 -c '
+import json, os
 progress = {
-    'phase': '${phase}',
-    'percent': ${percent},
-    'backend': '${GPU_BACKEND:-unknown}',
-    'detail': '''${detail}''',
-    'error': None
+    "phase": os.environ["_PROG_PHASE"],
+    "percent": int(os.environ["_PROG_PERCENT"]),
+    "backend": os.environ["_PROG_BACKEND"],
+    "detail": os.environ["_PROG_DETAIL"],
+    "error": None,
 }
-with open('${PROGRESS_FILE}', 'w') as f:
+fd = os.open(os.environ["_PROG_FILE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+with os.fdopen(fd, "w") as f:
     json.dump(progress, f)
-" 2>/dev/null || true
+' 2>/dev/null || true
     fi
 }
 
 _progress_error() {
     local reason="$1"
     if [ -n "$PROGRESS_FILE" ]; then
-        python3 -c "
-import json
+        _PROG_BACKEND="${GPU_BACKEND:-unknown}" _PROG_REASON="$reason" \
+        _PROG_FILE="$PROGRESS_FILE" \
+        python3 -c '
+import json, os
+reason = os.environ["_PROG_REASON"]
 progress = {
-    'phase': 'failed',
-    'percent': 0,
-    'backend': '${GPU_BACKEND:-unknown}',
-    'detail': '''${reason}''',
-    'error': '''${reason}'''
+    "phase": "failed",
+    "percent": 0,
+    "backend": os.environ["_PROG_BACKEND"],
+    "detail": reason,
+    "error": reason,
 }
-with open('${PROGRESS_FILE}', 'w') as f:
+fd = os.open(os.environ["_PROG_FILE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+with os.fdopen(fd, "w") as f:
     json.dump(progress, f)
-" 2>/dev/null || true
+' 2>/dev/null || true
     fi
 }
 
@@ -201,18 +212,19 @@ _audit() {
     local event="$1"
     local detail="${2:-{}}"
     mkdir -p "$(dirname "$AUDIT_LOG")"
-    python3 -c "
-import json, hashlib
+    _AUDIT_EVENT="$event" _AUDIT_DETAIL="$detail" _AUDIT_LOG="$AUDIT_LOG" \
+    python3 -c '
+import json, hashlib, os
 from datetime import datetime, timezone
 entry = {
-    'timestamp': datetime.now(timezone.utc).isoformat(),
-    'event': 'diffusion_${event}',
-    'detail': json.loads('''${detail}''')
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "event": "diffusion_" + os.environ["_AUDIT_EVENT"],
+    "detail": json.loads(os.environ["_AUDIT_DETAIL"]),
 }
-entry['hash'] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-with open('${AUDIT_LOG}', 'a') as f:
-    f.write(json.dumps(entry) + '\n')
-" 2>/dev/null || true
+entry["hash"] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+with open(os.environ["_AUDIT_LOG"], "a") as f:
+    f.write(json.dumps(entry) + "\n")
+' 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -301,31 +313,27 @@ else
     echo "  Detected: ${GPU_BACKEND}"
 fi
 
-# Validate backend exists in manifest
-BACKEND_EXISTS=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
+# Validate backend exists in manifest and read config (single safe Python call)
+eval "$(
+    _SECAI_MANIFEST="$MANIFEST" _SECAI_BACKEND="$GPU_BACKEND" \
+    python3 -c '
+import os, sys, yaml
+with open(os.environ["_SECAI_MANIFEST"]) as f:
     m = yaml.safe_load(f)
-print('yes' if '${GPU_BACKEND}' in m.get('backends', {}) else 'no')
-")
+backend = os.environ["_SECAI_BACKEND"]
+if backend not in m.get("backends", {}):
+    print(f"BACKEND_EXISTS=no")
+    sys.exit(0)
+cfg = m["backends"][backend]
+print(f"BACKEND_EXISTS=yes")
+print(f"BACKEND_LOCKFILE={cfg[\"lockfile\"]}")
+print(f"BACKEND_TORCH_INDEX={cfg[\"torch_index\"]}")
+'
+)"
 
 if [ "$BACKEND_EXISTS" != "yes" ]; then
     rollback "Backend '${GPU_BACKEND}' not defined in manifest"
 fi
-
-# Read backend config from manifest
-BACKEND_LOCKFILE=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
-    m = yaml.safe_load(f)
-print(m['backends']['${GPU_BACKEND}']['lockfile'])
-")
-BACKEND_TORCH_INDEX=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
-    m = yaml.safe_load(f)
-print(m['backends']['${GPU_BACKEND}']['torch_index'])
-")
 
 LOCKFILE="${LOCKFILE_DIR}/${BACKEND_LOCKFILE}"
 if [ ! -f "$LOCKFILE" ]; then
@@ -657,14 +665,15 @@ fi
 _progress "verifying" 70 "Verifying wheel cache"
 echo "=== Verifying wheel cache ==="
 
-python3 -c "
+_SECAI_MANIFEST="$MANIFEST" _SECAI_BACKEND="$GPU_BACKEND" _SECAI_SOURCE="$INSTALL_SOURCE" \
+python3 -c '
 import hashlib, os, platform, sys, zipfile
 import yaml
 
-with open('${MANIFEST}') as f:
+with open(os.environ["_SECAI_MANIFEST"]) as f:
     m = yaml.safe_load(f)
-wheels = m['backends']['${GPU_BACKEND}'].get('wheels', [])
-source = '${INSTALL_SOURCE}'
+wheels = m["backends"][os.environ["_SECAI_BACKEND"]].get("wheels", [])
+source = os.environ["_SECAI_SOURCE"]
 machine = platform.machine()
 py_ver = f'{sys.version_info.major}{sys.version_info.minor}'
 errors = []
@@ -730,8 +739,8 @@ if errors:
     for err in errors:
         print(f'ERROR: {err}', file=sys.stderr)
     sys.exit(1)
-print(f'All {len(wheels)} wheels verified')
-" || rollback "wheel cache verification failed"
+print(f"All {len(wheels)} wheels verified")
+' || rollback "wheel cache verification failed"
 
 # ---------------------------------------------------------------------------
 # Step 5: Install into temporary venv
@@ -758,46 +767,44 @@ _progress "installing" 80 "Installing packages"
 _progress "smoke_testing" 85 "Running smoke test"
 echo "=== Running smoke test ==="
 
-"${VENV_TMP}/bin/python3" -c "
-import sys
-print(f'Python {sys.version}')
+_SECAI_BACKEND="$GPU_BACKEND" "${VENV_TMP}/bin/python3" -c '
+import os, sys
+print(f"Python {sys.version}")
 
 # Core imports
 import torch
-print(f'PyTorch {torch.__version__}')
+print(f"PyTorch {torch.__version__}")
 import diffusers
-print(f'Diffusers {diffusers.__version__}')
+print(f"Diffusers {diffusers.__version__}")
 import transformers
-print(f'Transformers {transformers.__version__}')
+print(f"Transformers {transformers.__version__}")
 import safetensors
-print(f'Safetensors {safetensors.__version__}')
+print(f"Safetensors {safetensors.__version__}")
 import accelerate
-print(f'Accelerate {accelerate.__version__}')
+print(f"Accelerate {accelerate.__version__}")
 
 # Backend/device detection
-backend = '${GPU_BACKEND}'
-if backend == 'cuda':
-    assert torch.cuda.is_available(), 'CUDA not available but backend is cuda'
-    print(f'CUDA devices: {torch.cuda.device_count()}')
-    # Small tensor op on GPU
-    t = torch.randn(8, 8, device='cuda')
-    assert t.device.type == 'cuda'
+backend = os.environ["_SECAI_BACKEND"]
+if backend == "cuda":
+    assert torch.cuda.is_available(), "CUDA not available but backend is cuda"
+    print(f"CUDA devices: {torch.cuda.device_count()}")
+    t = torch.randn(8, 8, device="cuda")
+    assert t.device.type == "cuda"
     result = torch.matmul(t, t.T)
-    print(f'CUDA tensor op OK: {result.shape}')
-elif backend == 'rocm':
-    assert torch.cuda.is_available(), 'ROCm/HIP not available but backend is rocm'
-    print(f'ROCm devices: {torch.cuda.device_count()}')
-    t = torch.randn(8, 8, device='cuda')
+    print(f"CUDA tensor op OK: {result.shape}")
+elif backend == "rocm":
+    assert torch.cuda.is_available(), "ROCm/HIP not available but backend is rocm"
+    print(f"ROCm devices: {torch.cuda.device_count()}")
+    t = torch.randn(8, 8, device="cuda")
     result = torch.matmul(t, t.T)
-    print(f'ROCm tensor op OK: {result.shape}')
+    print(f"ROCm tensor op OK: {result.shape}")
 else:
-    # CPU backend
     t = torch.randn(8, 8)
     result = torch.matmul(t, t.T)
-    print(f'CPU tensor op OK: {result.shape}')
+    print(f"CPU tensor op OK: {result.shape}")
 
-print('Smoke test PASSED')
-" || rollback "smoke test failed"
+print("Smoke test PASSED")
+' || rollback "smoke test failed"
 
 # ---------------------------------------------------------------------------
 # Step 7: Promote venv (atomic swap)

@@ -47,13 +47,11 @@ jobs:
           echo "Verifying checksum..."
           ACTUAL=$(sha256sum "/tmp/${TARBALL}" | awk '{print $1}')
           if [ "$ACTUAL" != "$LLAMA_CPP_SHA256" ]; then
-            echo "WARNING: llama.cpp checksum mismatch"
-            echo "  Expected: ${LLAMA_CPP_SHA256}"
-            echo "  Actual:   ${ACTUAL}"
+            echo "::error::llama.cpp checksum mismatch: expected ${LLAMA_CPP_SHA256}, got ${ACTUAL}"
             echo "Update LLAMA_CPP_SHA256 in build-services.sh if the version was bumped."
-          else
-            echo "OK: llama.cpp checksum verified"
+            exit 1
           fi
+          echo "OK: llama.cpp checksum verified"
           echo "TARBALL_SHA256=${ACTUAL}" >> "$GITHUB_ENV"
           echo "LLAMA_CPP_VERSION=${LLAMA_CPP_VERSION}" >> "$GITHUB_ENV"
           mv "/tmp/${TARBALL}" "/tmp/llama-cpp-staged.tar.gz"

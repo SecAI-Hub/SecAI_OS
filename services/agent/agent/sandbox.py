@@ -125,9 +125,9 @@ def revalidate_step_capability(step: Step, cap: CapabilityToken) -> tuple[bool, 
 
 
 def _path_in_scope(path: str, allowed: list[str]) -> bool:
-    """Check if a normalised path matches any allowed glob."""
+    """Check if a resolved path matches any allowed glob."""
     import fnmatch
-    norm = os.path.normpath(os.path.abspath(path))
+    norm = os.path.realpath(path)
     for pattern in allowed:
         norm_pat = os.path.normpath(pattern)
         if fnmatch.fnmatch(norm, norm_pat):

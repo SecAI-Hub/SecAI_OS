@@ -2042,7 +2042,7 @@ def emergency_panic():
 
     cmd = [SECURECTL, "panic", str(level), "--no-countdown"]
     if level >= 2:
-        cmd.extend(["--confirm", passphrase])
+        cmd.extend(["--confirm", "-"])  # read passphrase from stdin
 
     log.warning("EMERGENCY PANIC LEVEL %d triggered via UI", level)
     _ui_audit.append("emergency_panic", {
@@ -2054,6 +2054,7 @@ def emergency_panic():
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=60,
+            input=passphrase if level >= 2 else None,
         )
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip()

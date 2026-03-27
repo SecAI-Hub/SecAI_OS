@@ -200,13 +200,12 @@ class StorageGateway:
 
     @staticmethod
     def _normalise(path: str) -> str:
-        """Normalise and resolve a path, blocking traversal attacks."""
-        # Resolve relative paths and symlinks
-        norm = os.path.normpath(os.path.abspath(path))
-        # Block null bytes
+        """Normalise and resolve a path, blocking traversal and symlink attacks."""
+        # Block null bytes first
         if "\x00" in path:
             return "/dev/null"  # safe sentinel that will fail later checks
-        return norm
+        # Resolve relative paths, .., AND symlinks to get the real target
+        return os.path.realpath(path)
 
     @staticmethod
     def _check_blocked(norm_path: str) -> str | None:

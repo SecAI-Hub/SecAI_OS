@@ -63,11 +63,10 @@ jobs:
 
           if [ "$FAIL" -gt 0 ]; then
             echo ""
-            echo "WARNING: ${FAIL} required CI check(s) did not show success."
-            echo "This may happen if CI has not finished yet or if the tag was pushed"
-            echo "from a commit that was not on main. Proceeding with caution."
-            echo ""
-            echo "::warning::${FAIL}/${#REQUIRED_CHECKS[@]} required CI checks not confirmed as passing"
+            echo "::error::${FAIL} required CI check(s) did not show success."
+            echo "Cannot create a release from a commit with failing or missing CI checks."
+            echo "Ensure CI is green before tagging a release."
+            exit 1
           fi
           echo "Preflight complete: ${PASS}/${#REQUIRED_CHECKS[@]} checks confirmed passing"
 
