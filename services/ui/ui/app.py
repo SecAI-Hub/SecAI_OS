@@ -1330,12 +1330,16 @@ def diffusion_runtime_status():
     # Check if verified cache has any wheels
     cache_available = Path("/var/lib/secure-ai/diffusion-cache/verified").is_dir()
 
+    # Check if the manifest has been populated with real hashes
+    manifest_populated = bool(manifest and manifest.get("populated", False))
+
     return jsonify({
         "installed": installed,
         "detected_backend": detected_backend,
         "estimated_size_mb": estimated_size_mb,
         "cache_available": cache_available,
         "installing": installing,
+        "manifest_populated": manifest_populated,
         "error": error,
     })
 
@@ -1345,6 +1349,14 @@ def diffusion_runtime_enable():
     """Write the request marker to trigger the privileged installer via path unit."""
     if _DIFFUSION_READY_MARKER.exists():
         return jsonify({"status": "already_installed"}), 200
+
+    # Block install if the manifest hasn't been populated with real hashes
+    manifest = _load_diffusion_manifest()
+    if not manifest or not manifest.get("populated", False):
+        return jsonify({
+            "error": "Diffusion runtime manifest has not been populated with package hashes. "
+                     "An administrator must run scripts/refresh-diffusion-locks.sh first.",
+        }), 503
 
     if _diffusion_install_in_progress():
         return jsonify({"status": "already_installing"}), 409

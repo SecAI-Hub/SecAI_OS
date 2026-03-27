@@ -10,11 +10,26 @@
 #   2. Wheel manifest (the "wheels" list below)
 #      Used at download time: exact filename + SHA256 before promotion.
 #
-# To refresh after a dependency change:
-#   scripts/refresh-diffusion-locks.sh   (regenerates lockfiles + manifest)
+# STATUS: UNPOPULATED
+#   The wheel lists and lockfiles below are structural scaffolding only.
+#   They contain no real hashes and CANNOT be used to install the runtime.
+#   To populate with real data, run on a Linux machine with the target Python:
+#
+#     scripts/refresh-diffusion-locks.sh
+#
+#   This will pip-compile backend-specific lockfiles and fill in the wheel
+#   entries with real filenames, SHA256 hashes, and source URLs.
+#
+#   The installer (secai-enable-diffusion.sh) checks the 'populated' flag
+#   below and refuses to run if it is false.
 
 schema_version: 1
 description: "Diffusion runtime trust anchor — per-backend wheel manifests and lockfiles"
+
+# Set to true by scripts/refresh-diffusion-locks.sh after populating real hashes.
+# The installer refuses to run while this is false.
+populated: false
+
 python_version: "3.12"
 supported_architectures:
   - x86_64
@@ -30,79 +45,33 @@ format_policy: wheel_only   # reject sdists / tarballs / eggs
 
 # ---------------------------------------------------------------------------
 # Backend definitions
+#
+# Each backend needs:
+#   lockfile: pip-compile output with --generate-hashes
+#   torch_index: PyTorch wheel index URL for this backend
+#   estimated_size_mb: approximate download size for the UI consent dialog
+#   wheels: list of {filename, sha256, source} — the download-phase trust anchor
+#
+# The wheels lists below are EMPTY until populated by refresh-diffusion-locks.sh.
 # ---------------------------------------------------------------------------
 backends:
   cpu:
     lockfile: diffusion-cpu.lock
     torch_index: https://download.pytorch.org/whl/cpu
     estimated_size_mb: 2000
-    wheels:
-      # -- PyTorch core (CPU) --
-      - filename: "torch-2.3.1+cpu-cp312-cp312-linux_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_torch_cpu"
-        source: "https://download.pytorch.org/whl/cpu/*"
-      # -- Diffusers ecosystem --
-      - filename: "diffusers-0.28.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_diffusers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "transformers-4.41.2-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_transformers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "safetensors-0.4.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_safetensors"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "accelerate-1.13.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_accelerate"
-        source: "https://files.pythonhosted.org/packages/*"
-      # NOTE: Placeholder entries. Run scripts/refresh-diffusion-locks.sh to
-      # generate the complete wheel list with real SHA256 hashes.
+    wheels: []
+    # Populated by: scripts/refresh-diffusion-locks.sh --backend cpu
 
   cuda:
     lockfile: diffusion-cuda.lock
     torch_index: https://download.pytorch.org/whl/cu121
     estimated_size_mb: 4500
-    wheels:
-      # -- PyTorch core (CUDA 12.1) --
-      - filename: "torch-2.3.1+cu121-cp312-cp312-linux_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_torch_cuda"
-        source: "https://download.pytorch.org/whl/cu121/*"
-      # -- Diffusers ecosystem (same pure-Python wheels as CPU) --
-      - filename: "diffusers-0.28.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_diffusers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "transformers-4.41.2-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_transformers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "safetensors-0.4.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_safetensors"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "accelerate-1.13.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_accelerate"
-        source: "https://files.pythonhosted.org/packages/*"
-      # NOTE: Placeholder entries. Run scripts/refresh-diffusion-locks.sh to
-      # generate the complete wheel list with real SHA256 hashes.
+    wheels: []
+    # Populated by: scripts/refresh-diffusion-locks.sh --backend cuda
 
   rocm:
     lockfile: diffusion-rocm.lock
     torch_index: https://download.pytorch.org/whl/rocm6.0
     estimated_size_mb: 4000
-    wheels:
-      # -- PyTorch core (ROCm 6.0) --
-      - filename: "torch-2.3.1+rocm6.0-cp312-cp312-linux_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_torch_rocm"
-        source: "https://download.pytorch.org/whl/rocm6.0/*"
-      # -- Diffusers ecosystem (same pure-Python wheels as CPU) --
-      - filename: "diffusers-0.28.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_diffusers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "transformers-4.41.2-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_transformers"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "safetensors-0.4.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-        sha256: "PLACEHOLDER_HASH_safetensors"
-        source: "https://files.pythonhosted.org/packages/*"
-      - filename: "accelerate-1.13.0-py3-none-any.whl"
-        sha256: "PLACEHOLDER_HASH_accelerate"
-        source: "https://files.pythonhosted.org/packages/*"
-      # NOTE: Placeholder entries. Run scripts/refresh-diffusion-locks.sh to
-      # generate the complete wheel list with real SHA256 hashes.
+    wheels: []
+    # Populated by: scripts/refresh-diffusion-locks.sh --backend rocm

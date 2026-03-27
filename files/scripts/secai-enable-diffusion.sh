@@ -235,6 +235,17 @@ if [ ! -f "$MANIFEST" ]; then
     rollback "Manifest not found: ${MANIFEST}"
 fi
 
+# Check if the manifest has been populated with real hashes
+MANIFEST_POPULATED=$(python3 -c "
+import yaml
+with open('${MANIFEST}') as f:
+    m = yaml.safe_load(f)
+print('yes' if m.get('populated', False) else 'no')
+")
+if [ "$MANIFEST_POPULATED" != "yes" ]; then
+    rollback "Diffusion runtime manifest is not yet populated with real package hashes. Run scripts/refresh-diffusion-locks.sh on a Linux machine with the target Python version to generate the manifest, then commit the result."
+fi
+
 REQUIRED_PYTHON_VERSION=$(python3 -c "
 import yaml
 with open('${MANIFEST}') as f:

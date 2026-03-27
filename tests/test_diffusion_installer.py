@@ -314,14 +314,27 @@ class TestEndpointBehavior:
             assert data["detected_backend"] is None
             assert data["estimated_size_mb"] is None
 
+    def _populated_manifest(self):
+        """Return a mock manifest with populated=True for enable endpoint tests."""
+        return {"populated": True, "backends": {"cpu": {"estimated_size_mb": 2000}}}
+
     def test_enable_returns_202(self, patched_app):
         client, tmp_path = patched_app
-        with patch("ui.app._detect_gpu_backend", return_value="cpu"):
+        with patch("ui.app._detect_gpu_backend", return_value="cpu"), \
+             patch("ui.app._load_diffusion_manifest", return_value=self._populated_manifest()):
             resp = client.post("/api/diffusion/runtime/enable")
             assert resp.status_code == 202
             data = resp.get_json()
             assert data["status"] == "installing"
             assert (tmp_path / "request").exists()
+
+    def test_enable_returns_503_if_manifest_unpopulated(self, patched_app):
+        """Unpopulated manifest blocks install with 503."""
+        client, tmp_path = patched_app
+        with patch("ui.app._load_diffusion_manifest", return_value={"populated": False}):
+            resp = client.post("/api/diffusion/runtime/enable")
+            assert resp.status_code == 503
+            assert "populated" in resp.get_json().get("error", "").lower()
 
     def test_enable_returns_200_if_already_installed(self, patched_app):
         client, tmp_path = patched_app
@@ -335,10 +348,11 @@ class TestEndpointBehavior:
         """Concurrent clicks return 409."""
         client, tmp_path = patched_app
         (tmp_path / "request").touch()  # first install in progress
-        resp = client.post("/api/diffusion/runtime/enable")
-        assert resp.status_code == 409
-        data = resp.get_json()
-        assert data["status"] == "already_installing"
+        with patch("ui.app._load_diffusion_manifest", return_value=self._populated_manifest()):
+            resp = client.post("/api/diffusion/runtime/enable")
+            assert resp.status_code == 409
+            data = resp.get_json()
+            assert data["status"] == "already_installing"
 
     def test_enable_returns_409_if_progress_non_terminal(self, patched_app):
         """In-progress via progress file returns 409."""
@@ -346,8 +360,9 @@ class TestEndpointBehavior:
         (tmp_path / "progress").write_text(json.dumps({
             "phase": "downloading", "percent": 50,
         }))
-        resp = client.post("/api/diffusion/runtime/enable")
-        assert resp.status_code == 409
+        with patch("ui.app._load_diffusion_manifest", return_value=self._populated_manifest()):
+            resp = client.post("/api/diffusion/runtime/enable")
+            assert resp.status_code == 409
 
     def test_progress_returns_detecting_when_waiting(self, patched_app):
         client, tmp_path = patched_app

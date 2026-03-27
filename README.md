@@ -220,8 +220,8 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Job | Workflow Link | What It Proves |
 |-----|--------------|---------------|
-| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 402 Go tests across 9 services with `-race` (build, test, vet) |
-| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 739 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
+| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 413 Go tests across 9 services with `-race` (build, test, vet) |
+| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 923 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
 | `security-regression` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Adversarial test suite: prompt injection, policy bypass, containment, recovery |
 | `supply-chain-verify` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | SBOM generation via Syft, cosign availability, provenance keywords in release/build workflows |
 | `test-count-check` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Prevents documented test counts from drifting below actual (source of truth: [test-counts.json](docs/test-counts.json)) |
@@ -242,7 +242,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
 | [Security Status](docs/security-status.md) | Implementation status of all 54 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,141 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,336 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -357,13 +357,13 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (402 total across 9 services)
+# Go tests (413 total across 9 services)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd services/$svc && go test -v -race ./...)
 done
 
-# Python tests (739 total)
+# Python tests (923 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 
@@ -465,7 +465,7 @@ services/
   search-mediator/          Python -- Tor-routed web search (:8485)
   ui/                       Python/Flask -- Web UI (:8480)
   common/                   Python -- Shared utilities (audit, auth, mlock)
-tests/                      739 Python tests, 402 Go tests (1,141 total)
+tests/                      923 Python tests, 413 Go tests (1,336 total)
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs

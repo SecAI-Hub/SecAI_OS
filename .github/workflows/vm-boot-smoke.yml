@@ -3,8 +3,13 @@ name: VM Boot Smoke Test (Tier 2)
 # Tier 2: Real VM boot test on self-hosted KVM runner.
 # All checks run inside the guest via SSH (not host-side).
 #
+# STATUS: DRAFT — verification commands are scaffolding only (echo placeholders).
+#   This workflow will pass without testing anything. Automatic triggers are
+#   disabled until the self-hosted KVM runner is provisioned and the SSH
+#   verification commands are implemented.
+#
 # SECURITY: Never triggered by pull_request (fork safety for self-hosted runners).
-# Only workflow_dispatch, schedule, and push to protected branches.
+# To test manually: Actions → VM Boot Smoke Test → Run workflow
 
 on:
   workflow_dispatch:
@@ -13,11 +18,12 @@ on:
         description: "Exact image digest (sha256:...) to test. Required for manual runs."
         required: true
         type: string
-  schedule:
-    # Nightly at 3:17 AM UTC (off-minute to reduce load spikes)
-    - cron: "17 3 * * *"
-  push:
-    branches: [main, stable, 'release/**']
+  # Nightly and push triggers disabled until verification commands are real.
+  # Uncomment when ready:
+  # schedule:
+  #   - cron: "17 3 * * *"
+  # push:
+  #   branches: [main, stable, 'release/**']
     paths-ignore:
       - "**.md"
       - "docs/**"

@@ -64,6 +64,11 @@ class TestManifestStructure:
         assert manifest.get("format_policy") == "wheel_only", \
             "format_policy must be 'wheel_only'"
 
+    def test_populated_flag_present(self, manifest):
+        assert "populated" in manifest, \
+            "Manifest must have a 'populated' flag"
+        assert isinstance(manifest["populated"], bool)
+
     def test_backends_present(self, manifest):
         assert "backends" in manifest
         assert isinstance(manifest["backends"], dict)
@@ -108,12 +113,20 @@ class TestBackendDefinitions:
         assert cfg["estimated_size_mb"] > 0
 
     @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
-    def test_backend_has_wheels(self, manifest, backend):
+    def test_backend_has_wheels_key(self, manifest, backend):
         cfg = manifest["backends"][backend]
         assert "wheels" in cfg, \
             f"Backend '{backend}' must have a wheels list"
         assert isinstance(cfg["wheels"], list)
-        assert len(cfg["wheels"]) > 0
+
+    @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
+    def test_backend_wheels_populated_when_manifest_says_so(self, manifest, backend):
+        """If the manifest says populated=true, every backend must have wheel entries."""
+        if not manifest.get("populated", False):
+            pytest.skip("Manifest not yet populated — wheel entries are expected to be empty")
+        cfg = manifest["backends"][backend]
+        assert len(cfg["wheels"]) > 0, \
+            f"Backend '{backend}' has no wheel entries but manifest says populated=true"
 
 
 class TestWheelManifestEntries:
@@ -165,6 +178,19 @@ class TestLockfileIntegrity:
     """Validate the backend-specific lockfiles."""
 
     EXPECTED_BACKENDS = ["cpu", "cuda", "rocm"]
+
+    @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
+    def test_lockfile_has_packages_when_populated(self, manifest, backend):
+        """If the manifest is populated, lockfiles must contain real package entries."""
+        if not manifest.get("populated", False):
+            pytest.skip("Manifest not yet populated — lockfiles are expected to be empty")
+        lockfile_name = manifest["backends"][backend]["lockfile"]
+        lockfile_path = SCRIPTS_DIR / lockfile_name
+        content = lockfile_path.read_text()
+        pkg_pattern = re.compile(r"^(\S+==\S+)\s*\\", re.MULTILINE)
+        packages = pkg_pattern.findall(content)
+        assert len(packages) > 0, \
+            f"Lockfile {lockfile_name} has no packages but manifest says populated=true"
 
     @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
     def test_lockfile_fully_hashed(self, manifest, backend):

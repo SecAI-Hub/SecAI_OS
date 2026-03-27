@@ -276,6 +276,7 @@ Return the current diffusion runtime state.
     "estimated_size_mb": 4500,
     "cache_available": false,
     "installing": false,
+    "manifest_populated": false,
     "error": null
   }
   ```
@@ -285,6 +286,7 @@ Return the current diffusion runtime state.
   - `estimated_size_mb` -- estimated download size from manifest for the detected backend; `null` if backend unknown
   - `cache_available` -- true if verified wheel cache exists (faster re-install)
   - `installing` -- true if an install is in progress (request marker or active progress)
+  - `manifest_populated` -- true if the runtime manifest has real package hashes. If false, enable returns 503. Run `scripts/refresh-diffusion-locks.sh` to populate.
   - `error` -- error detail from the last failed install, or `null`
 - **Status priority:** installed > failed (suppresses installing) > in-progress > not installed
 

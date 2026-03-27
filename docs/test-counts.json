@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-14",
+  "generated": "2026-03-27",
   "go": {
     "airlock": 10,
     "registry": 14,
@@ -9,9 +9,9 @@
     "policy-engine": 44,
     "runtime-attestor": 55,
     "integrity-monitor": 50,
-    "incident-recorder": 86
+    "incident-recorder": 97
   },
-  "go_total": 402,
-  "python_total": 739,
-  "grand_total": 1141
+  "go_total": 413,
+  "python_total": 923,
+  "grand_total": 1336
 }
