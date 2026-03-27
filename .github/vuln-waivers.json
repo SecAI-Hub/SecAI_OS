@@ -1,5 +1,20 @@
 {
   "_comment": "Vulnerability waivers for CI dependency-audit job. Each entry documents a reviewed finding that is temporarily accepted. Waivers MUST include: id, reason, reviewer, expires (YYYY-MM-DD). Expired waivers are ignored and the finding will fail CI again.",
   "go": [],
-  "python": []
+  "python": [
+    {
+      "id": "GHSA-5239-wwwm-4pmq",
+      "package": "pygments",
+      "reason": "ReDoS in AdlLexer — local-only exploit, not reachable from our usage (no archetype syntax highlighting). Awaiting upstream fix.",
+      "reviewer": "sec_ai",
+      "expires": "2026-06-27"
+    },
+    {
+      "id": "GHSA-gc5v-m9x4-r6x2",
+      "package": "requests",
+      "reason": "Predictable temp path in extract_zipped_paths() — we do not call this function. Standard requests usage is not affected per advisory.",
+      "reviewer": "sec_ai",
+      "expires": "2026-06-27"
+    }
+  ]
 }

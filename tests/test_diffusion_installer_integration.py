@@ -9,13 +9,9 @@ Requires: Linux or POSIX-compatible environment (skipped on Windows).
 """
 
 import hashlib
-import http.server
 import json
 import os
-import shutil
 import sys
-import tempfile
-import threading
 import zipfile
 from pathlib import Path
 

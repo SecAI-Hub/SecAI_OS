@@ -11,7 +11,6 @@ Covers:
 - Module-level app export for WSGI import
 """
 
-import re
 import sys
 from pathlib import Path
 

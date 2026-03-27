@@ -9,12 +9,8 @@ Covers:
 - Non-regular file rejection (symlinks, FIFOs, device nodes)
 """
 
-import json
 import os
-import stat
 import sys
-import tempfile
-import uuid
 from pathlib import Path
 from unittest import mock
 

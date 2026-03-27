@@ -16,9 +16,7 @@ Validates:
 """
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -217,7 +215,6 @@ class TestUIRequestMarkerSemantics:
 
     def test_enable_endpoint_does_not_import_subprocess_for_installer(self):
         """The enable endpoint must not directly run the installer."""
-        import ast
         import inspect
         # Import the function source
         from ui.app import diffusion_runtime_enable

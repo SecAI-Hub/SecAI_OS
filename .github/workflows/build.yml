@@ -95,7 +95,7 @@ jobs:
           "
 
       - name: Upload staged artifacts
-        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: source-prep
           path: |
@@ -179,7 +179,7 @@ jobs:
 
       - name: Upload image digest artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-digest
           path: IMAGE_DIGEST
