@@ -705,11 +705,13 @@ def search_test():
 
 
 def main():
+    """Dev-mode entry point. Production uses gunicorn via systemd wrapper."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     host, port = BIND_ADDR.rsplit(":", 1)
+    log.warning("Running Flask dev server — use gunicorn in production")
     log.info("search-mediator starting on %s (SearXNG=%s)", BIND_ADDR, SEARXNG_URL)
     app.run(host=host, port=int(port), debug=False, threaded=True)
 

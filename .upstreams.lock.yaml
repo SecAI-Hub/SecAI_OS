@@ -1,0 +1,111 @@
+# Upstream dependency manifest for SecAI OS.
+#
+# Each entry pins an external repository to a specific commit + archive checksum.
+# Subtree source lives in upstreams/<name>/ (NOT vendor/).
+#
+# CI on PRs to main/release branches FAILS if any entry has status: PENDING.
+# Placeholder entries are only allowed on migration branches.
+#
+# To update an upstream: scripts/update-upstream.sh <name> <new-sha>
+
+schema_version: 1
+
+upstreams:
+  ai-model-registry:
+    upstream_url: https://github.com/SecAI-Hub/ai-model-registry.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/ai-model-registry
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  agent-tool-firewall:
+    upstream_url: https://github.com/SecAI-Hub/agent-tool-firewall.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/agent-tool-firewall
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  gpu-integrity-watch:
+    upstream_url: https://github.com/SecAI-Hub/gpu-integrity-watch.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/gpu-integrity-watch
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  mcp-firewall:
+    upstream_url: https://github.com/SecAI-Hub/mcp-firewall.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/mcp-firewall
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  policy-engine:
+    upstream_url: https://github.com/SecAI-Hub/policy-engine.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/policy-engine
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  runtime-attestor:
+    upstream_url: https://github.com/SecAI-Hub/runtime-attestor.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/runtime-attestor
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  integrity-monitor:
+    upstream_url: https://github.com/SecAI-Hub/integrity-monitor.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/integrity-monitor
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  incident-recorder:
+    upstream_url: https://github.com/SecAI-Hub/incident-recorder.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/incident-recorder
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  gguf-guard:
+    upstream_url: https://github.com/SecAI-Hub/gguf-guard.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/gguf-guard
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  ai-quarantine:
+    upstream_url: https://github.com/SecAI-Hub/ai-quarantine.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/ai-quarantine
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null
+
+  llm-search-mediator:
+    upstream_url: https://github.com/SecAI-Hub/llm-search-mediator.git
+    pinned_commit: "# PENDING: awaiting subtree import"
+    archive_sha256: "# PENDING"
+    local_path: upstreams/llm-search-mediator
+    license: Apache-2.0
+    sync_date: null
+    reviewer: null

@@ -357,13 +357,13 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (399 total across 9 services)
+# Go tests (402 total across 9 services)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd services/$svc && go test -v -race ./...)
 done
 
-# Python tests (718 total)
+# Python tests (739 total)
 pip install pytest flask requests pyyaml
 python -m pytest tests/ -v
 

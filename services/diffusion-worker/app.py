@@ -501,12 +501,14 @@ def unload_pipelines():
 
 
 def main():
+    """Dev-mode entry point. Production uses gunicorn via systemd wrapper."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB max request
     host, port = BIND_ADDR.rsplit(":", 1)
+    log.warning("Running Flask dev server — use gunicorn in production")
     log.info("diffusion-worker starting on %s", BIND_ADDR)
     app.run(host=host, port=int(port), debug=False, threaded=True)
 

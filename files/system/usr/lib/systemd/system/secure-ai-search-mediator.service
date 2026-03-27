@@ -70,5 +70,8 @@ LimitNPROC=32
 LimitNOFILE=512
 LimitCORE=0
 
+# Production timeouts
+TimeoutStopSec=15
+
 [Install]
 WantedBy=multi-user.target

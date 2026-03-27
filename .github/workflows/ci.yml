@@ -242,6 +242,87 @@ jobs:
 
           echo "=== Supply chain verification passed ==="
 
+      - name: Verify hermetic build readiness
+        run: |
+          echo "=== Checking build-services.sh hermetic controls ==="
+          SCRIPT="files/scripts/build-services.sh"
+
+          # Must have hermetic guard
+          grep -q "HERMETIC_BUILD" "$SCRIPT" || { echo "FAIL: no HERMETIC_BUILD guard"; exit 1; }
+          echo "OK: HERMETIC_BUILD guard present"
+
+          # Must have LLAMA_CPP_SHA256 checksum
+          grep -q "LLAMA_CPP_SHA256" "$SCRIPT" || { echo "FAIL: no LLAMA_CPP_SHA256"; exit 1; }
+          echo "OK: LLAMA_CPP_SHA256 present"
+
+          # Must have GOPROXY=off
+          grep -q "GOPROXY=off" "$SCRIPT" || { echo "FAIL: no GOPROXY=off"; exit 1; }
+          echo "OK: GOPROXY=off present"
+
+          # Must not have --clone in locate_source
+          if grep "locate_source.*--clone" "$SCRIPT"; then
+            echo "FAIL: locate_source still uses --clone"
+            exit 1
+          fi
+          echo "OK: no --clone in locate_source"
+
+          # Must not have dnf install
+          if grep -E "^\s*dnf\s+install" "$SCRIPT"; then
+            echo "FAIL: dnf install found"
+            exit 1
+          fi
+          echo "OK: no dnf install"
+
+          echo "=== Hermetic build readiness: PASSED ==="
+
+      - name: Verify upstreams manifest consistency
+        run: |
+          echo "=== Checking .upstreams.lock.yaml ==="
+          if [ ! -f .upstreams.lock.yaml ]; then
+            echo "WARNING: .upstreams.lock.yaml not found"
+            exit 0
+          fi
+
+          python3 -c "
+          import yaml, sys, os
+
+          with open('.upstreams.lock.yaml') as f:
+              data = yaml.safe_load(f)
+
+          upstreams = data.get('upstreams', {})
+          errors = 0
+          pending = 0
+          for name, entry in upstreams.items():
+              local_path = entry.get('local_path', '')
+              commit = str(entry.get('pinned_commit', ''))
+
+              # Check for PENDING entries
+              if 'PENDING' in commit:
+                  pending += 1
+                  # On main/release branches, PENDING is a failure
+                  ref = os.environ.get('GITHUB_REF', '')
+                  if 'refs/heads/main' in ref or 'release/' in ref or 'stable' in ref:
+                      print(f'FAIL: {name} has PENDING commit on protected branch')
+                      errors += 1
+                  else:
+                      print(f'WARN: {name} has PENDING commit (allowed on non-protected branch)')
+                  continue
+
+              # Check local_path exists
+              if local_path and not os.path.isdir(local_path):
+                  print(f'WARN: {name} local_path does not exist: {local_path}')
+
+              # Verify no subtrees under vendor/ (must be under upstreams/)
+              if local_path.startswith('vendor/') and not local_path.startswith('vendor/wheels'):
+                  print(f'FAIL: {name} subtree under vendor/ — must use upstreams/')
+                  errors += 1
+
+          print(f'Checked {len(upstreams)} upstream(s): {pending} pending, {errors} error(s)')
+          if errors > 0:
+              sys.exit(1)
+          "
+          echo "=== Upstreams manifest check: PASSED ==="
+
   security-regression:
     name: Security Regression Tests
     runs-on: ubuntu-latest

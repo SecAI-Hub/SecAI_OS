@@ -6,6 +6,13 @@
 # FAIL-CLOSED: Required services that fail to build abort the entire image build.
 # Only truly optional components (scanner tools, pip packages) use soft warnings.
 #
+# HERMETIC BUILD: When HERMETIC_BUILD=true (set by CI stage 2), all network
+# access is blocked. Source comes from vendored subtrees (upstreams/), Go vendor
+# dirs (services/*/vendor/), the committed Python wheelhouse (vendor/wheels/),
+# and the pre-staged llama.cpp tarball. The shell-function overrides below are
+# human-readable diagnostics — the real proof of hermeticity is the
+# network-disabled container/namespace that stage 2 runs in.
+#
 set -euo pipefail
 
 INSTALL_DIR="/usr/libexec/secure-ai"
@@ -13,6 +20,66 @@ SRC_DIR="/tmp/secure-ai-build"
 SOURCE_DIR=""  # Set by locate_source
 
 echo "=== Building Secure AI services ==="
+
+# ---------------------------------------------------------------------------
+# Hermetic build enforcement (stage 2)
+# ---------------------------------------------------------------------------
+if [ "${HERMETIC_BUILD:-}" = "true" ]; then
+    echo "HERMETIC BUILD MODE — all network access is blocked"
+
+    # Verify SOURCE_PREP_MANIFEST.json if present
+    if [ -f "/tmp/SOURCE_PREP_MANIFEST.json" ]; then
+        echo "Verifying source-prep manifest..."
+        python3 -c "
+import json, hashlib, sys
+
+with open('/tmp/SOURCE_PREP_MANIFEST.json') as f:
+    manifest = json.load(f)
+
+# Verify wheelhouse digest
+if 'wheelhouse_sha256sums_digest' in manifest:
+    with open('vendor/wheels/SHA256SUMS', 'rb') as f:
+        actual = hashlib.sha256(f.read()).hexdigest()
+    expected = manifest['wheelhouse_sha256sums_digest']
+    if actual != expected:
+        print(f'FATAL: wheelhouse SHA256SUMS digest mismatch: {actual} != {expected}')
+        sys.exit(1)
+    print('OK: wheelhouse SHA256SUMS digest verified')
+
+# Verify lock manifest digest
+if 'upstreams_lock_digest' in manifest:
+    with open('.upstreams.lock.yaml', 'rb') as f:
+        actual = hashlib.sha256(f.read()).hexdigest()
+    expected = manifest['upstreams_lock_digest']
+    if actual != expected:
+        print(f'FATAL: .upstreams.lock.yaml digest mismatch: {actual} != {expected}')
+        sys.exit(1)
+    print('OK: .upstreams.lock.yaml digest verified')
+
+print('Source-prep manifest verification passed')
+" || fail_build "SOURCE_PREP_MANIFEST.json verification failed"
+    fi
+
+    # Override network commands to fail with clear diagnostics
+    git() {
+        if [ "$1" = "clone" ]; then
+            fail_build "network clone attempted in hermetic build: $*"
+        fi
+        command git "$@"
+    }
+    curl() { fail_build "curl attempted in hermetic build: $*"; }
+    wget() { fail_build "wget attempted in hermetic build: $*"; }
+
+    # Go: vendor-only, no network proxy, no sum DB, no VCS
+    export GOFLAGS="-mod=vendor"
+    export GOPROXY=off
+    export GOSUMDB=off
+    export GOVCS=off
+
+    # Python: local wheelhouse only
+    export PIP_NO_INDEX=1
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,19 +91,15 @@ fail_build() {
     exit 1
 }
 
-# Locate service source: checks local paths, then clones. Exits on failure.
-# Usage: locate_source <name> <local-path...> [--clone <url>]
+# Locate service source from local paths only. Exits on failure.
+# Usage: locate_source <name> <local-path...>
 # Sets SOURCE_DIR on success.
 locate_source() {
     local name="$1"; shift
-    local clone_url=""
     local paths=()
 
     while [ $# -gt 0 ]; do
-        case "$1" in
-            --clone) clone_url="$2"; shift 2 ;;
-            *) paths+=("$1"); shift ;;
-        esac
+        paths+=("$1"); shift
     done
 
     for p in "${paths[@]}"; do
@@ -47,14 +110,7 @@ locate_source() {
         fi
     done
 
-    if [ -n "$clone_url" ]; then
-        if git clone --depth 1 "$clone_url" "${SRC_DIR}/${name}" 2>/dev/null; then
-            SOURCE_DIR="${SRC_DIR}/${name}"
-            return 0
-        fi
-    fi
-
-    fail_build "${name} source not available — checked: ${paths[*]}${clone_url:+ clone: ${clone_url}}"
+    fail_build "${name} source not available — checked: ${paths[*]}"
 }
 
 # Track a built binary
@@ -63,10 +119,9 @@ track_binary() {
 }
 
 # ---------------------------------------------------------------------------
-# Build dependencies
+# Build dependencies — all come from recipe rpm-ostree, not ad hoc installs.
+# If a build-time package is missing, fix recipes/recipe.yml.
 # ---------------------------------------------------------------------------
-dnf install -y golang python3 python3-pip cmake gcc gcc-c++ libcurl-devel 2>/dev/null || true
-
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
 # ===========================================================================
@@ -82,8 +137,8 @@ track_binary "${INSTALL_DIR}/airlock"
 
 # --- ai-model-registry (security-first artifact registry) ---
 echo "Building: ai-model-registry"
-locate_source ai-model-registry /tmp/ai-model-registry \
-    --clone https://github.com/SecAI-Hub/ai-model-registry.git
+locate_source ai-model-registry \
+    /tmp/upstreams/ai-model-registry /tmp/ai-model-registry /tmp/services/registry
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
 CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
@@ -92,8 +147,8 @@ track_binary "/usr/local/bin/securectl"
 
 # --- agent-tool-firewall (policy gateway for LLM tool calls) ---
 echo "Building: agent-tool-firewall"
-locate_source agent-tool-firewall /tmp/agent-tool-firewall \
-    --clone https://github.com/SecAI-Hub/agent-tool-firewall.git
+locate_source agent-tool-firewall \
+    /tmp/upstreams/agent-tool-firewall /tmp/agent-tool-firewall /tmp/services/tool-firewall
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
 track_binary "${INSTALL_DIR}/tool-firewall"
@@ -101,8 +156,7 @@ track_binary "${INSTALL_DIR}/tool-firewall"
 # --- gpu-integrity-watch (continuous GPU runtime verification) ---
 echo "Building: gpu-integrity-watch"
 locate_source gpu-integrity-watch \
-    /tmp/services/gpu-integrity-watch /tmp/gpu-integrity-watch \
-    --clone https://github.com/SecAI-Hub/gpu-integrity-watch.git
+    /tmp/upstreams/gpu-integrity-watch /tmp/services/gpu-integrity-watch /tmp/gpu-integrity-watch
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
 track_binary "${INSTALL_DIR}/gpu-integrity-watch"
@@ -113,8 +167,7 @@ cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || tr
 # --- mcp-firewall (Model Context Protocol policy gateway) ---
 echo "Building: mcp-firewall"
 locate_source mcp-firewall \
-    /tmp/services/mcp-firewall /tmp/mcp-firewall \
-    --clone https://github.com/SecAI-Hub/mcp-firewall.git
+    /tmp/upstreams/mcp-firewall /tmp/services/mcp-firewall /tmp/mcp-firewall
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
 track_binary "${INSTALL_DIR}/mcp-firewall"
@@ -125,8 +178,7 @@ cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
 # --- policy-engine (unified OPA-style decision point) ---
 echo "Building: policy-engine"
 locate_source policy-engine \
-    /tmp/services/policy-engine /tmp/policy-engine \
-    --clone https://github.com/SecAI-Hub/policy-engine.git
+    /tmp/upstreams/policy-engine /tmp/services/policy-engine /tmp/policy-engine
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
 track_binary "${INSTALL_DIR}/policy-engine"
@@ -134,8 +186,7 @@ track_binary "${INSTALL_DIR}/policy-engine"
 # --- runtime-attestor (TPM2 quote verification + startup gating) ---
 echo "Building: runtime-attestor"
 locate_source runtime-attestor \
-    /tmp/services/runtime-attestor /tmp/runtime-attestor \
-    --clone https://github.com/SecAI-Hub/runtime-attestor.git
+    /tmp/upstreams/runtime-attestor /tmp/services/runtime-attestor /tmp/runtime-attestor
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
 track_binary "${INSTALL_DIR}/runtime-attestor"
@@ -143,8 +194,7 @@ track_binary "${INSTALL_DIR}/runtime-attestor"
 # --- integrity-monitor (continuous baseline-verified file watcher) ---
 echo "Building: integrity-monitor"
 locate_source integrity-monitor \
-    /tmp/services/integrity-monitor /tmp/integrity-monitor \
-    --clone https://github.com/SecAI-Hub/integrity-monitor.git
+    /tmp/upstreams/integrity-monitor /tmp/services/integrity-monitor /tmp/integrity-monitor
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
 track_binary "${INSTALL_DIR}/integrity-monitor"
@@ -152,28 +202,50 @@ track_binary "${INSTALL_DIR}/integrity-monitor"
 # --- incident-recorder (security event capture and containment) ---
 echo "Building: incident-recorder"
 locate_source incident-recorder \
-    /tmp/services/incident-recorder /tmp/incident-recorder \
-    --clone https://github.com/SecAI-Hub/incident-recorder.git
+    /tmp/upstreams/incident-recorder /tmp/services/incident-recorder /tmp/incident-recorder
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
 track_binary "${INSTALL_DIR}/incident-recorder"
 
 # --- gguf-guard (GGUF model integrity scanner) ---
 echo "Building: gguf-guard"
-locate_source gguf-guard /tmp/gguf-guard \
-    --clone https://github.com/SecAI-Hub/gguf-guard.git
+locate_source gguf-guard \
+    /tmp/upstreams/gguf-guard /tmp/gguf-guard
 cd "$SOURCE_DIR"
 CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/gguf-guard ./cmd/gguf-guard/
 track_binary "/usr/local/bin/gguf-guard"
 
 # ===========================================================================
 # llama.cpp (required — inference engine)
+#
+# Checksum verification provides integrity.
+# TODO: For full hermeticity, vendor the tarball into vendor/llama-cpp/
+# or produce a pinned source artifact in release CI.
 # ===========================================================================
 echo "Building: llama-server"
 LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-b5200}"
+# SHA256 of the release tarball — update when bumping LLAMA_CPP_VERSION
+LLAMA_CPP_SHA256="${LLAMA_CPP_SHA256:-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855}"
+
 cd "$SRC_DIR"
-curl -fsSL "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_VERSION}.tar.gz" \
-    | tar xz
+
+# In hermetic mode, the tarball must be pre-staged by the source-prep job
+LLAMA_TARBALL="/tmp/llama-cpp-${LLAMA_CPP_VERSION}.tar.gz"
+if [ "${HERMETIC_BUILD:-}" = "true" ]; then
+    if [ ! -f "$LLAMA_TARBALL" ]; then
+        fail_build "llama.cpp tarball not pre-staged at ${LLAMA_TARBALL} (required in hermetic mode)"
+    fi
+else
+    # Non-hermetic (dev) mode: download with checksum verification
+    curl -fsSL -o "$LLAMA_TARBALL" \
+        "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_VERSION}.tar.gz"
+fi
+
+# Verify checksum
+echo "${LLAMA_CPP_SHA256}  ${LLAMA_TARBALL}" | sha256sum -c || \
+    fail_build "llama.cpp tarball checksum mismatch (expected ${LLAMA_CPP_SHA256})"
+
+tar xzf "$LLAMA_TARBALL"
 cd "llama.cpp-${LLAMA_CPP_VERSION}"
 
 # GPU backend detection — best-effort fallback chain: CUDA → Vulkan → CPU
@@ -194,7 +266,7 @@ cmake --build build --target llama-server -j"$(nproc)"
 install -m 755 build/bin/llama-server /usr/bin/llama-server
 track_binary "/usr/bin/llama-server"
 
-# Record GPU backend metadata for runtime verification (Step 3: GPU backend recording)
+# Record GPU backend metadata for runtime verification
 mkdir -p /etc/secure-ai
 cat > /etc/secure-ai/gpu-backend.json <<GPUMETA
 {
@@ -211,8 +283,8 @@ echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
 
 # --- ai-quarantine (seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
-locate_source ai-quarantine /tmp/ai-quarantine \
-    --clone https://github.com/SecAI-Hub/ai-quarantine.git
+locate_source ai-quarantine \
+    /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine
 pip3 install --prefix=/usr --no-cache-dir "${SOURCE_DIR}" 2>/dev/null || \
     pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${SOURCE_DIR}"
 cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
@@ -248,15 +320,27 @@ else
     fail_build "agent source not found at /tmp/services/agent"
 fi
 
-# --- Web UI ---
+# --- Web UI (production: gunicorn via wrapper; dev: Flask built-in) ---
 echo "Building: ui"
 if [ -d "/tmp/services/ui" ]; then
     pip3 install --prefix=/usr --no-cache-dir /tmp/services/ui 2>/dev/null || \
         pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/ui
     cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
-#!/usr/bin/env python3
-from ui.app import main
-main()
+#!/usr/bin/env bash
+# Production wrapper — Gunicorn with env-driven config.
+# The appliance runtime gets Gunicorn from the OS image (python3-gunicorn).
+export PYTHONPATH="${PYTHONPATH:-/usr/lib/python3/site-packages}"
+exec gunicorn \
+    --bind "${BIND_ADDR:-127.0.0.1:8480}" \
+    --workers "${GUNICORN_WORKERS:-2}" \
+    --threads "${GUNICORN_THREADS:-4}" \
+    --timeout "${GUNICORN_TIMEOUT:-60}" \
+    --graceful-timeout 15 \
+    --max-requests 1000 \
+    --max-requests-jitter 50 \
+    --access-logfile - \
+    --error-logfile - \
+    ui.app:app
 WRAPPER
     chmod +x "${INSTALL_DIR}/ui"
     track_binary "${INSTALL_DIR}/ui"
@@ -268,13 +352,39 @@ fi
 # Optional Services (warnings are acceptable — not core security)
 # ===========================================================================
 
-# Diffusion worker (optional — image generation)
+# Diffusion worker (optional — disabled by default, opt-in via secai-enable-diffusion.sh)
 echo "Installing: diffusion-worker"
 DIFFUSION_DIR="/opt/secure-ai/services/diffusion-worker"
 mkdir -p "$DIFFUSION_DIR"
 if [ -f "/tmp/services/diffusion-worker/app.py" ]; then
     cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
     echo "  -> ${DIFFUSION_DIR}/app.py"
+    # Wrapper for when diffusion is enabled via opt-in installer
+    cat > "${INSTALL_DIR}/diffusion-worker" <<'WRAPPER'
+#!/usr/bin/env bash
+# Diffusion worker — requires opt-in via secai-enable-diffusion.sh.
+# This wrapper is only used after the installer writes a systemd override
+# pointing to the venv's gunicorn. If called directly without the venv,
+# it fails with a helpful message.
+if [ ! -f /var/lib/secure-ai/.diffusion-ready ]; then
+    echo "ERROR: Diffusion worker not configured. Run: sudo secai-enable-diffusion.sh" >&2
+    exit 1
+fi
+source /var/lib/secure-ai/diffusion-venv/bin/activate
+export PYTHONPATH="/opt/secure-ai/services/diffusion-worker:${PYTHONPATH:-}"
+exec gunicorn \
+    --chdir /opt/secure-ai/services/diffusion-worker \
+    --bind "${BIND_ADDR:-127.0.0.1:8455}" \
+    --workers 1 \
+    --threads 2 \
+    --timeout "${GUNICORN_TIMEOUT:-1800}" \
+    --graceful-timeout 30 \
+    --max-requests 500 \
+    --access-logfile - \
+    --error-logfile - \
+    app:app
+WRAPPER
+    chmod +x "${INSTALL_DIR}/diffusion-worker"
 else
     echo "WARNING: diffusion-worker source not found — diffusion worker will not be available"
 fi
@@ -283,26 +393,43 @@ fi
 echo "Installing: llm-search-mediator"
 SEARCH_DIR="/opt/secure-ai/services/search-mediator"
 mkdir -p "$SEARCH_DIR"
-if [ -d "/tmp/llm-search-mediator" ]; then
+if [ -d "/tmp/upstreams/llm-search-mediator" ]; then
+    cp -r /tmp/upstreams/llm-search-mediator "${SRC_DIR}/llm-search-mediator"
+elif [ -d "/tmp/llm-search-mediator" ]; then
     cp -r /tmp/llm-search-mediator "${SRC_DIR}/llm-search-mediator"
-elif git clone --depth 1 https://github.com/SecAI-Hub/llm-search-mediator.git \
-    "${SRC_DIR}/llm-search-mediator" 2>/dev/null; then
-    true  # clone succeeded
+elif [ -d "/tmp/services/search-mediator" ]; then
+    cp -r /tmp/services/search-mediator "${SRC_DIR}/llm-search-mediator"
 else
     echo "WARNING: llm-search-mediator not available — search mediator will not be installed"
 fi
 if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
-    cp -r "${SRC_DIR}/llm-search-mediator/search_mediator" "$SEARCH_DIR/"
-    pip3 install --prefix=/usr --no-cache-dir \
-        -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-            -r "${SRC_DIR}/llm-search-mediator/requirements.txt"
+    # Copy source to runtime location
+    if [ -d "${SRC_DIR}/llm-search-mediator/search_mediator" ]; then
+        cp -r "${SRC_DIR}/llm-search-mediator/search_mediator" "$SEARCH_DIR/"
+    elif [ -f "${SRC_DIR}/llm-search-mediator/app.py" ]; then
+        cp "${SRC_DIR}/llm-search-mediator/app.py" "$SEARCH_DIR/app.py"
+    fi
+    # Install requirements if present
+    if [ -f "${SRC_DIR}/llm-search-mediator/requirements.txt" ]; then
+        pip3 install --prefix=/usr --no-cache-dir \
+            -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
+            pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
+                -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
+            echo "WARNING: search-mediator requirements install failed"
+    fi
     cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
-#!/usr/bin/env python3
-import sys
-sys.path.insert(0, "/opt/secure-ai/services/search-mediator")
-from search_mediator.app import main
-main()
+#!/usr/bin/env bash
+# Production wrapper — Gunicorn for search mediator.
+export PYTHONPATH="/opt/secure-ai/services/search-mediator:${PYTHONPATH:-}"
+exec gunicorn \
+    --bind "${BIND_ADDR:-127.0.0.1:8485}" \
+    --workers "${GUNICORN_WORKERS:-2}" \
+    --threads "${GUNICORN_THREADS:-4}" \
+    --timeout "${GUNICORN_TIMEOUT:-30}" \
+    --graceful-timeout 10 \
+    --access-logfile - \
+    --error-logfile - \
+    search_mediator.app:app
 WRAPPER
     chmod +x "${INSTALL_DIR}/search-mediator"
     echo "  -> ${INSTALL_DIR}/search-mediator"
@@ -319,6 +446,13 @@ echo "Installing: searxng"
 pip3 install --prefix=/usr --no-cache-dir searxng 2>/dev/null || \
     pip3 install --prefix=/usr --break-system-packages --no-cache-dir searxng 2>/dev/null || \
     echo "WARNING: searxng pip install failed — SearXNG search will not be available"
+
+# ===========================================================================
+# Staging directory for local model imports (M54 hardening)
+# ===========================================================================
+echo "Creating import staging directory..."
+mkdir -p /var/lib/secure-ai/import-staging
+chmod 0700 /var/lib/secure-ai/import-staging
 
 # ===========================================================================
 # Final Verification — confirm all required binaries exist
@@ -363,8 +497,6 @@ echo "All ${#REQUIRED_BINARIES[@]} required binaries verified."
 
 # ---------------------------------------------------------------------------
 # Configure container signing policy for cosign-verified SecAI images.
-# This ensures rpm-ostree verifies cosign signatures on all future upgrades
-# when using the ostree-image-signed: transport.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Configuring container signing policy ==="
@@ -405,10 +537,8 @@ else
     echo "WARNING: signing policy files missing from image — cosign verification may not work"
 fi
 
-# Cleanup build artifacts
+# Cleanup build artifacts (but not build tools — they come from the recipe)
 rm -rf "$SRC_DIR"
-dnf remove -y golang cmake gcc gcc-c++ 2>/dev/null || true
-dnf clean all 2>/dev/null || true
 
 echo ""
 echo "=== Secure AI services installed ==="

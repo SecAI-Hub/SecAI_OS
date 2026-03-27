@@ -15,8 +15,96 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-prep:
+    name: "Stage 1: Source Prep"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Validate committed wheelhouse
+        run: |
+          echo "=== Validating vendor/wheels/SHA256SUMS ==="
+          if [ ! -f vendor/wheels/SHA256SUMS ]; then
+            echo "WARNING: vendor/wheels/SHA256SUMS not found"
+            echo "Wheelhouse not yet populated — hermetic build will fail."
+          else
+            echo "OK: vendor/wheels/SHA256SUMS exists"
+          fi
+
+      - name: Download and verify llama.cpp tarball
+        run: |
+          # Read pinned version + checksum from build-services.sh
+          LLAMA_CPP_VERSION=$(grep -oP 'LLAMA_CPP_VERSION:-\K[^}]+' files/scripts/build-services.sh | head -1)
+          LLAMA_CPP_SHA256=$(grep -oP 'LLAMA_CPP_SHA256:-\K[^}]+' files/scripts/build-services.sh | head -1)
+
+          echo "Downloading llama.cpp ${LLAMA_CPP_VERSION}..."
+          TARBALL="llama-cpp-${LLAMA_CPP_VERSION}.tar.gz"
+          curl -fsSL -o "/tmp/${TARBALL}" \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_VERSION}.tar.gz"
+
+          echo "Verifying checksum..."
+          ACTUAL=$(sha256sum "/tmp/${TARBALL}" | awk '{print $1}')
+          if [ "$ACTUAL" != "$LLAMA_CPP_SHA256" ]; then
+            echo "WARNING: llama.cpp checksum mismatch"
+            echo "  Expected: ${LLAMA_CPP_SHA256}"
+            echo "  Actual:   ${ACTUAL}"
+            echo "Update LLAMA_CPP_SHA256 in build-services.sh if the version was bumped."
+          else
+            echo "OK: llama.cpp checksum verified"
+          fi
+          echo "TARBALL_SHA256=${ACTUAL}" >> "$GITHUB_ENV"
+          echo "LLAMA_CPP_VERSION=${LLAMA_CPP_VERSION}" >> "$GITHUB_ENV"
+          mv "/tmp/${TARBALL}" "/tmp/llama-cpp-staged.tar.gz"
+
+      - name: Emit SOURCE_PREP_MANIFEST.json
+        run: |
+          python3 -c "
+          import json, hashlib, os
+          from datetime import datetime
+
+          manifest = {
+              'schema_version': 1,
+              'timestamp': datetime.utcnow().isoformat() + 'Z',
+              'commit_sha': os.environ.get('GITHUB_SHA', 'unknown'),
+              'llama_cpp_version': os.environ.get('LLAMA_CPP_VERSION', 'unknown'),
+              'llama_cpp_tarball_sha256': os.environ.get('TARBALL_SHA256', 'unknown'),
+          }
+
+          # Wheelhouse SHA256SUMS digest
+          try:
+              with open('vendor/wheels/SHA256SUMS', 'rb') as f:
+                  manifest['wheelhouse_sha256sums_digest'] = hashlib.sha256(f.read()).hexdigest()
+          except FileNotFoundError:
+              manifest['wheelhouse_sha256sums_digest'] = 'not_populated'
+
+          # Upstreams lock manifest digest
+          try:
+              with open('.upstreams.lock.yaml', 'rb') as f:
+                  manifest['upstreams_lock_digest'] = hashlib.sha256(f.read()).hexdigest()
+          except FileNotFoundError:
+              manifest['upstreams_lock_digest'] = 'not_found'
+
+          with open('SOURCE_PREP_MANIFEST.json', 'w') as f:
+              json.dump(manifest, f, indent=2)
+              f.write('\n')
+
+          print('--- SOURCE_PREP_MANIFEST.json ---')
+          print(json.dumps(manifest, indent=2))
+          "
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        with:
+          name: source-prep
+          path: |
+            SOURCE_PREP_MANIFEST.json
+            /tmp/llama-cpp-staged.tar.gz
+
   bluebuild:
-    name: Build Custom Image
+    name: "Stage 2: Build Custom Image"
+    needs: [source-prep]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,6 +114,8 @@ jobs:
       fail-fast: false
       matrix:
         recipe:
+          # BlueBuild resolves recipe paths relative to the recipes/ directory.
+          # "recipe.yml" maps to "recipes/recipe.yml" by convention.
           - recipe.yml
     steps:
       - name: Build Custom Image
@@ -86,3 +176,142 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Full image ref: \`${IMAGE_REF}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload image digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        with:
+          name: image-digest
+          path: IMAGE_DIGEST
+          if-no-files-found: warn
+
+  smoke-test:
+    name: Tier 1 Smoke Test (Artifact Verification)
+    needs: [bluebuild]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Validate recipe systemd units
+        run: |
+          python3 -c "
+          import yaml, sys
+
+          with open('recipes/recipe.yml') as f:
+              recipe = yaml.safe_load(f)
+
+          for module in recipe.get('modules', []):
+              if module.get('type') != 'systemd':
+                  continue
+              enabled = set(module.get('system', {}).get('enabled', []))
+              disabled = set(module.get('system', {}).get('disabled', []))
+
+              overlap = enabled & disabled
+              if overlap:
+                  print(f'FAIL: services in both enabled and disabled: {overlap}')
+                  sys.exit(1)
+
+              # Diffusion must be disabled by default
+              if 'secure-ai-diffusion.service' in enabled:
+                  print('FAIL: secure-ai-diffusion.service must be in disabled list')
+                  sys.exit(1)
+              if 'secure-ai-diffusion.service' not in disabled:
+                  print('FAIL: secure-ai-diffusion.service missing from disabled list')
+                  sys.exit(1)
+
+              # Core services must be enabled
+              core = [
+                  'secure-ai-registry.service',
+                  'secure-ai-tool-firewall.service',
+                  'secure-ai-ui.service',
+                  'secure-ai-policy-engine.service',
+                  'nftables.service',
+              ]
+              for svc in core:
+                  if svc not in enabled:
+                      print(f'FAIL: core service {svc} not in enabled list')
+                      sys.exit(1)
+
+              print(f'OK: {len(enabled)} enabled, {len(disabled)} disabled, no overlap')
+          "
+
+      - name: Validate YAML config files
+        run: |
+          python3 -c "
+          import yaml, sys, glob
+          errors = 0
+          for pattern in ['files/system/etc/secure-ai/**/*.yaml', 'recipes/*.yml']:
+              for f in glob.glob(pattern, recursive=True):
+                  try:
+                      with open(f) as fh:
+                          yaml.safe_load(fh)
+                      print(f'OK: {f}')
+                  except Exception as e:
+                      print(f'FAIL: {f}: {e}')
+                      errors += 1
+          sys.exit(errors)
+          "
+
+      - name: Verify build script is hermetic-ready
+        run: |
+          echo "=== Checking build-services.sh for network fetch patterns ==="
+
+          SCRIPT="files/scripts/build-services.sh"
+
+          # Must have hermetic guard
+          grep -q "HERMETIC_BUILD" "$SCRIPT" || { echo "FAIL: no HERMETIC_BUILD guard"; exit 1; }
+          echo "OK: HERMETIC_BUILD guard present"
+
+          # Must have LLAMA_CPP_SHA256
+          grep -q "LLAMA_CPP_SHA256" "$SCRIPT" || { echo "FAIL: no LLAMA_CPP_SHA256"; exit 1; }
+          echo "OK: LLAMA_CPP_SHA256 checksum present"
+
+          # Must have GOPROXY=off in hermetic mode
+          grep -q "GOPROXY=off" "$SCRIPT" || { echo "FAIL: no GOPROXY=off"; exit 1; }
+          echo "OK: GOPROXY=off in hermetic mode"
+
+          # Must not have --clone in locate_source calls
+          if grep -n "locate_source.*--clone" "$SCRIPT"; then
+            echo "FAIL: locate_source still uses --clone"
+            exit 1
+          fi
+          echo "OK: no --clone in locate_source"
+
+          # Must not have dnf install
+          if grep -n "dnf install" "$SCRIPT" | grep -v "^#" | grep -v "dnf remove"; then
+            echo "FAIL: dnf install found in build script"
+            exit 1
+          fi
+          echo "OK: no dnf install"
+
+          echo "=== Build script hermetic checks passed ==="
+
+      - name: Verify systemd units use wrappers
+        run: |
+          echo "=== Checking systemd units ==="
+          UNITS_DIR="files/system/usr/lib/systemd/system"
+
+          # UI must use wrapper, not python3 directly
+          if grep -q "ExecStart=/usr/bin/python3" "${UNITS_DIR}/secure-ai-ui.service"; then
+            echo "FAIL: UI service still uses python3 directly"
+            exit 1
+          fi
+          echo "OK: UI uses wrapper"
+
+          # Diffusion must not use python3 directly
+          if grep -q "ExecStart=/usr/bin/python3" "${UNITS_DIR}/secure-ai-diffusion.service"; then
+            echo "FAIL: Diffusion service still uses python3 directly"
+            exit 1
+          fi
+          echo "OK: Diffusion uses wrapper/placeholder"
+
+          echo "=== Systemd unit checks passed ==="

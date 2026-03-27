@@ -5,7 +5,10 @@ Wants=secure-ai-registry.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/secure-ai/services/diffusion-worker/app.py
+# Diffusion worker is DISABLED by default. The base ExecStart fails with a
+# helpful message. To enable: run secai-enable-diffusion.sh, which installs
+# GPU dependencies into a venv and writes a systemd override.
+ExecStart=/bin/bash -c 'echo "Diffusion worker not configured. Run: sudo secai-enable-diffusion.sh" >&2; exit 1'
 Restart=on-failure
 RestartSec=5
 
@@ -75,6 +78,10 @@ CPUQuota=200%
 TasksMax=256
 LimitNOFILE=4096
 LimitCORE=0
+
+# Production timeouts — generous for long-running generation
+TimeoutStartSec=60
+TimeoutStopSec=35
 
 [Install]
 WantedBy=multi-user.target
