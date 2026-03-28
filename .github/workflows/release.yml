@@ -149,22 +149,28 @@ jobs:
           path: dist/
 
   build-iso:
-    name: Build ISO (isogenerator)
+    name: Build ISO
     needs: [preflight]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo docker image prune -af
+
       - name: Build ISO
-        uses: ublue-os/isogenerator@427a070b3ba1d24998833c948b745ef8061bb5e2 # main
+        uses: jasonn3/build-container-installer@207e927e28c92704c4cdbe10b980643b3771ef01 # main
         id: isogen
         with:
-          ARCH: x86_64
-          IMAGE_REPO: ghcr.io/secai-hub
-          IMAGE_NAME: secai_os
-          IMAGE_TAG: ${{ github.ref_name }}
-          VERSION: 42
-          VARIANT: Silverblue
+          arch: x86_64
+          image_name: secai_os
+          image_repo: ghcr.io/secai-hub
+          image_tag: ${{ github.ref_name }}
+          version: 42
+          variant: Silverblue
+          iso_name: secai-os-${{ github.ref_name }}-x86_64.iso
 
       - name: Install cosign
         run: |
@@ -173,16 +179,16 @@ jobs:
             -o /usr/local/bin/cosign
           chmod +x /usr/local/bin/cosign
 
-      - name: Rename and sign ISO
+      - name: Sign ISO
         run: |
-          ISO_SRC="${{ steps.isogen.outputs.iso-path }}"
-          ISO_DST="dist/secai-os-${{ github.ref_name }}-x86_64.iso"
+          ISO_PATH="${{ steps.isogen.outputs.iso_path }}"
           mkdir -p dist
-          mv "$ISO_SRC" "$ISO_DST"
+          mv "$ISO_PATH" "dist/"
+          ISO_FILE="dist/secai-os-${{ github.ref_name }}-x86_64.iso"
           cosign sign-blob --yes \
             --key env://COSIGN_PRIVATE_KEY \
-            --output-signature "${ISO_DST}.sig" \
-            "$ISO_DST"
+            --output-signature "${ISO_FILE}.sig" \
+            "$ISO_FILE"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
