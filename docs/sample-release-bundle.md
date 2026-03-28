@@ -50,10 +50,22 @@ v1.0.0/
   # Release manifest (machine-readable)
   RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, provenance, build metadata
 
+  # Install artifacts (bootable images)
+  secai-os-v1.0.0-x86_64.iso        # Bootable ISO (from isogenerator)
+  secai-os-v1.0.0-x86_64.iso.sig    # cosign detached signature
+  secai-os-v1.0.0.qcow2             # QCOW2 disk image (optional — requires KVM build infra)
+  secai-os-v1.0.0.qcow2.sig         # cosign detached signature
+  secai-os-v1.0.0.ova               # OVA appliance (optional — requires KVM build infra)
+  secai-os-v1.0.0.ova.sig           # cosign detached signature
+
   # Checksums and signature
   SHA256SUMS            # sha256sum of every artifact above (includes RELEASE_MANIFEST.json)
   SHA256SUMS.sig        # cosign detached signature over SHA256SUMS
 ```
+
+> **Note:** QCOW2 and OVA artifacts may be absent if the repository does not have
+> a self-hosted KVM runner. The ISO is always produced. See `docs/release-artifacts.json`
+> for the machine-readable artifact specification.
 
 ## Image Digest
 

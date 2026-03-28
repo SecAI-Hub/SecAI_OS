@@ -331,6 +331,43 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# Step 5: Verify install artifact signatures (optional)
+# ---------------------------------------------------------------------------
+info "Step 5: Verifying install artifact signatures (if present)..."
+
+install_artifacts_found=0
+for pattern in "secai-os-*.iso" "secai-os-*.qcow2" "secai-os-*.ova"; do
+    for artifact in $pattern; do
+        [ -f "$artifact" ] || continue
+        install_artifacts_found=$((install_artifacts_found + 1))
+        sig_file="${artifact}.sig"
+        if [[ -f "$sig_file" ]]; then
+            if cosign verify-blob \
+                --key "${COSIGN_PUB_KEY}" \
+                --signature "$sig_file" \
+                "$artifact" \
+                >/dev/null 2>&1; then
+                pass "Install artifact signature OK: ${artifact}"
+                record_check 5 "install_sig_${artifact}" "PASS"
+            else
+                fail "Install artifact signature FAILED: ${artifact}"
+                record_check 5 "install_sig_${artifact}" "FAIL"
+            fi
+        else
+            warn "No .sig file for ${artifact} — cannot verify signature"
+            record_check 5 "install_sig_${artifact}" "SKIP" "no .sig file"
+        fi
+    done
+done
+
+if [[ $install_artifacts_found -eq 0 ]]; then
+    info "No install artifacts (ISO/QCOW2/OVA) found — skipping Step 5"
+    record_check 5 "install_artifacts" "SKIP" "no install artifacts present"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

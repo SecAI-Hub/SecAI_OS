@@ -148,10 +148,97 @@ jobs:
           name: python-sboms
           path: dist/
 
+  build-iso:
+    name: Build ISO (isogenerator)
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build ISO
+        uses: ublue-os/isogenerator@main
+        id: isogen
+        with:
+          ARCH: x86_64
+          IMAGE_REPO: ghcr.io/secai-hub
+          IMAGE_NAME: secai_os
+          IMAGE_TAG: ${{ github.ref_name }}
+          VERSION: 42
+          VARIANT: Silverblue
+
+      - name: Install cosign
+        run: |
+          COSIGN_VERSION="v2.4.3"
+          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+            -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+
+      - name: Rename and sign ISO
+        run: |
+          ISO_SRC="${{ steps.isogen.outputs.iso-path }}"
+          ISO_DST="dist/secai-os-${{ github.ref_name }}-x86_64.iso"
+          mkdir -p dist
+          mv "$ISO_SRC" "$ISO_DST"
+          cosign sign-blob --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --output-signature "${ISO_DST}.sig" \
+            "$ISO_DST"
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: iso-amd64
+          path: dist/secai-os-*.iso*
+
+  build-vm-images:
+    name: Build VM Images (QCOW2 + OVA)
+    needs: [preflight]
+    if: vars.HAS_KVM_RUNNER == 'true'
+    runs-on: [self-hosted, linux, x64, kvm]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build QCOW2
+        run: |
+          bash scripts/vm/build-qcow2.sh --ci \
+            --image-ref "ghcr.io/secai-hub/secai_os:${{ github.ref_name }}"
+
+      - name: Build OVA from QCOW2
+        run: bash scripts/vm/build-ova.sh
+
+      - name: Install cosign
+        run: |
+          COSIGN_VERSION="v2.4.3"
+          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+            -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+
+      - name: Sign VM artifacts
+        run: |
+          mkdir -p dist
+          cp output/secai-os.qcow2 "dist/secai-os-${{ github.ref_name }}.qcow2"
+          cp output/secai-os.ova "dist/secai-os-${{ github.ref_name }}.ova"
+          for f in dist/secai-os-${{ github.ref_name }}.qcow2 dist/secai-os-${{ github.ref_name }}.ova; do
+            cosign sign-blob --yes \
+              --key env://COSIGN_PRIVATE_KEY \
+              --output-signature "${f}.sig" \
+              "$f"
+          done
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+      - name: Upload VM artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vm-images
+          path: dist/secai-os-*
+
   provenance:
     name: SLSA Provenance & Attestation
     runs-on: ubuntu-latest
-    needs: [build-go, build-python]
+    needs: [build-go, build-python, build-iso]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -261,6 +348,24 @@ jobs:
               }
             }' > RELEASE_MANIFEST.json
 
+          # Add install artifacts (conditionally present)
+          INSTALL_JSON="{}"
+          for artifact in secai-os-*.iso secai-os-*.qcow2 secai-os-*.ova; do
+            [ -f "$artifact" ] || continue
+            HASH=$(sha256sum "$artifact" | awk '{print $1}')
+            SIZE=$(stat -c%s "$artifact" 2>/dev/null || stat -f%z "$artifact" 2>/dev/null || echo 0)
+            TYPE="${artifact##*.}"
+            INSTALL_JSON=$(echo "$INSTALL_JSON" | jq \
+              --arg type "$TYPE" --arg name "$artifact" \
+              --arg sha256 "$HASH" --arg size "$SIZE" \
+              --arg sig "${artifact}.sig" \
+              '. + {($type): {"name": $name, "sha256": $sha256, "size_bytes": ($size | tonumber), "signature": $sig}}')
+          done
+          # Merge install_artifacts into manifest
+          jq --argjson install "$INSTALL_JSON" \
+            '. + {install_artifacts: $install}' RELEASE_MANIFEST.json > RELEASE_MANIFEST.json.tmp
+          mv RELEASE_MANIFEST.json.tmp RELEASE_MANIFEST.json
+
           echo "--- RELEASE_MANIFEST.json ---"
           cat RELEASE_MANIFEST.json
 
@@ -309,5 +414,11 @@ jobs:
             dist/IMAGE_DIGEST
             dist/IMAGE_REF_PINNED
             dist/RELEASE_MANIFEST.json
+            dist/secai-os-*.iso
+            dist/secai-os-*.iso.sig
+            dist/secai-os-*.qcow2
+            dist/secai-os-*.qcow2.sig
+            dist/secai-os-*.ova
+            dist/secai-os-*.ova.sig
           generate_release_notes: true
           fail_on_unmatched_files: false

@@ -14,13 +14,27 @@
 #
 set -euo pipefail
 
-OUTPUT_DIR="${1:-./output}"
+# Parse flags
+CI_MODE=false
+CUSTOM_IMAGE_REF=""
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ci) CI_MODE=true; shift ;;
+        --image-ref) CUSTOM_IMAGE_REF="$2"; shift 2 ;;
+        --image-ref=*) CUSTOM_IMAGE_REF="${1#*=}"; shift ;;
+        *) POSITIONAL_ARGS+=("$1"); shift ;;
+    esac
+done
+
+OUTPUT_DIR="${POSITIONAL_ARGS[0]:-./output}"
 IMAGE_NAME="secai-os"
 DISK_SIZE="64G"
 VAULT_SIZE="32G"
 
-# SecAI OS container image
-CONTAINER_IMAGE="ghcr.io/secai-hub/secai_os:latest"
+# SecAI OS container image (override with --image-ref for CI)
+CONTAINER_IMAGE="${CUSTOM_IMAGE_REF:-ghcr.io/secai-hub/secai_os:latest}"
 
 # Generate random passwords for VM build (never hardcoded)
 SECAI_VM_PASSWORD="${SECAI_VM_PASSWORD:-$(openssl rand -base64 18)}"
