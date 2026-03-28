@@ -586,6 +586,10 @@
                 <span class="status-dot gray" id="sidebar-system-dot"></span>
                 <span id="sidebar-system-text">System</span>
             </div>
+            <div class="status-indicator" id="sidebar-trust">
+                <span class="status-dot green" id="sidebar-trust-dot"></span>
+                <span id="sidebar-trust-text">Offline</span>
+            </div>
         </div>
     </aside>
 
@@ -603,6 +607,9 @@
                 <span class="topbar-badge" id="system-badge">system</span>
             </div>
         </header>
+        <div id="degraded-banner" style="display:none;background:var(--danger-subtle);border:1px solid var(--danger);border-radius:var(--radius);padding:0.5rem 1rem;margin:0 1rem 0.5rem;font-size:0.85rem;color:var(--danger)">
+            <strong>System integrity check failed.</strong> <a href="/security" style="color:var(--danger);text-decoration:underline">View details</a>
+        </div>
         <div class="content {% block content_class %}{% endblock %}">
             {% block content %}{% endblock %}
         </div>
@@ -775,6 +782,8 @@
                 var resp = await fetch('/api/profile');
                 var data = await resp.json();
                 var badge = document.getElementById('profile-badge');
+                var trustDot = document.getElementById('sidebar-trust-dot');
+                var trustText = document.getElementById('sidebar-trust-text');
                 var p = data.active || 'unknown';
                 var locked = data.locked || false;
                 if (p === 'offline_private') {
@@ -782,32 +791,62 @@
                     badge.style.borderColor = 'var(--success)';
                     badge.style.color = 'var(--success)';
                     badge.title = 'Profile: Maximum isolation — no network';
+                    trustDot.className = 'status-dot green';
+                    trustText.textContent = 'Offline Private';
                 } else if (p === 'research') {
                     badge.textContent = locked ? 'research (locked)' : 'tor only';
                     badge.style.borderColor = 'var(--warning)';
                     badge.style.color = 'var(--warning)';
                     badge.title = 'Profile: Privacy-preserving research — Tor-routed';
+                    trustDot.className = 'status-dot yellow';
+                    trustText.textContent = 'Tor Only';
                 } else if (p === 'full_lab') {
                     badge.textContent = locked ? 'full lab (locked)' : 'filtered';
                     badge.style.borderColor = 'var(--accent)';
                     badge.style.color = 'var(--accent)';
                     badge.title = 'Profile: Full capability lab — filtered network';
+                    trustDot.className = 'status-dot yellow';
+                    trustText.textContent = 'Filtered';
                 } else {
                     badge.textContent = 'unknown';
                     badge.style.borderColor = 'var(--text-muted)';
                     badge.style.color = 'var(--text-muted)';
+                    trustDot.className = 'status-dot gray';
+                    trustText.textContent = 'Unknown';
                 }
             } catch(e) {
                 /* Profile API not available — non-critical */
             }
         }
 
+        async function pollApplianceState() {
+            try {
+                var resp = await fetch('/api/observability/appliance-state');
+                var data = await resp.json();
+                var banner = document.getElementById('degraded-banner');
+                var trustDot = document.getElementById('sidebar-trust-dot');
+                var trustText = document.getElementById('sidebar-trust-text');
+                if (data.state && data.state !== 'trusted') {
+                    banner.style.display = 'block';
+                    trustDot.className = 'status-dot red';
+                    trustText.textContent = 'Degraded';
+                } else {
+                    banner.style.display = 'none';
+                }
+            } catch(e) {
+                /* Observability API not available — hide banner */
+                document.getElementById('degraded-banner').style.display = 'none';
+            }
+        }
+
         pollVaultStatus();
         pollSystemStatus();
         pollProfileStatus();
+        pollApplianceState();
         setInterval(pollVaultStatus, 10000);
         setInterval(pollSystemStatus, 15000);
         setInterval(pollProfileStatus, 30000);
+        setInterval(pollApplianceState, 30000);
 
         /* Close sidebar on mobile when clicking main area */
         document.querySelector('.main').addEventListener('click', function() {

@@ -592,6 +592,11 @@ def security_page():
     return render_template("security.html", active_page="security")
 
 
+@app.route("/why-safe")
+def why_safe_page():
+    return render_template("why-safe.html", active_page="security")
+
+
 @app.route("/updates")
 def updates_page():
     return render_template("updates.html", active_page="updates")

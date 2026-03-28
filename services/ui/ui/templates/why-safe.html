@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Why is this safe? — SecAI OS{% endblock %}
+{% block page_title %}Why is this safe?{% endblock %}
+
+{% block content %}
+<div style="max-width:720px">
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
+        <h3 style="margin-bottom:0.5rem;color:var(--success)">Your data stays on this device</h3>
+        <p style="color:var(--text-secondary);line-height:1.6">
+            SecAI OS runs all AI inference locally — on your hardware, using your GPU.
+            No prompts, responses, or model data are sent to any cloud service.
+            The network firewall blocks all outbound connections by default.
+        </p>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
+        <h3 style="margin-bottom:0.5rem">What's running right now</h3>
+        <p style="color:var(--text-secondary);line-height:1.6;margin-bottom:0.75rem">
+            Your appliance is running in the <strong id="ws-profile">offline_private</strong> profile.
+        </p>
+        <ul style="color:var(--text-secondary);line-height:1.8;padding-left:1.25rem">
+            <li id="ws-network">Network: <strong>blocked</strong> — no data leaves this device</li>
+            <li>Vault: encrypted with AES-256 (LUKS2 + Argon2id)</li>
+            <li>Models: verified through a 7-stage quarantine pipeline before use</li>
+            <li>Services: sandboxed with seccomp-BPF, Landlock, and systemd hardening</li>
+            <li>Audit: tamper-evident hash-chained logs record all security events</li>
+        </ul>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
+        <h3 style="margin-bottom:0.5rem">What happens if something goes wrong</h3>
+        <ul style="color:var(--text-secondary);line-height:1.8;padding-left:1.25rem">
+            <li><strong>Tampered model detected:</strong> automatically quarantined and removed</li>
+            <li><strong>Integrity check fails:</strong> system degrades to safe mode, alerts you</li>
+            <li><strong>Suspicious activity:</strong> agent frozen, airlock disabled, vault re-locked automatically</li>
+            <li><strong>Bad update:</strong> Greenboot rolls back to the last known-good state</li>
+            <li><strong>Worst case:</strong> 3-level emergency panic — lock, wipe keys, or full wipe</li>
+        </ul>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
+        <h3 style="margin-bottom:0.5rem">No telemetry</h3>
+        <p style="color:var(--text-secondary);line-height:1.6">
+            SecAI OS does not collect any telemetry. No usage analytics, no crash reports,
+            no phone-home, no heartbeat. The only network activity is what you explicitly
+            enable by switching to the "research" or "full lab" profile — and even then,
+            all traffic is Tor-routed with PII stripping.
+        </p>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
+        <h3 style="margin-bottom:0.5rem">How to verify</h3>
+        <p style="color:var(--text-secondary);line-height:1.6;margin-bottom:0.5rem">
+            You don't have to take our word for it:
+        </p>
+        <ul style="color:var(--text-secondary);line-height:1.8;padding-left:1.25rem">
+            <li>The <a href="/security" style="color:var(--accent)">Security dashboard</a> shows real-time verification status</li>
+            <li>Audit logs are hash-chained — any tampering breaks the chain visibly</li>
+            <li>The OS image is cosign-signed with SLSA3 provenance attestation</li>
+            <li>Every model passes 7 stages of automated verification before use</li>
+            <li><a href="/security" style="color:var(--accent)">Export a forensic bundle</a> for independent verification</li>
+        </ul>
+    </div>
+
+    <p style="color:var(--text-muted);font-size:0.85rem;text-align:center;margin-top:1rem">
+        For the full technical security model, see the <a href="/security" style="color:var(--accent)">Security dashboard</a>.
+    </p>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(async function() {
+    try {
+        var resp = await fetch('/api/profile');
+        var data = await resp.json();
+        var p = data.active || 'offline_private';
+        document.getElementById('ws-profile').textContent = p.replace(/_/g, ' ');
+        var netEl = document.getElementById('ws-network');
+        if (p === 'offline_private') {
+            netEl.innerHTML = 'Network: <strong>blocked</strong> — no data leaves this device';
+        } else if (p === 'research') {
+            netEl.innerHTML = 'Network: <strong>Tor only</strong> — queries are anonymized through Tor';
+        } else if (p === 'full_lab') {
+            netEl.innerHTML = 'Network: <strong>filtered</strong> — outbound traffic goes through the airlock';
+        }
+    } catch(e) { /* non-critical */ }
+})();
+</script>
+{% endblock %}
