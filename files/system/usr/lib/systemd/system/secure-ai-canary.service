@@ -9,10 +9,28 @@ ExecStart=/usr/libexec/secure-ai/canary-check.sh check
 # Needs root for vault lock, process kill, and file access
 ProtectHome=yes
 PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — root oneshot, needs kill/vault ops
+CapabilityBoundingSet=
+
 LimitCORE=0
 
 # Needs access to sensitive dirs and ability to lock vault
 ReadOnlyPaths=/etc/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+
+# Syscall filtering — permissive for kill/vault operations
+SystemCallFilter=@system-service @signal
+SystemCallFilter=~@mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM

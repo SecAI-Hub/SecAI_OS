@@ -9,6 +9,7 @@ Environment=AUDIT_LOGS_DIR=/var/lib/secure-ai/logs
 Environment=SERVICES_DIR=/usr/libexec/secure-ai/services
 
 # Filesystem access
+DynamicUser=yes
 ReadOnlyPaths=/usr/libexec/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateTmp=yes
@@ -29,6 +30,15 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictRealtime=yes
 PrivateNetwork=yes
+
+# Capability bounding — non-root oneshot
+CapabilityBoundingSet=
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
 
 # Resource limits
 MemoryMax=128M

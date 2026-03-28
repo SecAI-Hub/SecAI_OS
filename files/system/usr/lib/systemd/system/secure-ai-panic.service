@@ -10,8 +10,25 @@ RemainAfterExit=yes
 # Needs root for vault lock, process kill, key shred
 ProtectHome=yes
 PrivateTmp=yes
+PrivateNetwork=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — root oneshot, needs kill/vault ops
+CapabilityBoundingSet=
+
+# Syscall filtering — permissive for kill/vault/shred operations
+SystemCallFilter=@system-service @signal
+SystemCallFilter=~@mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
 LimitCORE=0
 
 ReadWritePaths=/var/lib/secure-ai /run/secure-ai /etc/secure-ai

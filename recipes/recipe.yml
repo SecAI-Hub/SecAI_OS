@@ -55,7 +55,13 @@ modules:
       - source: system
         destination: /
 
-  # 3) Copy service source code into build context and compile.
+  # 3) Make service source available to build script, then compile.
+  #    BlueBuild mounts files/ at /tmp/files/ but services/ is at repo root.
+  #    The containerfile snippet copies services/ into the image for the build.
+  - type: containerfile
+    snippets:
+      - COPY services/ /tmp/services/
+
   - type: script
     scripts:
       - build-services.sh

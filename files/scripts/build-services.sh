@@ -561,6 +561,8 @@ fi
 
 # Cleanup build artifacts (but not build tools — they come from the recipe)
 rm -rf "$SRC_DIR"
+# Remove service source copied by containerfile COPY step (not needed at runtime)
+rm -rf /tmp/services
 
 echo ""
 echo "=== Secure AI services installed ==="

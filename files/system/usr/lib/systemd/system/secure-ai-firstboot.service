@@ -9,5 +9,26 @@ Type=oneshot
 ExecStart=/usr/libexec/secure-ai/firstboot.sh
 RemainAfterExit=yes
 
+# Filesystem isolation
+ProtectHome=yes
+PrivateTmp=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — root oneshot, no special caps needed
+CapabilityBoundingSet=
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
 [Install]
 WantedBy=multi-user.target

@@ -14,7 +14,23 @@ ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
-NoNewPrivileges=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — root oneshot, no special caps needed
+CapabilityBoundingSet=
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
 
 # Write results to logs
 ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai

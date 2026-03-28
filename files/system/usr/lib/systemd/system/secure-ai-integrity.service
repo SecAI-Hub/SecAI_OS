@@ -34,6 +34,12 @@ RestrictRealtime=yes
 # Needs network to talk to registry on localhost
 RestrictAddressFamilies=AF_INET AF_UNIX
 
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
 # Resource limits
 MemoryMax=256M
 CPUQuota=25%

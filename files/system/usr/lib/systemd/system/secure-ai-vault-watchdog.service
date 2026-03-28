@@ -15,9 +15,30 @@ ReadWritePaths=/var/lib/secure-ai /run/secure-ai /dev/mapper
 ProtectHome=yes
 NoNewPrivileges=no
 PrivateTmp=yes
+PrivateNetwork=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 
 # Needs root for cryptsetup and umount
 User=root
+
+# Capability bounding — needs mount/unmount for cryptsetup
+CapabilityBoundingSet=CAP_SYS_ADMIN
+
+# Syscall filtering — needs @mount for cryptsetup operations
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@privileged @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Production timeouts
+TimeoutStopSec=30
 
 # Resource limits
 MemoryMax=64M

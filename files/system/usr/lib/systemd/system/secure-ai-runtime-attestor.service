@@ -23,6 +23,7 @@ ReadOnlyPaths=/sys/firmware/efi
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateTmp=yes
 PrivateDevices=yes
+DeviceAllow=/dev/tpmrm0 rw
 ProtectSystem=strict
 ProtectHome=yes
 ProtectProc=invisible

@@ -41,6 +41,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 
 # --- Security: Max input sizes ---
 MAX_PASSPHRASE_LENGTH = 256
+MAX_CHAT_BODY_BYTES = 1_048_576
 
 # --- Flask secret key (persistent, regenerated on passphrase change) ---
 _FLASK_SECRET_FILE = Path(os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")) / "flask-secret"
@@ -803,7 +804,7 @@ def model_fsverity_status():
 def verify_model():
     name = request.json.get("name", "")
     try:
-        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify?name={name}", timeout=30)
+        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify", params={"name": name}, timeout=30)
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -814,7 +815,7 @@ def verify_model_manifest():
     """Verify per-tensor integrity manifest via gguf-guard."""
     name = request.json.get("name", "")
     try:
-        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify-manifest?name={name}", timeout=120)
+        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify-manifest", params={"name": name}, timeout=120)
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -824,7 +825,7 @@ def verify_model_manifest():
 def delete_model():
     name = request.json.get("name", "")
     try:
-        resp = requests.delete(f"{REGISTRY_URL}/v1/model/delete?name={name}", timeout=10)
+        resp = requests.delete(f"{REGISTRY_URL}/v1/model/delete", params={"name": name}, timeout=10)
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -973,7 +974,7 @@ def _verify_active_model() -> dict:
         # Verify the first (active) model
         name = models[0].get("name", "")
         verify_resp = requests.post(
-            f"{REGISTRY_URL}/v1/model/verify?name={name}", timeout=30
+            f"{REGISTRY_URL}/v1/model/verify", params={"name": name}, timeout=30
         )
         result = verify_resp.json()
         if result.get("safe_to_use") == "true":
@@ -989,6 +990,8 @@ def _verify_active_model() -> dict:
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
+    if request.content_length and request.content_length > MAX_CHAT_BODY_BYTES:
+        return jsonify({"error": "request too large"}), 413
     body = request.get_json()
     messages = body.get("messages", [])
 
@@ -1015,6 +1018,8 @@ def chat():
 
 @app.route("/api/chat/stream", methods=["POST"])
 def chat_stream():
+    if request.content_length and request.content_length > MAX_CHAT_BODY_BYTES:
+        return jsonify({"error": "request too large"}), 413
     body = request.get_json()
     messages = body.get("messages", [])
 
@@ -1082,6 +1087,8 @@ def chat_with_search():
     sending to the LLM. The response includes a flag indicating online sources
     were used.
     """
+    if request.content_length and request.content_length > MAX_CHAT_BODY_BYTES:
+        return jsonify({"error": "request too large"}), 413
     body = request.get_json()
     messages = body.get("messages", [])
     do_search = body.get("search", False)
@@ -1373,7 +1380,7 @@ def diffusion_runtime_enable():
         return jsonify({"status": "already_installing"}), 409
     except OSError as e:
         log.error("Failed to create diffusion request marker: %s", e)
-        return jsonify({"error": f"failed to request install: {e}"}), 500
+        return jsonify({"error": "failed to request install"}), 500
 
     _ui_audit.append("diffusion_runtime_enable_requested", {
         "backend": _detect_gpu_backend(),
@@ -1601,8 +1608,9 @@ def forensic_export():
         ts = time.strftime("%Y%m%d-%H%M%S")
         resp.headers["Content-Disposition"] = f"attachment; filename=forensic-bundle-{ts}.json"
         return resp
-    except Exception as e:
-        return jsonify({"error": f"incident recorder unreachable: {e}"}), 503
+    except Exception:
+        log.exception("incident recorder unreachable")
+        return jsonify({"error": "incident recorder unreachable"}), 503
 
 
 def _read_service_token():
@@ -1763,7 +1771,8 @@ def vault_lock():
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode != 0:
-            return jsonify({"success": False, "error": result.stderr.strip()}), 500
+            log.error("vault lock failed: %s", result.stderr.strip())
+            return jsonify({"success": False, "error": "vault lock failed"}), 500
 
         # Update state file
         VAULT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1773,8 +1782,9 @@ def vault_lock():
             "detail": "manual_lock",
         }))
         return jsonify({"success": True, "state": "locked"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        log.exception("vault lock failed")
+        return jsonify({"success": False, "error": "vault lock failed"}), 500
 
 
 @app.route("/api/vault/unlock", methods=["POST"])
@@ -1841,8 +1851,9 @@ def vault_unlock():
 
         _ui_audit.append("vault_unlock", {})
         return jsonify({"success": True, "state": "unlocked"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        log.exception("vault unlock failed")
+        return jsonify({"success": False, "error": "vault unlock failed"}), 500
 
 
 @app.route("/api/vault/keepalive", methods=["POST"])
@@ -1992,9 +2003,9 @@ def toggle_vm_gpu():
             ) if enabled else None,
         })
 
-    except Exception as e:
+    except Exception:
         log.exception("failed to toggle VM GPU")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "internal error"}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -2118,8 +2129,9 @@ def update_check():
             return jsonify({"status": "checked", "output": result.stdout.strip()})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "update check timed out"}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("update check failed")
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/api/update/stage", methods=["POST"])
@@ -2132,16 +2144,17 @@ def update_stage():
             capture_output=True, text=True, timeout=600,
         )
         if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip()
-            return jsonify({"error": error or "staging failed"}), 500
+            log.error("update stage failed: %s", result.stderr.strip() or result.stdout.strip())
+            return jsonify({"error": "staging failed"}), 500
         try:
             return jsonify(json.loads(result.stdout.strip()))
         except (json.JSONDecodeError, ValueError):
             return jsonify({"status": "staged", "output": result.stdout.strip()})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "staging timed out"}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("update stage failed")
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/api/update/apply", methods=["POST"])
@@ -2158,13 +2171,14 @@ def update_apply():
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip()
-            return jsonify({"error": error or "apply failed"}), 500
+            log.error("update apply failed: %s", result.stderr.strip() or result.stdout.strip())
+            return jsonify({"error": "apply failed"}), 500
         return jsonify({"status": "applied", "message": "Update applied. System is rebooting."})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "apply timed out"}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("update apply failed")
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/api/update/rollback", methods=["POST"])
@@ -2181,13 +2195,14 @@ def update_rollback():
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip()
-            return jsonify({"error": error or "rollback failed"}), 500
+            log.error("update rollback failed: %s", result.stderr.strip() or result.stdout.strip())
+            return jsonify({"error": "rollback failed"}), 500
         return jsonify({"status": "rolled_back", "message": "Rollback applied. System is rebooting."})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "rollback timed out"}), 504
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        log.exception("update rollback failed")
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/api/update/health")
@@ -2260,8 +2275,9 @@ def agent_submit_task():
             "mode": body.get("mode", "standard"),
         })
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/task/<task_id>")
@@ -2270,8 +2286,9 @@ def agent_get_task(task_id):
     try:
         data, status = _agent_request("GET", f"/v1/task/{task_id}")
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/task/<task_id>/approve", methods=["POST"])
@@ -2282,8 +2299,9 @@ def agent_approve_steps(task_id):
         data, status = _agent_request("POST", f"/v1/task/{task_id}/approve", json_body=body)
         _ui_audit.append("agent_steps_approved", {"task_id": task_id})
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/task/<task_id>/deny", methods=["POST"])
@@ -2294,8 +2312,9 @@ def agent_deny_steps(task_id):
         data, status = _agent_request("POST", f"/v1/task/{task_id}/deny", json_body=body)
         _ui_audit.append("agent_steps_denied", {"task_id": task_id})
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/task/<task_id>/cancel", methods=["POST"])
@@ -2305,8 +2324,9 @@ def agent_cancel_task(task_id):
         data, status = _agent_request("POST", f"/v1/task/{task_id}/cancel", json_body={})
         _ui_audit.append("agent_task_cancelled", {"task_id": task_id})
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/tasks")
@@ -2316,8 +2336,9 @@ def agent_list_tasks():
     try:
         data, status = _agent_request("GET", "/v1/tasks", params={"limit": limit})
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 @app.route("/api/agent/modes")
@@ -2326,8 +2347,9 @@ def agent_list_modes():
     try:
         data, status = _agent_request("GET", "/v1/modes", timeout=5)
         return jsonify(data), status
-    except Exception as e:
-        return jsonify({"error": f"agent service unavailable: {e}"}), 503
+    except Exception:
+        log.exception("agent service unavailable")
+        return jsonify({"error": "agent service unavailable"}), 503
 
 
 def main():

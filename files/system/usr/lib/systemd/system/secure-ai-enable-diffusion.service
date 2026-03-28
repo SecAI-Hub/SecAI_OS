@@ -14,3 +14,15 @@ TimeoutStartSec=3600
 # Needs /var/lib/secure-ai write access for venv + cache
 # Needs /etc/systemd/system write access for overrides
 # Needs systemctl for daemon-reload + enable
+
+# Minimal hardening for oneshot installer
+ProtectHome=yes
+PrivateTmp=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes

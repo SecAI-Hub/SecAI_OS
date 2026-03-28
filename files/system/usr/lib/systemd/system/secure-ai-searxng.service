@@ -11,15 +11,24 @@ Restart=on-failure
 RestartSec=5
 
 # Sandboxing — needs network only to reach Tor SOCKS5 on localhost
+DynamicUser=yes
 ProtectSystem=strict
 ReadOnlyPaths=/etc/secure-ai/searxng
 ProtectHome=yes
 PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — non-root
+CapabilityBoundingSet=
 
 # SearXNG connects to Tor on localhost, which connects to the internet
 RestrictAddressFamilies=AF_INET AF_UNIX
@@ -30,9 +39,18 @@ PrivateUsers=yes
 # No GPU, no devices
 PrivateDevices=yes
 
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
 # Resource limits
 MemoryMax=512M
 TasksMax=128
+
+# Production timeouts
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

@@ -22,6 +22,11 @@ VAULT_SIZE="32G"
 # SecAI OS container image
 CONTAINER_IMAGE="ghcr.io/sec_ai/secai_os:latest"
 
+# Generate random passwords for VM build (never hardcoded)
+SECAI_VM_PASSWORD="${SECAI_VM_PASSWORD:-$(openssl rand -base64 18)}"
+SECAI_VAULT_PASSWORD="${SECAI_VAULT_PASSWORD:-$(openssl rand -base64 18)}"
+export SECAI_VM_PASSWORD SECAI_VAULT_PASSWORD
+
 echo "=========================================="
 echo " SecAI OS — QCOW2 Image Builder"
 echo "=========================================="
@@ -47,7 +52,7 @@ lang en_US.UTF-8
 keyboard us
 timezone UTC --utc
 rootpw --lock
-user --name=secai --groups=wheel --plaintext --password=changeme
+user --name=secai --groups=wheel --plaintext --password=${SECAI_VM_PASSWORD}
 
 # Partitioning — root + vault
 zerombr
@@ -55,7 +60,7 @@ clearpart --all --initlabel
 part /boot/efi --fstype=efi --size=512
 part /boot --fstype=ext4 --size=1024
 part / --fstype=btrfs --size=30720
-part /var/lib/secure-ai --fstype=ext4 --grow --encrypted --passphrase=changeme
+part /var/lib/secure-ai --fstype=ext4 --grow --encrypted --passphrase=${SECAI_VAULT_PASSWORD}
 
 # Network
 network --bootproto=dhcp --activate
@@ -105,8 +110,10 @@ echo "[4/4] Post-build instructions:"
 echo ""
 echo "  After installation completes:"
 echo "    1. Boot the VM"
-echo "    2. Log in as 'secai' (password: changeme)"
-echo "    3. Change passwords: sudo passwd secai && sudo cryptsetup luksChangeKey /dev/sda4"
+echo "    2. Log in as 'secai' (password: ${SECAI_VM_PASSWORD})"
+echo "    3. CHANGE BOTH PASSWORDS IMMEDIATELY:"
+echo "       sudo passwd secai"
+echo "       sudo cryptsetup luksChangeKey /dev/sda4  (current: ${SECAI_VAULT_PASSWORD})"
 echo "    4. Complete rebase: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest"
 echo "    5. Reboot: sudo systemctl reboot"
 echo ""

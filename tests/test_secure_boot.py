@@ -137,7 +137,10 @@ class TestBootVerifyService:
     def test_has_sandboxing(self):
         content = (SYSTEMD_DIR / "secure-ai-boot-verify.service").read_text()
         assert "ProtectHome=yes" in content
-        assert "NoNewPrivileges=yes" in content
+        # boot-verify needs privilege escalation for TPM2/EFI access,
+        # so NoNewPrivileges is intentionally absent. Check for other hardening.
+        assert "ProtectKernelTunables=yes" in content
+        assert "SystemCallFilter=" in content
 
 
 class TestFirstbootIntegration:

@@ -12,12 +12,30 @@ RestartSec=30
 # Needs root for vault lock and process kill on trigger
 ProtectHome=yes
 PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Capability bounding — root service, needs kill/vault ops
+CapabilityBoundingSet=
+
 LimitCORE=0
 
 ReadOnlyPaths=/etc/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+
+# Syscall filtering — permissive for kill/vault operations
+SystemCallFilter=@system-service @signal
+SystemCallFilter=~@mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
 
 # Resource limits — lightweight watcher
 MemoryMax=64M

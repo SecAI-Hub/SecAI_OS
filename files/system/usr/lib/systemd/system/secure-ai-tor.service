@@ -19,11 +19,16 @@ ReadWritePaths=/var/lib/secure-ai/tor /var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai/tor
 ProtectHome=yes
 PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 
 # Tor needs network (it IS the network proxy)
 # But restrict to IPv4/IPv6 TCP only
@@ -35,9 +40,18 @@ PrivateUsers=yes
 # No GPU, no devices
 PrivateDevices=yes
 
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
 # Resource limits
 MemoryMax=256M
 TasksMax=64
+
+# Production timeouts
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

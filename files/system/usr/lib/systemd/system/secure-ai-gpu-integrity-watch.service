@@ -61,6 +61,12 @@ SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-em
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
+# GPU device access — explicit DeviceAllow for integrity verification
+DeviceAllow=/dev/nvidia* rw
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/dri/* rw
+DeviceAllow=/dev/kfd rw
+
 # Resource limits
 MemoryMax=256M
 CPUQuota=15%
