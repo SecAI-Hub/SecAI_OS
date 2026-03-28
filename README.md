@@ -46,40 +46,35 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 
 ## Quickstart
 
-### Install (Fedora Atomic)
+Download, verify, boot, run the setup wizard. See [docs/install/quickstart.md](docs/install/quickstart.md) for full details.
+
+| Method | Time | Best For |
+|--------|------|----------|
+| [**ISO**](docs/install/quickstart.md#path-a-install-from-iso-real-pc) (Recommended) | ~30 min | Real PC, full security |
+| [**OVA**](docs/install/quickstart.md#path-b-import-vm--virtualbox--vmware-ova) | ~15 min | Try it first (VirtualBox/VMware) |
+| [**QCOW2**](docs/install/quickstart.md#path-c-import-vm--kvm--proxmox--qemu-qcow2) | ~15 min | KVM / Proxmox |
+| [**Rebase**](docs/install/quickstart.md#path-d-advanced--rebase-from-existing-fedora) | ~45 min | Existing Fedora Silverblue |
+
+After boot, the setup wizard guides you through profile selection, system verification, and model import.
+
+### Advanced / Operator Install
+
+For production deployments with digest pinning and signing policy configuration:
 
 ```bash
-# 1. Download and review the signed bootstrap script
+# Review the bootstrap script, then run with a pinned digest
 curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
   -o /tmp/secai-bootstrap.sh
 less /tmp/secai-bootstrap.sh
-
-# 2. Run the bootstrap (configures signing policy + verified rebase)
-#    Use --digest from the latest release for production installs
 sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
-
-# 3. Reboot and run the setup wizard
 sudo systemctl reboot
-sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
 ```
 
-The bootstrap script verifies the image signature and configures the signing policy
-**before** the rebase, so the first pull uses the signed transport — no unverified
-pull is ever performed. See the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest)
-for the digest, or omit `--digest` for evaluation.
-
-See [docs/install/](docs/install/) for detailed guides: [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
+See [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
 
 ### Get Your First Model
 
 Open `http://127.0.0.1:8480`, go to **Models**, and click **Download** on any model in the catalog. The 7-stage quarantine pipeline runs automatically. Once promoted, the model is ready to use.
-
-Or via CLI:
-
-```bash
-sudo cp your-model.gguf /var/lib/secure-ai/quarantine/incoming/
-journalctl -u secure-ai-quarantine-watcher -f  # watch pipeline
-```
 
 ---
 
@@ -317,6 +312,8 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [FAQ](docs/faq.md) | Common questions |
 | [Glossary](docs/glossary.md) | Key terms and concepts |
 | [Non-Goals](docs/non-goals.md) | What SecAI OS does NOT try to do |
+| [Why is this safe?](docs/why-is-this-safe.md) | Plain-language security explanation |
+| [Telemetry Policy](docs/telemetry-policy.md) | No-telemetry guarantee |
 
 ### Component Docs
 
@@ -349,6 +346,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Guide | Description |
 |-------|-------------|
+| [Quickstart](docs/install/quickstart.md) | Choose your path: ISO, OVA, QCOW2, or rebase |
 | [Bare Metal](docs/install/bare-metal.md) | Fresh install on dedicated hardware |
 | [Virtual Machine](docs/install/vm.md) | VirtualBox, VMware, KVM/QEMU |
 | [Development](docs/install/dev.md) | Local dev without OS rebase |
