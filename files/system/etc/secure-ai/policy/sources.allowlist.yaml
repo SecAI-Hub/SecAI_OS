@@ -17,7 +17,7 @@ models:
     allowed_formats: ["gguf"]
 
 containers:
-  - registry: "ghcr.io/sec_ai/secai_os"
+  - registry: "ghcr.io/secai-hub/secai_os"
     require_cosign: true
     notes: "Project service containers; must pass cosign verification"
 

@@ -2,5 +2,5 @@
 ## This allows rpm-ostree to verify cosign signatures during rebase/upgrade.
 
 docker:
-  ghcr.io/sec_ai/secai_os:
+  ghcr.io/secai-hub/secai_os:
     use-sigstore-attachments: true

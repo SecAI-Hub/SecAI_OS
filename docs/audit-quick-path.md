@@ -171,14 +171,14 @@ Verify the container image was signed by the expected identity:
 cosign verify \
   --certificate-identity-regexp=".*SecAI-Hub.*" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/sec_ai/secai_os:latest
+  ghcr.io/secai-hub/secai_os:latest
 
 # Verify SLSA provenance attestation
 cosign verify-attestation \
   --type slsa \
   --certificate-identity-regexp=".*SecAI-Hub.*" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/sec_ai/secai_os:latest
+  ghcr.io/secai-hub/secai_os:latest
 ```
 
 Expected: verification succeeds with no errors. Output shows the signing certificate chain.

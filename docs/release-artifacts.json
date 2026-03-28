@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "description": "Machine-readable source of truth for expected release artifacts. Used by CI docs-validation and test_release_artifacts.py.",
+  "canonical_image_ref": "ghcr.io/secai-hub/secai_os",
+  "go_services": [
+    "airlock",
+    "registry",
+    "tool-firewall",
+    "gpu-integrity-watch",
+    "mcp-firewall",
+    "policy-engine",
+    "runtime-attestor",
+    "integrity-monitor",
+    "incident-recorder"
+  ],
+  "architectures": ["linux-amd64", "linux-arm64"],
+  "python_services": [
+    "agent",
+    "ui",
+    "quarantine",
+    "common",
+    "diffusion-worker",
+    "search-mediator"
+  ],
+  "artifacts": {
+    "required": {
+      "go_binaries": {
+        "pattern": "{service}-{arch}",
+        "description": "Static Go binaries for each service and architecture"
+      },
+      "go_sboms": {
+        "pattern": "{service}-sbom.cdx.json",
+        "description": "CycloneDX SBOM per Go service"
+      },
+      "python_sboms": {
+        "pattern": "{service}-sbom.cdx.json",
+        "description": "CycloneDX SBOM per Python service"
+      },
+      "checksums": {
+        "files": ["SHA256SUMS", "SHA256SUMS.sig"],
+        "description": "Checksums and cosign detached signature"
+      },
+      "manifest": {
+        "files": ["RELEASE_MANIFEST.json"],
+        "description": "Machine-readable release manifest"
+      },
+      "image_digest": {
+        "files": ["IMAGE_DIGEST"],
+        "description": "OCI image digest for this release"
+      }
+    },
+    "optional": {
+      "iso": {
+        "pattern": "secai-os-{version}-x86_64.iso",
+        "signature": "secai-os-{version}-x86_64.iso.sig",
+        "description": "Bootable ISO (requires isogenerator)",
+        "required_when": "always (standard runner)"
+      },
+      "qcow2": {
+        "pattern": "secai-os-{version}.qcow2",
+        "signature": "secai-os-{version}.qcow2.sig",
+        "description": "QCOW2 disk image for KVM/QEMU/Proxmox",
+        "required_when": "vars.HAS_KVM_RUNNER == 'true'"
+      },
+      "ova": {
+        "pattern": "secai-os-{version}.ova",
+        "signature": "secai-os-{version}.ova.sig",
+        "description": "OVA appliance for VirtualBox/VMware",
+        "required_when": "vars.HAS_KVM_RUNNER == 'true'"
+      },
+      "bootc_iso": {
+        "pattern": "secai-os-{version}-x86_64-bootc.iso",
+        "signature": "secai-os-{version}-x86_64-bootc.iso.sig",
+        "description": "Experimental bootc-image-builder ISO",
+        "required_when": "vars.ENABLE_BOOTC_ISO == 'true'"
+      }
+    }
+  }
+}

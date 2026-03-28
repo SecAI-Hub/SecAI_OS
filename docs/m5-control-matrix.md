@@ -33,7 +33,7 @@ Last updated: 2026-03-14
 | 23 | Prompt injection detection | MCP Firewall global rules | Shell metacharacters and prompt patterns detected and denied | `TestAdversarial_MalformedMCPPayload` | Global rule match in audit log | `go test -run TestAdversarial_MalformedMCPPayload ./services/mcp-firewall/...` |
 | 24 | MCP taint tracking | MCP Firewall taint.go | Session-scoped taint propagation prevents data flow violations | `TestAdversarial_TaintBypassAttempt`, `TestTaint_*` | Taint entries per session ID | `go test -run "TestTaint\|TestAdversarial_Taint" ./services/mcp-firewall/...` |
 | 25 | SBOM generation verification | CI supply-chain-verify job | Syft generates SBOMs for all services | CI workflow step output | CycloneDX SBOM artifacts | `syft dir:services/registry -o cyclonedx-json` (repeat per service) |
-| 26 | Release provenance attestation | Release workflow (release.yml) | cosign attest with SLSA3 provenance | CI workflow attestation step | Signed provenance attestation | `cosign verify-attestation --type slsa ghcr.io/sec_ai/secai_os:latest` |
+| 26 | Release provenance attestation | Release workflow (release.yml) | cosign attest with SLSA3 provenance | CI workflow attestation step | Signed provenance attestation | `cosign verify-attestation --type slsa ghcr.io/secai-hub/secai_os:latest` |
 
 ## End-to-End Enforcement Paths
 

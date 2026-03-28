@@ -165,6 +165,43 @@ jobs:
           sys.exit(errors)
           "
 
+  image-ref-consistency:
+    name: Image Reference Consistency
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Check for wrong image references
+        run: |
+          CANONICAL="ghcr.io/secai-hub/secai_os"
+
+          # Known wrong patterns (container image refs only)
+          WRONG_PATTERNS=(
+            "ghcr.io/sec_ai/secai_os"
+          )
+
+          ERRORS=0
+          for pattern in "${WRONG_PATTERNS[@]}"; do
+            MATCHES=$(grep -rn \
+              --include='*.sh' --include='*.py' --include='*.yaml' \
+              --include='*.yml' --include='*.md' --include='*.json' \
+              "$pattern" . 2>/dev/null | grep -v '.git/' | grep -v 'node_modules/' || true)
+            if [ -n "$MATCHES" ]; then
+              echo "::error::Found wrong image reference '$pattern':"
+              echo "$MATCHES"
+              ERRORS=$((ERRORS + $(echo "$MATCHES" | wc -l)))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::Found $ERRORS wrong image reference(s)."
+            echo "All container image references must use: $CANONICAL"
+            exit 1
+          fi
+          echo "OK: All image references use canonical path: $CANONICAL"
+
   check-pins:
     name: Verify action & container pins
     runs-on: ubuntu-latest
@@ -675,6 +712,44 @@ jobs:
               print(f'NOTE: ~{drift} undocumented test(s) detected (within threshold)')
           else:
               print(f'OK: test-counts.json is current (documented: {documented})')
+          "
+
+      - name: Verify release-artifacts.json consistency
+        run: |
+          python3 -c "
+          import json, re, sys
+
+          with open('docs/release-artifacts.json') as f:
+              artifacts = json.load(f)
+
+          # Verify Go services in artifacts.json match release.yml matrix
+          with open('.github/workflows/release.yml') as f:
+              release = f.read()
+
+          # Extract matrix services from release.yml
+          matrix_match = re.search(r'service: \[([^\]]+)\]', release)
+          if not matrix_match:
+              print('FAIL: cannot find service matrix in release.yml')
+              sys.exit(1)
+          release_services = sorted(s.strip() for s in matrix_match.group(1).split(','))
+          artifact_services = sorted(artifacts['go_services'])
+
+          if release_services != artifact_services:
+              print(f'FAIL: release.yml services {release_services} != release-artifacts.json {artifact_services}')
+              sys.exit(1)
+
+          # Verify schema version
+          if artifacts.get('schema_version') != 1:
+              print('FAIL: release-artifacts.json schema_version must be 1')
+              sys.exit(1)
+
+          # Verify canonical image ref
+          canonical = artifacts.get('canonical_image_ref', '')
+          if 'sec_ai' in canonical:
+              print(f'FAIL: canonical_image_ref contains wrong namespace: {canonical}')
+              sys.exit(1)
+
+          print(f'OK: release-artifacts.json consistent ({len(release_services)} Go services, {len(artifacts[\"python_services\"])} Python services)')
           "
 
   release-gate:

@@ -25,7 +25,7 @@ build → attest → sign → verify → promote
 
 ### 1. Build (build.yml)
 - BlueBuild action builds the OS image from `recipes/recipe.yml`
-- Image published to `ghcr.io/sec_ai/secai_os`
+- Image published to `ghcr.io/secai-hub/secai_os`
 - cosign signs the image using `SIGNING_SECRET`
 
 ### 2. Attest (build.yml + release.yml)

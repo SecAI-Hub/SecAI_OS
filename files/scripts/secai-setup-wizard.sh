@@ -21,7 +21,7 @@ set -euo pipefail
 SECURE_AI_ROOT="/var/lib/secure-ai"
 COSIGN_PUB="/etc/pki/containers/secai-cosign.pub"
 WIZARD_MARKER="${SECURE_AI_ROOT}/.wizard-complete"
-REGISTRY="ghcr.io/sec_ai/secai_os"
+REGISTRY="ghcr.io/secai-hub/secai_os"
 HEALTH_CHECK="/usr/libexec/secure-ai/first-boot-check.sh"
 SETUP_VAULT="/usr/libexec/secure-ai/setup-vault.sh"
 TPM2_SEAL="/usr/libexec/secure-ai/tpm2-seal-vault.sh"

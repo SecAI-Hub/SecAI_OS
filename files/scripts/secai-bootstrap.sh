@@ -27,7 +27,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-REGISTRY="ghcr.io/sec_ai/secai_os"
+REGISTRY="ghcr.io/secai-hub/secai_os"
 COSIGN_PUB_URL="https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub"
 # SHA256 fingerprint of the expected cosign.pub — update after key rotation
 COSIGN_PUB_SHA256="de6a17ed1cd444a2671798f14d6bf98c1658259dc443a130eba9f40855a7d310"
@@ -197,7 +197,7 @@ mkdir -p "$(dirname "$REGISTRIES_YAML")"
 cat > "$REGISTRIES_YAML" <<'YAML'
 ## SecAI OS — enable sigstore signature attachments for cosign-signed images.
 docker:
-  ghcr.io/sec_ai/secai_os:
+  ghcr.io/secai-hub/secai_os:
     use-sigstore-attachments: true
 YAML
 chmod 0644 "$REGISTRIES_YAML"
@@ -218,7 +218,7 @@ with open('${POLICY_JSON}') as f:
 policy.setdefault('transports', {})
 policy['transports'].setdefault('docker', {})
 
-policy['transports']['docker']['ghcr.io/sec_ai/secai_os'] = [{
+policy['transports']['docker']['ghcr.io/secai-hub/secai_os'] = [{
     'type': 'sigstoreSigned',
     'keyPath': '${COSIGN_PUB_DEST}',
     'signedIdentity': {'type': 'matchRepository'}
@@ -238,7 +238,7 @@ policy = {
     'default': [{'type': 'insecureAcceptAnything'}],
     'transports': {
         'docker': {
-            'ghcr.io/sec_ai/secai_os': [{
+            'ghcr.io/secai-hub/secai_os': [{
                 'type': 'sigstoreSigned',
                 'keyPath': '${COSIGN_PUB_DEST}',
                 'signedIdentity': {'type': 'matchRepository'}

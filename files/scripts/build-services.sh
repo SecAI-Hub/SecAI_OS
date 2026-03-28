@@ -552,7 +552,7 @@ with open('${POLICY_JSON}') as f:
 policy.setdefault('transports', {})
 policy['transports'].setdefault('docker', {})
 
-policy['transports']['docker']['ghcr.io/sec_ai/secai_os'] = [{
+policy['transports']['docker']['ghcr.io/secai-hub/secai_os'] = [{
     'type': 'sigstoreSigned',
     'keyPath': '${COSIGN_PUB}',
     'signedIdentity': {'type': 'matchRepository'}
@@ -562,7 +562,7 @@ with open('${POLICY_JSON}', 'w') as f:
     json.dump(policy, f, indent=2)
     f.write('\n')
 
-print('  -> policy.json updated: sigstoreSigned entry for ghcr.io/sec_ai/secai_os')
+print('  -> policy.json updated: sigstoreSigned entry for ghcr.io/secai-hub/secai_os')
 " || fail_build "Failed to update container signing policy"
     else
         echo "WARNING: ${POLICY_JSON} not found — signing policy not configured"

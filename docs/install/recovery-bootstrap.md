@@ -40,7 +40,7 @@ curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub 
   -o /tmp/cosign.pub
 
 # Verify the image signature — STOP if this fails
-cosign verify --key /tmp/cosign.pub ghcr.io/sec_ai/secai_os:latest
+cosign verify --key /tmp/cosign.pub ghcr.io/secai-hub/secai_os:latest
 ```
 
 You must see a successful verification result. **Do not proceed if verification fails.**
@@ -49,7 +49,7 @@ You must see a successful verification result. **Do not proceed if verification 
 
 ```bash
 # One-time unverified pull (safe ONLY because you verified the signature above)
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest
+sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/secai-hub/secai_os:latest
 sudo systemctl reboot
 ```
 
@@ -68,7 +68,7 @@ verified by rpm-ostree.
 
 ```bash
 # Lock to signed transport — all future updates verified automatically
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest
 sudo systemctl reboot
 ```
 
@@ -91,7 +91,7 @@ If your system is currently on the unverified transport (check with
 `rpm-ostree status`), switch to signed transport:
 
 ```bash
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest
 sudo systemctl reboot
 ```
 
@@ -110,7 +110,7 @@ If `rpm-ostree upgrade` fails with a signature verification error:
 1. Check that the signing policy is intact:
    ```bash
    cat /etc/containers/policy.json | python3 -m json.tool
-   # Should contain a "sigstoreSigned" entry for ghcr.io/sec_ai/secai_os
+   # Should contain a "sigstoreSigned" entry for ghcr.io/secai-hub/secai_os
    ```
 
 2. Check the registries config:

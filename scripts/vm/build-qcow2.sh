@@ -20,7 +20,7 @@ DISK_SIZE="64G"
 VAULT_SIZE="32G"
 
 # SecAI OS container image
-CONTAINER_IMAGE="ghcr.io/sec_ai/secai_os:latest"
+CONTAINER_IMAGE="ghcr.io/secai-hub/secai_os:latest"
 
 # Generate random passwords for VM build (never hardcoded)
 SECAI_VM_PASSWORD="${SECAI_VM_PASSWORD:-$(openssl rand -base64 18)}"
@@ -68,7 +68,7 @@ network --bootproto=dhcp --activate
 # Post-install: rebase to SecAI OS
 %post --log=/root/secai-post.log
 # Rebase to SecAI OS (unsigned first, then signed after reboot)
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/sec_ai/secai_os:latest || true
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/secai-hub/secai_os:latest || true
 
 # Write a flag so firstboot knows this is a VM install
 mkdir -p /var/lib/secure-ai
@@ -83,7 +83,7 @@ echo "   sudo passwd secai"                       >> /etc/motd
 echo "   sudo cryptsetup luksChangeKey /dev/sda4" >> /etc/motd
 echo ""                                           >> /etc/motd
 echo " Then reboot to complete SecAI OS setup:"   >> /etc/motd
-echo "   sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest" >> /etc/motd
+echo "   sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest" >> /etc/motd
 echo "   sudo systemctl reboot"                   >> /etc/motd
 echo "============================================" >> /etc/motd
 %end
@@ -114,7 +114,7 @@ echo "    2. Log in as 'secai' (password: ${SECAI_VM_PASSWORD})"
 echo "    3. CHANGE BOTH PASSWORDS IMMEDIATELY:"
 echo "       sudo passwd secai"
 echo "       sudo cryptsetup luksChangeKey /dev/sda4  (current: ${SECAI_VAULT_PASSWORD})"
-echo "    4. Complete rebase: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/sec_ai/secai_os:latest"
+echo "    4. Complete rebase: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest"
 echo "    5. Reboot: sudo systemctl reboot"
 echo ""
 echo "  The QCOW2 image is at: ${OUTPUT_DIR}/${IMAGE_NAME}.qcow2"
