@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-27",
+  "generated": "2026-03-28",
   "go": {
     "airlock": 10,
     "registry": 14,
@@ -12,6 +12,6 @@
     "incident-recorder": 97
   },
   "go_total": 413,
-  "python_total": 923,
-  "grand_total": 1336
+  "python_total": 998,
+  "grand_total": 1411
 }
