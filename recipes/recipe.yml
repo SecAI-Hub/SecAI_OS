@@ -24,6 +24,8 @@ modules:
       - python3-requests
       - python3-gunicorn       # Production WSGI server (replaces Flask dev server)
       - golang
+      - cmake                    # Required for llama.cpp build
+      - gcc-c++                  # C++ compiler for llama.cpp
       # GPU compute support
       - mesa-dri-drivers          # Intel/AMD OpenGL + Vulkan
       - mesa-vulkan-drivers       # Vulkan for Intel/AMD
