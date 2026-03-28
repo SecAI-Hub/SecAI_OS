@@ -163,8 +163,77 @@ See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual ri
 ### Verify Image Signatures
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/sec_ai/secai_os:latest
+cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
 ```
+
+---
+
+## Releases & Packages
+
+### Container Image (OCI)
+
+Every push to `main` builds a signed OCI image via [BlueBuild](https://blue-build.org/):
+
+```
+ghcr.io/secai-hub/secai_os:latest     # rolling latest
+ghcr.io/secai-hub/secai_os:42          # Fedora 42 base
+```
+
+Install with digest pinning (recommended for production):
+
+```bash
+sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+```
+
+The image is cosign-signed. Verify before pulling:
+
+```bash
+cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+```
+
+### Tagged Releases
+
+Tagged releases (`v*`) are built by the [Release workflow](.github/workflows/release.yml) and include:
+
+| Artifact | Description |
+|----------|-------------|
+| `<service>-linux-amd64` | Static Go binary (x86_64) |
+| `<service>-linux-arm64` | Static Go binary (ARM64) |
+| `<service>-sbom.cdx.json` | Per-service CycloneDX SBOM |
+| `SHA256SUMS` | Checksums for all release artifacts |
+| `SHA256SUMS.sig` | Cosign signature over checksums |
+| `IMAGE_DIGEST` | OCI image digest for this release |
+| `IMAGE_REF_PINNED` | Fully qualified digest-pinned image reference |
+| `RELEASE_MANIFEST.json` | Machine-readable release manifest (binaries, SBOMs, provenance, build metadata) |
+
+Go services shipped as release binaries: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, `incident-recorder`.
+
+Python services (`ui`, `agent`, `quarantine`, `diffusion-worker`, `search-mediator`) are baked into the OCI image and do not ship as standalone binaries.
+
+### Verify a Release
+
+```bash
+# Download and verify checksums
+curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/download/v0.1.0/SHA256SUMS -o SHA256SUMS
+curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/download/v0.1.0/SHA256SUMS.sig -o SHA256SUMS.sig
+cosign verify-blob --key cosign.pub --signature SHA256SUMS.sig SHA256SUMS
+sha256sum -c SHA256SUMS
+
+# Or use the Makefile (clones repo, runs full verification)
+make verify-release
+```
+
+See [docs/sample-release-bundle.md](docs/sample-release-bundle.md) for the full artifact structure and [docs/release-policy.md](docs/release-policy.md) for release channels (stable/candidate/dev).
+
+### Diffusion Runtime (On-Demand)
+
+The ~2–5 GB diffusion runtime (PyTorch, diffusers, transformers) is **not** included in the base image. It is acquired on-demand when a user first visits the Generate page:
+
+1. Backend auto-detected (CUDA / ROCm / CPU)
+2. Wheels downloaded from PyTorch/PyPI with full hash verification against committed manifests
+3. Installed into an isolated venv, smoke tested, and enabled
+
+Trust anchors: [`diffusion-runtime-manifest.yaml`](files/scripts/diffusion-runtime-manifest.yaml) + per-backend lockfiles (`diffusion-{cpu,cuda,rocm}.lock`). Air-gapped installs supported via `--from-local`.
 
 ---
 
