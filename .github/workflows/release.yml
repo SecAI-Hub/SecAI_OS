@@ -183,14 +183,21 @@ jobs:
 
       - name: Sign ISO
         run: |
-          ISO_PATH="${{ steps.isogen.outputs.iso_path }}"
           mkdir -p dist
-          mv "$ISO_PATH" "dist/"
-          ISO_FILE="dist/secai-os-${{ github.ref_name }}-x86_64.iso"
+          # Find the ISO — the action may output it in various locations
+          ISO_FILE=$(find . -maxdepth 2 -name "secai-os-*.iso" -type f | head -1)
+          if [ -z "$ISO_FILE" ]; then
+            echo "ERROR: ISO file not found after build"
+            find . -maxdepth 3 -name "*.iso" -type f
+            exit 1
+          fi
+          echo "Found ISO: $ISO_FILE"
+          mv "$ISO_FILE" "dist/"
+          ISO_BASENAME=$(basename "$ISO_FILE")
           cosign sign-blob --yes \
             --key env://COSIGN_PRIVATE_KEY \
-            --output-signature "${ISO_FILE}.sig" \
-            "$ISO_FILE"
+            --output-signature "dist/${ISO_BASENAME}.sig" \
+            "dist/${ISO_BASENAME}"
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
