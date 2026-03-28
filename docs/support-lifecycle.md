@@ -54,6 +54,35 @@ Last updated: 2026-03-14
 
 ---
 
+## Install Path Support Matrix
+
+| Install Path | Support Level | Security Features | Notes |
+|-------------|-------------|-------------------|-------|
+| **Bare metal (ISO)** | Production | Full: TPM2, Secure Boot, hardware isolation, fs-verity | Recommended for sensitive workloads |
+| **Bare metal (rebase)** | Production | Full | For existing Fedora Silverblue operators |
+| **VM (OVA/QCOW2)** | Evaluation | Limited: no TPM2 sealing, host visibility of VM memory | Not for sensitive model data |
+| **VM (manual)** | Community | Limited | Self-configured |
+| **Container (dev)** | Development | Minimal: no systemd hardening, no firewall, no vault | Service development only |
+
+### Production Support Statement
+
+Bare-metal installations using the **stable** release channel with digest-pinned images are the intended production path. This means:
+
+- Security patches within 72 hours of disclosure
+- Automated rollback via Greenboot
+- Supply-chain verification (cosign + SLSA3 provenance)
+- Documented recovery procedures
+
+VM installations are supported for **evaluation and development** only. Known limitations:
+- No TPM2 vault key sealing (secrets held in VM memory visible to host)
+- No Secure Boot chain verification (depends on hypervisor configuration)
+- Reduced GPU performance (passthrough required for full acceleration)
+- Host hypervisor has full visibility of guest memory
+
+> **Note:** The ISO install path is newly added and should be considered production-ready once exercised in at least one stable release cycle. Until then, the bare-metal rebase path remains the most validated production install method.
+
+---
+
 ## Software Compatibility
 
 ### Base OS

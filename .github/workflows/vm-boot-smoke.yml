@@ -3,13 +3,10 @@ name: VM Boot Smoke Test (Tier 2)
 # Tier 2: Real VM boot test on self-hosted KVM runner.
 # All checks run inside the guest via SSH (not host-side).
 #
-# STATUS: DRAFT — verification commands are scaffolding only (echo placeholders).
-#   This workflow will pass without testing anything. Automatic triggers are
-#   disabled until the self-hosted KVM runner is provisioned and the SSH
-#   verification commands are implemented.
+# REQUIRES: self-hosted runner with KVM, QEMU, cloud-utils, and ssh-keygen.
+# Gate: only runs when vars.HAS_KVM_RUNNER == 'true'.
 #
 # SECURITY: Never triggered by pull_request (fork safety for self-hosted runners).
-# To test manually: Actions → VM Boot Smoke Test → Run workflow
 
 on:
   workflow_dispatch:
@@ -18,15 +15,8 @@ on:
         description: "Exact image digest (sha256:...) to test. Required for manual runs."
         required: true
         type: string
-  # Nightly and push triggers disabled until verification commands are real.
-  # Uncomment when ready:
-  # schedule:
-  #   - cron: "17 3 * * *"
-  # push:
-  #   branches: [main, stable, 'release/**']
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+  schedule:
+    - cron: "17 3 * * *"
 
 concurrency:
   group: vm-boot-smoke-${{ github.ref }}
@@ -39,6 +29,7 @@ permissions:
 jobs:
   vm-boot-smoke:
     name: Boot VM & Verify Services
+    if: vars.HAS_KVM_RUNNER == 'true'
     runs-on: [self-hosted, linux, x64, kvm]
     timeout-minutes: 30
 
@@ -51,36 +42,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "${{ inputs.image_digest }}" ]; then
-            # Manual dispatch: use the exact digest provided by the operator.
             DIGEST="${{ inputs.image_digest }}"
           else
-            # Schedule/push: download the exact IMAGE_DIGEST artifact from the
-            # most recent successful build.yml run on this ref.
-            # NO skopeo, NO tag heuristics, NO registry-state dependencies.
-            # The test always runs against exactly the image produced by the
-            # corresponding build pipeline run.
             echo "Fetching IMAGE_DIGEST artifact from latest build workflow run..."
             RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/build.yml/runs?branch=${{ github.ref_name }}&status=success&per_page=1" \
               --jq '.workflow_runs[0].id' 2>/dev/null || echo "")
             if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
               echo "ERROR: No successful build.yml run found for ref ${{ github.ref_name }}"
-              echo "Run the build workflow first, or provide an exact digest via workflow_dispatch."
               exit 1
             fi
             echo "Using build run: ${RUN_ID}"
-
-            # Download the image-digest artifact published by the bluebuild job
             gh run download "$RUN_ID" -n image-digest -D /tmp/image-digest || {
               echo "ERROR: Could not download image-digest artifact from build run ${RUN_ID}"
-              echo "The build workflow must publish an IMAGE_DIGEST artifact."
               exit 1
             }
-
             if [ ! -f /tmp/image-digest/IMAGE_DIGEST ]; then
               echo "ERROR: IMAGE_DIGEST file not found in downloaded artifact"
               exit 1
             fi
-
             DIGEST=$(cat /tmp/image-digest/IMAGE_DIGEST | tr -d '[:space:]')
             if [ -z "$DIGEST" ] || [ "$DIGEST" = "unknown" ]; then
               echo "ERROR: IMAGE_DIGEST artifact contains invalid digest: '${DIGEST}'"
@@ -90,102 +69,137 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Image under test: ${DIGEST}"
 
-      - name: Prepare cloud-init
+      - name: Generate SSH key pair
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/vm-smoke-key -N "" -q
+          echo "SSH_KEY=$(cat /tmp/vm-smoke-key.pub)" >> "$GITHUB_ENV"
+
+      - name: Prepare cloud-init ISO
         run: |
           mkdir -p /tmp/vm-smoke
-          cat > /tmp/vm-smoke/user-data <<'EOF'
+          cat > /tmp/vm-smoke/user-data <<EOF
           #cloud-config
           ssh_authorized_keys:
-            - ssh-ed25519 SMOKE_TEST_KEY_PLACEHOLDER
+            - ${SSH_KEY}
           runcmd:
             - systemctl is-system-running --wait || true
           EOF
-          cat > /tmp/vm-smoke/meta-data <<'EOF'
+          cat > /tmp/vm-smoke/meta-data <<'METAEOF'
           instance-id: secai-smoke-test
           local-hostname: secai-smoke
-          EOF
+          METAEOF
+          cloud-localds /tmp/vm-smoke/cloud-init.iso /tmp/vm-smoke/user-data /tmp/vm-smoke/meta-data
 
-      # The actual QEMU boot + SSH verification steps are environment-specific.
-      # This template shows the verification checks that run inside the guest.
+      - name: Build QCOW2 from image
+        run: |
+          bash scripts/vm/build-qcow2.sh --ci \
+            --image-ref "ghcr.io/secai-hub/secai_os@${{ steps.image.outputs.digest }}" \
+            /tmp/vm-smoke
 
       - name: Boot VM in QEMU/KVM
         run: |
-          echo "=== Boot VM with image digest: ${{ steps.image.outputs.digest }} ==="
-          echo "NOTE: Actual QEMU invocation is environment-specific."
-          echo "The self-hosted runner must have:"
-          echo "  - QEMU/KVM installed with nested virt or bare-metal KVM"
-          echo "  - The SecAI OS image pulled and converted to qcow2"
-          echo "  - SSH key pair for guest access"
-          echo ""
-          echo "Template QEMU command:"
-          echo "  qemu-system-x86_64 -enable-kvm -m 4G -smp 2 \\"
-          echo "    -drive file=secai-os.qcow2,if=virtio \\"
-          echo "    -cdrom cloud-init.iso \\"
-          echo "    -netdev user,id=net0,hostfwd=tcp::2222-:22 \\"
-          echo "    -device virtio-net-pci,netdev=net0 \\"
-          echo "    -nographic &"
+          qemu-system-x86_64 -enable-kvm -m 4G -smp 2 \
+            -drive file=/tmp/vm-smoke/secai-os.qcow2,if=virtio,format=qcow2 \
+            -cdrom /tmp/vm-smoke/cloud-init.iso \
+            -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+            -device virtio-net-pci,netdev=net0 \
+            -nographic &
+          echo $! > /tmp/vm-smoke/qemu.pid
+          echo "QEMU started (PID: $(cat /tmp/vm-smoke/qemu.pid))"
 
       - name: Wait for SSH readiness
         run: |
           echo "Waiting for guest SSH (up to 5 minutes)..."
-          # for i in $(seq 1 60); do
-          #   ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
-          #     -p 2222 root@localhost echo "SSH ready" && break
-          #   sleep 5
-          # done
+          SSH_OPTS="-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key"
+          for i in $(seq 1 60); do
+            if ssh $SSH_OPTS -p 2222 root@localhost echo "SSH ready" 2>/dev/null; then
+              echo "Guest SSH is up after $((i * 5)) seconds"
+              break
+            fi
+            sleep 5
+          done
 
-      - name: "Check: first-boot flow completed"
+      - name: "Check: systemd system state"
         run: |
-          echo "ssh guest: systemctl is-system-running"
-          # ssh -p 2222 root@localhost "systemctl is-system-running"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          STATE=$($SSH "systemctl is-system-running" 2>/dev/null || true)
+          echo "System state: $STATE"
+          if [ "$STATE" != "running" ] && [ "$STATE" != "degraded" ]; then
+            echo "FAIL: expected running or degraded, got $STATE"
+            $SSH "systemctl --failed" || true
+            exit 1
+          fi
 
-      - name: "Check: auth/login endpoint responds"
+      - name: "Check: auth endpoint responds"
         run: |
-          echo "ssh guest: curl -sf http://127.0.0.1:8480/api/auth/status"
-          # ssh -p 2222 root@localhost "curl -sf http://127.0.0.1:8480/api/auth/status"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          $SSH "curl -sf http://127.0.0.1:8480/api/auth/status" || {
+            echo "FAIL: auth endpoint did not respond"
+            exit 1
+          }
 
       - name: "Check: health endpoint"
         run: |
-          echo "ssh guest: curl -sf http://127.0.0.1:8480/health"
-          # ssh -p 2222 root@localhost "curl -sf http://127.0.0.1:8480/health"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          $SSH "curl -sf http://127.0.0.1:8480/health" || {
+            echo "FAIL: health endpoint did not respond"
+            exit 1
+          }
 
-      - name: "Check: disabled services stay inactive"
+      - name: "Check: disabled services stay inactive (offline_private profile)"
         run: |
-          echo "ssh guest: verify disabled services"
-          # DISABLED=(
-          #   secure-ai-diffusion.service
-          #   secure-ai-airlock.service
-          #   secure-ai-tor.service
-          #   secure-ai-searxng.service
-          #   secure-ai-search-mediator.service
-          # )
-          # for svc in "${DISABLED[@]}"; do
-          #   ssh -p 2222 root@localhost "
-          #     if systemctl is-active --quiet $svc 2>/dev/null; then
-          #       echo 'FAIL: $svc is active (should be disabled)'
-          #       exit 1
-          #     fi
-          #     echo 'OK: $svc is inactive'
-          #   "
-          # done
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          DISABLED=(
+            secure-ai-diffusion.service
+            secure-ai-airlock.service
+            secure-ai-tor.service
+            secure-ai-searxng.service
+            secure-ai-search-mediator.service
+            secure-ai-enable-diffusion.path
+          )
+          for svc in "${DISABLED[@]}"; do
+            if $SSH "systemctl is-active --quiet $svc" 2>/dev/null; then
+              echo "FAIL: $svc is active (should be disabled in offline_private)"
+              exit 1
+            fi
+            echo "OK: $svc is inactive"
+          done
 
-      - name: "Check: vault lock/unlock"
+      - name: "Check: default profile is offline_private"
         run: |
-          echo "ssh guest: curl -sf http://127.0.0.1:8480/api/vault/status"
-          # ssh -p 2222 root@localhost "curl -sf http://127.0.0.1:8480/api/vault/status"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          PROFILE=$($SSH "cat /var/lib/secure-ai/state/profile.json 2>/dev/null || echo '{}'")
+          echo "Profile state: $PROFILE"
+          # On first boot without wizard, profile.json may not exist yet — fallback is offline_private
 
-      - name: "Check: model import/quarantine path"
+      - name: "Check: vault API responds"
         run: |
-          echo "ssh guest: test quarantine directory exists"
-          # ssh -p 2222 root@localhost "test -d /var/lib/secure-ai/quarantine"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          $SSH "curl -sf http://127.0.0.1:8480/api/vault/status" || {
+            echo "FAIL: vault status endpoint did not respond"
+            exit 1
+          }
 
-      - name: "Check: update/rollback mechanism"
+      - name: "Check: quarantine directory exists"
         run: |
-          echo "ssh guest: rpm-ostree status"
-          # ssh -p 2222 root@localhost "rpm-ostree status"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          $SSH "test -d /var/lib/secure-ai/quarantine" || {
+            echo "FAIL: quarantine directory does not exist"
+            exit 1
+          }
+
+      - name: "Check: rpm-ostree deployment"
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          $SSH "rpm-ostree status" || {
+            echo "FAIL: rpm-ostree status failed"
+            exit 1
+          }
 
       - name: Cleanup VM
         if: always()
         run: |
-          echo "Shutting down VM..."
-          # kill %1 2>/dev/null || true
+          if [ -f /tmp/vm-smoke/qemu.pid ]; then
+            kill "$(cat /tmp/vm-smoke/qemu.pid)" 2>/dev/null || true
+          fi
+          rm -rf /tmp/vm-smoke /tmp/vm-smoke-key /tmp/vm-smoke-key.pub

@@ -549,6 +549,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup, coding standards, an
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and threat boundaries.
 
+## Telemetry
+
+SecAI OS does not collect telemetry. No usage analytics, crash reports, or phone-home. See [docs/telemetry-policy.md](docs/telemetry-policy.md).
+
 ## License
 
 [Apache License 2.0](LICENSE)
