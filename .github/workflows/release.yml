@@ -49,9 +49,10 @@ jobs:
           PASS=0
           FAIL=0
           for check in "${REQUIRED_CHECKS[@]}"; do
+            # Use startswith to handle matrix jobs (e.g. "Go Build & Test (registry)")
             RESULT=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
-              --jq ".check_runs[] | select(.name == \"${check}\") | .conclusion" \
-              2>/dev/null | head -1 || echo "not_found")
+              --jq "[.check_runs[] | select(.name | startswith(\"${check}\")) | .conclusion] | if length == 0 then [\"not_found\"] else . end | if all(. == \"success\") then \"success\" else .[0] end" \
+              2>/dev/null || echo "not_found")
             if [ "$RESULT" = "success" ]; then
               echo "OK: ${check} = ${RESULT}"
               PASS=$((PASS + 1))
