@@ -228,10 +228,13 @@ func TestCreateIncident_TriggersContainment(t *testing.T) {
 	resetGlobalState(t)
 
 	// Set up a mock agent endpoint to receive freeze.
-	var freezeCalled bool
+	var mu sync.Mutex
+	freezeCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/freeze" {
+			mu.Lock()
 			freezeCalled = true
+			mu.Unlock()
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -258,5 +261,7 @@ func TestCreateIncident_TriggersContainment(t *testing.T) {
 
 	// Note: We can't reliably test that the async goroutine ran in unit tests,
 	// but the important thing is that createIncident calls executeContainment.
+	mu.Lock()
 	_ = freezeCalled
+	mu.Unlock()
 }
