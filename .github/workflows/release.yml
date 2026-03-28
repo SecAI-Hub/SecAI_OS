@@ -108,7 +108,7 @@ jobs:
           output-file: dist/${{ matrix.service }}-sbom.cdx.json
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: go-${{ matrix.service }}
           path: dist/
@@ -142,7 +142,7 @@ jobs:
           done
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195508afaf57ec3c7 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: python-sboms
           path: dist/
