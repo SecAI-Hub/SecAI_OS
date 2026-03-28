@@ -40,8 +40,7 @@ VALID_PROFILES="offline_private research full_lab"
 log() { echo "[apply-profile] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 write_result() {
-    local status="$1" profile="$2" previous="$3" detail="${4:-}"
-    local tmpfile="${RESULT_FILE}.tmp"
+    # Reads from env vars: _RES_STATUS, _RES_PROFILE, _RES_PREVIOUS, _RES_DETAIL, _RES_TMPFILE, _RES_FILE
     python3 << 'PYEOF'
 import json, os, sys
 result = {
@@ -94,16 +93,15 @@ read_current_profile() {
     # Operator override takes precedence (hard lock)
     if [ -f "$OPERATOR_OVERRIDE" ]; then
         local override
-        override=$(python3 -c "
-import yaml, os, sys
+        override=$(_OVERRIDE_FILE="$OPERATOR_OVERRIDE" python3 -c '
+import yaml, os
 try:
-    with open(os.environ['_OVERRIDE_FILE']) as f:
+    with open(os.environ["_OVERRIDE_FILE"]) as f:
         data = yaml.safe_load(f)
-    print(data.get('profile', ''))
+    print(data.get("profile", ""))
 except Exception:
-    print('')
-" 2>/dev/null) || true
-        _OVERRIDE_FILE="$OPERATOR_OVERRIDE" || true
+    print("")
+' 2>/dev/null) || true
         if [ -n "$override" ] && validate_profile "$override"; then
             echo "$override"
             return 0
@@ -113,15 +111,15 @@ except Exception:
     # Read from runtime state
     if [ -f "$PROFILE_STATE" ]; then
         local current
-        current=$(python3 -c "
-import json, sys
+        current=$(_PS_FILE="$PROFILE_STATE" python3 -c '
+import json, os
 try:
-    with open('${PROFILE_STATE}') as f:
+    with open(os.environ["_PS_FILE"]) as f:
         data = json.load(f)
-    print(data.get('active', ''))
+    print(data.get("active", ""))
 except Exception:
-    print('')
-" 2>/dev/null) || true
+    print("")
+' 2>/dev/null) || true
         if [ -n "$current" ] && validate_profile "$current"; then
             echo "$current"
             return 0
