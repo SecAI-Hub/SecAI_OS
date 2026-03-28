@@ -128,10 +128,12 @@ modules:
         - nftables.service
         - secure-ai-firstboot.service
         - secure-ai-tmpdir.mount
-        # Path unit watches for UI-triggered diffusion install request
-        - secure-ai-enable-diffusion.path
+        # Path unit watches for UI-triggered profile change request
+        - secure-ai-apply-profile.path
       disabled:
         # Diffusion requires torch/diffusers — opt-in via UI or secai-enable-diffusion.sh
+        # Both path unit and worker are profile-controlled (full_lab only)
+        - secure-ai-enable-diffusion.path
         - secure-ai-diffusion.service
         - secure-ai-airlock.service
         # Search stack disabled by default (user enables via policy)

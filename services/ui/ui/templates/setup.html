@@ -172,9 +172,42 @@
             No data leaves unless you explicitly allow it.
         </p>
 
+        <div class="step" id="step-profile">
+            <div class="step-header">
+                <div class="step-num" id="step-profile-num">1</div>
+                <h3 id="step-profile-title">Choose Your Privacy Level</h3>
+            </div>
+            <p id="step-profile-desc">How do you want to use this appliance?</p>
+            <div id="profile-cards" style="display:flex;flex-direction:column;gap:0.5rem;margin-top:0.75rem">
+                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
+                    <input type="radio" name="profile" value="offline_private" checked style="margin-top:3px">
+                    <div>
+                        <strong style="color:var(--success)">Maximum Privacy</strong>
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">No network access. All AI runs locally. Smallest attack surface.</div>
+                    </div>
+                </label>
+                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
+                    <input type="radio" name="profile" value="research" style="margin-top:3px">
+                    <div>
+                        <strong style="color:var(--warning)">Web-Assisted Research</strong>
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">Privacy-preserving web search via Tor. Queries are anonymized.</div>
+                    </div>
+                </label>
+                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
+                    <input type="radio" name="profile" value="full_lab" style="margin-top:3px">
+                    <div>
+                        <strong style="color:var(--accent)">Full Lab</strong>
+                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">All features enabled. Network filtered through airlock. For evaluation and research.</div>
+                    </div>
+                </label>
+            </div>
+            <button id="btn-profile" onclick="applyProfile()" style="margin-top:0.75rem;padding:0.5rem 1rem;background:var(--accent);color:#0f1117;border:none;border-radius:var(--radius);cursor:pointer;font-weight:600">Confirm</button>
+            <div class="check" id="step-profile-check"></div>
+        </div>
+
         <div class="step" id="step1">
             <div class="step-header">
-                <div class="step-num" id="step1-num">1</div>
+                <div class="step-num" id="step1-num">2</div>
                 <h3>System Check</h3>
             </div>
             <p>Verifying core services are running...</p>
@@ -183,7 +216,7 @@
 
         <div class="step" id="step2">
             <div class="step-header">
-                <div class="step-num" id="step2-num">2</div>
+                <div class="step-num" id="step2-num">3</div>
                 <h3>Import a Model</h3>
             </div>
             <p>Upload a .gguf model file. It will be verified and scanned before becoming available.</p>
@@ -197,7 +230,7 @@
 
         <div class="step" id="step3">
             <div class="step-header">
-                <div class="step-num" id="step3-num">3</div>
+                <div class="step-num" id="step3-num">4</div>
                 <h3>Start Chatting</h3>
             </div>
             <p>Once a model is promoted, you can start using the AI assistant.</p>
@@ -214,11 +247,81 @@
     </div>
 
     <script nonce="{{ csp_nonce }}">
+        var profileSet = false;
         var servicesOk = false;
         var modelReady = false;
 
         function updateButton() {
             if (modelReady) document.getElementById('btn-start').classList.add('ready');
+        }
+
+        /* --- Profile selection (Step 1) --- */
+        async function checkProfileLock() {
+            try {
+                var resp = await fetch('/api/profile');
+                var data = await resp.json();
+                if (data.locked) {
+                    /* Operator override active — skip profile selection */
+                    var step = document.getElementById('step-profile');
+                    var num = document.getElementById('step-profile-num');
+                    document.getElementById('step-profile-title').textContent = 'Profile Set by Administrator';
+                    document.getElementById('step-profile-desc').textContent =
+                        'Profile "' + data.active + '" is locked by operator override.';
+                    document.getElementById('profile-cards').style.display = 'none';
+                    document.getElementById('btn-profile').style.display = 'none';
+                    var check = document.getElementById('step-profile-check');
+                    check.textContent = 'Profile: ' + data.active + ' (locked)';
+                    check.style.display = 'block';
+                    num.classList.add('done');
+                    step.classList.add('done');
+                    profileSet = true;
+                }
+            } catch(e) { /* non-critical */ }
+        }
+        checkProfileLock();
+
+        async function applyProfile() {
+            var selected = document.querySelector('input[name="profile"]:checked');
+            if (!selected) return;
+            var profile = selected.value;
+            var btn = document.getElementById('btn-profile');
+            btn.disabled = true;
+            btn.textContent = 'Applying...';
+
+            try {
+                var resp = await fetch('/api/profile/select', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+                    },
+                    body: JSON.stringify({profile: profile})
+                });
+                var data = await resp.json();
+                var check = document.getElementById('step-profile-check');
+                var num = document.getElementById('step-profile-num');
+                if (resp.ok || data.status === 'already_active') {
+                    check.textContent = 'Profile set: ' + profile;
+                    check.style.display = 'block';
+                    num.classList.add('done');
+                    document.getElementById('step-profile').classList.add('done');
+                    profileSet = true;
+                    btn.textContent = 'Done';
+                } else {
+                    check.textContent = data.error || 'Failed to set profile';
+                    check.style.display = 'block';
+                    check.style.color = 'var(--danger)';
+                    btn.textContent = 'Retry';
+                    btn.disabled = false;
+                }
+            } catch(e) {
+                var check = document.getElementById('step-profile-check');
+                check.textContent = 'Could not reach profile API';
+                check.style.display = 'block';
+                check.style.color = 'var(--warning)';
+                btn.textContent = 'Retry';
+                btn.disabled = false;
+            }
         }
 
         async function checkServices() {

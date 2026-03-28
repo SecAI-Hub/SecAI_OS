@@ -1,0 +1,19 @@
+[Unit]
+Description=SecAI Profile Applicator (one-shot, privileged)
+After=secure-ai-registry.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/apply-profile.sh
+ExecStopPost=-/bin/rm -f /run/secure-ai-ui/profile-request
+TimeoutStartSec=120
+
+# Hardening — this service needs systemctl access but nothing else exotic
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

@@ -598,6 +598,7 @@
                 <h1>{% block page_title %}{% endblock %}</h1>
             </div>
             <div class="topbar-right">
+                <span class="topbar-badge" id="profile-badge" title="Active profile">offline</span>
                 <span class="topbar-badge" id="vault-badge" title="Vault status">vault</span>
                 <span class="topbar-badge" id="system-badge">system</span>
             </div>
@@ -769,10 +770,44 @@
             }
         }
 
+        async function pollProfileStatus() {
+            try {
+                var resp = await fetch('/api/profile');
+                var data = await resp.json();
+                var badge = document.getElementById('profile-badge');
+                var p = data.active || 'unknown';
+                var locked = data.locked || false;
+                if (p === 'offline_private') {
+                    badge.textContent = locked ? 'offline (locked)' : 'offline';
+                    badge.style.borderColor = 'var(--success)';
+                    badge.style.color = 'var(--success)';
+                    badge.title = 'Profile: Maximum isolation — no network';
+                } else if (p === 'research') {
+                    badge.textContent = locked ? 'research (locked)' : 'tor only';
+                    badge.style.borderColor = 'var(--warning)';
+                    badge.style.color = 'var(--warning)';
+                    badge.title = 'Profile: Privacy-preserving research — Tor-routed';
+                } else if (p === 'full_lab') {
+                    badge.textContent = locked ? 'full lab (locked)' : 'filtered';
+                    badge.style.borderColor = 'var(--accent)';
+                    badge.style.color = 'var(--accent)';
+                    badge.title = 'Profile: Full capability lab — filtered network';
+                } else {
+                    badge.textContent = 'unknown';
+                    badge.style.borderColor = 'var(--text-muted)';
+                    badge.style.color = 'var(--text-muted)';
+                }
+            } catch(e) {
+                /* Profile API not available — non-critical */
+            }
+        }
+
         pollVaultStatus();
         pollSystemStatus();
+        pollProfileStatus();
         setInterval(pollVaultStatus, 10000);
         setInterval(pollSystemStatus, 15000);
+        setInterval(pollProfileStatus, 30000);
 
         /* Close sidebar on mobile when clicking main area */
         document.querySelector('.main').addEventListener('click', function() {

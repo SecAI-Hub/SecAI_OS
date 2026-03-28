@@ -209,3 +209,130 @@ logging:
   store_raw_prompts: false
   store_raw_responses: false
   audit_tool_calls: true
+
+# ---------------------------------------------------------------------------
+# Runtime profiles — control which optional services are active and the
+# network/agent posture.  Profile DEFINITIONS are baked into the image
+# (immutable).  The active selection lives in the writable runtime state
+# at /var/lib/secure-ai/state/profile.json (root:root 0644, atomic writes).
+#
+# An operator can hard-lock the profile by placing a file at
+# /etc/secure-ai/local.d/profile.yaml — when present it overrides the
+# runtime state and disables UI profile changes (403).
+#
+# On missing/malformed/invalid profile.json the system falls back to
+# offline_private (safest default) and emits an audit alert.
+# ---------------------------------------------------------------------------
+profile:
+  # Default profile for new installs (used when no profile.json exists)
+  default: "offline_private"
+
+  definitions:
+    offline_private:
+      description: "Maximum isolation — no network, core services only"
+      mode: "local-only"
+      session_mode: "offline-only"
+      agent_mode: "offline_only"
+      rationale: >
+        Agent remains active in offline_only mode because it provides useful
+        local automation (file management, workspace tasks) with no network
+        access, hard budget limits, and loopback-only IPC.  The agent service
+        unit uses PrivateNetwork=yes and the nftables rules block all egress.
+        policy.yaml network.runtime_egress=deny cannot be overridden by agent
+        mode.  This is verified by test_profile_system.py.
+      services_enabled:
+        # Tier 1: Security infrastructure (always on)
+        - secure-ai-runtime-attestor.service
+        - secure-ai-integrity-monitor.service
+        - secure-ai-incident-recorder.service
+        - secure-ai-policy-engine.service
+        - secure-ai-boot-verify.service
+        - secure-ai-vault-watchdog.service
+        - secure-ai-health-check.service
+        - secure-ai-gpu-integrity-watch.service
+        - secure-ai-mcp-firewall.service
+        # Tier 2: Core function
+        - secure-ai-ui.service
+        - secure-ai-registry.service
+        - secure-ai-tool-firewall.service
+        - secure-ai-agent.service
+        - secure-ai-quarantine-watcher.service
+        - secure-ai-inference.service
+      services_disabled:
+        - secure-ai-diffusion.service
+        - secure-ai-enable-diffusion.path
+        - secure-ai-airlock.service
+        - secure-ai-tor.service
+        - secure-ai-searxng.service
+        - secure-ai-search-mediator.service
+
+    research:
+      description: "Privacy-preserving research — Tor-routed web search"
+      mode: "online-augmented"
+      session_mode: "normal"
+      agent_mode: "online_assisted"
+      rationale: >
+        Enables the search stack (SearXNG + Tor + search-mediator) and the
+        airlock for filtered outbound access.  All web traffic is Tor-routed
+        with PII stripping and differential privacy (decoy queries).  Agent
+        can use search-assisted tools but only through the airlock.
+      services_enabled:
+        # Everything from offline_private plus search/airlock stack
+        - secure-ai-runtime-attestor.service
+        - secure-ai-integrity-monitor.service
+        - secure-ai-incident-recorder.service
+        - secure-ai-policy-engine.service
+        - secure-ai-boot-verify.service
+        - secure-ai-vault-watchdog.service
+        - secure-ai-health-check.service
+        - secure-ai-gpu-integrity-watch.service
+        - secure-ai-mcp-firewall.service
+        - secure-ai-ui.service
+        - secure-ai-registry.service
+        - secure-ai-tool-firewall.service
+        - secure-ai-agent.service
+        - secure-ai-quarantine-watcher.service
+        - secure-ai-inference.service
+        - secure-ai-airlock.service
+        - secure-ai-tor.service
+        - secure-ai-searxng.service
+        - secure-ai-search-mediator.service
+      services_disabled:
+        - secure-ai-diffusion.service
+        - secure-ai-enable-diffusion.path
+
+    full_lab:
+      description: "Full capability lab — all services available"
+      mode: "online-augmented"
+      session_mode: "normal"
+      agent_mode: "standard"
+      rationale: >
+        All services enabled including diffusion activation path unit and
+        the full search/airlock stack.  Network traffic is filtered through
+        the airlock (not direct).  Suitable for evaluation, research, and
+        model testing where maximum capability is needed.
+      services_enabled:
+        # All services
+        - secure-ai-runtime-attestor.service
+        - secure-ai-integrity-monitor.service
+        - secure-ai-incident-recorder.service
+        - secure-ai-policy-engine.service
+        - secure-ai-boot-verify.service
+        - secure-ai-vault-watchdog.service
+        - secure-ai-health-check.service
+        - secure-ai-gpu-integrity-watch.service
+        - secure-ai-mcp-firewall.service
+        - secure-ai-ui.service
+        - secure-ai-registry.service
+        - secure-ai-tool-firewall.service
+        - secure-ai-agent.service
+        - secure-ai-quarantine-watcher.service
+        - secure-ai-inference.service
+        - secure-ai-airlock.service
+        - secure-ai-tor.service
+        - secure-ai-searxng.service
+        - secure-ai-search-mediator.service
+        - secure-ai-enable-diffusion.path
+      services_disabled:
+        # Diffusion worker itself stays disabled — activated on-demand via path unit
+        - secure-ai-diffusion.service

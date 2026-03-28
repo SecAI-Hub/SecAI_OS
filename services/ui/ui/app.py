@@ -1293,6 +1293,192 @@ def _diffusion_install_in_progress() -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Profile management endpoints (Epic 4)
+# ---------------------------------------------------------------------------
+
+PROFILE_STATE_PATH = "/var/lib/secure-ai/state/profile.json"
+PROFILE_OVERRIDE_PATH = "/etc/secure-ai/local.d/profile.yaml"
+PROFILE_REQUEST_PATH = "/run/secure-ai-ui/profile-request"
+PROFILE_RESULT_PATH = "/run/secure-ai/profile-result.json"
+APPLIANCE_CONFIG_PATH = "/etc/secure-ai/config/appliance.yaml"
+VALID_PROFILES = {"offline_private", "research", "full_lab"}
+
+
+def _read_profile_definitions():
+    """Read profile definitions from the baked appliance config."""
+    try:
+        with open(APPLIANCE_CONFIG_PATH) as f:
+            config = yaml.safe_load(f)
+        return config.get("profile", {}).get("definitions", {})
+    except Exception:
+        return {}
+
+
+def _read_active_profile():
+    """Read the active profile, respecting override precedence."""
+    # Operator override (hard lock)
+    if os.path.exists(PROFILE_OVERRIDE_PATH):
+        try:
+            with open(PROFILE_OVERRIDE_PATH) as f:
+                data = yaml.safe_load(f)
+            name = data.get("profile", "")
+            if name in VALID_PROFILES:
+                return name, True  # (profile_name, is_locked)
+        except Exception:
+            pass
+
+    # Runtime state
+    if os.path.exists(PROFILE_STATE_PATH):
+        try:
+            with open(PROFILE_STATE_PATH) as f:
+                data = json.load(f)
+            name = data.get("active", "")
+            if name in VALID_PROFILES:
+                return name, False
+        except Exception:
+            pass
+
+    # Fallback
+    return "offline_private", False
+
+
+@app.route("/api/profile")
+def get_profile():
+    """Return active profile, definitions, and lock status."""
+    active, locked = _read_active_profile()
+    definitions = _read_profile_definitions()
+
+    # Build a safe summary of each definition
+    defs_summary = {}
+    for name, defn in definitions.items():
+        defs_summary[name] = {
+            "description": defn.get("description", ""),
+            "mode": defn.get("mode", ""),
+            "agent_mode": defn.get("agent_mode", ""),
+            "rationale": defn.get("rationale", ""),
+        }
+
+    return jsonify({
+        "active": active,
+        "locked": locked,
+        "locked_by": "operator_override" if locked else None,
+        "definitions": defs_summary,
+    })
+
+
+@app.route("/api/profile/preview", methods=["POST"])
+def preview_profile():
+    """Preview what would change if switching to a new profile."""
+    active, locked = _read_active_profile()
+    if locked:
+        return jsonify({
+            "error": "Profile is locked by operator override at "
+                     "/etc/secure-ai/local.d/profile.yaml"
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+    target = data.get("profile", "")
+    if target not in VALID_PROFILES:
+        return jsonify({"error": f"Invalid profile: {target}"}), 400
+
+    definitions = _read_profile_definitions()
+    current_def = definitions.get(active, {})
+    target_def = definitions.get(target, {})
+
+    current_enabled = set(current_def.get("services_enabled", []))
+    target_enabled = set(target_def.get("services_enabled", []))
+
+    to_start = sorted(target_enabled - current_enabled)
+    to_stop = sorted(current_enabled - target_enabled)
+
+    # Privacy implications
+    implications = []
+    if "secure-ai-tor.service" in to_start:
+        implications.append(
+            "Network access will be enabled through Tor. "
+            "Queries will be anonymized but will leave this device."
+        )
+    if "secure-ai-airlock.service" in to_start:
+        implications.append(
+            "The airlock egress proxy will be activated. "
+            "Outbound connections will be filtered and logged."
+        )
+    if "secure-ai-tor.service" in to_stop:
+        implications.append(
+            "Network access will be disabled. "
+            "All web search and outbound connections will stop."
+        )
+
+    return jsonify({
+        "current": active,
+        "target": target,
+        "services_to_start": to_start,
+        "services_to_stop": to_stop,
+        "privacy_implications": implications,
+        "description": target_def.get("description", ""),
+    })
+
+
+@app.route("/api/profile/select", methods=["POST"])
+def select_profile():
+    """Request a profile change via the path-unit activation pattern."""
+    active, locked = _read_active_profile()
+    if locked:
+        return jsonify({
+            "error": "Profile is locked by operator override at "
+                     "/etc/secure-ai/local.d/profile.yaml"
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+    target = data.get("profile", "")
+    if target not in VALID_PROFILES:
+        return jsonify({"error": f"Invalid profile: {target}"}), 400
+
+    if target == active:
+        return jsonify({"status": "already_active", "profile": active})
+
+    # Check for existing request
+    if os.path.exists(PROFILE_REQUEST_PATH):
+        return jsonify({"status": "already_in_progress"}), 409
+
+    # Write request file atomically (same pattern as diffusion enable)
+    try:
+        fd = os.open(
+            PROFILE_REQUEST_PATH,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        os.write(fd, target.encode("utf-8"))
+        os.close(fd)
+    except FileExistsError:
+        return jsonify({"status": "already_in_progress"}), 409
+    except OSError:
+        log.exception("Failed to write profile request file")
+        return jsonify({"error": "Failed to write request"}), 500
+
+    return jsonify({"status": "applying", "profile": target}), 202
+
+
+@app.route("/api/profile/status")
+def profile_status():
+    """Read the result of the last profile change operation."""
+    if os.path.exists(PROFILE_RESULT_PATH):
+        try:
+            with open(PROFILE_RESULT_PATH) as f:
+                result = json.load(f)
+            return jsonify(result)
+        except Exception:
+            pass
+
+    # No result file — check if a request is pending
+    if os.path.exists(PROFILE_REQUEST_PATH):
+        return jsonify({"status": "in_progress"})
+
+    active, locked = _read_active_profile()
+    return jsonify({"status": "idle", "profile": active, "locked": locked})
+
+
 @app.route("/api/diffusion/runtime/status")
 def diffusion_runtime_status():
     """Return diffusion runtime state for the first-use flow.

@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch for profile change request from UI
+
+[Path]
+PathExists=/run/secure-ai-ui/profile-request
+
+[Install]
+WantedBy=multi-user.target

@@ -183,10 +183,16 @@ jobs:
 
           ERRORS=0
           for pattern in "${WRONG_PATTERNS[@]}"; do
+            # Exclude files that legitimately contain wrong patterns as string
+            # literals for detection purposes (this CI job + the consistency test)
             MATCHES=$(grep -rn \
               --include='*.sh' --include='*.py' --include='*.yaml' \
               --include='*.yml' --include='*.md' --include='*.json' \
-              "$pattern" . 2>/dev/null | grep -v '.git/' | grep -v 'node_modules/' || true)
+              --exclude='ci.yml' \
+              --exclude='test_image_ref_consistency.py' \
+              "$pattern" . 2>/dev/null \
+              | grep -v '.git/' | grep -v 'node_modules/' \
+              || true)
             if [ -n "$MATCHES" ]; then
               echo "::error::Found wrong image reference '$pattern':"
               echo "$MATCHES"

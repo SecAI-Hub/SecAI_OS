@@ -113,11 +113,12 @@ class TestDisabledByDefaultServices:
 class TestDiffusionPathUnitEnabled:
     """The diffusion install path unit must be enabled to watch for UI requests."""
 
-    def test_path_unit_in_enabled_list(self, recipe):
+    def test_path_unit_in_disabled_list(self, recipe):
+        """Diffusion path unit is disabled by default — profile-controlled (full_lab only)."""
         systemd = _get_systemd_module(recipe)
-        enabled = _get_enabled(systemd)
-        assert "secure-ai-enable-diffusion.path" in enabled, \
-            "secure-ai-enable-diffusion.path must be in the enabled list"
+        disabled = systemd["system"]["disabled"]
+        assert "secure-ai-enable-diffusion.path" in disabled, \
+            "secure-ai-enable-diffusion.path must be in the disabled list (profile-controlled)"
 
 
 class TestDiffusionManifestLockfiles:
