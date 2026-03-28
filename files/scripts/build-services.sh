@@ -496,8 +496,12 @@ REQUIRED_BINARIES=(
     "${INSTALL_DIR}/agent"
     "${INSTALL_DIR}/ui"
     "/usr/local/bin/securectl"
-    "/usr/local/bin/gguf-guard"
     "/usr/bin/llama-server"
+)
+
+# Optional binaries — built from external upstreams, may be skipped
+OPTIONAL_BINARIES=(
+    "/usr/local/bin/gguf-guard"
 )
 
 MISSING=0
@@ -516,6 +520,16 @@ if [ "$MISSING" -gt 0 ]; then
     fail_build "${MISSING} required binaries missing — image build aborted"
 fi
 echo "All ${#REQUIRED_BINARIES[@]} required binaries verified."
+
+# Check optional binaries (warn but don't fail)
+for bin in "${OPTIONAL_BINARIES[@]}"; do
+    if [ -f "$bin" ]; then
+        SIZE=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null || echo "?")
+        printf "  OPTIONAL: %-45s %s bytes\n" "$bin" "$SIZE"
+    else
+        printf "  OPTIONAL MISSING: %s (upstream not pinned)\n" "$bin"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Configure container signing policy for cosign-verified SecAI images.
