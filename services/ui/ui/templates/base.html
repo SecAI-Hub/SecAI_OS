@@ -620,7 +620,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
         /* -- CSRF: auto-include token on all non-GET fetch requests -- */
         var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         var _origFetch = window.fetch;

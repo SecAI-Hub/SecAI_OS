@@ -24,7 +24,9 @@ from werkzeug.utils import secure_filename
 
 import requests
 import yaml
-from flask import Flask, Response, jsonify, render_template, request, session
+import secrets as _secrets_mod
+
+from flask import Flask, Response, g, jsonify, render_template, request, session
 
 # Add services/ to path so we can import common.audit_chain
 _services_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -146,20 +148,27 @@ def csrf_protect():
     return None
 
 
+@app.before_request
+def generate_csp_nonce():
+    """Generate a per-request CSP nonce for inline scripts and styles."""
+    g.csp_nonce = _secrets_mod.token_urlsafe(24)
+
+
 @app.context_processor
-def inject_csrf_token():
-    """Expose CSRF token to all templates."""
+def inject_template_globals():
+    """Expose CSRF token and CSP nonce to all templates."""
     token = session.get("csrf_token", "")
-    return {"csrf_token": token}
+    return {"csrf_token": token, "csp_nonce": getattr(g, "csp_nonce", "")}
 
 
 @app.after_request
 def add_security_headers(response):
     """Add defense-in-depth HTTP security headers to every response."""
+    nonce = getattr(g, "csp_nonce", "")
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "media-src 'self' data:; "
         "font-src 'self'; "

@@ -63,7 +63,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
     function switchTab(tab, el) {
         document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
         document.querySelectorAll('[id^="panel-"]').forEach(function(p) { p.classList.add('hidden'); });

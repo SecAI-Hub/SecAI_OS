@@ -93,7 +93,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
     async function loadUpdateStatus() {
         try {
             var resp = await fetch('/api/update/status');

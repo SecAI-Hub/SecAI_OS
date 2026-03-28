@@ -41,7 +41,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
     var uploadZone = document.getElementById('upload-zone');
     var fileInput = document.getElementById('file-input');
 

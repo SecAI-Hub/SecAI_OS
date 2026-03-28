@@ -247,34 +247,23 @@ if [ ! -f "$MANIFEST" ]; then
     rollback "Manifest not found: ${MANIFEST}"
 fi
 
-# Check if the manifest has been populated with real hashes
-MANIFEST_POPULATED=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
+# Read all manifest metadata in a single safe Python call (no shell interpolation)
+CURRENT_PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+CURRENT_ARCH=$(uname -m)
+
+eval "$(_SECAI_MANIFEST="$MANIFEST" python3 -c '
+import os, sys, yaml
+with open(os.environ["_SECAI_MANIFEST"]) as f:
     m = yaml.safe_load(f)
-print('yes' if m.get('populated', False) else 'no')
-")
+print(f"MANIFEST_POPULATED={\"yes\" if m.get(\"populated\", False) else \"no\"}")
+print(f"REQUIRED_PYTHON_VERSION={m.get(\"python_version\", \"\")}")
+arches = m.get("supported_architectures", [])
+print(f"SUPPORTED_ARCHES={\" \".join(arches)}")
+')"
+
 if [ "$MANIFEST_POPULATED" != "yes" ]; then
     rollback "Diffusion runtime manifest is not yet populated with real package hashes. Run scripts/refresh-diffusion-locks.sh on a Linux machine with the target Python version to generate the manifest, then commit the result."
 fi
-
-REQUIRED_PYTHON_VERSION=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
-    m = yaml.safe_load(f)
-print(m.get('python_version', ''))
-")
-
-CURRENT_PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-CURRENT_ARCH=$(uname -m)
-
-SUPPORTED_ARCHES=$(python3 -c "
-import yaml
-with open('${MANIFEST}') as f:
-    m = yaml.safe_load(f)
-arches = m.get('supported_architectures', [])
-print(' '.join(arches))
-")
 
 if [ -n "$REQUIRED_PYTHON_VERSION" ] && [ "$CURRENT_PYTHON_VERSION" != "$REQUIRED_PYTHON_VERSION" ]; then
     rollback "Python version mismatch: have ${CURRENT_PYTHON_VERSION}, need ${REQUIRED_PYTHON_VERSION}"

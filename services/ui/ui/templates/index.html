@@ -125,7 +125,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
     var chatContainer = document.getElementById('chat-container');
     var userInput = document.getElementById('user-input');
     var sendBtn = document.getElementById('send-btn');

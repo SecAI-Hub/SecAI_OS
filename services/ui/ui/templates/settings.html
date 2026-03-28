@@ -74,7 +74,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
     async function loadSession() {
         try {
             var resp = await fetch('/api/auth/status');
