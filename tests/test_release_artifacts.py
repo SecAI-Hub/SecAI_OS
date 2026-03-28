@@ -8,8 +8,6 @@ import json
 import re
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).parent.parent
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 ARTIFACTS_JSON = REPO_ROOT / "docs" / "release-artifacts.json"
