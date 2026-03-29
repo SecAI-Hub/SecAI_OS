@@ -417,7 +417,7 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (binaries + SBOMs + checksums)
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
@@ -429,11 +429,26 @@ jobs:
             dist/IMAGE_DIGEST
             dist/IMAGE_REF_PINNED
             dist/RELEASE_MANIFEST.json
-            dist/secai-os-*.iso
             dist/secai-os-*.iso.sig
-            dist/secai-os-*.qcow2
             dist/secai-os-*.qcow2.sig
-            dist/secai-os-*.ova
             dist/secai-os-*.ova.sig
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+      # ISO/QCOW2/OVA files are too large for GitHub Releases (>2GB limit).
+      # Upload signatures only (above). The full images are available as
+      # workflow artifacts or should be hosted on external storage.
+      - name: Note on large artifacts
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "## Large Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "ISO/QCOW2/OVA files exceed GitHub Releases' 2GB limit." >> "$GITHUB_STEP_SUMMARY"
+          echo "Their cosign signatures (.sig) are included in the release." >> "$GITHUB_STEP_SUMMARY"
+          echo "Full images are available as workflow artifacts (90-day retention)." >> "$GITHUB_STEP_SUMMARY"
+          for f in dist/secai-os-*.iso dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
+            [ -f "$f" ] || continue
+            SIZE=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            SIZE_MB=$((SIZE / 1048576))
+            echo "  - $(basename "$f"): ${SIZE_MB} MB" >> "$GITHUB_STEP_SUMMARY"
+          done
