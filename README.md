@@ -46,29 +46,33 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 
 ## Quickstart
 
-Download, verify, boot, run the setup wizard. See [docs/install/quickstart.md](docs/install/quickstart.md) for full details.
-
-| Method | Time | Best For |
-|--------|------|----------|
-| [**ISO**](docs/install/quickstart.md#path-a-install-from-iso-real-pc) (Recommended) | ~30 min | Real PC, full security |
-| [**OVA**](docs/install/quickstart.md#path-b-import-vm--virtualbox--vmware-ova) | ~15 min | Try it first (VirtualBox/VMware) |
-| [**QCOW2**](docs/install/quickstart.md#path-c-import-vm--kvm--proxmox--qemu-qcow2) | ~15 min | KVM / Proxmox |
-| [**Rebase**](docs/install/quickstart.md#path-d-advanced--rebase-from-existing-fedora) | ~45 min | Existing Fedora Silverblue |
-
-After boot, the setup wizard guides you through profile selection, system verification, and model import.
-
-### Advanced / Operator Install
-
-For production deployments with digest pinning and signing policy configuration:
+Install [Fedora Silverblue 42](https://fedoraproject.org/silverblue/), then run the bootstrap script. The script configures cosign signature verification **before** the first image pull — no unverified data is ever fetched.
 
 ```bash
-# Review the bootstrap script, then run with a pinned digest
+# 1. Download and review the bootstrap script
 curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
   -o /tmp/secai-bootstrap.sh
 less /tmp/secai-bootstrap.sh
-sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+
+# 2. Run the bootstrap (use --digest from the latest release for production)
+sudo bash /tmp/secai-bootstrap.sh
+
+# 3. Reboot and open the setup wizard
 sudo systemctl reboot
+# Then open http://127.0.0.1:8480
 ```
+
+The setup wizard guides you through privacy profile selection, system verification, and model import.
+
+| Method | Time | Best For | Details |
+|--------|------|----------|---------|
+| **Bootstrap** (Recommended) | ~30 min | Real PC or VM | Install Fedora Silverblue, run script, reboot |
+| **Build VM locally** | ~45 min | VirtualBox / VMware / KVM | `scripts/vm/build-qcow2.sh` builds a QCOW2 from the OCI image |
+| **Development** | ~10 min | Service development only | No OS features; see [dev guide](docs/install/dev.md) |
+
+See [docs/install/quickstart.md](docs/install/quickstart.md) for full step-by-step instructions, VM build details, and verification commands.
+
+For production deployments with digest pinning: `sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST`
 
 See [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
 
@@ -198,12 +202,25 @@ Tagged releases (`v*`) are built by the [Release workflow](.github/workflows/rel
 | `SHA256SUMS` | Checksums for all release artifacts |
 | `SHA256SUMS.sig` | Cosign signature over checksums |
 | `IMAGE_DIGEST` | OCI image digest for this release |
-| `IMAGE_REF_PINNED` | Fully qualified digest-pinned image reference |
 | `RELEASE_MANIFEST.json` | Machine-readable release manifest (binaries, SBOMs, provenance, build metadata) |
+| `secai-os-*.iso.sig` | Cosign signature for the bootable ISO |
 
 Go services shipped as release binaries: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, `incident-recorder`.
 
 Python services (`ui`, `agent`, `quarantine`, `diffusion-worker`, `search-mediator`) are baked into the OCI image and do not ship as standalone binaries.
+
+### Bootable ISO
+
+A signed bootable ISO is built by every tagged release using [build-container-installer](https://github.com/JasonN3/build-container-installer). The ISO exceeds GitHub's 2 GB release asset limit, so it is available as a **workflow artifact** (90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml). The cosign signature (`.iso.sig`) is published to the GitHub Release for verification.
+
+To build a QCOW2 or OVA locally from the OCI image:
+
+```bash
+bash scripts/vm/build-qcow2.sh        # produces output/secai-os.qcow2
+bash scripts/vm/build-ova.sh           # produces output/secai-os.ova
+```
+
+Requires a Linux host with `virt-install`, `qemu-img`, and `libvirt`.
 
 ### Verify a Release
 

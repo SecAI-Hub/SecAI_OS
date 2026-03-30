@@ -1,131 +1,116 @@
 # Quickstart
 
-Get SecAI OS running in the fewest steps possible. Choose the path that fits your hardware.
+Get SecAI OS running in the fewest steps possible. Choose the path that fits your situation.
 
 ## Choose Your Install Path
 
 | Method | Time | Difficulty | Best For |
 |--------|------|-----------|----------|
-| **ISO** (Recommended) | ~30 min | Easy | Real PC, full security |
-| **VM Import (OVA)** | ~15 min | Easy | Try it first (VirtualBox/VMware) |
-| **VM Import (QCOW2)** | ~15 min | Easy | KVM / Proxmox / QEMU |
-| **Rebase** (Advanced) | ~45 min | Moderate | Existing Fedora Silverblue |
+| **Bootstrap** (Recommended) | ~30 min | Easy | Real PC or VM, full security |
+| **VM Build** | ~45 min | Moderate | Local evaluation in VirtualBox/VMware/KVM |
+| **Development** | ~10 min | Easy | Service development only (no OS features) |
+
+> **Note on ISO/OVA/QCOW2:** The release pipeline builds a signed bootable ISO, but it exceeds GitHub's 2 GB release asset limit. Pre-built VM images (OVA/QCOW2) require build infrastructure not yet provisioned. For now, the bootstrap path below is the primary install method. See [Artifact Availability](#artifact-availability) for details.
 
 ---
 
-## Path A: Install from ISO (Real PC)
+## Path A: Bootstrap Install (Real PC or VM)
 
-This gives you the full security stack including Secure Boot, TPM2, and hardware isolation.
+This is the recommended path. It installs Fedora Silverblue, then rebases to SecAI OS with full signature verification. You get the complete security stack: Secure Boot, TPM2, encrypted vault, and all 25+ defense layers.
 
-**1. Download the ISO**
+**1. Install Fedora Silverblue**
 
-Go to the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) and download `secai-os-<version>-x86_64.iso`.
+Download [Fedora Silverblue 42](https://fedoraproject.org/silverblue/) and install it on your hardware or in a VM. A minimal install is fine — SecAI OS replaces the desktop.
 
-**2. Write to USB**
+**2. Run the bootstrap script**
 
-Linux/macOS:
+The bootstrap script configures cosign signature verification **before** the first image pull — no unverified data is ever fetched.
+
 ```bash
-sudo dd if=secai-os-*.iso of=/dev/sdX bs=4M status=progress
-sync
+# Download and review the script (always review before running as root)
+curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
+  -o /tmp/secai-bootstrap.sh
+less /tmp/secai-bootstrap.sh
+
+# Run the bootstrap
+sudo bash /tmp/secai-bootstrap.sh
 ```
 
-Windows: Use [Rufus](https://rufus.ie) — select the ISO, choose your USB drive, and click Start.
+For production, pin to an exact image digest from the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest):
 
-**3. Boot from USB**
+```bash
+sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+```
 
-Restart your computer. Enter the boot menu (usually F12, F2, or Esc) and select the USB drive. Follow the installer prompts.
+**3. Reboot**
 
-**4. First boot**
+```bash
+sudo systemctl reboot
+```
 
-After installation completes and the system reboots, open a browser to:
+**4. Open the UI**
+
+After reboot, open a browser to:
 ```
 http://127.0.0.1:8480
 ```
 
-**What you should see:** The SecAI OS setup wizard. It will ask you to choose a privacy profile, verify system health, and import your first AI model.
+**What you should see:** The SecAI OS setup wizard. It asks you to choose a privacy profile, verifies system health, and walks you through importing your first AI model.
 
 ---
 
-## Path B: Import VM — VirtualBox / VMware (OVA)
+## Path B: Build a VM Image Locally
 
-For evaluation. Note: VM installs cannot use TPM2 sealing or Secure Boot chain verification.
+If you want a self-contained VM image without installing Fedora first, you can build one from the OCI image using the included scripts. This requires a Linux host with KVM/QEMU.
 
-**1. Download the OVA**
-
-Go to the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) and download `secai-os-<version>.ova`.
-
-> OVA may not be available in every release. If absent, use Path C (QCOW2) or Path A (ISO).
-
-**2. Import**
-
-- **VirtualBox:** File → Import Appliance → select the OVA → Import
-- **VMware:** File → Open → select the OVA → Import
-
-**3. Start the VM and open the UI**
-
-Start the VM. After boot, open a browser to the VM's IP on port 8480:
-```
-http://<vm-ip>:8480
-```
-
-If using NAT networking, forward port 8480 from the VM to your host, then use `http://127.0.0.1:8480`.
-
-**What you should see:** The setup wizard with profile selection, system check, and model import.
-
----
-
-## Path C: Import VM — KVM / Proxmox / QEMU (QCOW2)
-
-**1. Download the QCOW2**
-
-Go to the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) and download `secai-os-<version>.qcow2`.
-
-> QCOW2 may not be available in every release. If absent, use Path A (ISO).
-
-**2. Create a VM**
+**1. Clone the repo and build**
 
 ```bash
-# Example: create and start a KVM VM using the downloaded disk
+git clone https://github.com/SecAI-Hub/SecAI_OS.git
+cd SecAI_OS
+
+# Build QCOW2 (requires: virt-install, qemu-img, libvirt)
+bash scripts/vm/build-qcow2.sh
+
+# Optionally convert to OVA for VirtualBox/VMware
+bash scripts/vm/build-ova.sh
+```
+
+The build scripts pull the signed OCI image and create a bootable disk with root + encrypted vault partitions. Credentials are randomly generated and printed at build time.
+
+**2. Start the VM**
+
+```bash
+# KVM/QEMU
 virt-install \
   --name secai-os \
   --memory 16384 \
   --vcpus 4 \
-  --disk path=secai-os-*.qcow2,format=qcow2 \
+  --disk path=output/secai-os.qcow2,format=qcow2 \
   --import \
   --os-variant fedora42 \
   --network default \
   --noautoconsole
+
+# Or import the OVA into VirtualBox/VMware
 ```
 
 **3. Access the UI**
 
 ```bash
-# Find the VM's IP
 virsh domifaddr secai-os
-# Open in browser
-xdg-open http://<vm-ip>:8480
+# Open http://<vm-ip>:8480 in your browser
 ```
 
-**What you should see:** The setup wizard.
+> **Security note:** VM installs cannot use TPM2 vault key sealing and the host hypervisor has visibility into guest memory. VMs are suitable for evaluation, not sensitive workloads. See [support-lifecycle.md](../support-lifecycle.md) for the full support matrix.
 
 ---
 
-## Path D: Advanced — Rebase from Existing Fedora
+## Path C: Development Mode
 
-If you already have Fedora Silverblue (F42+), you can rebase directly. This is the operator path.
+Run individual services locally for development without rebasing your OS. No security features (sandboxing, firewall, vault) are active.
 
-See [bare-metal.md](bare-metal.md) for the full bootstrap flow with digest pinning and signing policy configuration.
-
-```bash
-# Quick version (evaluation only — use --digest for production)
-curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
-  -o /tmp/secai-bootstrap.sh
-less /tmp/secai-bootstrap.sh   # Review first
-sudo bash /tmp/secai-bootstrap.sh
-sudo systemctl reboot
-```
-
-After reboot, open `http://127.0.0.1:8480` and run the setup wizard.
+See [dev.md](dev.md) for setup instructions.
 
 ---
 
@@ -135,14 +120,20 @@ Regardless of install path, the setup wizard guides you through:
 
 1. **Choose your privacy level** — Maximum Privacy (default), Web-Assisted Research, or Full Lab
 2. **System check** — verifies core services are running
-3. **Import a model** — upload a `.gguf` model file (it goes through the 7-stage quarantine pipeline automatically)
+3. **Import a model** — upload a `.gguf` model file (it passes through the 7-stage quarantine pipeline automatically)
 4. **Start chatting** — once the model is promoted, you're ready
 
 ---
 
 ## Verify Your Install (Optional)
 
-After downloading any release artifact, you can verify its integrity.
+After running the bootstrap, you can verify the image signature:
+
+```bash
+cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+```
+
+To verify release artifacts (Go binaries, SBOMs, checksums):
 
 **Linux / macOS:**
 ```bash
@@ -153,15 +144,27 @@ sha256sum -c SHA256SUMS --ignore-missing
 **Windows (PowerShell):**
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/SecAI-Hub/SecAI_OS/releases/latest/download/SHA256SUMS" -OutFile SHA256SUMS
-$expected = (Get-Content SHA256SUMS | Select-String "secai-os").Line.Split()[0]
-$actual = (Get-FileHash "secai-os-*.iso" -Algorithm SHA256).Hash.ToLower()
-if ($expected -eq $actual) { "OK: checksum matches" } else { "FAIL: checksum mismatch" }
+Get-Content SHA256SUMS
 ```
 
-For advanced verification (cosign signatures, SLSA3 provenance), see [sample-release-bundle.md](../docs/sample-release-bundle.md) or run:
+For advanced verification (cosign detached signatures, SLSA3 provenance attestation), see [sample-release-bundle.md](../sample-release-bundle.md) or run:
 ```bash
 make verify-release
 ```
+
+---
+
+## Artifact Availability
+
+| Artifact | Where | Status |
+|----------|-------|--------|
+| **OCI image** | `ghcr.io/secai-hub/secai_os:latest` | Always available, cosign-signed |
+| **Go binaries + SBOMs** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | Always available |
+| **ISO** | Release workflow artifact (90-day retention) | Built in CI; too large (~4 GB) for GitHub Releases |
+| **ISO signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.iso.sig` file for verification |
+| **QCOW2 / OVA** | `scripts/vm/build-qcow2.sh` / `build-ova.sh` | Build locally; CI build requires self-hosted KVM runner |
+
+The ISO is produced by every tagged release and is available as a [workflow artifact](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml) with 90-day retention. Its cosign signature (`.iso.sig`) is published to GitHub Releases for verification. For permanent ISO hosting, an external storage solution is needed.
 
 ---
 
@@ -171,4 +174,4 @@ make verify-release
 - [Enable Web Search](../examples/enable-web-search.md)
 - [Vault Management](../examples/lock-unlock-vault.md)
 - [Security Dashboard](http://127.0.0.1:8480/security) — verify your appliance health
-- [Why is this safe?](../docs/why-is-this-safe.md) — plain-language security explanation
+- [Why is this safe?](../why-is-this-safe.md) — plain-language security explanation
