@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -30,43 +31,61 @@ Usage:
   securectl status                   Show registry service health
 
 Environment:
-  REGISTRY_URL   Registry endpoint (default: http://127.0.0.1:8470)
+  REGISTRY_URL         Registry endpoint (default: http://127.0.0.1:8470)
+  SERVICE_TOKEN_PATH   Registry service token path (default: /run/secure-ai/service-token)
 `)
 	os.Exit(1)
 }
 
-func apiGet(path string) ([]byte, int, error) {
-	resp, err := http.Get(registryURL + path)
-	if err != nil {
-		return nil, 0, err
+func readServiceToken() string {
+	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
+	if tokenPath == "" {
+		tokenPath = "/run/secure-ai/service-token"
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, nil
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
-func apiDelete(path string) ([]byte, int, error) {
-	req, err := http.NewRequest(http.MethodDelete, registryURL+path, nil)
+func apiRequest(method, path string, body io.Reader) ([]byte, int, error) {
+	req, err := http.NewRequest(method, registryURL+path, body)
 	if err != nil {
 		return nil, 0, err
 	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token := readServiceToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, nil
+	respBody, _ := io.ReadAll(resp.Body)
+	return respBody, resp.StatusCode, nil
+}
+
+func apiGet(path string) ([]byte, int, error) {
+	return apiRequest(http.MethodGet, path, nil)
+}
+
+func apiDelete(path string) ([]byte, int, error) {
+	return apiRequest(http.MethodDelete, path, nil)
 }
 
 func apiPost(path string) ([]byte, int, error) {
-	resp, err := http.Post(registryURL+path, "application/json", strings.NewReader("{}"))
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, nil
+	return apiRequest(http.MethodPost, path, strings.NewReader("{}"))
+}
+
+func modelQueryPath(endpoint, name string) string {
+	values := url.Values{}
+	values.Set("name", name)
+	return endpoint + "?" + values.Encode()
 }
 
 func cmdList() {
@@ -109,7 +128,7 @@ func cmdList() {
 }
 
 func cmdInfo(name string) {
-	data, code, err := apiGet("/v1/model?name=" + name)
+	data, code, err := apiGet(modelQueryPath("/v1/model", name))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -126,7 +145,7 @@ func cmdInfo(name string) {
 }
 
 func cmdVerify(name string) {
-	data, code, err := apiPost("/v1/model/verify?name=" + name)
+	data, code, err := apiPost(modelQueryPath("/v1/model/verify", name))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -146,7 +165,7 @@ func cmdVerify(name string) {
 }
 
 func cmdPath(name string) {
-	data, code, err := apiGet("/v1/model/path?name=" + name)
+	data, code, err := apiGet(modelQueryPath("/v1/model/path", name))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -161,7 +180,7 @@ func cmdPath(name string) {
 }
 
 func cmdDelete(name string) {
-	data, code, err := apiDelete("/v1/model/delete?name=" + name)
+	data, code, err := apiDelete(modelQueryPath("/v1/model/delete", name))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -213,16 +232,24 @@ func main() {
 	case "list", "ls":
 		cmdList()
 	case "info":
-		if len(os.Args) < 3 { usage() }
+		if len(os.Args) < 3 {
+			usage()
+		}
 		cmdInfo(os.Args[2])
 	case "verify":
-		if len(os.Args) < 3 { usage() }
+		if len(os.Args) < 3 {
+			usage()
+		}
 		cmdVerify(os.Args[2])
 	case "path":
-		if len(os.Args) < 3 { usage() }
+		if len(os.Args) < 3 {
+			usage()
+		}
 		cmdPath(os.Args[2])
 	case "delete", "rm":
-		if len(os.Args) < 3 { usage() }
+		if len(os.Args) < 3 {
+			usage()
+		}
 		cmdDelete(os.Args[2])
 	case "status":
 		cmdStatus()

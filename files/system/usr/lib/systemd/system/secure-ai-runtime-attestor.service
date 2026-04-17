@@ -59,6 +59,10 @@ PrivateUsers=yes
 # and needs to exec tpm2_pcrread and rpm-ostree (external commands)
 PrivateNetwork=no
 
+# Network restriction — attestor may only reach localhost peers
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Syscall filtering
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

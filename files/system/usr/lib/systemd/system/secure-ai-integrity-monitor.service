@@ -56,6 +56,10 @@ PrivateUsers=yes
 # PrivateNetwork=no — needs localhost HTTP for API and to read service binaries
 PrivateNetwork=no
 
+# Network restriction — monitor only exposes and reaches localhost APIs
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Syscall filtering
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

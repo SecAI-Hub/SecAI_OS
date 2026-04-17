@@ -40,10 +40,10 @@ type PolicyDefaults struct {
 }
 
 type ToolsPolicy struct {
-	Default    string      `yaml:"default"`
-	Allow      []ToolEntry `yaml:"allow"`
-	Deny       []ToolEntry `yaml:"deny"`
-	RateLimit  RateConfig  `yaml:"rate_limit"`
+	Default   string      `yaml:"default"`
+	Allow     []ToolEntry `yaml:"allow"`
+	Deny      []ToolEntry `yaml:"deny"`
+	RateLimit RateConfig  `yaml:"rate_limit"`
 }
 
 type ToolEntry struct {
@@ -68,6 +68,12 @@ type ToolCallRequest struct {
 	Params map[string]string `json:"params"`
 }
 
+type toolCallRequestWire struct {
+	Tool   string         `json:"tool"`
+	Params map[string]any `json:"params"`
+	Args   map[string]any `json:"args,omitempty"` // legacy alias accepted for compatibility
+}
+
 type ToolCallResponse struct {
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason,omitempty"`
@@ -81,9 +87,9 @@ var (
 	policyMu sync.RWMutex
 	policy   Policy
 
-	auditFile   *os.File
-	auditMu     sync.Mutex
-	auditPath   string
+	auditFile *os.File
+	auditMu   sync.Mutex
+	auditPath string
 
 	// Rate limiting: simple sliding window counter
 	rateMu      sync.Mutex
@@ -98,10 +104,10 @@ var (
 var serviceToken string // loaded at startup; empty = dev mode (no auth)
 
 const (
-	defaultMaxArgLength     = 4096
-	defaultRequestsPerMin   = 120
-	defaultBurstSize        = 20
-	maxRequestBodySize      = 64 * 1024 // 64 KB
+	defaultMaxArgLength   = 4096
+	defaultRequestsPerMin = 120
+	defaultBurstSize      = 20
+	maxRequestBodySize    = 64 * 1024 // 64 KB
 )
 
 // loadServiceToken reads the service-to-service auth token from disk.
@@ -190,11 +196,11 @@ func getPolicy() Policy {
 // ---------------------------------------------------------------------------
 
 type AuditEntry struct {
-	Timestamp string `json:"timestamp"`
-	Tool      string `json:"tool"`
+	Timestamp string            `json:"timestamp"`
+	Tool      string            `json:"tool"`
 	Params    map[string]string `json:"params,omitempty"`
-	Allowed   bool   `json:"allowed"`
-	Reason    string `json:"reason,omitempty"`
+	Allowed   bool              `json:"allowed"`
+	Reason    string            `json:"reason,omitempty"`
 }
 
 func initAuditLog() {
@@ -270,7 +276,65 @@ func cleanAndResolvePath(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve path: %w", err)
 	}
-	return abs, nil
+	return resolvePath(abs)
+}
+
+func resolvePath(abs string) (string, error) {
+	// Resolve symlinks for the deepest existing prefix so allowlist checks
+	// apply to the real target, not just the lexical path.
+	cursor := abs
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(cursor)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("cannot resolve path: %w", err)
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			// Nothing existed on disk; fall back to the canonical absolute path.
+			return filepath.Clean(abs), nil
+		}
+		suffix = append(suffix, filepath.Base(cursor))
+		cursor = parent
+	}
+}
+
+func normalizeMatchPath(raw string) string {
+	clean := filepath.Clean(raw)
+	slash := filepath.ToSlash(clean)
+	if vol := filepath.VolumeName(clean); vol != "" {
+		slash = strings.ToLower(filepath.ToSlash(vol)) + strings.TrimPrefix(slash, vol)
+	}
+	return slash
+}
+
+func pathMatchCandidates(raw string) []string {
+	norm := normalizeMatchPath(raw)
+	candidates := []string{norm}
+	if vol := filepath.VolumeName(filepath.Clean(raw)); vol != "" {
+		volNorm := strings.ToLower(filepath.ToSlash(vol))
+		trimmed := strings.TrimPrefix(norm, volNorm)
+		if trimmed != "" {
+			candidates = append(candidates, trimmed)
+		}
+	}
+	return candidates
+}
+
+func hasPathPrefix(path, prefix string) bool {
+	prefixNorm := normalizeMatchPath(prefix)
+	for _, candidate := range pathMatchCandidates(path) {
+		if candidate == prefixNorm || strings.HasPrefix(candidate, prefixNorm+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesGlob checks if a path matches an allowlist pattern.
@@ -279,14 +343,14 @@ func matchesGlob(path, pattern string) bool {
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := strings.TrimSuffix(pattern, "/**")
 		prefix = filepath.Clean(prefix)
-		return strings.HasPrefix(path, prefix+"/") || path == prefix
+		return hasPathPrefix(path, prefix)
 	}
 	if strings.HasSuffix(pattern, "**") {
 		prefix := strings.TrimSuffix(pattern, "**")
 		prefix = filepath.Clean(prefix)
-		return strings.HasPrefix(path, prefix)
+		return hasPathPrefix(path, prefix)
 	}
-	return strings.HasPrefix(path, filepath.Clean(pattern))
+	return hasPathPrefix(path, pattern)
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +377,31 @@ func validateArgs(params map[string]string, entry ToolEntry) (bool, string) {
 		}
 	}
 	return true, ""
+}
+
+func normalizeParams(raw map[string]any) map[string]string {
+	if len(raw) == 0 {
+		return map[string]string{}
+	}
+	normalized := make(map[string]string, len(raw))
+	for key, val := range raw {
+		switch typed := val.(type) {
+		case nil:
+			normalized[key] = ""
+		case string:
+			normalized[key] = typed
+		case bool, float64:
+			normalized[key] = fmt.Sprint(typed)
+		default:
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				normalized[key] = fmt.Sprint(typed)
+				continue
+			}
+			normalized[key] = string(encoded)
+		}
+	}
+	return normalized
 }
 
 // ---------------------------------------------------------------------------
@@ -400,10 +489,18 @@ func handleEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
-	var req ToolCallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var wire toolCallRequestWire
+	if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+	rawParams := wire.Params
+	if len(rawParams) == 0 && len(wire.Args) > 0 {
+		rawParams = wire.Args
+	}
+	req := ToolCallRequest{
+		Tool:   wire.Tool,
+		Params: normalizeParams(rawParams),
 	}
 
 	totalRequests.Add(1)
@@ -492,11 +589,13 @@ func main() {
 
 	log.Printf("secure-ai-tool-firewall listening on %s", bind)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

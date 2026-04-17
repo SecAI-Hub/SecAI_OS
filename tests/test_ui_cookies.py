@@ -96,6 +96,25 @@ class TestSessionTimeout:
             if hasattr(lifetime, "total_seconds"):
                 assert lifetime.total_seconds() == 1800
 
+    def test_passive_get_does_not_refresh_session(self):
+        import shutil
+
+        shutil.rmtree("/tmp/secai-test-auth", ignore_errors=True)
+        app = _make_app(session_timeout="900")
+        import ui.app as ui_app
+
+        ui_app._auth.setup_passphrase("testpass123")
+        token = ui_app._auth.login("testpass123")["token"]
+        before = ui_app._auth._sessions[token]["last_active"]
+
+        with app.test_client() as client:
+            client.set_cookie("session_token", token)
+            resp = client.get("/api/vault/status")
+            assert resp.status_code == 200
+
+        after = ui_app._auth._sessions[token]["last_active"]
+        assert after == before
+
 
 def _parse_set_cookies(response):
     """Parse Set-Cookie headers into a dict of {name: value}."""

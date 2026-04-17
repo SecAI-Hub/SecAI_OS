@@ -24,13 +24,13 @@ import (
 
 // Artifact represents a promoted model in the trusted registry.
 type Artifact struct {
-	Name        string            `json:"name" yaml:"name"`
-	Format      string            `json:"format" yaml:"format"`
-	Filename    string            `json:"filename" yaml:"filename"`
-	SHA256      string            `json:"sha256" yaml:"sha256"`
-	SizeBytes   int64             `json:"size_bytes" yaml:"size_bytes"`
-	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
-	PromotedAt  string            `json:"promoted_at" yaml:"promoted_at"`
+	Name            string            `json:"name" yaml:"name"`
+	Format          string            `json:"format" yaml:"format"`
+	Filename        string            `json:"filename" yaml:"filename"`
+	SHA256          string            `json:"sha256" yaml:"sha256"`
+	SizeBytes       int64             `json:"size_bytes" yaml:"size_bytes"`
+	Source          string            `json:"source,omitempty" yaml:"source,omitempty"`
+	PromotedAt      string            `json:"promoted_at" yaml:"promoted_at"`
 	ScanResults     map[string]string `json:"scan_results,omitempty" yaml:"scan_results,omitempty"`
 	ScannerVersions map[string]string `json:"scanner_versions,omitempty" yaml:"scanner_versions,omitempty"`
 	PolicyVersion   string            `json:"policy_version,omitempty" yaml:"policy_version,omitempty"`
@@ -54,17 +54,17 @@ type ModelsLock struct {
 
 // PromoteRequest is sent by the quarantine pipeline to promote an artifact.
 type PromoteRequest struct {
-	Name        string            `json:"name"`
-	Filename    string            `json:"filename"`
-	SHA256      string            `json:"sha256"`
-	SizeBytes   int64             `json:"size_bytes"`
-	Source      string            `json:"source,omitempty"`
-	ScanResults     map[string]string `json:"scan_results,omitempty"`
-	ScannerVersions map[string]string `json:"scanner_versions,omitempty"`
-	PolicyVersion   string            `json:"policy_version,omitempty"`
-	SourceRevision  string            `json:"source_revision,omitempty"`
-	GGUFGuardFingerprint map[string]any `json:"gguf_guard_fingerprint,omitempty"`
-	GGUFGuardManifest    string         `json:"gguf_guard_manifest,omitempty"`
+	Name                 string            `json:"name"`
+	Filename             string            `json:"filename"`
+	SHA256               string            `json:"sha256"`
+	SizeBytes            int64             `json:"size_bytes"`
+	Source               string            `json:"source,omitempty"`
+	ScanResults          map[string]string `json:"scan_results,omitempty"`
+	ScannerVersions      map[string]string `json:"scanner_versions,omitempty"`
+	PolicyVersion        string            `json:"policy_version,omitempty"`
+	SourceRevision       string            `json:"source_revision,omitempty"`
+	GGUFGuardFingerprint map[string]any    `json:"gguf_guard_fingerprint,omitempty"`
+	GGUFGuardManifest    string            `json:"gguf_guard_manifest,omitempty"`
 }
 
 var (
@@ -290,17 +290,17 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	artifact := Artifact{
-		Name:            req.Name,
-		Format:          format,
-		Filename:        req.Filename,
-		SHA256:          actualHash,
-		SizeBytes:       info.Size(),
-		Source:          req.Source,
-		PromotedAt:      time.Now().UTC().Format(time.RFC3339),
-		ScanResults:     req.ScanResults,
-		ScannerVersions: req.ScannerVersions,
-		PolicyVersion:   req.PolicyVersion,
-		SourceRevision:  req.SourceRevision,
+		Name:                 req.Name,
+		Format:               format,
+		Filename:             req.Filename,
+		SHA256:               actualHash,
+		SizeBytes:            info.Size(),
+		Source:               req.Source,
+		PromotedAt:           time.Now().UTC().Format(time.RFC3339),
+		ScanResults:          req.ScanResults,
+		ScannerVersions:      req.ScannerVersions,
+		PolicyVersion:        req.PolicyVersion,
+		SourceRevision:       req.SourceRevision,
 		GGUFGuardFingerprint: req.GGUFGuardFingerprint,
 		GGUFGuardManifest:    req.GGUFGuardManifest,
 	}
@@ -445,8 +445,8 @@ func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "unknown",
-			"detail":  "no integrity check has run yet",
+			"status": "unknown",
+			"detail": "no integrity check has run yet",
 		})
 		return
 	}
@@ -478,11 +478,11 @@ func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
 				json.NewEncoder(w).Encode(map[string]string{
-					"status":   "failed",
-					"name":     name,
-					"expected": m.SHA256,
-					"actual":   actual,
-					"error":    err.Error(),
+					"status":      "failed",
+					"name":        name,
+					"expected":    m.SHA256,
+					"actual":      actual,
+					"error":       err.Error(),
 					"safe_to_use": "false",
 				})
 				return
@@ -506,8 +506,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	manifestMu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "ok",
-		"model_count": count,
+		"status":       "ok",
+		"model_count":  count,
 		"registry_dir": registryDir,
 	})
 }
@@ -616,11 +616,13 @@ func main() {
 
 	log.Printf("secure-ai-registry listening on %s", bind)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

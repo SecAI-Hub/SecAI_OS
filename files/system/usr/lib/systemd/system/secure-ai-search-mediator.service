@@ -45,6 +45,10 @@ RestrictRealtime=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 
+# Network restriction — mediator only talks to local SearXNG
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Namespace restrictions
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_UNIX

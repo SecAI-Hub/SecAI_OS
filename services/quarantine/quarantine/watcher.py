@@ -48,6 +48,7 @@ REGISTRY_DIR = Path(os.getenv("REGISTRY_DIR", "/registry"))
 REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
 POLICY_PATH = Path(os.getenv("POLICY_PATH", "/etc/secure-ai/policy/policy.yaml"))
 AUDIT_LOG_PATH = Path(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/quarantine-audit.jsonl"))
+SERVICE_TOKEN_PATH = Path(os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token"))
 
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 DENIED_EXTENSIONS = {".pkl", ".pickle", ".pt", ".bin"}
@@ -126,6 +127,18 @@ def _compute_policy_version() -> dict:
         return {"hash": "unreadable"}
 
 
+def _service_headers() -> dict[str, str]:
+    """Return inter-service auth headers when a token is configured."""
+    try:
+        token = SERVICE_TOKEN_PATH.read_text().strip()
+    except OSError:
+        return {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
                         scan_results: dict, model_type: str = "llm",
                         source_url: str = "",
@@ -172,7 +185,7 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
         req = Request(
             f"{REGISTRY_URL}/v1/model/promote",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=_service_headers(),
             method="POST",
         )
         with urlopen(req, timeout=30) as resp:

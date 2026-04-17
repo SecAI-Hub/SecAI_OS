@@ -1,6 +1,6 @@
 [Unit]
 Description=Periodic Clipboard Clear (every 60 seconds)
-Documentation=Prevents sensitive data from persisting on clipboard
+# Prevents sensitive data from persisting on the clipboard between uses
 
 [Timer]
 OnBootSec=2min

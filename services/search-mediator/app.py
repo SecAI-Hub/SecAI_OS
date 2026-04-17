@@ -524,16 +524,17 @@ def build_context(results: list) -> str:
 # Audit logging
 # ---------------------------------------------------------------------------
 
-def audit_search(query: str, sanitized_query: str, redactions: list,
-                 num_results: int, blocked: bool):
-    """Write a hash-chained audit record for every search attempt."""
+def audit_search(query: str, redactions: list, num_results: int, blocked: bool,
+                 *, uniqueness_detected: bool = False):
+    """Write a privacy-preserving audit record for every search attempt."""
     query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     _audit_chain.append("web_search", {
         "query_hash": query_hash,
-        "sanitized_query": sanitized_query,
+        "query_length": len(query),
         "redactions_count": len(redactions),
         "results_returned": num_results,
         "blocked": blocked,
+        "uniqueness_detected": uniqueness_detected,
     })
 
 
@@ -586,7 +587,7 @@ def search():
     # Sanitize the outbound query
     san = sanitize_query(raw_query)
     if san["blocked"]:
-        audit_search(raw_query, san["query"], san["redactions"], 0, True)
+        audit_search(raw_query, san["redactions"], 0, True)
         return jsonify({
             "error": f"query blocked: {san['reason']}",
             "redactions": len(san["redactions"]),
@@ -603,7 +604,13 @@ def search():
         if uq["unique"]:
             mode = dp_config["uniqueness_mode"]
             if mode == "auto-block":
-                audit_search(raw_query, san["query"], san["redactions"], 0, True)
+                audit_search(
+                    raw_query,
+                    san["redactions"],
+                    0,
+                    True,
+                    uniqueness_detected=True,
+                )
                 return jsonify({
                     "error": "query blocked: contains highly unique/identifying terms",
                     "unique_matches": uq["matches"],
@@ -649,11 +656,11 @@ def search():
         resp.raise_for_status()
         data = resp.json()
     except requests.Timeout:
-        audit_search(raw_query, san["query"], san["redactions"], 0, False)
+        audit_search(raw_query, san["redactions"], 0, False)
         return jsonify({"error": "search timed out (Tor may be connecting)"}), 504
     except Exception as e:
         log.exception("SearXNG request failed")
-        audit_search(raw_query, san["query"], san["redactions"], 0, False)
+        audit_search(raw_query, san["redactions"], 0, False)
         return jsonify({"error": f"search failed: {str(e)}"}), 502
 
     # Sanitize the inbound results
@@ -661,7 +668,13 @@ def search():
     clean_results = sanitize_results(raw_results)
     context = build_context(clean_results)
 
-    audit_search(raw_query, san["query"], san["redactions"], len(clean_results), False)
+    audit_search(
+        raw_query,
+        san["redactions"],
+        len(clean_results),
+        False,
+        uniqueness_detected=bool(uniqueness_warning),
+    )
 
     log.info("search completed: query_len=%d results=%d redactions=%d delay=%.2fs decoys=%d",
              len(san["query"]), len(clean_results), len(san["redactions"]), delay, decoys_sent)

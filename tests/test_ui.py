@@ -50,6 +50,136 @@ class TestModelImport:
         assert resp.status_code == 400
 
 
+class TestCatalogDownloads:
+    def test_catalog_download_rejects_non_catalog_entry(self, client):
+        resp = client.post("/api/catalog/download", json={
+            "url": "https://example.com/evil.gguf",
+            "filename": "evil.gguf",
+        })
+        assert resp.status_code == 403
+        assert "curated catalog" in resp.get_json()["error"]
+
+    def test_catalog_download_rejects_invalid_filename(self, client):
+        catalog = load_model_catalog()
+        resp = client.post("/api/catalog/download", json={
+            "url": catalog[0]["url"],
+            "filename": "../evil.gguf",
+        })
+        assert resp.status_code == 400
+        assert "invalid catalog filename" in resp.get_json()["error"]
+
+    def test_catalog_download_honors_airlock_decision(self, client):
+        catalog = load_model_catalog()
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"allowed": False, "reason": "destination not in allowlist"},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app._read_service_token", return_value="svc-token"), \
+             patch("ui.app.requests.post", return_value=mock_resp) as mock_post:
+            resp = client.post("/api/catalog/download", json={
+                "url": catalog[0]["url"],
+                "filename": catalog[0]["filename"],
+            })
+
+        assert resp.status_code == 403
+        assert "allowlist" in resp.get_json()["error"]
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
+
+    def test_single_file_download_hides_partial_until_complete(self, tmp_path):
+        import ui.app as ui_app
+
+        class MockResp:
+            status_code = 200
+            headers = {"content-length": "6"}
+            url = "https://example.com/model.gguf"
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=0):
+                yield b"abc"
+                yield b"def"
+
+        with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
+             patch("ui.app.requests.get", return_value=MockResp()), \
+             patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch.dict("ui.app._active_downloads", {}, clear=True):
+            ui_app._download_single_file("https://example.com/model.gguf", "model.gguf")
+
+        assert (tmp_path / "model.gguf").read_bytes() == b"abcdef"
+        assert not any(p.name.endswith(".part") for p in tmp_path.iterdir())
+
+    def test_single_file_download_blocks_disallowed_redirect(self, tmp_path):
+        import ui.app as ui_app
+
+        class RedirectResp:
+            status_code = 302
+            headers = {"location": "https://evil.example/model.gguf"}
+            url = "https://example.com/model.gguf"
+
+            def raise_for_status(self):
+                return None
+
+            def close(self):
+                return None
+
+        with patch("ui.app._airlock_check_egress", side_effect=[
+            (True, 200, ""),
+            (False, 403, "destination not in allowlist"),
+        ]), \
+             patch("ui.app.requests.get", return_value=RedirectResp()), \
+             patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch.dict("ui.app._active_downloads", {}, clear=True):
+            with pytest.raises(ValueError, match="allowlist"):
+                ui_app._download_single_file("https://example.com/model.gguf", "model.gguf")
+
+        assert not (tmp_path / "model.gguf").exists()
+
+    def test_delete_model_includes_service_token_header(self, client):
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"status": "deleted"},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app._read_service_token", return_value="svc-token"), \
+             patch("ui.app.requests.delete", return_value=mock_resp) as mock_delete:
+            resp = client.post("/api/models/delete", json={"name": "test-model"})
+
+        assert resp.status_code == 200
+        _, kwargs = mock_delete.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
+
+    def test_verify_model_includes_service_token_header(self, client):
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"safe_to_use": "true"},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app._read_service_token", return_value="svc-token"), \
+             patch("ui.app.requests.post", return_value=mock_resp) as mock_post:
+            resp = client.post("/api/models/verify", json={"name": "test-model"})
+
+        assert resp.status_code == 200
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
+
+    def test_verify_all_includes_service_token_header(self, client):
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"status": "ok"},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app._read_service_token", return_value="svc-token"), \
+             patch("ui.app.requests.post", return_value=mock_resp) as mock_post:
+            resp = client.post("/api/integrity/verify-all")
+
+        assert resp.status_code == 200
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
+
+
 class TestPages:
     def test_chat_page_returns_html(self, client):
         with patch("ui.app.load_appliance_config", return_value={}):

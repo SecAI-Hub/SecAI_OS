@@ -97,7 +97,7 @@ search:
   block_high_pii_queries: true
   # Injection detection on inbound results
   detect_injection: true
-  # Audit every search (query hash + sanitized query + result count)
+  # Audit every search (query hash + length + redaction count + result count)
   audit: true
   # Search engines enabled in SearXNG (privacy-respecting only)
   allowed_engines:

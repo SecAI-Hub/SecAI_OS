@@ -48,6 +48,10 @@ RestrictRealtime=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 
+# Network restriction — watcher only calls local registry and smoke-test endpoints
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Namespace restrictions
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

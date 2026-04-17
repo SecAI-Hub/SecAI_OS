@@ -43,6 +43,10 @@ def ui_client(tmp_path):
         "COOKIE_SECURE": "false",
         "SESSION_TIMEOUT": "1800",
     }):
+        if "ui.app" in sys.modules:
+            del sys.modules["ui.app"]
+        if "ui.slo_tracker" in sys.modules:
+            del sys.modules["ui.slo_tracker"]
         from ui.app import app
         app.config["TESTING"] = True
         app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024

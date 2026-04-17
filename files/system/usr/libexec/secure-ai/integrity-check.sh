@@ -16,6 +16,7 @@ REGISTRY_DIR="${REGISTRY_DIR:-/var/lib/secure-ai/registry}"
 TAMPERED_DIR="${SECURE_AI_ROOT}/quarantine/tampered"
 INTEGRITY_LOG="${SECURE_AI_ROOT}/logs/integrity.jsonl"
 RESULT_FILE="${SECURE_AI_ROOT}/logs/integrity-last.json"
+SERVICE_TOKEN_PATH="${SERVICE_TOKEN_PATH:-/run/secure-ai/service-token}"
 
 log() {
     echo "[integrity-check] $*"
@@ -32,8 +33,16 @@ log_json() {
 
 mkdir -p "$(dirname "$INTEGRITY_LOG")" "$TAMPERED_DIR"
 
+registry_auth_args=()
+if [ -f "$SERVICE_TOKEN_PATH" ]; then
+    token=$(cat "$SERVICE_TOKEN_PATH" 2>/dev/null || true)
+    if [ -n "$token" ]; then
+        registry_auth_args=(-H "Authorization: Bearer ${token}")
+    fi
+fi
+
 # Fetch the manifest from the registry
-manifest=$(curl -sf "${REGISTRY_URL}/v1/models" 2>/dev/null) || {
+manifest=$(curl -sf "${registry_auth_args[@]}" "${REGISTRY_URL}/v1/models" 2>/dev/null) || {
     log "ERROR: cannot reach registry at ${REGISTRY_URL}"
     log_json "error" "" "registry unreachable"
     echo '{"status":"error","detail":"registry unreachable","checked_at":"'"$(date -Iseconds)"'"}' > "$RESULT_FILE"
@@ -84,7 +93,9 @@ for i in $(seq 0 $((model_count - 1))); do
 
         # Remove from registry manifest via API
         log "Removing ${name} from registry..."
-        curl -sf -X DELETE "${REGISTRY_URL}/v1/model/delete?name=${name}" >/dev/null 2>&1 || {
+        curl -sf "${registry_auth_args[@]}" -X DELETE \
+            --get --data-urlencode "name=${name}" \
+            "${REGISTRY_URL}/v1/model/delete" >/dev/null 2>&1 || {
             log "WARNING: could not remove ${name} from registry via API"
         }
 

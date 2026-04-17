@@ -52,6 +52,10 @@ RestrictAddressFamilies=AF_UNIX AF_INET
 PrivateUsers=yes
 PrivateNetwork=no
 
+# Network restriction — recorder only serves and calls local control-plane APIs
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Syscall filtering
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

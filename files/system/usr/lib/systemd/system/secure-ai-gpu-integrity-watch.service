@@ -48,6 +48,10 @@ RestrictRealtime=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO
 AmbientCapabilities=
 
+# Network restriction — probes are limited to localhost services
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Namespace restrictions
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET

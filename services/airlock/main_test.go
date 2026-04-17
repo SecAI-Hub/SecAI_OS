@@ -73,6 +73,20 @@ func TestAllowValidDestination(t *testing.T) {
 	}
 }
 
+func TestRejectLookalikeDestination(t *testing.T) {
+	setupTestPolicy()
+	body := `{"destination":"https://huggingface.co.evil.example/models/test","method":"GET","body":""}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handleEgressCheck(w, req)
+
+	var resp EgressResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Allowed {
+		t.Fatal("expected blocked for lookalike hostname")
+	}
+}
+
 func TestBlockUnknownDestination(t *testing.T) {
 	setupTestPolicy()
 	body := `{"destination":"https://evil.com/payload","method":"GET","body":""}`

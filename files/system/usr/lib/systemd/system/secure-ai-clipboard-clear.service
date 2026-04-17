@@ -1,6 +1,6 @@
 [Unit]
 Description=Secure AI Clipboard Auto-Clear
-Documentation=Clears clipboard to prevent sensitive data persistence
+# Clears clipboard to reduce sensitive data persistence on the desktop host
 
 [Service]
 Type=oneshot

@@ -825,6 +825,32 @@ class TestSecurityInvariants:
         assert result_step.result["ok"] is False
         assert "airlock unreachable" in result_step.result["error"]
 
+    def test_airlock_receives_destination_field(self):
+        """Outbound requests must send the destination field expected by the airlock."""
+        tmpdir = tempfile.mkdtemp()
+        storage = StorageGateway(tmpdir)
+        executor = Executor(storage)
+        cap = CapabilityToken(
+            allow_online=True,
+            sensitivity_ceiling=SensitivityLevel.HIGH,
+        )
+        step = Step(
+            action=StepAction.OUTBOUND_REQUEST,
+            status=StepStatus.APPROVED,
+            params={"url": "https://example.com", "method": "GET"},
+        )
+        budgets = Budgets()
+
+        mock_resp = type("Resp", (), {"status_code": 200, "text": "", "json": lambda self: {}})()
+
+        with patch("agent.agent.executor.requests.post", return_value=mock_resp) as mock_post:
+            result_step = executor.execute(step, cap, budgets)
+
+        assert result_step.result["ok"] is True
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["destination"] == "https://example.com"
+        assert "url" not in kwargs["json"]
+
     def test_cannot_bypass_tool_firewall(self):
         """Tool invocations fail when tool firewall is unreachable (fail-closed)."""
         tmpdir = tempfile.mkdtemp()
@@ -845,6 +871,36 @@ class TestSecurityInvariants:
             result_step = executor.execute(step, cap, budgets)
         assert result_step.result["ok"] is False
         assert "firewall unreachable" in result_step.result["error"]
+
+    def test_tool_firewall_receives_normalized_params(self):
+        """Tool firewall requests must send params, not the legacy args field."""
+        tmpdir = tempfile.mkdtemp()
+        storage = StorageGateway(tmpdir)
+        executor = Executor(storage)
+        cap = CapabilityToken(
+            allowed_tools=["filesystem.read"],
+            sensitivity_ceiling=SensitivityLevel.HIGH,
+        )
+        step = Step(
+            action=StepAction.TOOL_INVOKE,
+            status=StepStatus.APPROVED,
+            params={"tool": "filesystem.read", "args": {"path": "/tmp/test"}},
+        )
+        budgets = Budgets()
+
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "json": lambda self: {"decision": "allow"},
+        })()
+
+        with patch("agent.agent.executor.requests.post", return_value=mock_resp) as mock_post:
+            result_step = executor.execute(step, cap, budgets)
+
+        assert result_step.result["ok"] is True
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["tool"] == "filesystem.read"
+        assert kwargs["json"]["params"] == {"path": "/tmp/test"}
+        assert "args" not in kwargs["json"]
 
     def test_cannot_widen_scope_silently(self):
         """Widen-scope action is always classified as approval-required."""

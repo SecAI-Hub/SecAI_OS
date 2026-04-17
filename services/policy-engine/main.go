@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,18 +30,18 @@ import (
 type DecisionDomain string
 
 const (
-	DomainToolAccess      DecisionDomain = "tool_access"
-	DomainPathAccess      DecisionDomain = "path_access"
-	DomainEgress          DecisionDomain = "egress"
-	DomainAgentRisk       DecisionDomain = "agent_risk"
-	DomainSensitivity     DecisionDomain = "sensitivity"
-	DomainModelPromotion  DecisionDomain = "model_promotion"
+	DomainToolAccess     DecisionDomain = "tool_access"
+	DomainPathAccess     DecisionDomain = "path_access"
+	DomainEgress         DecisionDomain = "egress"
+	DomainAgentRisk      DecisionDomain = "agent_risk"
+	DomainSensitivity    DecisionDomain = "sensitivity"
+	DomainModelPromotion DecisionDomain = "model_promotion"
 )
 
 // DecisionRequest is sent by any service needing a policy decision.
 type DecisionRequest struct {
 	Domain      DecisionDomain    `json:"domain"`
-	Subject     string            `json:"subject"`               // e.g. tool name, path, destination
+	Subject     string            `json:"subject"`                // e.g. tool name, path, destination
 	Action      string            `json:"action,omitempty"`       // e.g. "read", "write", "invoke"
 	SessionMode string            `json:"session_mode,omitempty"` // "offline_only", "standard", "sensitive"
 	Params      map[string]string `json:"params,omitempty"`       // domain-specific context
@@ -94,10 +95,10 @@ type UnifiedPolicy struct {
 
 // ToolsPolicy defines tool invocation rules.
 type ToolsPolicy struct {
-	Default   string      `yaml:"default"`
-	Allow     []ToolRule  `yaml:"allow"`
-	Deny      []ToolRule  `yaml:"deny"`
-	RateLimit RateConfig  `yaml:"rate_limit"`
+	Default   string     `yaml:"default"`
+	Allow     []ToolRule `yaml:"allow"`
+	Deny      []ToolRule `yaml:"deny"`
+	RateLimit RateConfig `yaml:"rate_limit"`
 }
 
 // ToolRule defines a single tool allow/deny rule.
@@ -115,11 +116,11 @@ type RateConfig struct {
 
 // AgentPolicy defines agent-specific policy rules.
 type AgentPolicy struct {
-	DefaultMode string            `yaml:"default_mode"`
-	AlwaysDeny  []string          `yaml:"always_deny"`
-	HardApproval []string         `yaml:"hard_approval"`
-	AllowedTools []string         `yaml:"allowed_tools"`
-	Workspace    WorkspacePolicy  `yaml:"workspace"`
+	DefaultMode  string            `yaml:"default_mode"`
+	AlwaysDeny   []string          `yaml:"always_deny"`
+	HardApproval []string          `yaml:"hard_approval"`
+	AllowedTools []string          `yaml:"allowed_tools"`
+	Workspace    WorkspacePolicy   `yaml:"workspace"`
 	Budgets      map[string]Budget `yaml:"budgets"`
 }
 
@@ -131,10 +132,10 @@ type WorkspacePolicy struct {
 
 // Budget defines resource limits per session mode.
 type Budget struct {
-	MaxSteps    int `yaml:"max_steps"`
-	MaxTools    int `yaml:"max_tool_calls"`
-	MaxTokens   int `yaml:"max_tokens"`
-	MaxWallSec  int `yaml:"max_wall_clock_seconds"`
+	MaxSteps   int `yaml:"max_steps"`
+	MaxTools   int `yaml:"max_tool_calls"`
+	MaxTokens  int `yaml:"max_tokens"`
+	MaxWallSec int `yaml:"max_wall_clock_seconds"`
 }
 
 // =========================================================================
@@ -142,9 +143,9 @@ type Budget struct {
 // =========================================================================
 
 var (
-	policyMu     sync.RWMutex
+	policyMu      sync.RWMutex
 	unifiedPolicy UnifiedPolicy
-	policyDigest string // SHA-256 of combined policy files
+	policyDigest  string // SHA-256 of combined policy files
 
 	auditFile *os.File
 	auditMu   sync.Mutex
@@ -158,10 +159,10 @@ var (
 	rateWindow  time.Time
 
 	// Stats
-	totalRequests  atomic.Int64
-	allowedCount   atomic.Int64
-	deniedCount    atomic.Int64
-	askCount       atomic.Int64
+	totalRequests atomic.Int64
+	allowedCount  atomic.Int64
+	deniedCount   atomic.Int64
+	askCount      atomic.Int64
 )
 
 const maxRequestBodySize = 64 * 1024 // 64 KB
@@ -503,7 +504,7 @@ func evaluateEgress(req DecisionRequest, pol UnifiedPolicy, mkEv func(string) De
 		}
 		// Airlock enabled: check destination allowlist
 		for _, allowed := range pol.Airlock.Destinations {
-			if strings.Contains(dest, allowed) || matchesPrefix(dest, allowed) {
+			if destinationAllowed(dest, allowed) {
 				return DecisionResponse{
 					Decision: "allow",
 					Reason:   fmt.Sprintf("destination '%s' in airlock allowlist", dest),
@@ -576,7 +577,7 @@ func evaluateAgentRisk(req DecisionRequest, pol UnifiedPolicy, mkEv func(string)
 // --- Sensitivity evaluation ---
 
 func evaluateSensitivity(req DecisionRequest, pol UnifiedPolicy, mkEv func(string) DecisionEvidence) DecisionResponse {
-	level := req.Subject            // e.g. "high"
+	level := req.Subject             // e.g. "high"
 	ceiling := req.Params["ceiling"] // e.g. "medium"
 
 	levels := map[string]int{"low": 0, "medium": 1, "high": 2}
@@ -651,12 +652,62 @@ func evaluateModelPromotion(req DecisionRequest, pol UnifiedPolicy, mkEv func(st
 // Helpers
 // =========================================================================
 
+func normalizeMatchPath(raw string) string {
+	clean := filepath.Clean(raw)
+	slash := filepath.ToSlash(clean)
+	if vol := filepath.VolumeName(clean); vol != "" {
+		slash = strings.ToLower(filepath.ToSlash(vol)) + strings.TrimPrefix(slash, vol)
+	}
+	return slash
+}
+
+func pathMatchCandidates(raw string) []string {
+	norm := normalizeMatchPath(raw)
+	candidates := []string{norm}
+	if vol := filepath.VolumeName(filepath.Clean(raw)); vol != "" {
+		volNorm := strings.ToLower(filepath.ToSlash(vol))
+		trimmed := strings.TrimPrefix(norm, volNorm)
+		if trimmed != "" {
+			candidates = append(candidates, trimmed)
+		}
+	}
+	return candidates
+}
+
 func matchesPrefix(path, pattern string) bool {
 	pattern = strings.TrimSuffix(pattern, "/**")
 	pattern = strings.TrimSuffix(pattern, "**")
-	pattern = filepath.Clean(pattern)
-	path = filepath.Clean(path)
-	return strings.HasPrefix(path, pattern+"/") || path == pattern
+	pattern = normalizeMatchPath(pattern)
+	for _, candidate := range pathMatchCandidates(path) {
+		if candidate == pattern || strings.HasPrefix(candidate, pattern+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func destinationAllowed(dest, allowed string) bool {
+	destURL, destErr := url.Parse(dest)
+	allowedURL, allowedErr := url.Parse(allowed)
+
+	if destErr == nil && allowedErr == nil && destURL.Scheme != "" && allowedURL.Scheme != "" && destURL.Host != "" && allowedURL.Host != "" {
+		if !strings.EqualFold(destURL.Scheme, allowedURL.Scheme) {
+			return false
+		}
+		if !strings.EqualFold(destURL.Host, allowedURL.Host) {
+			return false
+		}
+		if allowedURL.Path == "" || allowedURL.Path == "/" {
+			return true
+		}
+		return matchesPrefix(destURL.Path, allowedURL.Path)
+	}
+
+	if destErr == nil && destURL.Hostname() != "" && !strings.Contains(allowed, "://") && !strings.Contains(allowed, "/") {
+		return strings.EqualFold(destURL.Hostname(), allowed)
+	}
+
+	return false
 }
 
 // =========================================================================
@@ -736,13 +787,13 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	pol, digest := getPolicy()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"policy_digest":   digest,
-		"tools_allow":     len(pol.Tools.Allow),
-		"tools_deny":      len(pol.Tools.Deny),
-		"total_requests":  totalRequests.Load(),
-		"allowed":         allowedCount.Load(),
-		"denied":          deniedCount.Load(),
-		"ask":             askCount.Load(),
+		"policy_digest":  digest,
+		"tools_allow":    len(pol.Tools.Allow),
+		"tools_deny":     len(pol.Tools.Deny),
+		"total_requests": totalRequests.Load(),
+		"allowed":        allowedCount.Load(),
+		"denied":         deniedCount.Load(),
+		"ask":            askCount.Load(),
 	})
 }
 
@@ -780,11 +831,13 @@ func main() {
 
 	log.Printf("secure-ai-policy-engine listening on %s", bind)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

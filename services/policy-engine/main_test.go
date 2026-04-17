@@ -274,6 +274,15 @@ func TestEgress_AirlockDisabled(t *testing.T) {
 	}
 }
 
+func TestDestinationAllowedRejectsLookalikeHost(t *testing.T) {
+	if destinationAllowed("https://evil-huggingface.co.example/download", "huggingface.co") {
+		t.Fatal("expected lookalike hostname to be rejected")
+	}
+	if destinationAllowed("https://huggingface.co.example/download", "https://huggingface.co/") {
+		t.Fatal("expected lookalike URL prefix to be rejected")
+	}
+}
+
 // =========================================================================
 // Agent risk tests
 // =========================================================================

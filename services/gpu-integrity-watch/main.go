@@ -22,15 +22,15 @@ import (
 
 // IntegrityProfile is the top-level configuration loaded from YAML.
 type IntegrityProfile struct {
-	Version      int                    `yaml:"version"`
-	ModelDir     string                 `yaml:"model_dir"`
-	InferenceURL string                `yaml:"inference_url"`
-	Probes       []ProbeConfig          `yaml:"probes"`
-	Scoring      ScoringConfig          `yaml:"scoring"`
-	Actions      []ActionConfig         `yaml:"actions"`
-	Daemon       DaemonConfig           `yaml:"daemon"`
-	BaselineFile string                 `yaml:"baseline_file"`
-	Integrations IntegrationConfig      `yaml:"integrations"`
+	Version      int               `yaml:"version"`
+	ModelDir     string            `yaml:"model_dir"`
+	InferenceURL string            `yaml:"inference_url"`
+	Probes       []ProbeConfig     `yaml:"probes"`
+	Scoring      ScoringConfig     `yaml:"scoring"`
+	Actions      []ActionConfig    `yaml:"actions"`
+	Daemon       DaemonConfig      `yaml:"daemon"`
+	BaselineFile string            `yaml:"baseline_file"`
+	Integrations IntegrationConfig `yaml:"integrations"`
 }
 
 // ProbeConfig defines a single probe's configuration.
@@ -91,12 +91,12 @@ func auditLog(event string, data map[string]interface{}) {
 // ---------- metrics ----------
 
 var (
-	metricChecks     atomic.Int64
-	metricPass       atomic.Int64
-	metricDrift      atomic.Int64
-	metricFail       atomic.Int64
-	metricActions    atomic.Int64
-	metricHTTPReqs   atomic.Int64
+	metricChecks   atomic.Int64
+	metricPass     atomic.Int64
+	metricDrift    atomic.Int64
+	metricFail     atomic.Int64
+	metricActions  atomic.Int64
+	metricHTTPReqs atomic.Int64
 )
 
 // ---------- main ----------
@@ -588,11 +588,13 @@ func cmdDaemon() {
 	log.Printf("gpu-integrity-watch daemon listening on %s", addr)
 
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

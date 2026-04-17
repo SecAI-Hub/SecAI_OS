@@ -19,6 +19,7 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urljoin
 
 from werkzeug.utils import secure_filename
 
@@ -127,7 +128,7 @@ def csrf_protect():
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        if _auth.validate_session(token):
+        if _auth.validate_session(token, refresh=False):
             return None
 
     # Extract the submitted CSRF token
@@ -240,6 +241,7 @@ _PUBLIC_ENDPOINTS = {
     "/api/auth/login", "/api/auth/setup", "/api/auth/status",
     "/login", "/health",
 }
+_PASSIVE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
@@ -353,6 +355,84 @@ MODEL_CATALOG: list[dict] = load_model_catalog()
 # Track active downloads
 _active_downloads = {}
 _download_lock = threading.Lock()
+_CATALOG_MAX_REDIRECTS = 5
+
+
+def _is_safe_catalog_name(name: str) -> bool:
+    """Return True when a catalog-managed file/dir name is a single path segment."""
+    if not name or name in (".", ".."):
+        return False
+    return Path(name).name == name and not Path(name).is_absolute()
+
+
+def _quarantine_partial_path(name: str) -> Path:
+    """Return a hidden temporary path ignored by the quarantine watcher."""
+    return QUARANTINE_DIR / f".{name}.{uuid.uuid4().hex}.part"
+
+
+def _airlock_check_egress(destination: str, method: str = "GET", body: str = "") -> tuple[bool, int, str]:
+    """Ask the airlock to approve an outbound request before the UI starts it."""
+    try:
+        resp = requests.post(
+            f"{AIRLOCK_URL}/v1/egress/check",
+            json={
+                "destination": destination,
+                "method": method,
+                "body": body,
+            },
+            headers=_service_headers(),
+            timeout=10,
+        )
+    except requests.ConnectionError:
+        return False, 503, "airlock unavailable"
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return False, 502, "invalid airlock response"
+
+    if resp.status_code != 200:
+        reason = data.get("reason") or data.get("error") or "airlock check failed"
+        return False, 502, reason
+
+    allowed = bool(data.get("allowed"))
+    reason = data.get("reason", "")
+    return allowed, (200 if allowed else 403), reason
+
+
+def _catalog_download_response(url: str):
+    """Fetch a catalog artifact while validating every redirect hop via the airlock."""
+    current = url
+    seen = set()
+
+    for _ in range(_CATALOG_MAX_REDIRECTS + 1):
+        if current in seen:
+            raise ValueError("download redirect loop detected")
+        seen.add(current)
+
+        allowed, _, reason = _airlock_check_egress(current, method="GET")
+        if not allowed:
+            raise ValueError(reason or "airlock blocked download")
+
+        resp = requests.get(current, stream=True, timeout=30, allow_redirects=False)
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location")
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
+            if not location:
+                raise ValueError("download redirect missing location")
+            current = urljoin(current, location)
+            if not current.startswith("https://"):
+                raise ValueError("download redirected to non-HTTPS URL")
+            continue
+
+        resp.raise_for_status()
+        if not resp.url.startswith("https://"):
+            raise ValueError("download redirected to non-HTTPS URL")
+        return resp
+
+    raise ValueError("download exceeded redirect limit")
 
 
 def _get_session_token():
@@ -397,8 +477,10 @@ def require_auth():
 
     # Check for valid session
     token = _get_session_token()
-    if _auth.validate_session(token):
-        _touch_vault_activity()
+    passive = request.method in _PASSIVE_METHODS
+    if _auth.validate_session(token, refresh=not passive):
+        if not passive:
+            _touch_vault_activity()
         return None
 
     # Not authenticated — redirect pages to login, return 401 for API
@@ -413,10 +495,11 @@ def require_auth():
 def auth_status():
     """Check if authentication is configured and current session state."""
     token = _get_session_token()
+    authenticated = _auth.validate_session(token, refresh=False) if token else False
     return jsonify({
         "configured": _auth.is_configured(),
-        "authenticated": _auth.validate_session(token) if token else False,
-        "session": _auth.get_session_info(token) if token else {},
+        "authenticated": authenticated,
+        "session": _auth.get_session_info(token) if authenticated else {},
     })
 
 
@@ -625,23 +708,41 @@ def catalog_download():
 
     url = body.get("url", "").strip()
     filename = body.get("filename", "").strip()
-    model_type = body.get("type", "llm")
 
     if not url or not filename:
         return jsonify({"error": "url and filename are required"}), 400
 
+    if not _is_safe_catalog_name(filename):
+        return jsonify({"error": "invalid catalog filename"}), 400
+
+    # Only allow downloads that exactly match the curated catalog entry.
+    catalog_entry = next(
+        (
+            m for m in MODEL_CATALOG
+            if m.get("url") == url and m.get("filename") == filename
+        ),
+        None,
+    )
+    if not catalog_entry:
+        return jsonify({
+            "error": "downloads must match a curated catalog entry",
+        }), 403
     if not url.startswith("https://"):
         return jsonify({"error": "only HTTPS downloads allowed"}), 400
+    allowed, status, reason = _airlock_check_egress(url, method="GET")
+    if not allowed:
+        return jsonify({"error": reason or "airlock blocked download"}), status
+
+    model_type = catalog_entry.get("type", "llm")
 
     with _download_lock:
         if filename in _active_downloads:
             return jsonify({"error": "download already in progress", "filename": filename}), 409
-
-    # Look up catalog entry for post-download verification
-    catalog_entry = next(
-        (m for m in MODEL_CATALOG if m.get("url") == url and m.get("filename") == filename),
-        None,
-    )
+    if (QUARANTINE_DIR / filename).exists():
+        return jsonify({
+            "error": "artifact already exists in quarantine",
+            "filename": filename,
+        }), 409
 
     thread = threading.Thread(
         target=_background_download,
@@ -696,88 +797,111 @@ def _download_single_file(url: str, filename: str, catalog_entry: dict | None = 
     If a catalog_entry is provided, post-download verification checks the
     file size (within 5% tolerance) and SHA-256 hash (if a real pin exists).
     """
+    if not _is_safe_catalog_name(filename):
+        raise ValueError("invalid catalog filename")
+
     dest = QUARANTINE_DIR / filename
+    tmp_dest = _quarantine_partial_path(filename)
     source_meta = QUARANTINE_DIR / f".{filename}.source"
+    if dest.exists():
+        raise ValueError("artifact already exists in quarantine")
 
-    resp = requests.get(url, stream=True, timeout=30, allow_redirects=True)
-    resp.raise_for_status()
-    # Verify final URL is still HTTPS (prevent downgrade via redirect)
-    if not resp.url.startswith("https://"):
-        raise ValueError("download redirected to non-HTTPS URL")
-    total = int(resp.headers.get("content-length", 0))
-    downloaded = 0
+    try:
+        resp = _catalog_download_response(url)
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
 
-    with open(dest, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
-            downloaded += len(chunk)
-            if total > 0:
-                pct = round(downloaded / total * 100, 1)
-                with _download_lock:
-                    _active_downloads[filename] = {
-                        "status": "downloading",
-                        "progress": pct,
-                        "downloaded_mb": round(downloaded / (1 << 20), 1),
-                        "total_mb": round(total / (1 << 20), 1),
-                    }
+        with open(tmp_dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = round(downloaded / total * 100, 1)
+                    with _download_lock:
+                        _active_downloads[filename] = {
+                            "status": "downloading",
+                            "progress": pct,
+                            "downloaded_mb": round(downloaded / (1 << 20), 1),
+                            "total_mb": round(total / (1 << 20), 1),
+                        }
 
-    # Post-download verification
-    if catalog_entry:
-        actual_size = dest.stat().st_size
-        expected_size = catalog_entry.get("expected_size_bytes")
-        if expected_size and expected_size > 0:
-            tolerance = 0.05
-            if abs(actual_size - expected_size) / expected_size > tolerance:
-                dest.unlink(missing_ok=True)
-                raise ValueError(
-                    f"downloaded file size {actual_size} differs from expected "
-                    f"{expected_size} by more than 5%"
-                )
+        # Post-download verification
+        if catalog_entry:
+            actual_size = tmp_dest.stat().st_size
+            expected_size = catalog_entry.get("expected_size_bytes")
+            if expected_size and expected_size > 0:
+                tolerance = 0.05
+                if abs(actual_size - expected_size) / expected_size > tolerance:
+                    raise ValueError(
+                        f"downloaded file size {actual_size} differs from expected "
+                        f"{expected_size} by more than 5%"
+                    )
 
-        expected_hash = catalog_entry.get("expected_sha256", "")
-        if expected_hash and expected_hash != "pin-on-first-download":
-            import hashlib
-            h = hashlib.sha256()
-            with open(dest, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(chunk)
-            actual_hash = h.hexdigest()
-            if actual_hash != expected_hash:
-                dest.unlink(missing_ok=True)
-                raise ValueError(
-                    f"SHA-256 mismatch: expected {expected_hash[:16]}..., "
-                    f"got {actual_hash[:16]}..."
-                )
+            expected_hash = catalog_entry.get("expected_sha256", "")
+            if expected_hash and expected_hash != "pin-on-first-download":
+                import hashlib
+                h = hashlib.sha256()
+                with open(tmp_dest, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+                actual_hash = h.hexdigest()
+                if actual_hash != expected_hash:
+                    raise ValueError(
+                        f"SHA-256 mismatch: expected {expected_hash[:16]}..., "
+                        f"got {actual_hash[:16]}..."
+                    )
 
-    source_meta.write_text(url)
+        os.replace(tmp_dest, dest)
+        source_meta.write_text(resp.url)
+    except Exception:
+        tmp_dest.unlink(missing_ok=True)
+        raise
 
 
 def _download_diffusion_model(url: str, dirname: str):
     """Download a diffusion model (HuggingFace repo) into quarantine."""
-    dest = QUARANTINE_DIR / dirname
-    source_meta = QUARANTINE_DIR / f".{dirname}.source"
+    if not _is_safe_catalog_name(dirname):
+        raise ValueError("invalid catalog directory name")
 
+    allowed, _, reason = _airlock_check_egress(url, method="GET")
+    if not allowed:
+        raise ValueError(reason or "airlock blocked download")
+
+    dest = QUARANTINE_DIR / dirname
+    tmp_dest = _quarantine_partial_path(dirname)
+    source_meta = QUARANTINE_DIR / f".{dirname}.source"
     if dest.exists():
-        shutil.rmtree(dest)
+        raise ValueError("artifact already exists in quarantine")
+
+    if tmp_dest.exists():
+        shutil.rmtree(tmp_dest, ignore_errors=True)
 
     with _download_lock:
         _active_downloads[dirname] = {"status": "downloading", "progress": 0, "message": "Cloning repository..."}
 
     try:
-        subprocess.run(
-            ["huggingface-cli", "download", url.replace("https://huggingface.co/", ""),
-             "--local-dir", str(dest), "--local-dir-use-symlinks", "False"],
-            check=True, capture_output=True, text=True, timeout=3600,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        if not url.startswith("https://huggingface.co/"):
-            raise ValueError("source not in allowlist for git clone")
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
-            check=True, capture_output=True, text=True, timeout=3600,
-        )
+        try:
+            subprocess.run(
+                ["huggingface-cli", "download", url.replace("https://huggingface.co/", ""),
+                 "--local-dir", str(tmp_dest), "--local-dir-use-symlinks", "False"],
+                check=True, capture_output=True, text=True, timeout=3600,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            if not url.startswith("https://huggingface.co/"):
+                raise ValueError("source not in allowlist for git clone")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", url, str(tmp_dest)],
+                check=True, capture_output=True, text=True, timeout=3600,
+            )
 
-    source_meta.write_text(url)
+        os.replace(tmp_dest, dest)
+        source_meta.write_text(url)
+    except Exception:
+        if tmp_dest.exists():
+            shutil.rmtree(tmp_dest, ignore_errors=True)
+        raise
 
 
 # --- API: Models ---
@@ -816,9 +940,15 @@ def model_fsverity_status():
 
 @app.route("/api/models/verify", methods=["POST"])
 def verify_model():
-    name = request.json.get("name", "")
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "")
     try:
-        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify", params={"name": name}, timeout=30)
+        resp = requests.post(
+            f"{REGISTRY_URL}/v1/model/verify",
+            params={"name": name},
+            headers=_service_headers(),
+            timeout=30,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -827,9 +957,15 @@ def verify_model():
 @app.route("/api/models/verify-manifest", methods=["POST"])
 def verify_model_manifest():
     """Verify per-tensor integrity manifest via gguf-guard."""
-    name = request.json.get("name", "")
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "")
     try:
-        resp = requests.post(f"{REGISTRY_URL}/v1/model/verify-manifest", params={"name": name}, timeout=120)
+        resp = requests.post(
+            f"{REGISTRY_URL}/v1/model/verify-manifest",
+            params={"name": name},
+            headers=_service_headers(),
+            timeout=120,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -837,9 +973,15 @@ def verify_model_manifest():
 
 @app.route("/api/models/delete", methods=["POST"])
 def delete_model():
-    name = request.json.get("name", "")
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "")
     try:
-        resp = requests.delete(f"{REGISTRY_URL}/v1/model/delete", params={"name": name}, timeout=10)
+        resp = requests.delete(
+            f"{REGISTRY_URL}/v1/model/delete",
+            params={"name": name},
+            headers=_service_headers(),
+            timeout=10,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
@@ -988,7 +1130,10 @@ def _verify_active_model() -> dict:
         # Verify the first (active) model
         name = models[0].get("name", "")
         verify_resp = requests.post(
-            f"{REGISTRY_URL}/v1/model/verify", params={"name": name}, timeout=30
+            f"{REGISTRY_URL}/v1/model/verify",
+            params={"name": name},
+            headers=_service_headers(),
+            timeout=30,
         )
         result = verify_resp.json()
         if result.get("safe_to_use") == "true":
@@ -1822,6 +1967,15 @@ def _read_service_token():
         return ""
 
 
+def _service_headers(extra: dict | None = None) -> dict:
+    """Return common headers for internal service-to-service requests."""
+    headers = dict(extra or {})
+    token = _read_service_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 # --- API: Model Integrity Monitoring ---
 
 @app.route("/api/integrity/status")
@@ -1838,7 +1992,11 @@ def integrity_status():
 def integrity_verify_all():
     """Trigger an immediate verification of all model hashes."""
     try:
-        resp = requests.post(f"{REGISTRY_URL}/v1/models/verify-all", timeout=120)
+        resp = requests.post(
+            f"{REGISTRY_URL}/v1/models/verify-all",
+            headers=_service_headers(),
+            timeout=120,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503

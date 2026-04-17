@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -86,6 +87,28 @@ class AuthManager:
         self._last_failed = 0.0
         self._lockout_until = 0.0
 
+    def _write_creds(self, creds: dict) -> None:
+        """Persist credentials atomically with restrictive permissions."""
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".auth.",
+            suffix=".tmp",
+            dir=str(self._data_dir),
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(creds, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, self._creds_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
     def is_configured(self) -> bool:
         """Check if a passphrase has been set."""
         return self._creds_path.exists()
@@ -102,10 +125,7 @@ class AuthManager:
         creds["created_at"] = time.time()
 
         try:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            with open(self._creds_path, "w") as f:
-                json.dump(creds, f)
-            os.chmod(str(self._creds_path), 0o600)
+            self._write_creds(creds)
             log.info("passphrase configured successfully")
             return True
         except OSError as e:
@@ -127,9 +147,7 @@ class AuthManager:
         creds["created_at"] = time.time()
 
         try:
-            with open(self._creds_path, "w") as f:
-                json.dump(creds, f)
-            os.chmod(str(self._creds_path), 0o600)
+            self._write_creds(creds)
 
             # Invalidate all existing sessions
             with self._lock:
@@ -183,8 +201,12 @@ class AuthManager:
 
         return {"success": False, "error": "incorrect passphrase"}
 
-    def validate_session(self, token: str) -> bool:
-        """Check if a session token is valid and not expired."""
+    def validate_session(self, token: str, refresh: bool = True) -> bool:
+        """Check if a session token is valid and not expired.
+
+        When ``refresh`` is False, validation does not extend the session's
+        idle timeout. This is useful for passive polling endpoints.
+        """
         if not token:
             return False
 
@@ -198,7 +220,8 @@ class AuthManager:
                 del self._sessions[token]
                 return False
 
-            session["last_active"] = now
+            if refresh:
+                session["last_active"] = now
             return True
 
     def logout(self, token: str):

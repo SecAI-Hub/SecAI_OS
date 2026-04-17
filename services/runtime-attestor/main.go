@@ -31,10 +31,10 @@ import (
 type AttestationState string
 
 const (
-	StateAttested  AttestationState = "attested"
-	StateDegraded  AttestationState = "degraded"
-	StateFailed    AttestationState = "failed"
-	StatePending   AttestationState = "pending"
+	StateAttested AttestationState = "attested"
+	StateDegraded AttestationState = "degraded"
+	StateFailed   AttestationState = "failed"
+	StatePending  AttestationState = "pending"
 )
 
 // RuntimeStateBundle is the signed evidence emitted at boot and periodically.
@@ -63,14 +63,14 @@ type BootMeasurements struct {
 
 // AttestationPolicy defines what must be verified.
 type AttestationPolicy struct {
-	Version         int               `yaml:"version"`
-	RequireTPM      bool              `yaml:"require_tpm"`
-	RequireSecureBoot bool            `yaml:"require_secure_boot"`
-	ExpectedPCRs    map[string]string `yaml:"expected_pcrs"`
-	ServiceBinaries map[string]string `yaml:"service_binaries"`
-	PolicyFiles     []string          `yaml:"policy_files"`
-	RefreshInterval string            `yaml:"refresh_interval"`
-	HMACKeyPath     string            `yaml:"hmac_key_path"`
+	Version           int               `yaml:"version"`
+	RequireTPM        bool              `yaml:"require_tpm"`
+	RequireSecureBoot bool              `yaml:"require_secure_boot"`
+	ExpectedPCRs      map[string]string `yaml:"expected_pcrs"`
+	ServiceBinaries   map[string]string `yaml:"service_binaries"`
+	PolicyFiles       []string          `yaml:"policy_files"`
+	RefreshInterval   string            `yaml:"refresh_interval"`
+	HMACKeyPath       string            `yaml:"hmac_key_path"`
 }
 
 // =========================================================================
@@ -78,8 +78,8 @@ type AttestationPolicy struct {
 // =========================================================================
 
 var (
-	stateMu      sync.RWMutex
-	currentState AttestationState = StatePending
+	stateMu       sync.RWMutex
+	currentState  AttestationState = StatePending
 	currentBundle RuntimeStateBundle
 
 	attestPolicy   AttestationPolicy
@@ -92,9 +92,9 @@ var (
 	serviceToken string
 	hmacKey      []byte
 
-	attestCount   atomic.Int64
-	degradeCount  atomic.Int64
-	failCount     atomic.Int64
+	attestCount  atomic.Int64
+	degradeCount atomic.Int64
+	failCount    atomic.Int64
 )
 
 const maxRequestBodySize = 64 * 1024
@@ -118,10 +118,10 @@ func loadAttestPolicy() error {
 		log.Printf("warning: attestation policy not found (%v) — using defaults", err)
 		attestPolicyMu.Lock()
 		attestPolicy = AttestationPolicy{
-			Version:         1,
-			RequireTPM:      false,
+			Version:           1,
+			RequireTPM:        false,
 			RequireSecureBoot: false,
-			RefreshInterval: "5m",
+			RefreshInterval:   "5m",
 			ServiceBinaries: map[string]string{
 				"registry":      "/usr/libexec/secure-ai/registry",
 				"tool-firewall": "/usr/libexec/secure-ai/tool-firewall",
@@ -592,11 +592,13 @@ func main() {
 
 	log.Printf("secure-ai-runtime-attestor listening on %s", bind)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

@@ -57,47 +57,47 @@ const (
 type IncidentState string
 
 const (
-	StateOpen       IncidentState = "open"
-	StateContained  IncidentState = "contained"
-	StateResolved   IncidentState = "resolved"
+	StateOpen         IncidentState = "open"
+	StateContained    IncidentState = "contained"
+	StateResolved     IncidentState = "resolved"
 	StateAcknowledged IncidentState = "acknowledged"
 )
 
 // Incident is a single security event record.
 type Incident struct {
-	ID              string           `json:"id" yaml:"id"`
-	CreatedAt       string           `json:"created_at" yaml:"created_at"`
-	Class           IncidentClass    `json:"class" yaml:"class"`
-	Severity        IncidentSeverity `json:"severity" yaml:"severity"`
-	State           IncidentState    `json:"state" yaml:"state"`
-	Source          string           `json:"source" yaml:"source"`
-	Description     string           `json:"description" yaml:"description"`
-	Evidence        map[string]string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	ContainmentActions []string      `json:"containment_actions,omitempty" yaml:"containment_actions,omitempty"`
-	ResolvedAt      string           `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
-	Hash            string           `json:"hash" yaml:"hash"`
+	ID                 string            `json:"id" yaml:"id"`
+	CreatedAt          string            `json:"created_at" yaml:"created_at"`
+	Class              IncidentClass     `json:"class" yaml:"class"`
+	Severity           IncidentSeverity  `json:"severity" yaml:"severity"`
+	State              IncidentState     `json:"state" yaml:"state"`
+	Source             string            `json:"source" yaml:"source"`
+	Description        string            `json:"description" yaml:"description"`
+	Evidence           map[string]string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	ContainmentActions []string          `json:"containment_actions,omitempty" yaml:"containment_actions,omitempty"`
+	ResolvedAt         string            `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
+	Hash               string            `json:"hash" yaml:"hash"`
 }
 
 // IncidentReport is the payload for creating a new incident.
 type IncidentReport struct {
-	Class       IncidentClass    `json:"class" yaml:"class"`
-	Severity    IncidentSeverity `json:"severity" yaml:"severity"`
-	Source      string           `json:"source" yaml:"source"`
-	Description string           `json:"description" yaml:"description"`
+	Class       IncidentClass     `json:"class" yaml:"class"`
+	Severity    IncidentSeverity  `json:"severity" yaml:"severity"`
+	Source      string            `json:"source" yaml:"source"`
+	Description string            `json:"description" yaml:"description"`
 	Evidence    map[string]string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 }
 
 // ContainmentPolicy defines automatic containment rules per incident class.
 type ContainmentPolicy struct {
-	Version  int                              `yaml:"version"`
+	Version  int                               `yaml:"version"`
 	Rules    map[IncidentClass]ContainmentRule `yaml:"rules"`
 	Alerting AlertingConfig                    `yaml:"alerting"`
 }
 
 // ContainmentRule defines what actions to take for a given incident class.
 type ContainmentRule struct {
-	AutoContain bool     `yaml:"auto_contain"`
-	Actions     []string `yaml:"actions"`
+	AutoContain bool             `yaml:"auto_contain"`
+	Actions     []string         `yaml:"actions"`
 	Severity    IncidentSeverity `yaml:"default_severity"`
 }
 
@@ -118,10 +118,10 @@ var (
 
 	serviceToken string
 
-	incidentCount   atomic.Int64
-	containedCount  atomic.Int64
-	resolvedCount   atomic.Int64
-	idCounter       atomic.Int64
+	incidentCount  atomic.Int64
+	containedCount atomic.Int64
+	resolvedCount  atomic.Int64
+	idCounter      atomic.Int64
 )
 
 const maxRequestBodySize = 64 * 1024
@@ -605,8 +605,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	open := getOpenIncidents()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":         "ok",
-		"open_incidents": len(open),
+		"status":          "ok",
+		"open_incidents":  len(open),
 		"total_incidents": incidentCount.Load(),
 	})
 }
@@ -862,11 +862,13 @@ func main() {
 
 	log.Printf("secure-ai-incident-recorder listening on %s", bind)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT

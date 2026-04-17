@@ -1,0 +1,10 @@
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.socket text eol=lf
+*.target text eol=lf
+*.path text eol=lf
+*.mount text eol=lf
+files/system/usr/lib/systemd/system/* text eol=lf
+files/system/usr/libexec/secure-ai/* text eol=lf
+files/system/etc/greenboot/check/required.d/* text eol=lf

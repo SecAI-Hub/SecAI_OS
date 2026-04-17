@@ -250,13 +250,13 @@ class Executor:
     ) -> dict:
         """Invoke a tool through the tool firewall."""
         tool = step.params.get("tool", "")
-        args = step.params.get("args", {})
+        params = step.params.get("args", {})
 
         # First: evaluate via tool firewall
         try:
             resp = requests.post(
                 f"{_TOOL_FIREWALL_URL}/v1/evaluate",
-                json={"tool": tool, "args": args},
+                json={"tool": tool, "params": params},
                 timeout=_SERVICE_TIMEOUT,
             )
             budgets.tool_calls_used += 1
@@ -299,7 +299,7 @@ class Executor:
         try:
             resp = requests.post(
                 f"{_AIRLOCK_URL}/v1/egress/check",
-                json={"url": url, "method": method, "body": body},
+                json={"destination": url, "method": method, "body": body},
                 timeout=_SERVICE_TIMEOUT,
             )
 

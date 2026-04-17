@@ -56,6 +56,10 @@ RestrictRealtime=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 
+# Network restriction — UI may only reach peer services on localhost
+IPAddressDeny=any
+IPAddressAllow=localhost
+
 # Namespace restrictions
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

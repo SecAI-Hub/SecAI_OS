@@ -22,12 +22,12 @@ import (
 // ---------- metrics ----------
 
 var (
-	metricEvals      atomic.Int64
-	metricAllowed    atomic.Int64
-	metricDenied     atomic.Int64
-	metricRedacted   atomic.Int64
-	metricApproval   atomic.Int64
-	metricHTTPReqs   atomic.Int64
+	metricEvals    atomic.Int64
+	metricAllowed  atomic.Int64
+	metricDenied   atomic.Int64
+	metricRedacted atomic.Int64
+	metricApproval atomic.Int64
+	metricHTTPReqs atomic.Int64
 )
 
 // ---------- main ----------
@@ -318,11 +318,13 @@ func cmdServe() {
 		addr, policy.DefaultAction, len(policy.Servers))
 
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

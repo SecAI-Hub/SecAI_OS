@@ -150,6 +150,19 @@ class TestAuthManagerSessions:
             auth.logout(token)
             assert auth.validate_session(token) is False
 
+    def test_validate_without_refresh_preserves_idle_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth = AuthManager(tmp)
+            auth.setup_passphrase("testpass123")
+            result = auth.login("testpass123")
+            token = result["token"]
+
+            before = auth._sessions[token]["last_active"]
+            time.sleep(0.01)
+            assert auth.validate_session(token, refresh=False) is True
+            after = auth._sessions[token]["last_active"]
+            assert after == before
+
     def test_session_info(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)

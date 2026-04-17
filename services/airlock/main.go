@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -30,18 +31,18 @@ type PolicyFile struct {
 }
 
 type AirlockPolicy struct {
-	Enabled             bool           `yaml:"enabled"`
-	AllowedDestinations []string       `yaml:"allowed_destinations"`
-	ContentRules        ContentRules   `yaml:"content_rules"`
-	RateLimit           RateConfig     `yaml:"rate_limit"`
-	MaxBodySize         int            `yaml:"max_body_size"`
-	AllowedMethods      []string       `yaml:"allowed_methods"`
+	Enabled             bool         `yaml:"enabled"`
+	AllowedDestinations []string     `yaml:"allowed_destinations"`
+	ContentRules        ContentRules `yaml:"content_rules"`
+	RateLimit           RateConfig   `yaml:"rate_limit"`
+	MaxBodySize         int          `yaml:"max_body_size"`
+	AllowedMethods      []string     `yaml:"allowed_methods"`
 }
 
 type ContentRules struct {
-	BlockIfContains   []string `yaml:"block_if_contains"`
-	ScanForPII        bool     `yaml:"scan_for_pii"`
-	ScanForCredentials bool    `yaml:"scan_for_credentials"`
+	BlockIfContains    []string `yaml:"block_if_contains"`
+	ScanForPII         bool     `yaml:"scan_for_pii"`
+	ScanForCredentials bool     `yaml:"scan_for_credentials"`
 }
 
 type RateConfig struct {
@@ -81,8 +82,8 @@ var (
 	policyMu sync.RWMutex
 	policy   AirlockPolicy
 
-	sourcesMu       sync.RWMutex
-	sourcePrefixes  []string
+	sourcesMu      sync.RWMutex
+	sourcePrefixes []string
 
 	auditFile *os.File
 	auditMu   sync.Mutex
@@ -102,9 +103,9 @@ var (
 var serviceToken string // loaded at startup; empty = dev mode (no auth)
 
 const (
-	defaultMaxBodySize      = 10 * 1024 * 1024 // 10 MB
-	defaultRequestsPerMin   = 30
-	maxRequestBodySize      = 64 * 1024 // 64 KB for the check request itself
+	defaultMaxBodySize    = 10 * 1024 * 1024 // 10 MB
+	defaultRequestsPerMin = 30
+	maxRequestBodySize    = 64 * 1024 // 64 KB for the check request itself
 )
 
 // loadServiceToken reads the service-to-service auth token from disk.
@@ -349,16 +350,46 @@ func validateDestination(dest string) error {
 func isDestinationAllowed(dest string, pol AirlockPolicy) bool {
 	// Check policy destinations
 	for _, allowed := range pol.AllowedDestinations {
-		if strings.HasPrefix(dest, allowed) {
+		if destinationMatchesAllowlist(dest, allowed) {
 			return true
 		}
 	}
 	// Check sources.allowlist.yaml prefixes
 	for _, prefix := range getSourcePrefixes() {
-		if strings.HasPrefix(dest, prefix) {
+		if destinationMatchesAllowlist(dest, prefix) {
 			return true
 		}
 	}
+	return false
+}
+
+func hasURLPathPrefix(candidate, prefix string) bool {
+	prefix = path.Clean(prefix)
+	candidate = path.Clean(candidate)
+	return candidate == prefix || strings.HasPrefix(candidate, prefix+"/")
+}
+
+func destinationMatchesAllowlist(dest, allowed string) bool {
+	destURL, destErr := url.Parse(dest)
+	allowedURL, allowedErr := url.Parse(allowed)
+
+	if destErr == nil && allowedErr == nil && destURL.Scheme != "" && allowedURL.Scheme != "" && destURL.Host != "" && allowedURL.Host != "" {
+		if !strings.EqualFold(destURL.Scheme, allowedURL.Scheme) {
+			return false
+		}
+		if !strings.EqualFold(destURL.Host, allowedURL.Host) {
+			return false
+		}
+		if allowedURL.Path == "" || allowedURL.Path == "/" {
+			return true
+		}
+		return hasURLPathPrefix(destURL.Path, allowedURL.Path)
+	}
+
+	if destErr == nil && destURL.Hostname() != "" && !strings.Contains(allowed, "://") && !strings.Contains(allowed, "/") {
+		return strings.EqualFold(destURL.Hostname(), allowed)
+	}
+
 	return false
 }
 
@@ -508,10 +539,10 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	pol := getPolicy()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"enabled":          pol.Enabled,
-		"total_requests":   totalRequests.Load(),
-		"blocked_requests": blockedRequests.Load(),
-		"allowed_requests": allowedRequests.Load(),
+		"enabled":              pol.Enabled,
+		"total_requests":       totalRequests.Load(),
+		"blocked_requests":     blockedRequests.Load(),
+		"allowed_requests":     allowedRequests.Load(),
 		"allowed_destinations": len(pol.AllowedDestinations) + len(getSourcePrefixes()),
 	})
 }
@@ -567,11 +598,13 @@ func main() {
 
 	log.Printf("secure-ai-airlock listening on %s (enabled=%t)", bind, policy.Enabled)
 	server := &http.Server{
-		Addr:         bind,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              bind,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -142,5 +144,73 @@ func TestEvaluateEndpointPost(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if !resp.Allowed {
 		t.Fatalf("expected allowed, got denied: %s", resp.Reason)
+	}
+}
+
+func TestEvaluateEndpointAcceptsLegacyArgsAlias(t *testing.T) {
+	setupTestPolicy()
+	body := `{"tool":"filesystem.read","args":{"path":"/vault/user_docs/test.txt"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/evaluate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handleEvaluate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp ToolCallResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Allowed {
+		t.Fatalf("expected allowed, got denied: %s", resp.Reason)
+	}
+}
+
+func TestDenyPrefixLookalikePath(t *testing.T) {
+	setupTestPolicy()
+	resp := evaluateTool(ToolCallRequest{
+		Tool:   "filesystem.read",
+		Params: map[string]string{"path": "/vault/user_docs_evil/readme.txt"},
+	})
+	if resp.Allowed {
+		t.Fatal("expected deny for prefix lookalike path")
+	}
+}
+
+func TestDenySymlinkEscape(t *testing.T) {
+	tmp := t.TempDir()
+	allowedDir := filepath.Join(tmp, "vault", "user_docs")
+	if err := os.MkdirAll(allowedDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	outside := filepath.Join(tmp, "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := filepath.Join(allowedDir, "linked-secret.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	policyMu.Lock()
+	policy = Policy{
+		Version: 1,
+		Tools: ToolsPolicy{
+			Default: "deny",
+			Allow: []ToolEntry{
+				{
+					Name:           "filesystem.read",
+					PathsAllowlist: []string{allowedDir + "/**"},
+				},
+			},
+		},
+	}
+	policyMu.Unlock()
+
+	resp := evaluateTool(ToolCallRequest{
+		Tool:   "filesystem.read",
+		Params: map[string]string{"path": link},
+	})
+	if resp.Allowed {
+		t.Fatal("expected deny for symlink escape outside allowlist")
 	}
 }

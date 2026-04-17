@@ -57,11 +57,11 @@ type ProbeResult struct {
 
 // Baseline stores known-good state for comparison.
 type Baseline struct {
-	CapturedAt        time.Time          `json:"captured_at" yaml:"captured_at"`
-	TensorHashes      map[string]string  `json:"tensor_hashes" yaml:"tensor_hashes"` // file -> sha256
-	SentinelRefs      []SentinelRef      `json:"sentinel_refs" yaml:"sentinel_refs"`
-	DriverFingerprint *DriverBaseline    `json:"driver_fingerprint,omitempty" yaml:"driver_fingerprint,omitempty"`
-	DeviceAllowlist   []string           `json:"device_allowlist,omitempty" yaml:"device_allowlist,omitempty"`
+	CapturedAt        time.Time         `json:"captured_at" yaml:"captured_at"`
+	TensorHashes      map[string]string `json:"tensor_hashes" yaml:"tensor_hashes"` // file -> sha256
+	SentinelRefs      []SentinelRef     `json:"sentinel_refs" yaml:"sentinel_refs"`
+	DriverFingerprint *DriverBaseline   `json:"driver_fingerprint,omitempty" yaml:"driver_fingerprint,omitempty"`
+	DeviceAllowlist   []string          `json:"device_allowlist,omitempty" yaml:"device_allowlist,omitempty"`
 }
 
 // DriverBaseline stores expected GPU driver state.
@@ -783,8 +783,13 @@ func detectDriverInfo(settings map[string]string) (version, module string) {
 		"xe":     "/sys/module/xe/version",
 	}
 
-	// Allow override via settings
+	driverPathConfigured := false
+	nvidiaSmiConfigured := false
+
+	// Allow override via settings. When a probe explicitly points to a driver
+	// version path, do not silently fall back to host auto-detection.
 	if customPath, ok := settings["driver_version_path"]; ok {
+		driverPathConfigured = true
 		data, err := os.ReadFile(customPath)
 		if err == nil {
 			version = strings.TrimSpace(string(data))
@@ -796,7 +801,7 @@ func detectDriverInfo(settings map[string]string) (version, module string) {
 	}
 
 	// Auto-detect if not configured
-	if version == "" {
+	if version == "" && !driverPathConfigured {
 		for mod, path := range sysfsDriverPaths {
 			data, err := os.ReadFile(path)
 			if err == nil {
@@ -814,8 +819,9 @@ func detectDriverInfo(settings map[string]string) (version, module string) {
 		nvidiaSmi := "nvidia-smi"
 		if custom, ok := settings["nvidia_smi_path"]; ok {
 			nvidiaSmi = custom
+			nvidiaSmiConfigured = true
 		}
-		if _, err := exec.LookPath(nvidiaSmi); err == nil {
+		if _, err := exec.LookPath(nvidiaSmi); err == nil && (!driverPathConfigured || nvidiaSmiConfigured) {
 			out, err := exec.Command(nvidiaSmi, "--query-gpu=driver_version", "--format=csv,noheader,nounits").Output()
 			if err == nil {
 				version = strings.TrimSpace(string(out))
