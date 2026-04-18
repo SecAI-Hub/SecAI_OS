@@ -14,11 +14,13 @@ Environment=SEARXNG_URL=http://127.0.0.1:8888
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AUDIT_DIR=/var/lib/secure-ai/logs
+Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
 
 # Filesystem isolation — only talks to SearXNG on localhost
 DynamicUser=yes
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/run/secure-ai
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict

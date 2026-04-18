@@ -9,7 +9,10 @@ The LLM never touches the network. This service is the only bridge between
 inference and online information, and it routes everything through Tor.
 """
 
+# ruff: noqa: E402
+
 import hashlib
+import hmac
 import html
 import logging
 import os
@@ -22,7 +25,7 @@ from urllib.parse import urlparse
 
 import requests
 import yaml
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 # Add services/ to path so we can import common.audit_chain
 _services_root = str(Path(__file__).resolve().parent.parent)
@@ -44,6 +47,7 @@ AUDIT_DIR = os.getenv("AUDIT_DIR", "/var/lib/secure-ai/logs")
 _audit_chain = AuditChain(os.path.join(AUDIT_DIR, "search-audit.jsonl"))
 
 # Limits
+MAX_SEARCH_BODY_BYTES = 16 * 1024
 MAX_QUERY_LENGTH = 200
 MAX_RESULTS = 5
 MAX_SNIPPET_LENGTH = 500
@@ -384,6 +388,35 @@ def load_policy() -> dict:
         return {}
 
 
+def _read_service_token() -> str:
+    """Read the inter-service token when present.
+
+    Empty token means development mode / auth disabled.
+    """
+    token_path = os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
+    try:
+        return Path(token_path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def _require_service_token() -> tuple[bool, Response | None]:
+    """Validate Bearer auth for egress-capable endpoints when configured."""
+    token = _read_service_token()
+    if not token:
+        return True, None
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False, (jsonify({"error": "forbidden"}), 403)
+
+    provided = auth[7:]
+    if not hmac.compare_digest(provided, token):
+        return False, (jsonify({"error": "forbidden"}), 403)
+
+    return True, None
+
+
 def _is_search_enabled() -> bool:
     """Check if web search is enabled in policy."""
     policy = load_policy()
@@ -567,6 +600,12 @@ def health():
 @app.route("/v1/search", methods=["POST"])
 def search():
     """Perform a sanitized, Tor-routed web search."""
+    if request.content_length and request.content_length > MAX_SEARCH_BODY_BYTES:
+        return jsonify({"error": "request too large"}), 413
+
+    authorized, auth_response = _require_service_token()
+    if not authorized:
+        return auth_response
 
     # Check if search is enabled
     if not _is_search_enabled():
@@ -577,7 +616,7 @@ def search():
     if session_mode == "offline-only":
         return jsonify({"error": "web search blocked in offline-only mode"}), 403
 
-    body = request.get_json()
+    body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400
 
@@ -686,6 +725,7 @@ def search():
         "redactions": len(san["redactions"]),
         "tor_routed": True,
         "decoys_sent": decoys_sent,
+        "untrusted_external_data": True,
     }
     if uniqueness_warning:
         result["uniqueness_warning"] = uniqueness_warning
@@ -696,6 +736,10 @@ def search():
 @app.route("/v1/search/test", methods=["GET"])
 def search_test():
     """Quick connectivity test: verify Tor circuit is working."""
+    authorized, auth_response = _require_service_token()
+    if not authorized:
+        return auth_response
+
     if not _is_search_enabled():
         return jsonify({"error": "web search is disabled"}), 403
 

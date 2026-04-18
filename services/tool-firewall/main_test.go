@@ -214,3 +214,37 @@ func TestDenySymlinkEscape(t *testing.T) {
 		t.Fatal("expected deny for symlink escape outside allowlist")
 	}
 }
+
+func TestSanitizeAuditParamsRedactsSensitivePayloads(t *testing.T) {
+	pol := Policy{}
+	params := map[string]string{
+		"path":   "/vault/user_docs/report.txt",
+		"prompt": "Summarize the attached tax return and bank statement",
+		"body":   strings.Repeat("x", 64),
+	}
+
+	got := sanitizeAuditParams(params, pol)
+	if got["path"] != params["path"] {
+		t.Fatalf("expected path to remain readable, got %q", got["path"])
+	}
+	if !strings.HasPrefix(got["prompt"], "[redacted len=") {
+		t.Fatalf("expected prompt to be redacted, got %q", got["prompt"])
+	}
+	if !strings.HasPrefix(got["body"], "[redacted len=") {
+		t.Fatalf("expected body to be redacted, got %q", got["body"])
+	}
+}
+
+func TestSanitizeAuditParamsAllowsRawWhenConfigured(t *testing.T) {
+	pol := Policy{}
+	pol.Defaults.Logging.StoreRawPrompts = true
+
+	params := map[string]string{
+		"prompt": "safe short prompt",
+	}
+
+	got := sanitizeAuditParams(params, pol)
+	if got["prompt"] != params["prompt"] {
+		t.Fatalf("expected prompt to remain raw, got %q", got["prompt"])
+	}
+}

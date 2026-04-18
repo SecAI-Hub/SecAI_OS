@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -201,6 +203,55 @@ type AuditEntry struct {
 	Params    map[string]string `json:"params,omitempty"`
 	Allowed   bool              `json:"allowed"`
 	Reason    string            `json:"reason,omitempty"`
+}
+
+var sensitiveAuditKeys = map[string]struct{}{
+	"args":        {},
+	"body":        {},
+	"content":     {},
+	"context":     {},
+	"instruction": {},
+	"input":       {},
+	"message":     {},
+	"messages":    {},
+	"payload":     {},
+	"prompt":      {},
+	"query":       {},
+	"response":    {},
+	"result":      {},
+	"text":        {},
+}
+
+func redactAuditValue(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("[redacted len=%d sha256=%s]", len(value), hex.EncodeToString(sum[:6]))
+}
+
+func sanitizeAuditParams(params map[string]string, pol Policy) map[string]string {
+	if len(params) == 0 {
+		return nil
+	}
+
+	sanitized := make(map[string]string, len(params))
+	for key, value := range params {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		_, sensitiveKey := sensitiveAuditKeys[lowerKey]
+
+		if sensitiveKey && !pol.Defaults.Logging.StoreRawPrompts {
+			sanitized[key] = redactAuditValue(value)
+			continue
+		}
+		if strings.Contains(lowerKey, "response") && !pol.Defaults.Logging.StoreRawResponses {
+			sanitized[key] = redactAuditValue(value)
+			continue
+		}
+		if len(value) > 512 {
+			sanitized[key] = redactAuditValue(value)
+			continue
+		}
+		sanitized[key] = value
+	}
+	return sanitized
 }
 
 func initAuditLog() {
@@ -516,7 +567,7 @@ func handleEvaluate(w http.ResponseWriter, r *http.Request) {
 	// Audit log
 	writeAudit(AuditEntry{
 		Tool:    req.Tool,
-		Params:  req.Params,
+		Params:  sanitizeAuditParams(req.Params, getPolicy()),
 		Allowed: resp.Allowed,
 		Reason:  resp.Reason,
 	})

@@ -5,6 +5,8 @@ Covers: policy engine, capability tokens, storage gateway, budgets,
 planner heuristic fallback, executor dispatch, and Flask API endpoints.
 """
 
+# ruff: noqa: E402
+
 import json
 import os
 import sys
@@ -53,6 +55,7 @@ from agent.agent.storage import StorageGateway
 from agent.agent.planner import Planner
 from agent.agent.executor import Executor
 from agent.agent.app import app
+import agent.agent.app as agent_app_module
 
 
 # ============================================================================
@@ -750,6 +753,77 @@ class TestAgentAPI:
     def test_approve_nonexistent(self):
         resp = self.client.post("/v1/task/fake/approve", json={})
         assert resp.status_code == 404
+
+    @patch("agent.agent.planner.requests.post")
+    def test_approve_pending_task_allows_internal_reverification(self, mock_post):
+        """Approval should re-check integrity without consuming the token nonce."""
+        clear_nonce_cache()
+        with agent_app_module._tasks_lock:
+            agent_app_module._tasks.clear()
+
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "read /var/lib/secure-ai/vault/user_docs/notes.txt",
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["status"] == "pending_approval"
+
+        resp = self.client.post(
+            f"/v1/task/{data['task_id']}/approve",
+            json={"approve_all": True},
+        )
+        assert resp.status_code == 200
+
+    @patch("agent.agent.planner.requests.post")
+    def test_approve_rejects_tampered_step(self, mock_post):
+        clear_nonce_cache()
+        with agent_app_module._tasks_lock:
+            agent_app_module._tasks.clear()
+
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "read /var/lib/secure-ai/vault/user_docs/notes.txt",
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["status"] == "pending_approval"
+
+        with agent_app_module._tasks_lock:
+            task = agent_app_module._tasks[data["task_id"]]
+            task.steps[0].params["path"] = "/etc/shadow"
+
+        resp = self.client.post(
+            f"/v1/task/{data['task_id']}/approve",
+            json={"approve_all": True},
+        )
+        assert resp.status_code == 409
+        assert "integrity" in resp.get_json()["error"]
+
+    @patch("agent.agent.planner.requests.post")
+    def test_approve_rejects_tampered_capability_token(self, mock_post):
+        clear_nonce_cache()
+        with agent_app_module._tasks_lock:
+            agent_app_module._tasks.clear()
+
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        resp = self.client.post("/v1/task", json={
+            "intent": "read /var/lib/secure-ai/vault/user_docs/notes.txt",
+        })
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["status"] == "pending_approval"
+
+        with agent_app_module._tasks_lock:
+            task = agent_app_module._tasks[data["task_id"]]
+            task.capability.allow_online = True
+
+        resp = self.client.post(
+            f"/v1/task/{data['task_id']}/approve",
+            json={"approve_all": True},
+        )
+        assert resp.status_code == 403
+        assert "invalid" in resp.get_json()["error"]
 
     def test_deny_nonexistent(self):
         resp = self.client.post("/v1/task/fake/deny", json={})

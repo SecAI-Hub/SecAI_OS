@@ -124,7 +124,11 @@ def sign_token(token: CapabilityToken) -> CapabilityToken:
     return token
 
 
-def verify_token(token: CapabilityToken) -> tuple[bool, str]:
+def verify_token(
+    token: CapabilityToken,
+    *,
+    consume_nonce: bool = True,
+) -> tuple[bool, str]:
     """Verify a capability token's HMAC signature, nonce, and expiry.
 
     Returns (valid, reason).
@@ -134,7 +138,7 @@ def verify_token(token: CapabilityToken) -> tuple[bool, str]:
         return False, "token expired"
 
     # 2. Replay protection — reject reused nonces
-    if token.nonce in _seen_nonces:
+    if consume_nonce and token.nonce in _seen_nonces:
         return False, "nonce already seen (replay)"
 
     # 3. Verify HMAC signature
@@ -146,9 +150,10 @@ def verify_token(token: CapabilityToken) -> tuple[bool, str]:
         return False, "signature mismatch"
 
     # 4. Record nonce (bounded cache)
-    if len(_seen_nonces) >= _MAX_NONCE_CACHE:
-        _seen_nonces.clear()
-    _seen_nonces.add(token.nonce)
+    if consume_nonce:
+        if len(_seen_nonces) >= _MAX_NONCE_CACHE:
+            _seen_nonces.clear()
+        _seen_nonces.add(token.nonce)
 
     return True, "valid"
 

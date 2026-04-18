@@ -31,6 +31,12 @@ from .models import (
 )
 from .planner import Planner
 from .policy import PolicyEngine
+from .sandbox import (
+    recycle_worker_state,
+    revalidate_step_capability,
+    sign_step,
+    verify_step_signature,
+)
 from .storage import StorageGateway
 
 log = logging.getLogger("agent")
@@ -176,7 +182,7 @@ def submit_task():
     task.budgets = budgets
 
     # Verify token immediately (proves signing is consistent)
-    token_valid, token_reason = verify_token(cap)
+    token_valid, _ = verify_token(cap, consume_nonce=False)
 
     _audit_log("task_submitted", {
         "task_id": task.task_id,
@@ -223,6 +229,10 @@ def submit_task():
         else:  # deny
             step.status = StepStatus.DENIED
             step.error = reason
+
+        # Bind the evaluated step to the capability and policy state so any
+        # mutation between planning, approval, and execution is detected.
+        step.signature = sign_step(step, cap)
 
     if needs_approval:
         task.status = TaskStatus.PENDING_APPROVAL
@@ -282,7 +292,10 @@ def approve_steps(task_id: str):
 
     # Verify capability token is still valid before approving
     if task.capability:
-        token_valid, token_reason = verify_token(task.capability)
+        token_valid, token_reason = verify_token(
+            task.capability,
+            consume_nonce=False,
+        )
         if not token_valid:
             _audit_log("approval_rejected", {
                 "task_id": task_id,
@@ -297,6 +310,25 @@ def approve_steps(task_id: str):
         if step.status != StepStatus.PENDING:
             continue
         if approve_all or step.step_id in step_ids:
+            assert task.capability is not None
+            sig_valid, sig_reason = verify_step_signature(
+                step,
+                task.capability,
+                step.signature,
+            )
+            if not sig_valid:
+                step.status = StepStatus.FAILED
+                step.error = sig_reason
+                task.status = TaskStatus.FAILED
+                _audit_log("approval_rejected", {
+                    "task_id": task_id,
+                    "step_id": step.step_id,
+                    "reason": sig_reason,
+                })
+                return jsonify({
+                    "error": f"step integrity check failed: {sig_reason}",
+                    "step_id": step.step_id,
+                }), 409
             step.status = StepStatus.APPROVED
             approved_count += 1
 
@@ -441,72 +473,117 @@ def _execute_task(task: Task):
     """Execute approved steps sequentially in a background thread."""
     log.info("executing task %s (%d steps)", task.task_id, len(task.steps))
 
-    for step in task.steps:
-        # Only execute approved steps
-        if step.status != StepStatus.APPROVED:
-            continue
+    try:
+        for step in task.steps:
+            # Only execute approved steps
+            if step.status != StepStatus.APPROVED:
+                continue
 
-        # Check if task was cancelled
-        if task.status == TaskStatus.CANCELLED:
-            step.status = StepStatus.SKIPPED
-            continue
+            # Check if task was cancelled
+            if task.status == TaskStatus.CANCELLED:
+                step.status = StepStatus.SKIPPED
+                continue
 
-        # Token expiry check before each step
-        if task.capability and task.capability.is_expired():
-            step.status = StepStatus.FAILED
-            step.error = "capability token expired during execution"
-            task.status = TaskStatus.FAILED
-            _audit_log("token_expired_during_execution", {
+            # Token expiry/signature check before each step
+            if task.capability and task.capability.is_expired():
+                step.status = StepStatus.FAILED
+                step.error = "capability token expired during execution"
+                task.status = TaskStatus.FAILED
+                _audit_log("token_expired_during_execution", {
+                    "task_id": task.task_id,
+                    "step_id": step.step_id,
+                })
+                break
+
+            # Budget check
+            budget_err = task.budgets.check()
+            if budget_err:
+                step.status = StepStatus.FAILED
+                step.error = budget_err
+                task.status = TaskStatus.FAILED
+                _audit_log("budget_exceeded", {
+                    "task_id": task.task_id,
+                    "error": budget_err,
+                })
+                break
+
+            assert task.capability is not None
+            token_valid, token_reason = verify_token(
+                task.capability,
+                consume_nonce=False,
+            )
+            if not token_valid:
+                step.status = StepStatus.FAILED
+                step.error = token_reason
+                task.status = TaskStatus.FAILED
+                _audit_log("token_integrity_violation", {
+                    "task_id": task.task_id,
+                    "step_id": step.step_id,
+                    "reason": token_reason,
+                })
+                break
+
+            sig_valid, sig_reason = verify_step_signature(
+                step,
+                task.capability,
+                step.signature,
+            )
+            if not sig_valid:
+                step.status = StepStatus.FAILED
+                step.error = sig_reason
+                task.status = TaskStatus.FAILED
+                _audit_log("step_integrity_violation", {
+                    "task_id": task.task_id,
+                    "step_id": step.step_id,
+                    "reason": sig_reason,
+                })
+                break
+
+            cap_valid, cap_reason = revalidate_step_capability(step, task.capability)
+            if not cap_valid:
+                step.status = StepStatus.FAILED
+                step.error = cap_reason
+                task.status = TaskStatus.FAILED
+                _audit_log("step_capability_violation", {
+                    "task_id": task.task_id,
+                    "step_id": step.step_id,
+                    "reason": cap_reason,
+                })
+                break
+
+            _executor.execute(step, task.capability, task.budgets)
+
+            _audit_log("step_executed", {
                 "task_id": task.task_id,
                 "step_id": step.step_id,
+                "action": step.action.value,
+                "status": step.status.value,
+                "token_id": task.capability.token_id if task.capability else "",
             })
-            break
 
-        # Budget check
-        budget_err = task.budgets.check()
-        if budget_err:
-            step.status = StepStatus.FAILED
-            step.error = budget_err
-            task.status = TaskStatus.FAILED
-            _audit_log("budget_exceeded", {
-                "task_id": task.task_id,
-                "error": budget_err,
-            })
-            break
+            # If step failed and it's critical, stop the task
+            if step.status == StepStatus.FAILED:
+                task.status = TaskStatus.FAILED
+                break
 
-        # Execute step (capability guaranteed non-None by expiry check above)
-        assert task.capability is not None
-        _executor.execute(step, task.capability, task.budgets)
+        # Finalise task status
+        if task.status == TaskStatus.RUNNING:
+            failed = any(s.status == StepStatus.FAILED for s in task.steps)
+            task.status = TaskStatus.FAILED if failed else TaskStatus.COMPLETED
 
-        _audit_log("step_executed", {
+        task.completed_at = time.time()
+
+        _audit_log("task_completed", {
             "task_id": task.task_id,
-            "step_id": step.step_id,
-            "action": step.action.value,
-            "status": step.status.value,
-            "token_id": task.capability.token_id if task.capability else "",
+            "status": task.status.value,
+            "steps_completed": sum(1 for s in task.steps if s.status == StepStatus.COMPLETED),
+            "steps_failed": sum(1 for s in task.steps if s.status == StepStatus.FAILED),
+            "steps_denied": sum(1 for s in task.steps if s.status == StepStatus.DENIED),
         })
 
-        # If step failed and it's critical, stop the task
-        if step.status == StepStatus.FAILED:
-            task.status = TaskStatus.FAILED
-            break
-
-    # Finalise task status
-    if task.status == TaskStatus.RUNNING:
-        failed = any(s.status == StepStatus.FAILED for s in task.steps)
-        task.status = TaskStatus.FAILED if failed else TaskStatus.COMPLETED
-
-    task.completed_at = time.time()
-
-    _audit_log("task_completed", {
-        "task_id": task.task_id,
-        "status": task.status.value,
-        "steps_completed": sum(1 for s in task.steps if s.status == StepStatus.COMPLETED),
-        "steps_failed": sum(1 for s in task.steps if s.status == StepStatus.FAILED),
-        "steps_denied": sum(1 for s in task.steps if s.status == StepStatus.DENIED),
-    })
-
-    log.info("task %s finished: %s", task.task_id, task.status.value)
+        log.info("task %s finished: %s", task.task_id, task.status.value)
+    finally:
+        recycle_worker_state(task.task_id)
 
 
 # --- Security headers ------------------------------------------------------

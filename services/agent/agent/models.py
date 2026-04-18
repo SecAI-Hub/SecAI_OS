@@ -200,6 +200,7 @@ class Step:
     params: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] | None = None
     error: str | None = None
+    signature: str = ""  # internal anti-tamper binding; intentionally omitted from API output
 
     def to_dict(self) -> dict:
         return {

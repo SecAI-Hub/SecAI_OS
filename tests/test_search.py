@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "search-mediator"))
 
 from app import (
+    app as search_app,
     build_context,
     check_injection,
     sanitize_query,
@@ -183,3 +184,53 @@ class TestContextBuilding:
         ]
         ctx = build_context(results)
         assert len(ctx) <= 4100  # MAX_CONTEXT_LENGTH + truncation notice
+
+
+class TestSearchEndpointAuth:
+    def test_search_requires_service_token_when_present(self, monkeypatch, tmp_path):
+        token_path = tmp_path / "service-token"
+        token_path.write_text("test-token")
+        monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+
+        with search_app.test_client() as client:
+            resp = client.post("/v1/search", json={"query": "test search"})
+
+        assert resp.status_code == 403
+
+    def test_search_accepts_matching_service_token(self, monkeypatch, tmp_path):
+        import app as sm
+
+        token_path = tmp_path / "service-token"
+        token_path.write_text("test-token")
+        monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+
+        with search_app.test_client() as client:
+            with monkeypatch.context() as m:
+                m.setattr(sm, "_is_search_enabled", lambda: True)
+                m.setattr(sm, "_get_session_mode", lambda: "normal")
+                m.setattr(sm, "_random_delay", lambda: 0.0)
+                m.setattr(sm, "_load_dp_config", lambda: {
+                    "enabled": False,
+                    "decoy_count": 0,
+                    "uniqueness_mode": "warn",
+                    "batch_window": 5.0,
+                })
+
+                class MockResp:
+                    status_code = 200
+
+                    def raise_for_status(self):
+                        return None
+
+                    def json(self):
+                        return {"results": []}
+
+                with monkeypatch.context() as m2:
+                    m2.setattr(sm.requests, "get", lambda *args, **kwargs: MockResp())
+                    resp = client.post(
+                        "/v1/search",
+                        json={"query": "test search"},
+                        headers={"Authorization": "Bearer test-token"},
+                    )
+
+        assert resp.status_code == 200
