@@ -152,12 +152,13 @@ Each tagged release may include bootable install artifacts in addition to the OC
 |----------|--------|-------------|----------|
 | OCI image | Container | BlueBuild (build.yml) | Always |
 | ISO | Bootable installer | isogenerator (release.yml) | Always |
+| Portable USB | Direct-flash raw.xz | bootc-image-builder raw + xz (release.yml) | Always |
 | QCOW2 | KVM/QEMU disk image | build-qcow2.sh on KVM runner | When `vars.HAS_KVM_RUNNER` is set |
 | OVA | VirtualBox/VMware appliance | build-ova.sh on KVM runner | When `vars.HAS_KVM_RUNNER` is set |
 
 All install artifacts are built from the same OCI image. After installation, the upgrade path is identical regardless of install method: `rpm-ostree upgrade`.
 
-QCOW2 and OVA may be absent in releases if the repository does not have a self-hosted KVM runner configured. The ISO is always produced on standard GitHub runners.
+QCOW2 and OVA may be absent in releases if the repository does not have a self-hosted KVM runner configured. The installer ISO and portable USB image are produced on standard GitHub runners.
 
 See [release-artifacts.json](release-artifacts.json) for the machine-readable specification of expected artifacts.
 

@@ -67,6 +67,7 @@ The setup wizard guides you through privacy profile selection, system verificati
 | Method | Time | Best For | Details |
 |--------|------|----------|---------|
 | **Bootstrap** (Recommended) | ~30 min | Real PC or VM | Install Fedora Silverblue, run script, reboot |
+| **Portable USB** | ~10 min | Run directly from a USB stick | Flash the release `*-usb.raw.xz` artifact to removable media |
 | **Build VM locally** | ~45 min | VirtualBox / VMware / KVM | `scripts/vm/build-qcow2.sh` builds a QCOW2 from the OCI image |
 | **Development** | ~10 min | Service development only | No OS features; see [dev guide](docs/install/dev.md) |
 
@@ -204,18 +205,20 @@ Tagged releases (`v*`) are built by the [Release workflow](.github/workflows/rel
 | `IMAGE_DIGEST` | OCI image digest for this release |
 | `RELEASE_MANIFEST.json` | Machine-readable release manifest (binaries, SBOMs, provenance, build metadata) |
 | `secai-os-*.iso.sig` | Cosign signature for the bootable ISO |
+| `secai-os-*-usb.raw.xz.sig` | Cosign signature for the portable USB image |
 
 Go services shipped as release binaries: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, `incident-recorder`.
 
 Python services (`ui`, `agent`, `quarantine`, `diffusion-worker`, `search-mediator`) are baked into the OCI image and do not ship as standalone binaries.
 
-### Bootable ISO
+### Bootable Media
 
-A signed bootable ISO is built by every tagged release using [build-container-installer](https://github.com/JasonN3/build-container-installer). The ISO exceeds GitHub's 2 GB release asset limit, so it is available as a **workflow artifact** (90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml). The cosign signature (`.iso.sig`) is published to the GitHub Release for verification.
+A signed bootable installer ISO is built by every tagged release using [build-container-installer](https://github.com/JasonN3/build-container-installer). Each release also includes a compressed portable USB image (`secai-os-*-usb.raw.xz`) built from the same bootc container so the OS can be flashed directly to a USB stick and run without first installing to the internal disk. Both artifacts are available as **workflow artifacts** (90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml), and their cosign signatures are published to the GitHub Release for verification.
 
-To build a QCOW2 or OVA locally from the OCI image:
+To build portable USB or VM media locally from the OCI image:
 
 ```bash
+bash scripts/build-usb-image.sh      # produces output/secai-os-<version>-x86_64-usb.raw(.xz)
 bash scripts/vm/build-qcow2.sh        # produces output/secai-os.qcow2
 bash scripts/vm/build-ova.sh           # produces output/secai-os.ova
 ```

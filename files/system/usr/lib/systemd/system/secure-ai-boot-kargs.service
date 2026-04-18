@@ -1,0 +1,14 @@
+[Unit]
+Description=Secure AI hardware-aware boot argument sync
+Documentation=https://github.com/SecAI-Hub/SecAI_OS
+After=local-fs.target
+Before=multi-user.target graphical.target
+ConditionPathExists=/usr/bin/rpm-ostree
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/sync-boot-kargs.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -207,6 +207,59 @@ jobs:
           name: iso-amd64
           path: dist/secai-os-*.iso*
 
+  build-usb-image:
+    name: Build Portable USB Image
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          sudo docker image prune -af
+
+      - name: Install image build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman xz-utils
+
+      - name: Build portable USB image
+        run: |
+          mkdir -p dist
+          sudo bash scripts/build-usb-image.sh \
+            --image-ref "ghcr.io/secai-hub/secai_os:latest" \
+            --output-dir ./dist \
+            --version "${{ github.ref_name }}"
+
+      - name: Install cosign
+        run: |
+          COSIGN_VERSION="v2.4.3"
+          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+            -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+
+      - name: Sign portable USB image
+        run: |
+          USB_IMAGE=$(find dist -maxdepth 1 -name "secai-os-*-usb.raw.xz" -type f | head -1)
+          if [ -z "$USB_IMAGE" ]; then
+            echo "ERROR: portable USB image not found after build"
+            find dist -maxdepth 2 -type f
+            exit 1
+          fi
+          cosign sign-blob --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --output-signature "${USB_IMAGE}.sig" \
+            "$USB_IMAGE"
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+      - name: Upload portable USB artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: usb-amd64
+          path: dist/secai-os-*-usb.raw.xz*
+
   build-vm-images:
     name: Build VM Images (QCOW2 + OVA)
     needs: [preflight]
@@ -253,7 +306,7 @@ jobs:
   provenance:
     name: SLSA Provenance & Attestation
     runs-on: ubuntu-latest
-    needs: [build-go, build-python, build-iso]
+    needs: [build-go, build-python, build-iso, build-usb-image]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -365,11 +418,14 @@ jobs:
 
           # Add install artifacts (conditionally present)
           INSTALL_JSON="{}"
-          for artifact in secai-os-*.iso secai-os-*.qcow2 secai-os-*.ova; do
+          for artifact in secai-os-*.iso secai-os-*.qcow2 secai-os-*.ova secai-os-*-usb.raw.xz; do
             [ -f "$artifact" ] || continue
             HASH=$(sha256sum "$artifact" | awk '{print $1}')
             SIZE=$(stat -c%s "$artifact" 2>/dev/null || stat -f%z "$artifact" 2>/dev/null || echo 0)
             TYPE="${artifact##*.}"
+            if [[ "$artifact" == *.raw.xz ]]; then
+              TYPE="usb_raw_xz"
+            fi
             INSTALL_JSON=$(echo "$INSTALL_JSON" | jq \
               --arg type "$TYPE" --arg name "$artifact" \
               --arg sha256 "$HASH" --arg size "$SIZE" \
@@ -430,12 +486,13 @@ jobs:
             dist/IMAGE_REF_PINNED
             dist/RELEASE_MANIFEST.json
             dist/secai-os-*.iso.sig
+            dist/secai-os-*-usb.raw.xz.sig
             dist/secai-os-*.qcow2.sig
             dist/secai-os-*.ova.sig
           generate_release_notes: true
           fail_on_unmatched_files: false
 
-      # ISO/QCOW2/OVA files are too large for GitHub Releases (>2GB limit).
+      # Install media files are too large for GitHub Releases (>2GB limit).
       # Upload signatures only (above). The full images are available as
       # workflow artifacts or should be hosted on external storage.
       - name: Note on large artifacts
@@ -443,10 +500,10 @@ jobs:
         run: |
           echo "## Large Artifacts" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "ISO/QCOW2/OVA files exceed GitHub Releases' 2GB limit." >> "$GITHUB_STEP_SUMMARY"
+          echo "Install media files can exceed GitHub Releases' 2GB limit." >> "$GITHUB_STEP_SUMMARY"
           echo "Their cosign signatures (.sig) are included in the release." >> "$GITHUB_STEP_SUMMARY"
           echo "Full images are available as workflow artifacts (90-day retention)." >> "$GITHUB_STEP_SUMMARY"
-          for f in dist/secai-os-*.iso dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
+          for f in dist/secai-os-*.iso dist/secai-os-*-usb.raw.xz dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
             [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f" 2>/dev/null || echo 0)
             SIZE_MB=$((SIZE / 1048576))

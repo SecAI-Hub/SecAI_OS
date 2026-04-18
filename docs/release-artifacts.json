@@ -56,6 +56,12 @@
         "description": "Bootable ISO (requires isogenerator)",
         "required_when": "always (standard runner)"
       },
+      "portable_usb": {
+        "pattern": "secai-os-{version}-x86_64-usb.raw.xz",
+        "signature": "secai-os-{version}-x86_64-usb.raw.xz.sig",
+        "description": "Direct-flash portable USB image built from bootc-image-builder raw output",
+        "required_when": "always (standard runner)"
+      },
       "qcow2": {
         "pattern": "secai-os-{version}.qcow2",
         "signature": "secai-os-{version}.qcow2.sig",

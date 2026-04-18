@@ -14,19 +14,21 @@ ProtectHome=yes
 PrivateTmp=yes
 
 # Kernel protection
-ProtectKernelTunables=yes
+# firstboot.sh intentionally adjusts a small set of boot-time sysctls
+# and may need to disable swap on the initial boot.
+ProtectKernelTunables=no
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 
-# Capability bounding — root oneshot, no special caps needed
-CapabilityBoundingSet=
+# Capability bounding — firstboot performs host setup (sysctl, swapoff, nft)
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_NET_ADMIN CAP_SETGID CAP_SETUID CAP_SYS_ADMIN CAP_SYS_RESOURCE
 
 # Syscall filtering
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallFilter=~@privileged @mount @clock @debug @reboot @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 

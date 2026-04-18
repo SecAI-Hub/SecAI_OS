@@ -33,3 +33,4 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+/.bluebuild-scripts_*

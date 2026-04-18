@@ -7,10 +7,11 @@ Get SecAI OS running in the fewest steps possible. Choose the path that fits you
 | Method | Time | Difficulty | Best For |
 |--------|------|-----------|----------|
 | **Bootstrap** (Recommended) | ~30 min | Easy | Real PC or VM, full security |
+| **Portable USB** | ~10 min | Easy | Run directly from removable media without installing first |
 | **VM Build** | ~45 min | Moderate | Local evaluation in VirtualBox/VMware/KVM |
 | **Development** | ~10 min | Easy | Service development only (no OS features) |
 
-> **Note on ISO/OVA/QCOW2:** The release pipeline builds a signed bootable ISO, but it exceeds GitHub's 2 GB release asset limit. Pre-built VM images (OVA/QCOW2) require build infrastructure not yet provisioned. For now, the bootstrap path below is the primary install method. See [Artifact Availability](#artifact-availability) for details.
+> **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). Pre-built VM images (OVA/QCOW2) still require build infrastructure not yet provisioned. The bootstrap path remains the recommended production install, but the portable USB artifact is the right choice when you want to boot and evaluate directly from removable media. See [Artifact Availability](#artifact-availability) for details.
 
 ---
 
@@ -160,11 +161,13 @@ make verify-release
 |----------|-------|--------|
 | **OCI image** | `ghcr.io/secai-hub/secai_os:latest` | Always available, cosign-signed |
 | **Go binaries + SBOMs** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | Always available |
-| **ISO** | Release workflow artifact (90-day retention) | Built in CI; too large (~4 GB) for GitHub Releases |
+| **Installer ISO** | Release workflow artifact (90-day retention) | Built in CI; intended for install-to-disk |
 | **ISO signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.iso.sig` file for verification |
+| **Portable USB image** | Release workflow artifact (90-day retention) | Built in CI as `secai-os-*-usb.raw.xz`; flash directly to removable media |
+| **Portable USB signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.raw.xz.sig` file for verification |
 | **QCOW2 / OVA** | `scripts/vm/build-qcow2.sh` / `build-ova.sh` | Build locally; CI build requires self-hosted KVM runner |
 
-The ISO is produced by every tagged release and is available as a [workflow artifact](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml) with 90-day retention. Its cosign signature (`.iso.sig`) is published to GitHub Releases for verification. For permanent ISO hosting, an external storage solution is needed.
+The installer ISO and portable USB image are produced by every tagged release and are available as [workflow artifacts](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml) with 90-day retention. Their cosign signatures are published to GitHub Releases for verification. For permanent hosting, an external storage solution is still needed.
 
 ---
 

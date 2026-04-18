@@ -75,15 +75,10 @@ modules:
     install: []
     nvidia-driver: nvidia-open
 
-  # 5) Kernel args: GPU setup + disable swap + security hardening.
+  # 5) Kernel args: generic security hardening.
   - type: kargs
     kargs:
-      # NVIDIA
-      - rd.driver.blacklist=nouveau
-      - modprobe.blacklist=nouveau
-      - nvidia-drm.modeset=1
-      # AMD — amdgpu is in-kernel, just ensure it's preferred
-      - amdgpu.dc=1
+      # Hardware-specific GPU boot arguments are synced post-boot.
       # Security hardening
       - systemd.swap=0
       - slab_nomerge
@@ -95,7 +90,6 @@ modules:
       # Memory protection (M18) — disable compressed swap
       - zswap.enabled=0
       - lockdown=confidentiality
-      - iommu=force
 
   # 6) Enable/disable systemd units baked into the image.
   - type: systemd
@@ -123,6 +117,7 @@ modules:
         - secure-ai-health-check.service
         - secure-ai-gpu-integrity-watch.service
         - secure-ai-mcp-firewall.service
+        - secure-ai-boot-kargs.service
         - greenboot-healthcheck.service
         - greenboot-task-runner.service
         - nftables.service

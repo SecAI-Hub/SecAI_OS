@@ -53,6 +53,8 @@ v1.0.0/
   # Install artifacts (bootable images)
   secai-os-v1.0.0-x86_64.iso        # Bootable ISO (from isogenerator)
   secai-os-v1.0.0-x86_64.iso.sig    # cosign detached signature
+  secai-os-v1.0.0-x86_64-usb.raw.xz     # Portable USB image (direct-flash)
+  secai-os-v1.0.0-x86_64-usb.raw.xz.sig # cosign detached signature
   secai-os-v1.0.0.qcow2             # QCOW2 disk image (optional — requires KVM build infra)
   secai-os-v1.0.0.qcow2.sig         # cosign detached signature
   secai-os-v1.0.0.ova               # OVA appliance (optional — requires KVM build infra)
@@ -64,8 +66,9 @@ v1.0.0/
 ```
 
 > **Note:** QCOW2 and OVA artifacts may be absent if the repository does not have
-> a self-hosted KVM runner. The ISO is always produced. See `docs/release-artifacts.json`
-> for the machine-readable artifact specification.
+> a self-hosted KVM runner. The installer ISO and portable USB image are produced
+> on standard runners. See `docs/release-artifacts.json` for the machine-readable
+> artifact specification.
 
 ## Image Digest
 

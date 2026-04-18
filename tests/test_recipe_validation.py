@@ -110,6 +110,29 @@ class TestDisabledByDefaultServices:
         assert service in disabled, f"{service} must be in the disabled list"
 
 
+class TestBootCompatibilityDefaults:
+    """Boot defaults should stay broadly compatible across hardware."""
+
+    def test_hardware_kargs_sync_service_enabled(self, recipe):
+        systemd = _get_systemd_module(recipe)
+        enabled = _get_enabled(systemd)
+        assert "secure-ai-boot-kargs.service" in enabled
+
+    def test_no_global_forced_iommu_arg(self, recipe):
+        kargs_module = next(m for m in recipe.get("modules", []) if m.get("type") == "kargs")
+        assert "iommu=force" not in kargs_module["kargs"]
+
+    def test_no_global_vendor_gpu_args(self, recipe):
+        kargs_module = next(m for m in recipe.get("modules", []) if m.get("type") == "kargs")
+        forbidden = {
+            "rd.driver.blacklist=nouveau",
+            "modprobe.blacklist=nouveau",
+            "nvidia-drm.modeset=1",
+            "amdgpu.dc=1",
+        }
+        assert forbidden.isdisjoint(set(kargs_module["kargs"]))
+
+
 class TestDiffusionPathUnitEnabled:
     """The diffusion install path unit must be enabled to watch for UI requests."""
 

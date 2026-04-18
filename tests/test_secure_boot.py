@@ -160,6 +160,20 @@ class TestFirstbootIntegration:
         content = (SCRIPTS_DIR / "firstboot.sh").read_text()
         assert "keys/tpm2" in content
 
+    def test_firstboot_service_keeps_needed_capabilities(self):
+        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
+        assert "CapabilityBoundingSet=CAP_CHOWN" in content
+        assert "CAP_SYS_ADMIN" in content
+        assert "CAP_NET_ADMIN" in content
+
+    def test_firstboot_service_can_write_kernel_tunables(self):
+        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
+        assert "ProtectKernelTunables=no" in content
+
+    def test_firstboot_service_allows_swapoff(self):
+        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
+        assert "@swap" not in content
+
 
 class TestRecipeIncludes:
     def test_recipe_includes_mokutil(self):

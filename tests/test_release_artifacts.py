@@ -87,6 +87,10 @@ class TestReleaseWorkflowStructure:
         content = _read_release_yml()
         assert "secai-os-*.iso" in content
 
+    def test_release_files_include_portable_usb(self):
+        content = _read_release_yml()
+        assert "secai-os-*-usb.raw.xz" in content
+
     def test_release_files_include_vm(self):
         content = _read_release_yml()
         assert "secai-os-*.qcow2" in content
@@ -109,6 +113,10 @@ class TestSampleReleaseBundle:
     def test_mentions_qcow2(self):
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         assert ".qcow2" in content
+
+    def test_mentions_portable_usb(self):
+        content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
+        assert ".raw.xz" in content
 
     def test_mentions_ova(self):
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
@@ -139,6 +147,10 @@ class TestVerifyReleaseScript:
         content = VERIFY_RELEASE.read_text(encoding="utf-8")
         # Step 5 should use cosign verify-blob for install artifacts
         assert "cosign verify-blob" in content
+
+    def test_handles_portable_usb_artifacts(self):
+        content = VERIFY_RELEASE.read_text(encoding="utf-8")
+        assert "usb.raw.xz" in content
 
 
 class TestBuildQcow2Script:
