@@ -60,7 +60,63 @@ http://127.0.0.1:8480
 
 ---
 
-## Path B: Build a VM Image Locally
+## Path B: Run From a Portable USB
+
+This path is for evaluation directly from removable media without first installing to the internal disk.
+
+**1. Download the portable USB image**
+
+Get the latest `secai-os-*-usb.raw.xz` workflow artifact from the
+[Release workflow](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml).
+
+**2. Verify the checksum**
+
+Download `SHA256SUMS` from the matching release bundle or workflow output and
+confirm that the hash for `secai-os-*-usb.raw.xz` matches your download.
+
+**3. Write it to the USB drive**
+
+**Windows (recommended):**
+
+- Prefer **USBImager**. It can write `*.raw.xz` images directly.
+- Select the downloaded `secai-os-*-usb.raw.xz` file.
+- Select the USB drive.
+- Click `Write`.
+
+**Windows (Rufus fallback):**
+
+- Set **Boot selection** to `Disk or ISO image`.
+- Click `SELECT` and choose the portable USB image.
+- If Rufus does not accept `*.raw.xz`, extract it to `*.raw` first with 7-Zip and select the extracted file.
+- Do **not** choose `MS-DOS`, `FreeDOS`, or `Non bootable`.
+- If Rufus offers `DD` vs `ISO` write modes, choose `DD`.
+
+**Linux / macOS:**
+
+```bash
+# Linux
+xz -dk secai-os-<version>-x86_64-usb.raw.xz
+sudo dd if=secai-os-<version>-x86_64-usb.raw of=/dev/sdX bs=16M status=progress oflag=sync
+
+# macOS
+xz -dk secai-os-<version>-x86_64-usb.raw.xz
+sudo dd if=secai-os-<version>-x86_64-usb.raw of=/dev/rdiskN bs=16m
+sync
+```
+
+Replace `/dev/sdX` or `/dev/rdiskN` with the actual removable device.
+
+**4. Boot from the USB**
+
+- Use the firmware's explicit **UEFI USB** boot entry.
+- Disable **Legacy/CSM** mode.
+- If the USB still does not appear bootable, try one test with **Secure Boot temporarily disabled** to distinguish firmware policy issues from a bad write.
+
+**What you should see:** The system should boot directly from the USB image rather than showing the installer-only ISO menu.
+
+---
+
+## Path C: Build a VM Image Locally
 
 If you want a self-contained VM image without installing Fedora first, you can build one from the OCI image using the included scripts. This requires a Linux host with KVM/QEMU.
 
@@ -107,7 +163,7 @@ virsh domifaddr secai-os
 
 ---
 
-## Path C: Development Mode
+## Path D: Development Mode
 
 Run individual services locally for development without rebasing your OS. No security features (sandboxing, firewall, vault) are active.
 

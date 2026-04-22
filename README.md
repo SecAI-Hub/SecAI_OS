@@ -215,6 +215,13 @@ Python services (`ui`, `agent`, `quarantine`, `diffusion-worker`, `search-mediat
 
 A signed bootable installer ISO is built by every tagged release using [build-container-installer](https://github.com/JasonN3/build-container-installer). Each release also includes a compressed portable USB image (`secai-os-*-usb.raw.xz`) built from the same bootc container so the OS can be flashed directly to a USB stick and run without first installing to the internal disk. Both artifacts are available as **workflow artifacts** (90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml), and their cosign signatures are published to the GitHub Release for verification.
 
+For Windows users writing the portable USB image:
+
+- Prefer **USBImager** for `*.raw.xz` because it can write compressed disk images directly.
+- In **Rufus**, keep **Boot selection** set to `Disk or ISO image`, click `SELECT`, and choose the portable USB image. If Rufus does not accept `*.raw.xz`, extract it to `*.raw` first with 7-Zip and select the extracted file instead.
+- Do **not** choose `MS-DOS`, `FreeDOS`, or `Non bootable` for the portable USB image.
+- Boot the USB in **UEFI** mode with Legacy/CSM disabled. If firmware still refuses the media, temporarily disable Secure Boot for troubleshooting.
+
 To build portable USB or VM media locally from the OCI image:
 
 ```bash
