@@ -628,8 +628,14 @@ def _make_unix_server(sock_path: str):
     class _UnixWSGIServer(WSGIServer):
         address_family = _socket.AF_UNIX
 
+        def __init__(self, socket_path: str, handler_cls: type[WSGIRequestHandler]) -> None:
+            self._socket_path = socket_path
+            super().__init__(("localhost", 0), handler_cls, bind_and_activate=False)
+            self.server_bind()
+            self.server_activate()
+
         def server_bind(self):
-            self.socket.bind(self.server_address)
+            self.socket.bind(self._socket_path)
             self.server_name = "localhost"
             self.server_port = 0
             self.setup_environ()

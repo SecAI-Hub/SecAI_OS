@@ -1,4 +1,4 @@
-FROM ghcr.io/ggml-org/llama.cpp:server AS llama_server
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
 
 FROM docker.io/library/python:3.12-slim@sha256:520153e2deb359602c9cffd84e491e3431d76e7bf95a3255c9ce9433b76ab99a
 

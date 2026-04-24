@@ -1,4 +1,4 @@
-FROM alpine:3.23 AS build
+FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS build
 
 USER root
 ENV PYTHON_VERSION=3.14.4
@@ -48,7 +48,7 @@ RUN pip install --no-cache-dir --upgrade \
     chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app "${VIRTUAL_ENV}" "${PREFIX}"
 
-FROM alpine:3.23 AS runtime-base
+FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS runtime-base
 
 RUN apk add --no-cache \
         bzip2 \

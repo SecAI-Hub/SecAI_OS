@@ -13,6 +13,12 @@ for f in $(find services/ -name 'Containerfile' -o -name 'Dockerfile'); do
         [[ -z "$line" ]] && continue
 
         if echo "$line" | grep -qE '^FROM '; then
+            image_ref="$(echo "$line" | awk '{for (i = 2; i <= NF; i++) if ($i !~ /^--/) {print $i; break}}')"
+
+            if [ "$image_ref" = "scratch" ]; then
+                continue
+            fi
+
             # Allow ARG-interpolated tags (e.g. ${COMPUTE}) with a warning
             if echo "$line" | grep -q '\${'; then
                 if ! echo "$line" | grep -q '@sha256:'; then
