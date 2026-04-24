@@ -34,3 +34,7 @@ dist/
 .DS_Store
 Thumbs.db
 /.bluebuild-scripts_*
+
+# Sandbox bundle
+/deploy/sandbox/.env
+/deploy/sandbox/runtime/

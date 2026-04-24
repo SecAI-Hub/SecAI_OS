@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import errno
 import stat
 import subprocess
 import sys
@@ -133,6 +134,12 @@ def csrf_protect():
         if _auth.validate_session(token, refresh=False):
             return None
 
+    # If the caller is not authenticated, let the auth guard return 401
+    # instead of surfacing a CSRF error for anonymous requests.
+    session_token = request.cookies.get("session_token", "")
+    if not _auth.validate_session(session_token, refresh=False):
+        return None
+
     # Extract the submitted CSRF token
     submitted = request.headers.get("X-CSRF-Token", "")
     if not submitted:
@@ -218,6 +225,57 @@ VAULT_STATE_FILE = Path(os.getenv("VAULT_STATE_FILE", "/run/secure-ai/vault-stat
 
 _ui_audit = AuditChain(os.getenv("AUDIT_LOG_PATH", "/var/lib/secure-ai/logs/ui-audit.jsonl"))
 _slo_tracker = SLOTracker()
+
+
+def _deployment_mode() -> str:
+    """Return the current packaging/deployment mode."""
+    return os.getenv("SECURE_AI_DEPLOYMENT_MODE", "").strip().lower() or "appliance"
+
+
+def _deployment_provider() -> str:
+    """Return the current deployment provider label."""
+    return os.getenv("SECURE_AI_DEPLOYMENT_PROVIDER", "").strip().lower() or "native"
+
+
+def _assurance_tier() -> str:
+    """Return the configured assurance tier."""
+    return os.getenv("SECURE_AI_ASSURANCE_TIER", "").strip().lower() or "production"
+
+
+def _is_sandbox_deployment() -> bool:
+    """Whether the UI is running in the compose sandbox path."""
+    return _deployment_mode() == "sandbox"
+
+
+def _unsupported_feature(feature: str, detail: str):
+    """Return a consistent response for appliance-only features."""
+    return jsonify({
+        "error": f"{feature} is not available in this deployment",
+        "feature": feature,
+        "detail": detail,
+        "deployment_mode": _deployment_mode(),
+        "deployment_provider": _deployment_provider(),
+        "assurance_tier": _assurance_tier(),
+        "supported": False,
+    }), 501
+
+
+def _missing_runtime_dependency(feature: str, dependency_path: str):
+    """Return a consistent response when an expected appliance helper is absent."""
+    return jsonify({
+        "error": f"{feature} is unavailable because a required helper is missing",
+        "feature": feature,
+        "detail": dependency_path,
+        "deployment_mode": _deployment_mode(),
+        "deployment_provider": _deployment_provider(),
+        "assurance_tier": _assurance_tier(),
+        "supported": False,
+    }), 501
+
+
+def _audit_unavailable(event: str, **data):
+    """Record that a feature request was blocked because the deployment cannot support it."""
+    _ui_audit.append(f"{event}_unavailable", {"status_code": 501, **data})
 
 AUTH_DATA_DIR = os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")
 _auth = AuthManager(AUTH_DATA_DIR)
@@ -454,6 +512,17 @@ def _touch_vault_activity():
         VAULT_ACTIVITY_FILE.write_text(str(time.time()))
     except OSError:
         pass
+
+
+def _storage_error_response(exc: OSError, *, action: str, filename: str) -> tuple:
+    """Return a controlled response for storage-related import failures."""
+    err_no = getattr(exc, "errno", None)
+    payload = {"filename": filename, "errno": err_no}
+    if err_no == errno.ENOSPC:
+        _ui_audit.append(f"{action}_failed", {**payload, "reason": "no_space_left"})
+        return jsonify({"error": "insufficient storage for import"}), 507
+    _ui_audit.append(f"{action}_failed", {**payload, "reason": "storage_error"})
+    return jsonify({"error": "import failed while writing artifact"}), 500
 
 
 def _read_vault_state() -> dict:
@@ -940,6 +1009,22 @@ def model_fsverity_status():
         return jsonify([])
 
 
+def _proxy_json_or_error(resp: requests.Response):
+    """Return an upstream response as JSON, falling back to a safe error envelope.
+
+    Some internal services still return plain-text errors on 4xx/5xx paths.
+    The UI should relay those failures without crashing on JSON decode.
+    """
+    try:
+        return jsonify(resp.json()), resp.status_code
+    except ValueError:
+        detail = (resp.text or "").strip()
+        if len(detail) > 500:
+            detail = detail[:500] + "..."
+        payload = {"error": detail or f"upstream returned HTTP {resp.status_code}"}
+        return jsonify(payload), resp.status_code
+
+
 @app.route("/api/models/verify", methods=["POST"])
 def verify_model():
     body = request.get_json(silent=True) or {}
@@ -951,7 +1036,7 @@ def verify_model():
             headers=_service_headers(),
             timeout=30,
         )
-        return jsonify(resp.json()), resp.status_code
+        return _proxy_json_or_error(resp)
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
@@ -968,7 +1053,7 @@ def verify_model_manifest():
             headers=_service_headers(),
             timeout=120,
         )
-        return jsonify(resp.json()), resp.status_code
+        return _proxy_json_or_error(resp)
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
@@ -984,7 +1069,7 @@ def delete_model():
             headers=_service_headers(),
             timeout=10,
         )
-        return jsonify(resp.json()), resp.status_code
+        return _proxy_json_or_error(resp)
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
@@ -1031,7 +1116,14 @@ def import_model():
         dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         dest = QUARANTINE_DIR / dest_name
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
-        uploaded.save(str(dest))
+        try:
+            uploaded.save(str(dest))
+        except OSError as exc:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return _storage_error_response(exc, action="model_import", filename=raw_name)
         _ui_audit.append("model_imported", {
             "original_name": raw_name, "safe_name": dest_name,
         })
@@ -1082,7 +1174,14 @@ def import_model():
         dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         dest = QUARANTINE_DIR / dest_name
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(src), str(dest))
+        try:
+            shutil.copy2(str(src), str(dest))
+        except OSError as exc:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return _storage_error_response(exc, action="model_import", filename=src.name)
         _ui_audit.append("model_imported", {
             "original_name": src.name, "safe_name": dest_name,
             "source": "local_path",
@@ -1116,33 +1215,123 @@ def quarantine_status():
 
 # --- API: Chat ---
 
-def _verify_active_model() -> dict:
+def _requested_model_name(body: dict | None = None) -> str:
+    """Return the explicitly requested or configured default model name."""
+    if body:
+        requested = str(body.get("model", "")).strip()
+        if requested:
+            return requested
+
+    config = load_appliance_config()
+    inference_cfg = config.get("inference", {}) if isinstance(config, dict) else {}
+    configured = str(inference_cfg.get("default_model", "")).strip()
+    return configured
+
+
+def _loaded_inference_model_filenames() -> list[str]:
+    """Return the model filenames currently loaded by the inference worker."""
+    resp = requests.get(f"{INFERENCE_URL}/v1/models", timeout=5)
+    payload = resp.json()
+
+    candidates: list[str] = []
+    if isinstance(payload, dict):
+        for item in payload.get("models", []):
+            if not isinstance(item, dict):
+                continue
+            for key in ("model", "name", "id"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+        for item in payload.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            for key in ("id", "model", "name"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return unique
+
+
+def _verify_active_model(body: dict | None = None) -> dict:
     """Pre-inference check: verify the active model's hash before use.
 
     Returns {"safe": True/False, "detail": "..."}.
     This ensures every inference request uses a verified, non-tampered model.
     """
     try:
-        # Get the active/default model from the registry
-        models_resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=3)
+        requested_name = _requested_model_name(body)
+
+        # Get promoted models from the registry.
+        models_resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(),
+            timeout=3,
+        )
         models = models_resp.json()
-        if not models:
+        if not isinstance(models, list) or not models:
             return {"safe": False, "detail": "no models in registry"}
 
-        # Verify the first (active) model
-        name = models[0].get("name", "")
+        # Determine which model the inference worker actually has loaded.
+        loaded_filenames = _loaded_inference_model_filenames()
+        if not loaded_filenames:
+            return {"safe": False, "detail": "inference worker has no loaded model"}
+        if len(loaded_filenames) > 1:
+            return {
+                "safe": False,
+                "detail": f"inference worker exposed multiple loaded models: {', '.join(loaded_filenames[:4])}",
+            }
+
+        loaded_filename = loaded_filenames[0]
+        registry_by_filename = {
+            str(model.get("filename", "")).strip(): model
+            for model in models
+            if isinstance(model, dict)
+        }
+        loaded_model = registry_by_filename.get(loaded_filename)
+        if not loaded_model:
+            return {
+                "safe": False,
+                "detail": (
+                    "loaded inference model is not a promoted registry artifact: "
+                    f"{loaded_filename}"
+                ),
+            }
+
+        loaded_name = str(loaded_model.get("name", "")).strip()
+        if requested_name and requested_name not in {loaded_name, loaded_filename}:
+            return {
+                "safe": False,
+                "detail": (
+                    f"requested model '{requested_name}' does not match loaded "
+                    f"inference model '{loaded_name or loaded_filename}'"
+                ),
+            }
+
         verify_resp = requests.post(
             f"{REGISTRY_URL}/v1/model/verify",
-            params={"name": name},
+            params={"name": loaded_name},
             headers=_service_headers(),
             timeout=30,
         )
         result = verify_resp.json()
         if result.get("safe_to_use") == "true":
-            return {"safe": True, "detail": f"{name} verified"}
+            return {
+                "safe": True,
+                "detail": f"{loaded_name or loaded_filename} verified",
+            }
         return {
             "safe": False,
-            "detail": f"{name} failed integrity check: {result.get('error', 'unknown')}",
+            "detail": (
+                f"{loaded_name or loaded_filename} failed integrity check: "
+                f"{result.get('error', 'unknown')}"
+            ),
         }
     except Exception as e:
         log.warning("pre-inference verification failed: %s", e)
@@ -1157,7 +1346,7 @@ def chat():
     messages = body.get("messages", [])
 
     # Pre-inference integrity check
-    check = _verify_active_model()
+    check = _verify_active_model(body)
     if not check["safe"]:
         _ui_audit.append("inference_blocked", {"reason": check["detail"]})
         return jsonify({
@@ -1185,7 +1374,7 @@ def chat_stream():
     messages = body.get("messages", [])
 
     # Pre-inference integrity check
-    check = _verify_active_model()
+    check = _verify_active_model(body)
     if not check["safe"]:
         return jsonify({
             "error": "inference blocked: model integrity check failed",
@@ -1280,7 +1469,7 @@ def chat_with_search():
                 log.warning("search augmentation failed, proceeding without")
 
     # Pre-inference integrity check
-    check = _verify_active_model()
+    check = _verify_active_model(body)
     if not check["safe"]:
         return jsonify({
             "error": "inference blocked: model integrity check failed",
@@ -1311,7 +1500,7 @@ def chat_with_search():
             timeout=300,
         )
         result = resp.json()
-        result["web_search_used"] = search_context is not None
+        result["web_search_used"] = bool(search_context and search_results)
         if search_results:
             result["search_sources"] = search_results
         return jsonify(result)
@@ -1495,6 +1684,21 @@ def _read_active_profile():
         except Exception:
             pass
 
+    # Compose sandbox fallback: infer the closest profile from live service
+    # availability and the rendered appliance mode when no state file exists.
+    if _is_sandbox_deployment():
+        try:
+            resp = requests.get(f"{DIFFUSION_URL}/health", timeout=1)
+            if resp.status_code == 200:
+                return "full_lab", False
+        except Exception:
+            pass
+        try:
+            if load_appliance_config().get("appliance", {}).get("mode") == "online-augmented":
+                return "research", False
+        except Exception:
+            pass
+
     # Fallback
     return "offline_private", False
 
@@ -1579,6 +1783,11 @@ def preview_profile():
 @app.route("/api/profile/select", methods=["POST"])
 def select_profile():
     """Request a profile change via the path-unit activation pattern."""
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "profile_select",
+            "The sandbox does not include the appliance profile path-unit controller. Change compose profiles outside the UI instead.",
+        )
     active, locked = _read_active_profile()
     if locked:
         return jsonify({
@@ -1705,6 +1914,11 @@ def diffusion_runtime_status():
 @app.route("/api/diffusion/runtime/enable", methods=["POST"])
 def diffusion_runtime_enable():
     """Write the request marker to trigger the privileged installer via path unit."""
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "diffusion_runtime_enable",
+            "The sandbox uses compose profiles for optional diffusion services instead of the appliance path-unit installer.",
+        )
     if _DIFFUSION_READY_MARKER.exists():
         return jsonify({"status": "already_installed"}), 200
 
@@ -1810,13 +2024,24 @@ def diffusion_runtime_progress():
 
 # --- API: Status ---
 
+@app.route("/health")
+def health():
+    """Fast liveness probe for container and local health checks."""
+    deployment = _read_deployment_env()
+    return jsonify({
+        "status": "ok",
+        "deployment_mode": deployment["mode"],
+        "assurance_tier": deployment["assurance_tier"],
+    })
+
 @app.route("/api/status")
 def status():
     checks = {}
+    deployment = _read_deployment_env()
     # Map service names to their circuit breaker keys
     svc_breaker_map = {
         "registry": "registry", "inference": "inference",
-        "diffusion": "diffusion", "search": "search",
+        "diffusion": "diffusion", "search_mediator": "search",
     }
     for name, url in [
         ("registry", REGISTRY_URL),
@@ -1824,7 +2049,7 @@ def status():
         ("diffusion", DIFFUSION_URL),
         ("tool_firewall", TOOL_FIREWALL_URL),
         ("airlock", AIRLOCK_URL),
-        ("search", SEARCH_MEDIATOR_URL),
+        ("search_mediator", SEARCH_MEDIATOR_URL),
     ]:
         breaker_key = svc_breaker_map.get(name)
         t0 = time.time()
@@ -1846,6 +2071,8 @@ def status():
     config = load_appliance_config()
     return jsonify({
         "appliance_mode": config.get("appliance", {}).get("mode", "unknown"),
+        "deployment_mode": deployment["mode"],
+        "assurance_tier": deployment["assurance_tier"],
         "services": checks,
     })
 
@@ -1945,6 +2172,11 @@ def slo_status():
 @app.route("/api/forensic/export")
 def forensic_export():
     """Proxy forensic bundle download from the incident recorder."""
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "forensic_export",
+            "The sandbox bundle does not include the appliance incident-recorder service.",
+        )
     token = _read_service_token()
     headers = {}
     if token:
@@ -2026,9 +2258,17 @@ def audit_status():
 @app.route("/api/audit/verify", methods=["POST"])
 def audit_verify_now():
     """Trigger an immediate audit chain verification."""
+    verify_script = "/usr/libexec/secure-ai/verify-audit-chains.py"
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "audit_verify",
+            "The sandbox bundle does not ship the appliance audit-chain verification helper.",
+        )
+    if not Path(verify_script).exists():
+        return _missing_runtime_dependency("audit_verify", verify_script)
     try:
         result = subprocess.run(
-            ["/usr/bin/python3", "/usr/libexec/secure-ai/verify-audit-chains.py"],
+            ["/usr/bin/python3", verify_script],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "AUDIT_LOGS_DIR": str(SECURE_AI_ROOT / "logs")},
         )
@@ -2041,7 +2281,7 @@ def audit_verify_now():
     except subprocess.TimeoutExpired:
         return jsonify({"error": "verification timed out"}), 504
     except FileNotFoundError:
-        return jsonify({"error": "verification script not found"}), 500
+        return _missing_runtime_dependency("audit_verify", verify_script)
 
 
 # --- API: Boot Chain Integrity (M17) ---
@@ -2110,6 +2350,11 @@ def vault_lock():
     token = _get_session_token()
     if not _auth.validate_session(token):
         return jsonify({"error": "authentication required"}), 401
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "vault_lock",
+            "The sandbox does not manage a LUKS-backed vault or appliance systemd services.",
+        )
 
     _ui_audit.append("vault_manual_lock", {"user_initiated": True})
 
@@ -2154,6 +2399,12 @@ def vault_lock():
 @app.route("/api/vault/unlock", methods=["POST"])
 def vault_unlock():
     """Unlock the vault with the LUKS passphrase."""
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "vault_unlock",
+            "The sandbox does not manage a LUKS-backed vault or appliance systemd services.",
+        )
+
     body = request.get_json()
     passphrase = body.get("passphrase", "") if body else ""
 
@@ -2258,11 +2509,42 @@ def _read_vm_env() -> dict:
     return result
 
 
+def _read_deployment_env() -> dict:
+    """Read deployment metadata for alternate packaging paths."""
+    return {
+        "mode": _deployment_mode(),
+        "provider": _deployment_provider(),
+        "assurance_tier": _assurance_tier(),
+    }
+
+
 @app.route("/api/vm/status")
 def vm_status():
     """Return VM detection results and security warnings."""
     info = _read_vm_env()
-    if info["is_vm"]:
+    deployment = _read_deployment_env()
+    info["deployment_mode"] = deployment["mode"]
+    info["deployment_provider"] = deployment["provider"]
+    info["assurance_tier"] = deployment["assurance_tier"]
+    info["environment_class"] = "bare_metal"
+
+    if deployment["mode"] == "sandbox":
+        info["is_sandbox"] = True
+        info["environment_class"] = "sandbox"
+        info["security_notice"] = {
+            "level": "warning",
+            "title": "Running in SecAI Sandbox",
+            "details": [
+                "The host kernel and container runtime can inspect process memory, "
+                "mounted files, audit data, and network traffic.",
+                "This deployment does not provide measured boot, TPM2 vault sealing, "
+                "immutable rpm-ostree updates, or systemd sandbox enforcement.",
+                "Use the sandbox for evaluation, policy testing, and workflow validation "
+                "rather than sensitive production workloads.",
+            ],
+        }
+    elif info["is_vm"]:
+        info["environment_class"] = "vm"
         info["security_notice"] = {
             "level": "warning",
             "title": f"Running in a Virtual Machine ({info['hypervisor']})",
@@ -2398,6 +2680,12 @@ def emergency_panic():
     Level 1 does not require passphrase.
     Levels 2 and 3 require passphrase confirmation.
     """
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "emergency_panic",
+            "The sandbox bundle does not include the appliance securectl panic path.",
+        )
+
     body = request.get_json()
     if not body or "level" not in body:
         return jsonify({"error": "JSON body with 'level' (1, 2, or 3) required"}), 400
@@ -2414,6 +2702,8 @@ def emergency_panic():
     if level >= 2 and not _auth._verify_stored(passphrase):
         _ui_audit.append("emergency_panic_reauth_failed", {"level": level})
         return jsonify({"error": "passphrase verification failed"}), 401
+    if not Path(SECURECTL).exists():
+        return _missing_runtime_dependency("emergency_panic", SECURECTL)
 
     cmd = [SECURECTL, "panic", str(level), "--no-countdown"]
     if level >= 2:
@@ -2455,6 +2745,18 @@ UPDATE_STATE_FILE = Path(os.getenv("UPDATE_STATE_FILE", "/run/secure-ai/update-s
 HEALTH_LOG_FILE = Path(os.getenv("HEALTH_LOG_FILE", "/var/lib/secure-ai/logs/health-check.json"))
 
 
+def _ensure_update_supported():
+    """Return an unsupported response when update tooling is absent."""
+    if _is_sandbox_deployment():
+        return _unsupported_feature(
+            "updates",
+            "The sandbox does not provide the appliance rpm-ostree update pipeline.",
+        )
+    if not Path(UPDATE_VERIFY).exists():
+        return _missing_runtime_dependency("updates", UPDATE_VERIFY)
+    return None
+
+
 @app.route("/api/update/status")
 def update_status():
     """Return current update state and deployment info."""
@@ -2480,6 +2782,10 @@ def update_status():
 @app.route("/api/update/check", methods=["POST"])
 def update_check():
     """Check for available updates."""
+    unsupported = _ensure_update_supported()
+    if unsupported:
+        _audit_unavailable("update_check", source="ui")
+        return unsupported
     _ui_audit.append("update_check", {"source": "ui"})
     try:
         result = subprocess.run(
@@ -2501,6 +2807,10 @@ def update_check():
 @app.route("/api/update/stage", methods=["POST"])
 def update_stage():
     """Stage (download) an update without applying it."""
+    unsupported = _ensure_update_supported()
+    if unsupported:
+        _audit_unavailable("update_stage", source="ui")
+        return unsupported
     _ui_audit.append("update_stage", {"source": "ui"})
     try:
         result = subprocess.run(
@@ -2524,6 +2834,11 @@ def update_stage():
 @app.route("/api/update/apply", methods=["POST"])
 def update_apply():
     """Apply a staged update and reboot."""
+    unsupported = _ensure_update_supported()
+    if unsupported:
+        _audit_unavailable("update_apply", source="ui")
+        return unsupported
+
     body = request.get_json() or {}
     if not body.get("confirm"):
         return jsonify({"error": "must include {\"confirm\": true} to apply update"}), 400
@@ -2548,6 +2863,11 @@ def update_apply():
 @app.route("/api/update/rollback", methods=["POST"])
 def update_rollback():
     """Roll back to the previous deployment."""
+    unsupported = _ensure_update_supported()
+    if unsupported:
+        _audit_unavailable("update_rollback", source="ui")
+        return unsupported
+
     body = request.get_json() or {}
     if not body.get("confirm"):
         return jsonify({"error": "must include {\"confirm\": true} to rollback"}), 400
@@ -2634,9 +2954,11 @@ def agent_submit_task():
     body = request.get_json(silent=True) or {}
     try:
         data, status = _agent_request("POST", "/v1/task", json_body=body, timeout=30)
-        _ui_audit.append("agent_task_submitted", {
+        event = "agent_task_submitted" if 200 <= status < 300 else "agent_task_submit_failed"
+        _ui_audit.append(event, {
             "intent_length": len(body.get("intent", "")),
             "mode": body.get("mode", "standard"),
+            "status_code": status,
         })
         return jsonify(data), status
     except Exception:
@@ -2661,7 +2983,8 @@ def agent_approve_steps(task_id):
     body = request.get_json(silent=True) or {}
     try:
         data, status = _agent_request("POST", f"/v1/task/{task_id}/approve", json_body=body)
-        _ui_audit.append("agent_steps_approved", {"task_id": task_id})
+        event = "agent_steps_approved" if 200 <= status < 300 else "agent_steps_approve_failed"
+        _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
     except Exception:
         log.exception("agent service unavailable")
@@ -2674,7 +2997,8 @@ def agent_deny_steps(task_id):
     body = request.get_json(silent=True) or {}
     try:
         data, status = _agent_request("POST", f"/v1/task/{task_id}/deny", json_body=body)
-        _ui_audit.append("agent_steps_denied", {"task_id": task_id})
+        event = "agent_steps_denied" if 200 <= status < 300 else "agent_steps_deny_failed"
+        _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
     except Exception:
         log.exception("agent service unavailable")
@@ -2686,7 +3010,8 @@ def agent_cancel_task(task_id):
     """Cancel an agent task."""
     try:
         data, status = _agent_request("POST", f"/v1/task/{task_id}/cancel", json_body={})
-        _ui_audit.append("agent_task_cancelled", {"task_id": task_id})
+        event = "agent_task_cancelled" if 200 <= status < 300 else "agent_task_cancel_failed"
+        _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
     except Exception:
         log.exception("agent service unavailable")

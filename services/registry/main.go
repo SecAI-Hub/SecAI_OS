@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -72,7 +74,7 @@ var (
 	manifestMu   sync.RWMutex
 	registryDir  string
 	manifestPath string
-	allowedFmts  = map[string]bool{"gguf": true, "safetensors": true}
+	allowedFmts  = map[string]bool{"gguf": true, "safetensors": true, "diffusion-directory": true}
 	serviceToken string // loaded at startup; empty = dev mode (no auth)
 )
 
@@ -186,6 +188,113 @@ func verifyFileHash(path, expected string) (string, error) {
 	return actual, nil
 }
 
+func computeDirectoryHash(path string) (string, error) {
+	root := filepath.Clean(path)
+	entries := make([]string, 0, 16)
+	if err := filepath.WalkDir(root, func(current string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	sort.Strings(entries)
+
+	h := sha256.New()
+	for _, rel := range entries {
+		h.Write([]byte(rel))
+		f, err := os.Open(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", err
+		}
+		_, copyErr := io.Copy(h, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func verifyArtifactHash(path, expected string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		actual, err := computeDirectoryHash(path)
+		if err != nil {
+			return "", err
+		}
+		if expected != "" && actual != expected {
+			return actual, fmt.Errorf("hash mismatch: expected %s, got %s", expected, actual)
+		}
+		return actual, nil
+	}
+	return verifyFileHash(path, expected)
+}
+
+func artifactSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return info.Size(), nil
+	}
+	var total int64
+	if err := filepath.WalkDir(path, func(current string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func artifactFormatFromPath(path, filename string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		if _, err := os.Stat(filepath.Join(path, "model_index.json")); err != nil {
+			if os.IsNotExist(err) {
+				return "", fmt.Errorf("directory artifact missing model_index.json")
+			}
+			return "", err
+		}
+		return "diffusion-directory", nil
+	}
+	format := formatFromFilename(filename)
+	if !allowedFmts[format] {
+		return "", fmt.Errorf("format %q not allowed", format)
+	}
+	return format, nil
+}
+
 func handleListModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -267,25 +376,23 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate format
-	format := formatFromFilename(req.Filename)
-	if !allowedFmts[format] {
-		http.Error(w, fmt.Sprintf("format %q not allowed; permitted: gguf, safetensors", format), http.StatusForbidden)
+	filePath := filepath.Join(registryDir, req.Filename)
+	format, err := artifactFormatFromPath(filePath, req.Filename)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("artifact validation failed: %v", err), http.StatusForbidden)
 		return
 	}
 
-	// Verify the file exists in the registry directory and hash matches
-	filePath := filepath.Join(registryDir, req.Filename)
-	actualHash, err := verifyFileHash(filePath, req.SHA256)
+	// Verify the artifact exists in the registry directory and hash matches
+	actualHash, err := verifyArtifactHash(filePath, req.SHA256)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("hash verification failed: %v", err), http.StatusConflict)
 		return
 	}
 
-	// Get file size
-	info, err := os.Stat(filePath)
+	sizeBytes, err := artifactSize(filePath)
 	if err != nil {
-		http.Error(w, "cannot stat model file", http.StatusInternalServerError)
+		http.Error(w, "cannot stat model artifact", http.StatusInternalServerError)
 		return
 	}
 
@@ -294,7 +401,7 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		Format:               format,
 		Filename:             req.Filename,
 		SHA256:               actualHash,
-		SizeBytes:            info.Size(),
+		SizeBytes:            sizeBytes,
 		Source:               req.Source,
 		PromotedAt:           time.Now().UTC().Format(time.RFC3339),
 		ScanResults:          req.ScanResults,
@@ -353,9 +460,9 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 	for _, m := range manifest.Models {
 		if m.Name == name {
 			found = true
-			// Remove the model file from disk
+			// Remove the model artifact (file or directory) from disk.
 			filePath := filepath.Join(registryDir, m.Filename)
-			if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			if err := os.RemoveAll(filePath); err != nil && !os.IsNotExist(err) {
 				log.Printf("warning: could not remove %s: %v", filePath, err)
 			}
 			log.Printf("REMOVED: %s (%s)", m.Name, m.Filename)
@@ -395,7 +502,7 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 
 	for _, m := range models {
 		filePath := filepath.Join(registryDir, m.Filename)
-		actual, err := verifyFileHash(filePath, m.SHA256)
+		actual, err := verifyArtifactHash(filePath, m.SHA256)
 		if err != nil {
 			allOk = false
 			results = append(results, map[string]string{
@@ -419,15 +526,21 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 		status = "failed"
 	}
 
+	resultBody := map[string]interface{}{
+		"status":      status,
+		"models":      results,
+		"checked":     len(results),
+		"verified_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := writeIntegrityResult(resultBody); err != nil {
+		log.Printf("warning: failed to persist integrity result: %v", err)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if !allOk {
 		w.WriteHeader(http.StatusConflict)
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  status,
-		"models":  results,
-		"checked": len(results),
-	})
+	json.NewEncoder(w).Encode(resultBody)
 }
 
 func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
@@ -436,10 +549,7 @@ func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resultPath := os.Getenv("INTEGRITY_RESULT_PATH")
-	if resultPath == "" {
-		resultPath = "/var/lib/secure-ai/logs/integrity-last.json"
-	}
+	resultPath := integrityResultPath()
 
 	data, err := os.ReadFile(resultPath)
 	if err != nil {
@@ -453,6 +563,26 @@ func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(data)
+}
+
+func integrityResultPath() string {
+	resultPath := os.Getenv("INTEGRITY_RESULT_PATH")
+	if resultPath == "" {
+		resultPath = "/var/lib/secure-ai/logs/integrity-last.json"
+	}
+	return resultPath
+}
+
+func writeIntegrityResult(result map[string]interface{}) error {
+	resultPath := integrityResultPath()
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(resultPath, data, 0o644)
 }
 
 func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
@@ -473,7 +603,7 @@ func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 	for _, m := range manifest.Models {
 		if m.Name == name {
 			filePath := filepath.Join(registryDir, m.Filename)
-			actual, err := verifyFileHash(filePath, m.SHA256)
+			actual, err := verifyArtifactHash(filePath, m.SHA256)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)

@@ -20,6 +20,7 @@ from flask import Flask, jsonify, request
 log = logging.getLogger("diffusion-worker")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB max request size
 
 REGISTRY_DIR = Path(os.getenv("REGISTRY_DIR", "/var/lib/secure-ai/registry"))
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
@@ -28,6 +29,7 @@ OUTPUTS_DIR = Path(os.getenv("OUTPUTS_DIR", "/var/lib/secure-ai/vault/outputs"))
 MAX_RESOLUTION = int(os.getenv("MAX_RESOLUTION", "2048"))
 MAX_STEPS = int(os.getenv("MAX_STEPS", "100"))
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "120"))
+VIDEO_DIMENSION_MULTIPLE = int(os.getenv("VIDEO_DIMENSION_MULTIPLE", "16"))
 
 # Loaded pipeline instances (lazy init)
 _pipelines = {}
@@ -68,6 +70,17 @@ def _get_device():
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
+
+
+def _optional_bounded_int(value, default: int, low: int, high: int) -> int:
+    """Parse an optional integer and keep it within bounds."""
+    if value is None:
+        return default
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return _clamp(value, low, high)
 
 
 def _load_pipeline(model_path: str, pipeline_type: str = "image"):
@@ -159,6 +172,91 @@ def _find_diffusion_models() -> list:
                         "class": "unknown",
                     })
     return models
+
+
+def _is_image_conditioned_video_model(model_info: dict) -> bool:
+    """Return True when a video pipeline expects an input image."""
+    class_name = str(model_info.get("class", "") or "")
+    return (
+        "StableVideoDiffusion" in class_name
+        or "Img2Vid" in class_name
+        or "ImageToVideo" in class_name
+    )
+
+
+def _video_encoder_image_size(pipe) -> int | None:
+    """Return the video encoder image size when available."""
+    image_encoder = getattr(pipe, "image_encoder", None)
+    config = getattr(image_encoder, "config", None)
+    size = getattr(config, "image_size", None)
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
+
+
+def _prepare_video_conditioning_input(init_image, pipe, torch):
+    """Prepare an input image for image-conditioned video pipelines.
+
+    Diffusers' Stable Video Diffusion pipeline hardcodes a 224x224 resize for
+    PIL inputs. Some tiny or compatibility test models use smaller encoder
+    sizes, so convert to a tensor at the model's declared image size when it
+    differs from the upstream default.
+    """
+    target_size = _video_encoder_image_size(pipe)
+    if not target_size or target_size == 224:
+        return init_image
+
+    import numpy as np
+
+    if init_image.size != (target_size, target_size):
+        init_image = init_image.resize((target_size, target_size))
+
+    arr = np.asarray(init_image).astype("float32") / 255.0
+    return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+
+
+def _round_up_dimension(value: int, multiple: int, minimum: int) -> int:
+    """Round image dimensions up to a safe multiple for diffusion preprocessors."""
+    value = max(minimum, int(value))
+    if value % multiple == 0:
+        return value
+    return value + (multiple - (value % multiple))
+
+
+def _normalize_img2img_input(init_image):
+    """Resize img2img inputs to a safe size for latent-space preprocessing."""
+    w, h = init_image.size
+    if w <= 0 or h <= 0:
+        raise ValueError("image dimensions must be > 0")
+
+    if w > MAX_RESOLUTION or h > MAX_RESOLUTION:
+        ratio = min(MAX_RESOLUTION / w, MAX_RESOLUTION / h)
+        init_image = init_image.resize((max(1, int(w * ratio)), max(1, int(h * ratio))))
+        w, h = init_image.size
+
+    target_w = _round_up_dimension(w, multiple=8, minimum=8)
+    target_h = _round_up_dimension(h, multiple=8, minimum=8)
+    if (target_w, target_h) != (w, h):
+        init_image = init_image.resize((target_w, target_h))
+    return init_image
+
+
+def _normalize_generation_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Round generation dimensions up to safe multiples for diffusion pipelines."""
+    return (
+        _round_up_dimension(width, multiple=8, minimum=8),
+        _round_up_dimension(height, multiple=8, minimum=8),
+    )
+
+
+def _normalize_video_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Round video dimensions up to codec-friendly multiples before export."""
+    return (
+        _round_up_dimension(width, multiple=VIDEO_DIMENSION_MULTIPLE, minimum=VIDEO_DIMENSION_MULTIPLE),
+        _round_up_dimension(height, multiple=VIDEO_DIMENSION_MULTIPLE, minimum=VIDEO_DIMENSION_MULTIPLE),
+    )
 
 
 # --- Health ---
@@ -308,15 +406,17 @@ def generate_video():
         return jsonify({"error": "JSON body required"}), 400
 
     prompt = body.get("prompt", "").strip()
-    if not prompt:
-        return jsonify({"error": "prompt is required"}), 400
     if len(prompt) > 2000:
         return jsonify({"error": "prompt too long (max 2000 chars)"}), 400
 
     negative_prompt = body.get("negative_prompt", "")
     model_name = body.get("model", "")
-    width = _clamp(body.get("width", 512), 256, MAX_RESOLUTION)
-    height = _clamp(body.get("height", 512), 256, MAX_RESOLUTION)
+    image_b64 = body.get("image", "")
+    requested_width = body.get("width")
+    requested_height = body.get("height")
+    width = _optional_bounded_int(requested_width, 512, 32, MAX_RESOLUTION)
+    height = _optional_bounded_int(requested_height, 512, 32, MAX_RESOLUTION)
+    width, height = _normalize_video_dimensions(width, height)
     num_frames = _clamp(body.get("num_frames", 25), 4, MAX_FRAMES)
     steps = _clamp(body.get("steps", 25), 1, MAX_STEPS)
     fps = _clamp(body.get("fps", 8), 1, 30)
@@ -336,8 +436,20 @@ def generate_video():
     else:
         return jsonify({"error": "no video generation models available"}), 503
 
+    image_conditioned = _is_image_conditioned_video_model(model_info)
+    if image_conditioned:
+        if not image_b64:
+            return jsonify({
+                "error": "image (base64) is required for this video model",
+                "model_class": model_info.get("class", "unknown"),
+            }), 400
+    else:
+        if not prompt:
+            return jsonify({"error": "prompt is required"}), 400
+
     try:
         import torch
+        from PIL import Image
         from diffusers.utils import export_to_video
 
         pipe = _load_pipeline(model_info["path"], "video")
@@ -346,15 +458,40 @@ def generate_video():
             generator = torch.Generator(device=_get_device()).manual_seed(int(seed))
 
         start = time.monotonic()
-        result = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt or None,
-            width=width,
-            height=height,
-            num_frames=num_frames,
-            num_inference_steps=steps,
-            generator=generator,
-        )
+        if image_conditioned:
+            img_bytes = base64.b64decode(image_b64)
+            init_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            w, h = init_image.size
+            if w <= 0 or h <= 0:
+                return jsonify({"error": "image dimensions must be > 0"}), 400
+            if w > MAX_RESOLUTION or h > MAX_RESOLUTION:
+                ratio = min(MAX_RESOLUTION / w, MAX_RESOLUTION / h)
+                init_image = init_image.resize((max(1, int(w * ratio)), max(1, int(h * ratio))))
+            init_image = _normalize_img2img_input(init_image)
+            if requested_width is None:
+                width = init_image.size[0]
+            if requested_height is None:
+                height = init_image.size[1]
+            width, height = _normalize_video_dimensions(width, height)
+            conditioning_input = _prepare_video_conditioning_input(init_image, pipe, torch)
+            result = pipe(
+                image=conditioning_input,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                num_inference_steps=steps,
+                generator=generator,
+            )
+        else:
+            result = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt or None,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                num_inference_steps=steps,
+                generator=generator,
+            )
         elapsed = round(time.monotonic() - start, 2)
 
         # Export video
@@ -376,6 +513,7 @@ def generate_video():
             "elapsed_seconds": elapsed,
             "parameters": {
                 "prompt": prompt,
+                "image_conditioned": image_conditioned,
                 "width": width,
                 "height": height,
                 "num_frames": num_frames,
@@ -401,6 +539,8 @@ def generate_img2img():
     prompt = body.get("prompt", "").strip()
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
+    if len(prompt) > 2000:
+        return jsonify({"error": "prompt too long (max 2000 chars)"}), 400
 
     image_b64 = body.get("image", "")
     if not image_b64:
@@ -411,6 +551,13 @@ def generate_img2img():
     steps = _clamp(body.get("steps", 30), 1, MAX_STEPS)
     guidance_scale = _clamp(body.get("guidance_scale", 7.5), 1.0, 30.0)
     seed = body.get("seed")
+
+    if strength <= 0:
+        return jsonify({"error": "strength must be greater than 0"}), 400
+    if steps * strength < 1:
+        return jsonify({
+            "error": "strength and steps combination must yield at least one denoising step",
+        }), 400
 
     models = _find_diffusion_models()
     if model_name:
@@ -430,11 +577,7 @@ def generate_img2img():
         # Decode input image
         img_bytes = base64.b64decode(image_b64)
         init_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        # Clamp resolution
-        w, h = init_image.size
-        if w > MAX_RESOLUTION or h > MAX_RESOLUTION:
-            ratio = min(MAX_RESOLUTION / w, MAX_RESOLUTION / h)
-            init_image = init_image.resize((int(w * ratio), int(h * ratio)))
+        init_image = _normalize_img2img_input(init_image)
 
         pipe = _load_pipeline(model_info["path"], "img2img")
         generator = None
@@ -506,7 +649,6 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB max request
     host, port = BIND_ADDR.rsplit(":", 1)
     log.warning("Running Flask dev server — use gunicorn in production")
     log.info("diffusion-worker starting on %s", BIND_ADDR)

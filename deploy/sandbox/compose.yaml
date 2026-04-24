@@ -1,0 +1,409 @@
+name: secai-sandbox
+
+x-secai-runtime-defaults: &secai_runtime_defaults
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+
+services:
+  registry:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/registry
+      dockerfile: Containerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8470
+      REGISTRY_DIR: /var/lib/secure-ai/registry
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    expose:
+      - "8470"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O - http://127.0.0.1:8470/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
+  policy-engine:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/policy-engine
+      dockerfile: Containerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8500
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      AGENT_POLICY_PATH: /etc/secure-ai/policy/agent.yaml
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    expose:
+      - "8500"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O - http://127.0.0.1:8500/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
+  tool-firewall:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/tool-firewall
+      dockerfile: Containerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8475
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    expose:
+      - "8475"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O - http://127.0.0.1:8475/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
+  airlock:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/airlock
+      dockerfile: Containerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8490
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    expose:
+      - "8490"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O - http://127.0.0.1:8490/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
+  quarantine:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../..
+      dockerfile: services/quarantine/Containerfile.sandbox
+    depends_on:
+      registry:
+        condition: service_healthy
+    environment:
+      REGISTRY_URL: http://registry:8470
+      REGISTRY_DIR: /var/lib/secure-ai/registry
+      QUARANTINE_DIR: /var/lib/secure-ai/quarantine
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      AUDIT_LOG_PATH: /var/lib/secure-ai/logs/quarantine-audit.jsonl
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from pathlib import Path; import sys; sys.exit(0 if Path('/var/lib/secure-ai/quarantine').is_dir() and Path('/var/lib/secure-ai/registry').is_dir() else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
+
+  search-mediator:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../..
+      dockerfile: services/search-mediator/Containerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8485
+      SEARXNG_URL: http://searxng:8888
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
+      AUDIT_DIR: /var/lib/secure-ai/logs
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      GUNICORN_WORKERS: 2
+      GUNICORN_THREADS: 2
+      GUNICORN_TIMEOUT: 30
+      GUNICORN_GRACEFUL_TIMEOUT: 10
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/config:/etc/secure-ai/config:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    networks:
+      - default
+      - search
+    expose:
+      - "8485"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/venv/bin/python",
+          "-c",
+          "from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8485/health', timeout=3).status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
+  tor:
+    profiles: ["search"]
+    <<: *secai_runtime_defaults
+    build:
+      context: ./tor
+      dockerfile: Containerfile
+    volumes:
+      - ./search/torrc:/etc/tor/torrc:ro
+    networks:
+      - default
+      - search
+    expose:
+      - "9050"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /var/lib/tor:rw,nosuid,nodev,size=32m,uid=100,gid=101
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 20s
+
+  searxng:
+    profiles: ["search"]
+    <<: *secai_runtime_defaults
+    build:
+      context: ./searxng
+      dockerfile: Containerfile
+    depends_on:
+      tor:
+        condition: service_healthy
+    user: "977:977"
+    environment:
+      SEARXNG_PORT: "8888"
+      SEARXNG_BIND_ADDRESS: "0.0.0.0"
+      SEARXNG_SECRET: "secai-sandbox-local-only-key"
+    networks:
+      - search
+    expose:
+      - "8888"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /etc/searxng:rw,nosuid,nodev,size=16m,uid=977,gid=977,mode=0755
+      - /var/cache/searxng:rw,nosuid,nodev,size=64m,uid=977,gid=977
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8888/healthz', timeout=5).status == 200 else 1)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 20s
+
+  agent:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../..
+      dockerfile: services/agent/Containerfile.sandbox
+    depends_on:
+      registry:
+        condition: service_healthy
+      tool-firewall:
+        condition: service_healthy
+      airlock:
+        condition: service_healthy
+      search-mediator:
+        condition: service_healthy
+    environment:
+      BIND_ADDR: unix:/run/secure-ai/agent.sock
+      AGENT_POLICY_PATH: /etc/secure-ai/policy/agent.yaml
+      VAULT_ROOT: /var/lib/secure-ai/vault
+      INFERENCE_URL: http://inference:8465
+      TOOL_FIREWALL_URL: http://tool-firewall:8475
+      AIRLOCK_URL: http://airlock:8490
+      REGISTRY_URL: http://registry:8470
+      SEARCH_MEDIATOR_URL: http://search-mediator:8485
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - secai-run:/run/secure-ai
+      - ./runtime/policy:/etc/secure-ai/policy:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/venv/bin/python",
+          "-c",
+          "import socket, sys; s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3); s.connect('/run/secure-ai/agent.sock'); s.sendall(b'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n'); data=s.recv(1024); s.close(); sys.exit(0 if b'200 OK' in data else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 20s
+
+  ui:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../..
+      dockerfile: services/ui/Containerfile.sandbox
+    depends_on:
+      registry:
+        condition: service_healthy
+      tool-firewall:
+        condition: service_healthy
+      airlock:
+        condition: service_healthy
+      search-mediator:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+    environment:
+      BIND_ADDR: 0.0.0.0:8480
+      SECURE_AI_ROOT: /var/lib/secure-ai
+      QUARANTINE_DIR: /var/lib/secure-ai/quarantine
+      APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
+      REGISTRY_URL: http://registry:8470
+      TOOL_FIREWALL_URL: http://tool-firewall:8475
+      AIRLOCK_URL: http://airlock:8490
+      SEARCH_MEDIATOR_URL: http://search-mediator:8485
+      AGENT_SOCKET: /run/secure-ai/agent.sock
+      INFERENCE_URL: http://inference:8465
+      DIFFUSION_URL: http://diffusion:8455
+      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      SECURE_AI_DEPLOYMENT_MODE: sandbox
+      SECURE_AI_DEPLOYMENT_PROVIDER: compose
+      SECURE_AI_ASSURANCE_TIER: evaluation
+      GUNICORN_WORKERS: 1
+      GUNICORN_THREADS: 4
+      GUNICORN_TIMEOUT: 60
+      GUNICORN_GRACEFUL_TIMEOUT: 15
+      SECURE_AI_TMPDIR: /var/lib/secure-ai/import-staging/.tmp
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - secai-run:/run/secure-ai
+      - ./runtime/config:/etc/secure-ai/config:ro
+      - ./runtime/service-token:/run/secrets/service-token:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /run/secure-ai-ui:rw,noexec,nosuid,nodev,mode=0770,uid=65534,gid=65534,size=16m
+    ports:
+      - "${SECAI_UI_PORT:-8480}:8480"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/venv/bin/python",
+          "-c",
+          "from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8480/health', timeout=3).status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 20s
+
+  inference:
+    profiles: ["llm"]
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/inference-worker
+      dockerfile: Containerfile
+      args:
+        IMAGE_TAG: ${SECAI_INFERENCE_IMAGE_TAG:-server}
+    user: "65534:65534"
+    environment:
+      BIND_ADDR: 0.0.0.0:8465
+      MODEL_PATH: ${SECAI_INFERENCE_MODEL_PATH:-}
+      CONTEXT_SIZE: ${SECAI_CONTEXT_SIZE:-8192}
+      GPU_LAYERS: ${SECAI_GPU_LAYERS:-0}
+      REGISTRY_DIR: /var/lib/secure-ai/registry
+    volumes:
+      - secai-state:/var/lib/secure-ai:ro
+    expose:
+      - "8465"
+
+  diffusion:
+    profiles: ["diffusion"]
+    <<: *secai_runtime_defaults
+    build:
+      context: ../..
+      dockerfile: services/diffusion-worker/Containerfile.sandbox
+      args:
+        COMPUTE: ${SECAI_DIFFUSION_COMPUTE:-cpu}
+    environment:
+      BIND_ADDR: 0.0.0.0:8455
+      REGISTRY_DIR: /var/lib/secure-ai/registry
+      OUTPUTS_DIR: /var/lib/secure-ai/vault/outputs
+      APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      GUNICORN_WORKERS: 1
+      GUNICORN_THREADS: 2
+      GUNICORN_TIMEOUT: 1800
+      GUNICORN_GRACEFUL_TIMEOUT: 30
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    volumes:
+      - secai-state:/var/lib/secure-ai
+      - ./runtime/config:/etc/secure-ai/config:ro
+    expose:
+      - "8455"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/venv/bin/python",
+          "-c",
+          "from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8455/health', timeout=5).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 45s
+
+volumes:
+  secai-state:
+    external: true
+    name: secai-sandbox_secai-state
+  secai-run:
+    external: true
+    name: secai-sandbox_secai-run
+
+networks:
+  search:
+    internal: true

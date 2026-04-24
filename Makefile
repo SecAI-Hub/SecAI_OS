@@ -31,6 +31,16 @@ help: ## Show available targets
 verify-release: ## Verify a release image (IMAGE=ghcr.io/...)
 	@files/scripts/verify-release.sh "$(IMAGE)"
 
+.PHONY: sandbox-vex
+sandbox-vex: ## Generate local sandbox OpenVEX document (requires built sandbox images)
+	python scripts/security/generate_custom_python_vex.py \
+	  --image secai-sandbox-ui:latest \
+	  --image secai-sandbox-agent:latest \
+	  --image secai-sandbox-search-mediator:latest \
+	  --image secai-sandbox-diffusion:latest \
+	  --include-unicode-locale-glibc \
+	  --output custom-python.vex.json
+
 .PHONY: test
 test: test-go test-python ## Run all tests (Go + Python)
 

@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.23-alpine@sha256:383395b794dffa5b53012a212365d40c8e37109a626ca30d6151c8348d380b5f AS build
+FROM docker.io/library/golang:1.25-alpine@sha256:5caaf1cca9dc351e13deafbc3879fd4754801acba8653fa9540cea125d01a71f AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download 2>/dev/null || true
@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /registry . && \
     CGO_ENABLED=0 go build -o /securectl ./cmd/securectl/
 
-FROM docker.io/library/alpine:3.20@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+FROM docker.io/library/alpine:3.22@sha256:310c62b5e7ca5b08167e4384c68db0fd2905dd9c7493756d356e893909057601
 RUN apk add --no-cache ca-certificates
 COPY --from=build /registry /usr/local/bin/registry
 COPY --from=build /securectl /usr/local/bin/securectl

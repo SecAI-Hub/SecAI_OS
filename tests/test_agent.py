@@ -9,6 +9,8 @@ planner heuristic fallback, executor dispatch, and Flask API endpoints.
 
 import json
 import os
+import socket
+import stat
 import sys
 import tempfile
 import time
@@ -32,6 +34,7 @@ from agent.agent.models import (
     Step,
     StepAction,
     StepStatus,
+    TaskStatus,
     Task,
 )
 from agent.agent.policy import PolicyEngine, classify_risk
@@ -555,6 +558,53 @@ class TestPlannerLLMParsing:
         assert len(steps) == 1
         assert steps[0].action == StepAction.SUMMARIZE
 
+    def test_parse_placeholder_content_uses_prior_read_path(self):
+        text = json.dumps([
+            {
+                "action": "read_file",
+                "description": "Read doc",
+                "params": {"path": "/vault/user_docs/report.txt"},
+            },
+            {
+                "action": "summarize",
+                "description": "Summarize doc",
+                "params": {"content": "..."},
+            },
+        ])
+        steps = self.planner._parse_llm_plan(text)
+        assert len(steps) == 2
+        assert steps[1].params.get("path") == "/vault/user_docs/report.txt"
+        assert "content" not in steps[1].params
+
+    def test_parse_placeholder_content_without_context_is_removed(self):
+        text = json.dumps([
+            {
+                "action": "summarize",
+                "description": "Summarize doc",
+                "params": {"content": "..."},
+            },
+        ])
+        steps = self.planner._parse_llm_plan(text)
+        assert len(steps) == 1
+        assert "content" not in steps[0].params
+
+    def test_parse_scope_glob_is_normalized_for_local_search(self):
+        text = json.dumps([
+            {
+                "action": "local_search",
+                "description": "Search outputs",
+                "params": {"path": "/var/lib/secure-ai/vault/outputs/**"},
+            },
+        ])
+        steps = self.planner._parse_llm_plan(text)
+        assert len(steps) == 1
+        assert steps[0].params["path"] == "/var/lib/secure-ai/vault/outputs"
+
+    def test_display_scope_strips_glob_suffixes(self):
+        assert self.planner._display_scope("/var/lib/secure-ai/vault/outputs/**") == (
+            "/var/lib/secure-ai/vault/outputs"
+        )
+
 
 # ============================================================================
 # Executor tests
@@ -630,6 +680,18 @@ class TestExecutor:
         result_step = self.executor.execute(step, self.cap, budgets)
         assert result_step.status == StepStatus.COMPLETED
         assert result_step.result["ok"]
+
+    def test_summarize_placeholder_content_fails_closed(self):
+        step = Step(
+            action=StepAction.SUMMARIZE,
+            status=StepStatus.APPROVED,
+            params={"content": "..."},
+        )
+        budgets = Budgets()
+        result_step = self.executor.execute(step, self.cap, budgets)
+        assert result_step.status == StepStatus.COMPLETED
+        assert not result_step.result["ok"]
+        assert "no content" in result_step.result["error"]
 
     def test_unknown_action_fails(self):
         step = Step(
@@ -829,6 +891,20 @@ class TestAgentAPI:
         resp = self.client.post("/v1/task/fake/deny", json={})
         assert resp.status_code == 404
 
+    def test_deny_completed_task_returns_conflict(self):
+        task = Task(intent="done")
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = time.time()
+        with agent_app_module._tasks_lock:
+            agent_app_module._tasks[task.task_id] = task
+
+        resp = self.client.post(f"/v1/task/{task.task_id}/deny", json={"deny_all": True})
+
+        assert resp.status_code == 409
+        assert "not pending_approval" in resp.get_json()["error"]
+        with agent_app_module._tasks_lock:
+            assert agent_app_module._tasks[task.task_id].status == TaskStatus.COMPLETED
+
     def test_security_headers(self):
         resp = self.client.get("/health")
         assert resp.headers.get("X-Content-Type-Options") == "nosniff"
@@ -844,6 +920,12 @@ class TestAgentAPI:
             "workspace": ["user_docs"],
         })
         assert resp.status_code == 201
+
+    def test_workspace_ids_resolve_to_directory_roots(self):
+        """Workspace IDs resolve to concrete directories for local_search steps."""
+        resolved, err = agent_app_module._resolve_workspaces(["outputs"])
+        assert err is None
+        assert resolved == ["/var/lib/secure-ai/vault/outputs"]
 
     def test_workspace_raw_path_rejected(self):
         """Raw filesystem paths are rejected — only workspace IDs allowed."""
@@ -1601,3 +1683,22 @@ class TestKeystoreFactory:
         assert token.signature != ""
         valid, reason = verify_token(token)
         assert valid, f"expected valid: {reason}"
+
+
+class TestUnixSocketServer:
+    def test_make_unix_server_binds_socket_path(self, tmp_path):
+        if not hasattr(socket, "AF_UNIX"):
+            pytest.skip("Unix domain sockets are not available on this platform")
+
+        sock_path = tmp_path / "agent.sock"
+        server = agent_app_module._make_unix_server(str(sock_path))
+        try:
+            assert sock_path.exists()
+            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o660
+            assert server.server_address == str(sock_path)
+        finally:
+            server.server_close()
+            try:
+                sock_path.unlink()
+            except FileNotFoundError:
+                pass

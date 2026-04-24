@@ -2,7 +2,7 @@
 
 Defines the hardware support matrix, software compatibility, support windows, and deprecation policy for SecAI OS.
 
-Last updated: 2026-03-14
+Last updated: 2026-04-22
 
 ---
 
@@ -61,6 +61,7 @@ Last updated: 2026-03-14
 | **Bare metal (ISO)** | Production | Full: TPM2, Secure Boot, hardware isolation, fs-verity | Recommended for sensitive workloads |
 | **Bare metal (rebase)** | Production | Full | For existing Fedora Silverblue operators |
 | **VM (OVA/QCOW2)** | Evaluation | Limited: no TPM2 sealing, host visibility of VM memory | Not for sensitive model data |
+| **Sandbox (compose)** | Evaluation | Limited: policy enforcement, quarantine, audit, agent, airlock; no measured boot or kernel isolation | Best for onboarding and workflow validation |
 | **VM (manual)** | Community | Limited | Self-configured |
 | **Container (dev)** | Development | Minimal: no systemd hardening, no firewall, no vault | Service development only |
 
@@ -78,6 +79,12 @@ VM installations are supported for **evaluation and development** only. Known li
 - No Secure Boot chain verification (depends on hypervisor configuration)
 - Reduced GPU performance (passthrough required for full acceleration)
 - Host hypervisor has full visibility of guest memory
+
+Sandbox deployments are supported for **evaluation only**. Known limitations:
+- Shared host kernel and container runtime can inspect memory, files, and traffic
+- No Secure Boot, TPM2, measured boot, or rpm-ostree immutability guarantees
+- No systemd unit sandboxing or appliance-wide nftables enforcement
+- Optional inference and diffusion profiles depend on user-supplied runtime configuration
 
 > **Note:** The ISO install path is newly added and should be considered production-ready once exercised in at least one stable release cycle. Until then, the bare-metal rebase path remains the most validated production install method.
 

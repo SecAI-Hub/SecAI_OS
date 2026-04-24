@@ -47,8 +47,11 @@ v1.0.0/
   diffusion-worker-sbom.cdx.json
   search-mediator-sbom.cdx.json
 
+  # OpenVEX vulnerability applicability evidence
+  custom-python.vex.json
+
   # Release manifest (machine-readable)
-  RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, provenance, build metadata
+  RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, OpenVEX docs, provenance, build metadata
 
   # Install artifacts (bootable images)
   secai-os-v1.0.0-x86_64.iso        # Bootable ISO (from isogenerator)
@@ -61,7 +64,7 @@ v1.0.0/
   secai-os-v1.0.0.ova.sig           # cosign detached signature
 
   # Checksums and signature
-  SHA256SUMS            # sha256sum of every artifact above (includes RELEASE_MANIFEST.json)
+  SHA256SUMS            # sha256sum of every artifact above (includes RELEASE_MANIFEST.json and custom-python.vex.json)
   SHA256SUMS.sig        # cosign detached signature over SHA256SUMS
 ```
 
@@ -121,6 +124,9 @@ Example structure:
   "sboms": [
     "airlock-sbom.cdx.json",
     "registry-sbom.cdx.json"
+  ],
+  "vex": [
+    "custom-python.vex.json"
   ],
   "provenance": {
     "type": "https://slsa.dev/provenance/v1",
@@ -191,7 +197,17 @@ SBOMs are also attached as cosign attestations to the image:
 cosign attest --yes --type cyclonedx \
   --predicate registry-sbom.cdx.json \
   --key cosign.key \
-  ghcr.io/secai-hub/secai_os:v1.0.0-registry
+ghcr.io/secai-hub/secai_os:v1.0.0-registry
+```
+
+## OpenVEX Evidence
+
+`custom-python.vex.json` is an [OpenVEX](https://openvex.dev/) document generated from the sandbox Python images built in the release workflow. It records the vulnerability-applicability decisions for the custom CPython runtime patches and the UTF-8-only glibc locale mitigation used by the diffusion sandbox image.
+
+Use it with Grype during offline verification:
+
+```bash
+grype secai-sandbox-diffusion:latest --vex custom-python.vex.json
 ```
 
 ## Provenance Attestation
@@ -299,6 +315,9 @@ gh release download v1.0.0 -R SecAI-Hub/SecAI_OS
 # Place cosign.pub in the directory (or set COSIGN_PUB_KEY)
 cp /path/to/cosign.pub .
 
+# If verifying a historical release after a signing-key rotation, also place
+# archived public keys in ./release-keys/ or set COSIGN_PUB_KEYS_DIR.
+
 # Run full verification (colored terminal output)
 ../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
 
@@ -312,7 +331,7 @@ cp /path/to/cosign.pub .
 make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
 ```
 
-The script prints PASS/FAIL for each step and exits non-zero if any check fails. See `--help` for configuration options.
+The script prints PASS/FAIL for each step, validates `custom-python.vex.json` when it is present, and exits non-zero if any check fails. See `--help` for configuration options.
 
 ### Sample Verification Output
 

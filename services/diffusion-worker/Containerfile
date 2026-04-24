@@ -5,13 +5,11 @@
 #   cpu   - CPU only (AVX2/AVX-512 optimized, works everywhere)
 ARG COMPUTE=cuda
 
-FROM docker.io/library/python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0 AS base
+FROM docker.io/library/python:3.12-slim@sha256:520153e2deb359602c9cffd84e491e3431d76e7bf95a3255c9ce9433b76ab99a AS base
 
 ARG COMPUTE
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx libglib2.0-0 && \
-    rm -rf /var/lib/apt/lists/*
+RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 setuptools==78.1.1
 
 # Install PyTorch with the appropriate compute backend
 RUN if [ "$COMPUTE" = "cuda" ]; then \
@@ -28,8 +26,11 @@ RUN pip install --no-cache-dir \
     accelerate \
     safetensors \
     flask \
+    gunicorn==23.0.0 \
+    imageio==2.37.3 \
+    imageio-ffmpeg==0.6.0 \
     pyyaml \
-    Pillow
+    Pillow==12.2.0
 
 # Intel XPU support (install IPEX when building for CPU — it auto-detects Intel GPUs)
 RUN if [ "$COMPUTE" = "cpu" ]; then \
@@ -37,7 +38,13 @@ RUN if [ "$COMPUTE" = "cpu" ]; then \
     fi
 
 COPY app.py /app/app.py
+COPY entrypoint.sh /app/diffusion-entrypoint.sh
+
+RUN chmod 0555 /app/diffusion-entrypoint.sh
 
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+USER 65534:65534
 EXPOSE 8455
-CMD ["python", "app.py"]
+ENTRYPOINT ["/app/diffusion-entrypoint.sh"]

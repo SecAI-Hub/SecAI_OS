@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,20 @@ func TestEvaluateEndpointAcceptsLegacyArgsAlias(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if !resp.Allowed {
 		t.Fatalf("expected allowed, got denied: %s", resp.Reason)
+	}
+}
+
+func TestEvaluateEndpointRejectsOversizedBody(t *testing.T) {
+	setupTestPolicy()
+	oversized := `{"tool":"filesystem.read","params":{"prompt":"` + strings.Repeat("x", maxRequestBodySize) + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/evaluate", bytes.NewBufferString(oversized))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handleEvaluate(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", w.Code)
 	}
 }
 

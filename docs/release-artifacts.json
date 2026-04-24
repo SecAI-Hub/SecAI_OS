@@ -44,6 +44,10 @@
         "files": ["RELEASE_MANIFEST.json"],
         "description": "Machine-readable release manifest"
       },
+      "openvex": {
+        "files": ["custom-python.vex.json"],
+        "description": "OpenVEX document covering the patched sandbox Python runtimes"
+      },
       "image_digest": {
         "files": ["IMAGE_DIGEST"],
         "description": "OCI image digest for this release"

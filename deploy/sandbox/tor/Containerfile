@@ -1,0 +1,9 @@
+FROM docker.io/library/alpine:3.22
+
+RUN apk add --no-cache tor
+
+RUN mkdir -p /var/lib/tor && \
+    chown -R tor:tor /var/lib/tor
+
+USER tor
+ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]

@@ -9,6 +9,7 @@ Get SecAI OS running in the fewest steps possible. Choose the path that fits you
 | **Bootstrap** (Recommended) | ~30 min | Easy | Real PC or VM, full security |
 | **Portable USB** | ~10 min | Easy | Run directly from removable media without installing first |
 | **VM Build** | ~45 min | Moderate | Local evaluation in VirtualBox/VMware/KVM |
+| **Sandbox Stack** | ~10 min | Easy | Evaluate the control plane on an existing workstation |
 | **Development** | ~10 min | Easy | Service development only (no OS features) |
 
 > **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). Pre-built VM images (OVA/QCOW2) still require build infrastructure not yet provisioned. The bootstrap path remains the recommended production install, but the portable USB artifact is the right choice when you want to boot and evaluate directly from removable media. See [Artifact Availability](#artifact-availability) for details.
@@ -163,7 +164,23 @@ virsh domifaddr secai-os
 
 ---
 
-## Path D: Development Mode
+## Path D: Sandbox Stack
+
+Run the compose-based sandbox bundle when you want the SecAI UI, registry, quarantine pipeline, tool firewall, airlock, policy engine, and agent on an existing workstation without rebasing the host OS.
+
+See [sandbox.md](sandbox.md) for the full instructions.
+
+Common flags:
+
+- `--with-search` / `-WithSearch` enables the Tor + SearXNG search sidecars and turns on `search.enabled` in the sandbox runtime policy.
+- `--with-airlock` / `-WithAirlock` turns on airlock-mediated outbound downloads in the sandbox runtime policy.
+- `--with-inference` / `-WithInference` and `--with-diffusion` / `-WithDiffusion` enable the heavier model-serving profiles.
+
+> **Security note:** This is a lower-assurance path than the full OS or VM image. The host kernel and container runtime can inspect container memory, mounted files, and network activity. Use it for evaluation and workflow testing, not sensitive workloads.
+
+---
+
+## Path E: Development Mode
 
 Run individual services locally for development without rebasing your OS. No security features (sandboxing, firewall, vault) are active.
 

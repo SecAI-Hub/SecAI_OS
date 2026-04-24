@@ -1,23 +1,45 @@
-# Inference worker: wraps llama-server (llama.cpp) with GPU support.
-# Build arg COMPUTE selects the backend:
-#   cuda   - NVIDIA GPUs (official llama.cpp CUDA build)
-#   rocm   - AMD GPUs (official llama.cpp ROCm build)
-#   vulkan - Cross-vendor Vulkan compute (Intel Arc, AMD, NVIDIA)
-#   cpu    - CPU only (AVX2/AVX-512/NEON auto-detected, Metal on macOS host)
-ARG COMPUTE=cuda
+# Inference worker: wraps llama-server (llama.cpp) with optional accelerator images.
+# Build arg IMAGE_TAG selects the upstream image tag:
+#   server         - CPU only
+#   server-cuda    - NVIDIA GPUs (CUDA 12)
+#   server-cuda13  - NVIDIA GPUs (CUDA 13)
+#   server-rocm    - AMD GPUs
+#   server-vulkan  - Cross-vendor Vulkan compute
+#   server-intel   - Intel SYCL
+#   server-openvino- Intel OpenVINO
+ARG IMAGE_TAG=server
 
-# SECURITY: Cannot digest-pin this image because the tag is dynamic (server-${COMPUTE}).
+# SECURITY: Cannot digest-pin this image because the tag is dynamic.
 # Pin each variant when building for production:
-#   skopeo inspect docker://ghcr.io/ggerganov/llama.cpp:server-cuda | jq -r '.Digest'
-#   skopeo inspect docker://ghcr.io/ggerganov/llama.cpp:server-rocm | jq -r '.Digest'
-#   skopeo inspect docker://ghcr.io/ggerganov/llama.cpp:server-cpu  | jq -r '.Digest'
+#   skopeo inspect docker://ghcr.io/ggml-org/llama.cpp:server-cuda   | jq -r '.Digest'
+#   skopeo inspect docker://ghcr.io/ggml-org/llama.cpp:server-rocm   | jq -r '.Digest'
+#   skopeo inspect docker://ghcr.io/ggml-org/llama.cpp:server        | jq -r '.Digest'
 # TODO: pin digest per COMPUTE variant
-FROM ghcr.io/ggerganov/llama.cpp:server-${COMPUTE} AS runtime
+#
+# Upstream moved the published images from `ggerganov/llama.cpp` to
+# `ggml-org/llama.cpp`; the old CPU tag no longer resolves.
+FROM ghcr.io/ggml-org/llama.cpp:${IMAGE_TAG} AS llama_server
+
+FROM docker.io/library/ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS runtime
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libgomp1 \
+        libssl3t64 \
+        libstdc++6 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=llama_server /app/ /opt/llama-server/
 
 # The entrypoint script reads appliance.yaml and starts llama-server
 # with the correct model path and settings.
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh \
+    && chmod +x /entrypoint.sh
+
+ENV LD_LIBRARY_PATH=/opt/llama-server
+ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server
 
 EXPOSE 8465
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD bash -ec 'port="${BIND_ADDR##*:}"; exec 3<>"/dev/tcp/127.0.0.1/${port}"'
 ENTRYPOINT ["/entrypoint.sh"]

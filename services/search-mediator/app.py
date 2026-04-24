@@ -43,6 +43,7 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 POLICY_PATH = os.getenv("POLICY_PATH", "/etc/secure-ai/policy/policy.yaml")
 AUDIT_DIR = os.getenv("AUDIT_DIR", "/var/lib/secure-ai/logs")
+SEARCH_HEALTH_TIMEOUT = float(os.getenv("SEARCH_HEALTH_TIMEOUT", "1.0"))
 
 _audit_chain = AuditChain(os.path.join(AUDIT_DIR, "search-audit.jsonl"))
 
@@ -265,15 +266,20 @@ def send_decoy_search(query: str) -> None:
     """Fire-and-forget a decoy search to SearXNG. Results are discarded."""
     try:
         padded = pad_query(query)
+        params = {
+            "q": padded,
+            "format": "json",
+            "categories": "general",
+            "language": "en",
+            "safesearch": "1",
+        }
+        engines = _allowed_engines_param()
+        if engines:
+            params["engines"] = engines
         requests.get(
             f"{SEARXNG_URL}/search",
-            params={
-                "q": padded,
-                "format": "json",
-                "categories": "general",
-                "language": "en",
-                "safesearch": "1",
-            },
+            params=params,
+            headers=_searxng_request_headers(),
             timeout=15,
         )
         log.debug("decoy search sent: %d chars", len(query))
@@ -352,6 +358,20 @@ PII_PATTERNS = [
     (re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "[IP]"),
     # Dates of birth patterns
     (re.compile(r"\b(?:born|dob|birthday)[:\s]+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", re.I), "[DOB]"),
+    # Bank account and routing numbers when they are explicitly labeled
+    (re.compile(r"\b(?:bank\s+)?account(?:\s+number|\s+no\.?|\s*#)?[:\s-]*\d{6,17}\b", re.I), "[BANK_ACCOUNT]"),
+    (re.compile(r"\b(?:routing(?:\s+number)?|aba)(?:\s+number|\s+no\.?|\s*#)?[:\s-]*\d{9}\b", re.I), "[BANK_ROUTING]"),
+    # Passport numbers when they are explicitly labeled
+    (re.compile(r"\bpassport(?:\s+number|\s+no\.?|\s*#)?[:\s-]*[A-Z0-9]{6,12}\b", re.I), "[PASSPORT]"),
+    # Full street addresses with house number + street name + suffix
+    (
+        re.compile(
+            r"\b\d{1,6}\s+(?:[A-Za-z0-9.'-]+\s+){0,5}"
+            r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)\b\.?",
+            re.I,
+        ),
+        "[ADDRESS]",
+    ),
     # API keys / tokens (long hex or base64 strings)
     (re.compile(r"\b(?:sk-|pk-|api[_-]?key[:\s=]+)[a-zA-Z0-9]{20,}\b", re.I), "[API_KEY]"),
     (re.compile(r"\b[a-fA-F0-9]{32,}\b"), "[HEX_TOKEN]"),
@@ -430,6 +450,48 @@ def _get_session_mode() -> str:
     return config.get("session", {}).get("mode", "normal")
 
 
+def _allowed_engines_param() -> str | None:
+    """Return the policy-allowed SearXNG engines as a comma-separated value."""
+    policy = load_policy()
+    search_cfg = policy.get("search", {})
+    allowed = search_cfg.get("allowed_engines", [])
+    if not isinstance(allowed, list):
+        return None
+    engines = [str(engine).strip() for engine in allowed if str(engine).strip()]
+    if not engines:
+        return None
+    return ",".join(engines)
+
+
+def _decoy_engines_param() -> str | None:
+    """Return a lower-risk engine subset for decoy searches."""
+    policy = load_policy()
+    search_cfg = policy.get("search", {})
+    allowed = search_cfg.get("allowed_engines", [])
+    if not isinstance(allowed, list):
+        return None
+    engines = [str(engine).strip() for engine in allowed if str(engine).strip()]
+    if not engines:
+        return None
+    preferred = [engine for engine in engines if engine in {"wikipedia", "github", "stackoverflow"}]
+    selected = preferred or [engine for engine in engines if engine != "duckduckgo"]
+    if not selected:
+        return None
+    return ",".join(selected)
+
+
+def _searxng_request_headers() -> dict[str, str]:
+    """Return a fixed, privacy-preserving header set for SearXNG requests."""
+    return {
+        "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "SecAI-SearchMediator/1.0",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Query sanitization (outbound)
 # ---------------------------------------------------------------------------
@@ -456,10 +518,37 @@ def sanitize_query(raw_query: str) -> dict:
             redactions.extend(matches)
             query = pattern.sub(replacement, query)
 
-    # If the query is mostly redacted, block it
+    pii_placeholders = {
+        "[EMAIL]",
+        "[PHONE]",
+        "[SSN]",
+        "[CARD]",
+        "[IP]",
+        "[DOB]",
+        "[BANK_ACCOUNT]",
+        "[BANK_ROUTING]",
+        "[PASSPORT]",
+        "[ADDRESS]",
+        "[API_KEY]",
+        "[HEX_TOKEN]",
+    }
+    high_risk_placeholders = {
+        "[SSN]",
+        "[CARD]",
+        "[BANK_ACCOUNT]",
+        "[BANK_ROUTING]",
+        "[PASSPORT]",
+        "[ADDRESS]",
+        "[API_KEY]",
+        "[HEX_TOKEN]",
+    }
+
+    # If the query is mostly redacted, or combines multiple high-risk
+    # identifiers, block it before any outbound search request is sent.
     tokens = query.split()
-    redacted_tokens = sum(1 for t in tokens if t.startswith("[") and t.endswith("]"))
-    if tokens and redacted_tokens / len(tokens) > 0.5:
+    redacted_tokens = sum(1 for t in tokens if t in pii_placeholders)
+    high_risk_redactions = sum(1 for t in tokens if t in high_risk_placeholders)
+    if (tokens and redacted_tokens / len(tokens) > 0.5) or high_risk_redactions >= 2:
         return {
             "query": query,
             "redactions": redactions,
@@ -582,11 +671,12 @@ def health():
 
     # Check SearXNG availability
     searxng_ok = False
-    try:
-        resp = requests.get(f"{SEARXNG_URL}/healthz", timeout=3)
-        searxng_ok = resp.status_code == 200
-    except Exception:
-        pass
+    if enabled and session_mode != "offline-only":
+        try:
+            resp = requests.get(f"{SEARXNG_URL}/healthz", timeout=SEARCH_HEALTH_TIMEOUT)
+            searxng_ok = resp.status_code == 200
+        except Exception:
+            pass
 
     return jsonify({
         "status": "ok",
@@ -681,15 +771,20 @@ def search():
 
     # Query SearXNG (which routes through Tor)
     try:
+        params = {
+            "q": padded_query,
+            "format": "json",
+            "categories": categories,
+            "language": "en",
+            "safesearch": "1",
+        }
+        engines = _allowed_engines_param()
+        if engines:
+            params["engines"] = engines
         resp = requests.get(
             f"{SEARXNG_URL}/search",
-            params={
-                "q": padded_query,
-                "format": "json",
-                "categories": categories,
-                "language": "en",
-                "safesearch": "1",
-            },
+            params=params,
+            headers=_searxng_request_headers(),
             timeout=30,
         )
         resp.raise_for_status()
@@ -744,9 +839,14 @@ def search_test():
         return jsonify({"error": "web search is disabled"}), 403
 
     try:
+        params = {"q": "test", "format": "json"}
+        engines = _allowed_engines_param()
+        if engines:
+            params["engines"] = engines
         resp = requests.get(
             f"{SEARXNG_URL}/search",
-            params={"q": "test", "format": "json"},
+            params=params,
+            headers=_searxng_request_headers(),
             timeout=30,
         )
         return jsonify({

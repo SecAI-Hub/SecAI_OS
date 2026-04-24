@@ -102,6 +102,47 @@ def _read_source_metadata(artifact_path: Path) -> str:
     return ""
 
 
+def _quarantine_status_marker(artifact_path: Path) -> Path:
+    """Return the hidden status marker path for a quarantined artifact."""
+    return artifact_path.parent / f".{artifact_path.name}.status.json"
+
+
+def _write_quarantine_status_marker(artifact_path: Path, **payload) -> None:
+    """Record that a quarantined artifact was already handled despite cleanup issues."""
+    marker = _quarantine_status_marker(artifact_path)
+    data = {
+        "artifact": artifact_path.name,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        **payload,
+    }
+    marker.write_text(json.dumps(data, indent=2))
+
+
+def _cleanup_quarantine_directory(artifact_dir: Path, *, state: str, artifact_hash: str) -> None:
+    """Best-effort cleanup after handling a directory import.
+
+    If the watcher cannot remove the original directory (for example because an
+    external tool copied it in with a different owner), write a hidden marker so
+    future scan loops skip the already-handled artifact instead of retrying
+    forever.
+    """
+    try:
+        shutil.rmtree(artifact_dir)
+    except OSError as e:
+        _write_quarantine_status_marker(
+            artifact_dir,
+            state=state,
+            sha256=artifact_hash,
+            cleanup_error=str(e),
+        )
+        log.warning(
+            "could not remove quarantine directory %s after %s; wrote status marker: %s",
+            artifact_dir.name,
+            state,
+            e,
+        )
+
+
 def _extract_scanner_versions(scan_results: dict) -> dict:
     """Extract scanner version info from pipeline scan result details."""
     versions = {}
@@ -125,6 +166,14 @@ def _compute_policy_version() -> dict:
         return {"hash": hashlib.sha256(content).hexdigest()}
     except OSError:
         return {"hash": "unreadable"}
+
+
+def _policy_version_id() -> str:
+    """Return the registry-safe policy version identifier."""
+    info = _compute_policy_version()
+    if isinstance(info, dict):
+        return str(info.get("hash", "unknown"))
+    return str(info)
 
 
 def _service_headers() -> dict[str, str]:
@@ -169,7 +218,7 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
         "source": source_url,
         "source_revision": source_revision,
         "scanner_versions": scanner_versions,
-        "policy_version": _compute_policy_version(),
+        "policy_version": _policy_version_id(),
     }
 
     # Include gguf-guard data if available from pipeline
@@ -316,18 +365,32 @@ def process_directory(artifact_dir: Path) -> bool:
             model_type="diffusion",
             details={k: str(v) for k, v in result.get("details", {}).items()},
         )
-        shutil.rmtree(artifact_dir)
+        _cleanup_quarantine_directory(
+            artifact_dir,
+            state="rejected",
+            artifact_hash=dir_hash,
+        )
         source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
         if source_meta.exists():
             source_meta.unlink()
         return False
 
-    # Move directory to registry
+    # Copy the directory into the registry first so ownership differences in the
+    # quarantine tree cannot block promotion.
     dest = REGISTRY_DIR / artifact_dir.name
+    tmp_dest = REGISTRY_DIR / f".{artifact_dir.name}.partial"
+    if tmp_dest.exists():
+        shutil.rmtree(tmp_dest)
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.move(str(artifact_dir), str(dest))
-    log.info("moved to registry dir: %s", dest)
+    try:
+        shutil.copytree(artifact_dir, tmp_dest, copy_function=shutil.copy2)
+        tmp_dest.replace(dest)
+    except Exception:
+        if tmp_dest.exists():
+            shutil.rmtree(tmp_dest, ignore_errors=True)
+        raise
+    log.info("copied to registry dir: %s", dest)
 
     # Enable fs-verity on individual model files in the directory
     fsverity_ok = True
@@ -340,6 +403,11 @@ def process_directory(artifact_dir: Path) -> bool:
     source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
     if source_meta.exists():
         source_meta.unlink()
+    _cleanup_quarantine_directory(
+        artifact_dir,
+        state="promoted",
+        artifact_hash=dir_hash,
+    )
 
     details = result.get("details", {})
     scan_summary = _build_scan_summary(details)
@@ -517,6 +585,8 @@ def scan_directory():
 
     for entry in sorted(QUARANTINE_DIR.iterdir()):
         if entry.name.startswith("."):
+            continue
+        if _quarantine_status_marker(entry).exists():
             continue
 
         try:

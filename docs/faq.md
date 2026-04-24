@@ -102,6 +102,20 @@ For production use with sensitive models, bare metal installation is recommended
 
 ---
 
+## Can I run SecAI OS without replacing my host OS?
+
+Yes. The project now includes a compose-based sandbox path for evaluation on an existing workstation.
+
+Use [Sandbox Deployment](install/sandbox.md) when you want the UI, quarantine pipeline, policy engine, tool firewall, airlock, and agent without rebasing the host.
+
+Important limits:
+
+- The host kernel and container runtime can inspect container memory and mounted files.
+- There is no TPM2 sealing, Secure Boot, measured boot, or immutable root.
+- It is appropriate for evaluation and workflow testing, not sensitive production workloads.
+
+---
+
 ## How do I update SecAI OS?
 
 SecAI OS uses rpm-ostree for atomic updates:

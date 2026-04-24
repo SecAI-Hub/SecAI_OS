@@ -1,0 +1,35 @@
+FROM ghcr.io/ggml-org/llama.cpp:server AS llama_server
+
+FROM docker.io/library/python:3.12-slim@sha256:520153e2deb359602c9cffd84e491e3431d76e7bf95a3255c9ce9433b76ab99a
+
+WORKDIR /app
+COPY services/quarantine/requirements.lock .
+COPY services/common/ /app/services/common/
+COPY services/quarantine/quarantine/ /app/quarantine/
+COPY --from=llama_server /app/ /opt/llama-server/
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
+    python -m pip install --no-cache-dir --require-hashes -r requirements.lock
+
+RUN python -m pip install --no-cache-dir modelscan || echo "WARN: modelscan not available"
+RUN python -m pip install --no-cache-dir fickling || echo "WARN: fickling not available"
+RUN python -m pip install --no-cache-dir garak || echo "WARN: garak not available"
+RUN python -m pip install --no-cache-dir modelaudit || echo "WARN: modelaudit not available"
+RUN python -m pip install --no-cache-dir litellm==1.83.11 && \
+    python -m pip install --no-cache-dir aiohttp==3.13.5 python-dotenv==1.2.2
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app:/app/services
+ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server
+ENV LD_LIBRARY_PATH=/opt/llama-server
+ENV HOME=/tmp/secure-ai-home
+ENV XDG_CONFIG_HOME=/tmp/secure-ai-config
+ENV XDG_DATA_HOME=/tmp/secure-ai-data
+ENV XDG_CACHE_HOME=/tmp/secure-ai-cache
+USER 65534:65534
+ENTRYPOINT ["python", "-m", "quarantine.watcher"]

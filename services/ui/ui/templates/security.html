@@ -108,7 +108,7 @@
 <div class="section-title">Environment</div>
 <div class="card" id="vm-card">
     <div class="card-header">
-        <span class="card-title">VM Detection</span>
+        <span class="card-title">Runtime Environment</span>
         <span class="badge badge-muted" id="vm-badge">checking</span>
     </div>
     <p class="meta" id="vm-detail">Checking environment...</p>
@@ -171,8 +171,10 @@
             var resp = await fetch('/api/status');
             var data = await resp.json();
             var services = data.services || {};
+            var deploymentMode = data.deployment_mode || 'appliance';
             var tbody = document.getElementById('services-tbody');
             var onlineCount = 0;
+            var optionalCount = 0;
             var rows = '';
 
             var svcList = [
@@ -187,16 +189,29 @@
             svcList.forEach(function(svc) {
                 var s = services[svc.key] || {};
                 var ok = s.status === 'ok';
+                var optionalDisabled =
+                    deploymentMode === 'sandbox' &&
+                    (svc.key === 'inference' || svc.key === 'diffusion') &&
+                    (s.status === 'unreachable' || s.status === 'circuit_open');
                 if (ok) onlineCount++;
+                if (optionalDisabled) optionalCount++;
                 rows += '<tr>' +
                     '<td style="font-weight:500">' + esc(svc.name) + '</td>' +
-                    '<td><span class="badge ' + (ok ? 'badge-success' : 'badge-muted') + '">' + (ok ? 'online' : 'offline') + '</span></td>' +
-                    '<td>' + (s.detail ? esc(s.detail) : (ok ? 'Healthy' : 'Not responding')) + '</td>' +
+                    '<td><span class="badge ' + (ok ? 'badge-success' : 'badge-muted') + '">' +
+                    (optionalDisabled ? 'optional' : (ok ? 'online' : 'offline')) + '</span></td>' +
+                    '<td>' + (
+                        optionalDisabled
+                            ? 'Disabled in sandbox mode until the matching profile is enabled.'
+                            : (s.detail ? esc(s.detail) : (ok ? 'Healthy' : 'Not responding'))
+                    ) + '</td>' +
                 '</tr>';
             });
 
             tbody.innerHTML = rows;
-            document.getElementById('stat-services').textContent = onlineCount + '/' + svcList.length;
+            document.getElementById('stat-services').textContent =
+                deploymentMode === 'sandbox' && optionalCount > 0
+                    ? onlineCount + ' + ' + optionalCount + ' opt'
+                    : onlineCount + '/' + svcList.length;
         } catch(e) {
             document.getElementById('services-tbody').innerHTML = '<tr><td colspan="3" class="text-muted">Could not reach status endpoint</td></tr>';
         }
@@ -318,7 +333,14 @@
             var data = await resp.json();
             var badge = document.getElementById('vm-badge');
             var detail = document.getElementById('vm-detail');
-            if (data.is_vm) {
+            if (data.environment_class === 'sandbox') {
+                badge.className = 'badge badge-warning';
+                badge.textContent = 'sandbox';
+                detail.textContent =
+                    'Running in the compose-based sandbox (' + (data.deployment_provider || 'unknown') +
+                    '). Assurance tier: ' + (data.assurance_tier || 'evaluation') +
+                    '. The host can inspect container memory, files, and network activity.';
+            } else if (data.is_vm) {
                 badge.className = 'badge badge-warning';
                 badge.textContent = 'virtual machine';
                 detail.textContent = 'Running inside a VM (' + (data.hypervisor || 'unknown') + '). GPU passthrough: ' + (data.gpu_passthrough ? 'Yes' : 'No');

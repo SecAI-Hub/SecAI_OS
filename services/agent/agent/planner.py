@@ -91,7 +91,7 @@ AVAILABLE ACTIONS:
 OUTPUT FORMAT (JSON array only, no markdown):
 [
   {{"action": "read_file", "description": "Read the document", "params": {{"path": "/vault/user_docs/report.txt"}}}},
-  {{"action": "summarize", "description": "Summarize the document", "params": {{"content": "..."}}}}
+  {{"action": "summarize", "description": "Summarize the document", "params": {{"path": "/vault/user_docs/report.txt"}}}}
 ]
 """
 
@@ -141,12 +141,14 @@ class Planner:
         """Use the inference worker to decompose the intent."""
         actions = ", ".join(a.value for a in StepAction)
         system = _SYSTEM_PROMPT.format(actions=actions)
+        readable_scopes = ", ".join(self._display_scope(path) for path in cap.readable_paths) or "none"
+        writable_scopes = ", ".join(self._display_scope(path) for path in cap.writable_paths) or "none"
 
         prompt = (
             f"{system}\n\n"
             f"Session mode: {cap.session_mode.value}\n"
-            f"Readable scopes: {', '.join(cap.readable_paths) or 'none'}\n"
-            f"Writable scopes: {', '.join(cap.writable_paths) or 'none'}\n"
+            f"Readable scopes: {readable_scopes}\n"
+            f"Writable scopes: {writable_scopes}\n"
             f"Online access: {'yes' if cap.allow_online else 'no'}\n\n"
             f"USER INTENT: {intent}\n\n"
             f"PLAN (JSON array):"
@@ -216,10 +218,43 @@ class Planner:
             steps.append(Step(
                 action=action,
                 description=raw.get("description", ""),
-                params=raw.get("params", {}),
+                params=self._sanitize_params(raw.get("params", {})),
             ))
 
+        self._normalize_step_context(steps)
         return steps
+
+    @staticmethod
+    def _sanitize_params(params: Any) -> dict[str, Any]:
+        """Drop placeholder values copied from prompt examples."""
+        if not isinstance(params, dict):
+            return {}
+        sanitized: dict[str, Any] = {}
+        for key, value in params.items():
+            if isinstance(value, str) and value.strip() in {"...", "…"}:
+                continue
+            if key in {"path", "scope"} and isinstance(value, str):
+                value = Planner._strip_scope_glob(value)
+            sanitized[key] = value
+        return sanitized
+
+    @staticmethod
+    def _normalize_step_context(steps: list[Step]) -> None:
+        """Propagate obvious file context between adjacent planning steps."""
+        last_read_path = ""
+        for step in steps:
+            for key in ("path", "scope"):
+                value = step.params.get(key)
+                if isinstance(value, str):
+                    step.params[key] = Planner._strip_scope_glob(value)
+            if step.action == StepAction.READ_FILE:
+                last_read_path = str(step.params.get("path", "")).strip()
+                continue
+            if step.action == StepAction.SUMMARIZE:
+                content = str(step.params.get("content", "")).strip()
+                path = str(step.params.get("path", "")).strip()
+                if not content and not path and last_read_path:
+                    step.params["path"] = last_read_path
 
     # --- heuristic fallback ------------------------------------------------
 
@@ -287,3 +322,18 @@ class Planner:
             params["context"] = intent
 
         return params
+
+    @staticmethod
+    def _strip_scope_glob(path: str) -> str:
+        """Normalize wildcard scope strings copied from capability prompts."""
+        value = str(path).strip()
+        while value.endswith("/**") or value.endswith("\\**"):
+            value = value[:-3]
+        while value.endswith("/*") or value.endswith("\\*"):
+            value = value[:-2]
+        return value.rstrip("/\\") or value
+
+    @staticmethod
+    def _display_scope(path: str) -> str:
+        """Show directory scopes without glob suffixes in the planning prompt."""
+        return Planner._strip_scope_glob(path)

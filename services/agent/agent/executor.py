@@ -129,6 +129,8 @@ class Executor:
     ) -> dict:
         """Summarize content using the local inference worker."""
         content = step.params.get("content", "")
+        if isinstance(content, str) and content.strip() in {"...", "…"}:
+            content = ""
         if not content:
             # If a path is given, read via storage gateway first
             path = step.params.get("path", "")

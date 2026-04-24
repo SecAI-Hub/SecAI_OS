@@ -44,6 +44,7 @@ jobs:
             "Dependency Vulnerability Audit"
             "Test Count Drift Check"
             "Documentation Validation"
+            "Sandbox OpenVEX Smoke"
           )
 
           PASS=0
@@ -147,6 +148,34 @@ jobs:
         with:
           name: python-sboms
           path: dist/
+
+  build-sandbox-vex:
+    name: Build Sandbox OpenVEX Evidence
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build sandbox images required for VEX generation
+        run: docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion
+
+      - name: Generate sandbox OpenVEX document
+        run: |
+          mkdir -p dist
+          python3 scripts/security/generate_custom_python_vex.py \
+            --image secai-sandbox-ui:latest \
+            --image secai-sandbox-agent:latest \
+            --image secai-sandbox-search-mediator:latest \
+            --image secai-sandbox-diffusion:latest \
+            --include-unicode-locale-glibc \
+            --document-id "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/custom-python.vex.json" \
+            --output dist/custom-python.vex.json
+
+      - name: Upload OpenVEX artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-vex
+          path: dist/custom-python.vex.json
 
   build-iso:
     name: Build ISO
@@ -306,7 +335,7 @@ jobs:
   provenance:
     name: SLSA Provenance & Attestation
     runs-on: ubuntu-latest
-    needs: [build-go, build-python, build-iso, build-usb-image]
+    needs: [build-go, build-python, build-sandbox-vex, build-iso, build-usb-image]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -364,6 +393,15 @@ jobs:
               '. + [$name]')
           done
 
+          # Collect OpenVEX filenames
+          VEX_JSON="[]"
+          for vex in *.vex.json; do
+            [ -f "$vex" ] || continue
+            VEX_JSON=$(echo "$VEX_JSON" | jq \
+              --arg name "$vex" \
+              '. + [$name]')
+          done
+
           # Read image digest
           IMAGE_DIGEST="unknown"
           if [ -f IMAGE_DIGEST ]; then
@@ -383,6 +421,7 @@ jobs:
             --arg image_ref_pinned "$IMAGE_REF_PINNED" \
             --argjson binaries "$BINARIES_JSON" \
             --argjson sboms "$SBOMS_JSON" \
+            --argjson vex "$VEX_JSON" \
             --arg provenance_type "https://slsa.dev/provenance/v1" \
             --arg checksum_file "SHA256SUMS" \
             --arg signature_file "SHA256SUMS.sig" \
@@ -400,6 +439,7 @@ jobs:
               },
               binaries: $binaries,
               sboms: $sboms,
+              vex: $vex,
               provenance: {
                 type: $provenance_type,
                 attested: true
@@ -480,6 +520,7 @@ jobs:
           files: |
             dist/*-linux-*
             dist/*-sbom.cdx.json
+            dist/*.vex.json
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/IMAGE_DIGEST

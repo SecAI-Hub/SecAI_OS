@@ -269,7 +269,7 @@ jobs:
           # Verify release workflow exists and contains required supply-chain steps
           test -f .github/workflows/release.yml || { echo "FAIL: release.yml missing"; exit 1; }
 
-          for keyword in "sbom-action" "attest-build-provenance" "cosign" "cyclonedx" "SHA256SUMS"; do
+          for keyword in "sbom-action" "attest-build-provenance" "cosign" "cyclonedx" "SHA256SUMS" "generate_custom_python_vex.py" ".vex.json"; do
             grep -q "${keyword}" .github/workflows/release.yml || \
               { echo "FAIL: release.yml missing '${keyword}'"; exit 1; }
             echo "OK: release.yml contains '${keyword}'"
@@ -362,6 +362,42 @@ jobs:
               sys.exit(1)
           "
           echo "=== Upstreams manifest check: PASSED ==="
+
+  sandbox-vex-smoke:
+    name: Sandbox OpenVEX Smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Build sandbox images required for OpenVEX generation
+        run: docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion
+
+      - name: Generate sandbox OpenVEX document
+        run: |
+          python scripts/security/generate_custom_python_vex.py \
+            --image secai-sandbox-ui:latest \
+            --image secai-sandbox-agent:latest \
+            --image secai-sandbox-search-mediator:latest \
+            --image secai-sandbox-diffusion:latest \
+            --include-unicode-locale-glibc \
+            --output custom-python.vex.json
+
+      - name: Validate generated OpenVEX document
+        run: |
+          test -f custom-python.vex.json
+          jq -e '."@context" == "https://openvex.dev/ns/v0.2.0" and (.statements | type == "array") and (.statements | length > 0)' custom-python.vex.json >/dev/null
+
+      - name: Upload OpenVEX artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-vex-smoke
+          path: custom-python.vex.json
 
   security-regression:
     name: Security Regression Tests

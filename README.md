@@ -69,13 +69,14 @@ The setup wizard guides you through privacy profile selection, system verificati
 | **Bootstrap** (Recommended) | ~30 min | Real PC or VM | Install Fedora Silverblue, run script, reboot |
 | **Portable USB** | ~10 min | Run directly from a USB stick | Flash the release `*-usb.raw.xz` artifact to removable media |
 | **Build VM locally** | ~45 min | VirtualBox / VMware / KVM | `scripts/vm/build-qcow2.sh` builds a QCOW2 from the OCI image |
+| **Sandbox Stack** | ~10 min | Evaluate on an existing workstation | Compose-based control-plane bundle with explicit lower-assurance limits |
 | **Development** | ~10 min | Service development only | No OS features; see [dev guide](docs/install/dev.md) |
 
-See [docs/install/quickstart.md](docs/install/quickstart.md) for full step-by-step instructions, VM build details, and verification commands.
+See [docs/install/quickstart.md](docs/install/quickstart.md) for full step-by-step instructions, including the [sandbox path](docs/install/sandbox.md), VM build details, and verification commands.
 
 For production deployments with digest pinning: `sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST`
 
-See [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
+See [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [sandbox](docs/install/sandbox.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
 
 ### Get Your First Model
 

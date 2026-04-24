@@ -210,6 +210,34 @@ done
 
 Expected: each service produces a valid CycloneDX JSON SBOM with a non-zero component count.
 
+### Custom CPython VEX (sandbox images)
+
+The sandbox `ui`, `agent`, `search-mediator`, and `diffusion` images can carry a vendor-patched CPython runtime. Version-only scanners can continue to report Python CVEs after the runtime is patched, so auditors should generate a VEX document from the runtime's own build manifest and then re-run Grype with that document.
+
+For the `diffusion` image, the generator can also inspect the runtime locale guard and emit a `not_affected` statement for `glibc` `CVE-2026-5928` when the image enforces a UTF-8-only locale at startup.
+
+Use the same image references for both VEX generation and the subsequent Grype scan:
+
+```bash
+python scripts/security/generate_custom_python_vex.py \
+  --image secai-sandbox-ui:latest \
+  --image secai-sandbox-agent:latest \
+  --image secai-sandbox-search-mediator:latest \
+  --image secai-sandbox-diffusion:latest \
+  --include-unicode-locale-glibc \
+  --output custom-python.vex.json
+
+grype secai-sandbox-ui:latest --vex custom-python.vex.json -o json \
+  | jq '{matches, ignoredMatches}'
+```
+
+Expected:
+
+- `custom-python.vex.json` is generated successfully.
+- The patched CPython findings move from `matches` to `ignoredMatches`.
+- When the diffusion runtime enforces a UTF-8-only locale, the glibc `CVE-2026-5928` finding also moves from `matches` to `ignoredMatches`.
+- Each ignored finding lists an `appliedIgnoreRules` entry with `namespace: "vex"` and `vex-status: "not_affected"`.
+
 ### Checksum Verification (release artifacts)
 
 For tagged releases, verify the checksum file:
@@ -242,6 +270,10 @@ gh release download v1.0.0 -R SecAI-Hub/SecAI_OS
 # Place cosign.pub (or set COSIGN_PUB_KEY)
 cp /path/to/cosign.pub .
 
+# Optional for historical releases signed before key rotation:
+# populate ./release-keys/ or set COSIGN_PUB_KEYS_DIR to an archive of old
+# public keys.
+
 # Run full verification (colored terminal output)
 ../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
 
@@ -253,7 +285,7 @@ cp /path/to/cosign.pub .
 ../files/scripts/verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
 ```
 
-The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 provenance attestation, and SHA256 checksums. See `files/scripts/verify-release.sh --help` for configuration options.
+The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 provenance attestation, SHA256 checksums, and the structural validity of `custom-python.vex.json` when that OpenVEX file is present in the release bundle. See `files/scripts/verify-release.sh --help` for configuration options.
 
 Or via Make:
 

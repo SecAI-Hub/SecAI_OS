@@ -10,9 +10,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
+CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 ARTIFACTS_JSON = REPO_ROOT / "docs" / "release-artifacts.json"
 SAMPLE_BUNDLE = REPO_ROOT / "docs" / "sample-release-bundle.md"
 VERIFY_RELEASE = REPO_ROOT / "files" / "scripts" / "verify-release.sh"
+MAKEFILE = REPO_ROOT / "Makefile"
 
 
 def _load_artifacts_json():
@@ -21,6 +23,10 @@ def _load_artifacts_json():
 
 def _read_release_yml():
     return RELEASE_YML.read_text(encoding="utf-8")
+
+
+def _read_ci_yml():
+    return CI_YML.read_text(encoding="utf-8")
 
 
 class TestReleaseArtifactsJson:
@@ -104,6 +110,28 @@ class TestReleaseWorkflowStructure:
         content = _read_release_yml()
         assert "install_artifacts" in content
 
+    def test_release_files_include_openvex(self):
+        content = _read_release_yml()
+        assert ".vex.json" in content
+
+    def test_has_sandbox_vex_job(self):
+        content = _read_release_yml()
+        assert "build-sandbox-vex:" in content
+
+    def test_preflight_requires_sandbox_openvex_ci_check(self):
+        content = _read_release_yml()
+        assert "Sandbox OpenVEX Smoke" in content
+
+
+class TestCiWorkflowStructure:
+    def test_ci_has_sandbox_openvex_smoke_job(self):
+        content = _read_ci_yml()
+        assert "sandbox-vex-smoke:" in content
+
+    def test_ci_generates_custom_python_vex(self):
+        content = _read_ci_yml()
+        assert "generate_custom_python_vex.py" in content
+
 
 class TestSampleReleaseBundle:
     def test_mentions_iso(self):
@@ -131,6 +159,10 @@ class TestSampleReleaseBundle:
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         assert "release-artifacts.json" in content
 
+    def test_mentions_openvex(self):
+        content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
+        assert "custom-python.vex.json" in content
+
 
 class TestVerifyReleaseScript:
     def test_has_step5_install_artifacts(self):
@@ -151,6 +183,22 @@ class TestVerifyReleaseScript:
     def test_handles_portable_usb_artifacts(self):
         content = VERIFY_RELEASE.read_text(encoding="utf-8")
         assert "usb.raw.xz" in content
+
+    def test_validates_openvex_when_present(self):
+        content = VERIFY_RELEASE.read_text(encoding="utf-8")
+        assert "custom-python.vex.json" in content
+        assert "openvex_structure" in content
+
+    def test_supports_key_archive_directory(self):
+        content = VERIFY_RELEASE.read_text(encoding="utf-8")
+        assert "COSIGN_PUB_KEYS_DIR" in content
+        assert "release-keys" in content
+
+
+class TestMakefileTargets:
+    def test_has_sandbox_vex_target(self):
+        content = MAKEFILE.read_text(encoding="utf-8")
+        assert "sandbox-vex:" in content
 
 
 class TestBuildQcow2Script:

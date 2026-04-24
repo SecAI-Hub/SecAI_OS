@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,29 @@ import (
 	"strings"
 	"testing"
 )
+
+func writeTinyDiffusionModel(t *testing.T, root, name string) string {
+	t.Helper()
+	modelDir := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(modelDir, "unet"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(modelDir, "model_index.json"),
+		[]byte(`{"_class_name":"StableDiffusionXLPipeline"}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write model_index: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(modelDir, "unet", "diffusion_pytorch_model.safetensors"),
+		[]byte("tiny diffusion weights"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+	return modelDir
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -105,6 +129,82 @@ func TestPromoteValidModel(t *testing.T) {
 	}
 }
 
+func TestPromoteValidDiffusionDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	registryDir = tmp
+	manifestPath = filepath.Join(tmp, "manifest.json")
+
+	manifestMu.Lock()
+	manifest = Manifest{Version: 1, Models: []Artifact{}}
+	manifestMu.Unlock()
+
+	modelDir := writeTinyDiffusionModel(t, tmp, "tiny-diffusion")
+	hash, err := computeDirectoryHash(modelDir)
+	if err != nil {
+		t.Fatalf("computeDirectoryHash: %v", err)
+	}
+	size, err := artifactSize(modelDir)
+	if err != nil {
+		t.Fatalf("artifactSize: %v", err)
+	}
+
+	body := fmt.Sprintf(`{
+		"name": "tiny-diffusion",
+		"filename": "tiny-diffusion",
+		"sha256": %q,
+		"size_bytes": %d,
+		"scan_results": {"model_type":"diffusion"}
+	}`, hash, size)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/model/promote", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlePromote(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	manifestMu.RLock()
+	defer manifestMu.RUnlock()
+	if len(manifest.Models) != 1 {
+		t.Fatalf("expected 1 model in manifest, got %d", len(manifest.Models))
+	}
+	if manifest.Models[0].Format != "diffusion-directory" {
+		t.Fatalf("expected diffusion-directory format, got %q", manifest.Models[0].Format)
+	}
+}
+
+func TestPromoteDirectoryMissingModelIndexRejected(t *testing.T) {
+	tmp := t.TempDir()
+	registryDir = tmp
+	manifestPath = filepath.Join(tmp, "manifest.json")
+
+	if err := os.MkdirAll(filepath.Join(tmp, "bad-diffusion"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "bad-diffusion", "weights.safetensors"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+
+	body := `{
+		"name": "bad-diffusion",
+		"filename": "bad-diffusion",
+		"sha256": "deadbeef",
+		"size_bytes": 1,
+		"scan_results": {"model_type":"diffusion"}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/model/promote", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlePromote(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeleteNonexistent(t *testing.T) {
 	manifestMu.Lock()
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
@@ -141,6 +241,8 @@ func TestVerifyAllEmpty(t *testing.T) {
 func TestVerifyAllWithValidModel(t *testing.T) {
 	tmp := t.TempDir()
 	registryDir = tmp
+	resultPath := filepath.Join(tmp, "integrity-last.json")
+	t.Setenv("INTEGRITY_RESULT_PATH", resultPath)
 
 	fakeModel := filepath.Join(tmp, "test.gguf")
 	os.WriteFile(fakeModel, []byte("fake model data"), 0644)
@@ -165,11 +267,49 @@ func TestVerifyAllWithValidModel(t *testing.T) {
 	if body["status"] != "ok" {
 		t.Fatalf("expected ok, got %v", body["status"])
 	}
+	if _, err := os.Stat(resultPath); err != nil {
+		t.Fatalf("expected integrity result file, got %v", err)
+	}
+}
+
+func TestVerifyAllWithValidDiffusionDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	registryDir = tmp
+
+	modelDir := writeTinyDiffusionModel(t, tmp, "diffusion-ok")
+	hash, err := computeDirectoryHash(modelDir)
+	if err != nil {
+		t.Fatalf("computeDirectoryHash: %v", err)
+	}
+
+	manifestMu.Lock()
+	manifest = Manifest{Version: 1, Models: []Artifact{{
+		Name:     "diffusion-ok",
+		Format:   "diffusion-directory",
+		Filename: "diffusion-ok",
+		SHA256:   hash,
+	}}}
+	manifestMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/models/verify-all", nil)
+	w := httptest.NewRecorder()
+	handleVerifyAll(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["status"] != "ok" {
+		t.Fatalf("expected ok, got %v", body["status"])
+	}
 }
 
 func TestVerifyAllDetectsTampered(t *testing.T) {
 	tmp := t.TempDir()
 	registryDir = tmp
+	resultPath := filepath.Join(tmp, "integrity-last.json")
+	t.Setenv("INTEGRITY_RESULT_PATH", resultPath)
 
 	fakeModel := filepath.Join(tmp, "tampered.gguf")
 	os.WriteFile(fakeModel, []byte("tampered data"), 0644)
@@ -193,6 +333,13 @@ func TestVerifyAllDetectsTampered(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &body)
 	if body["status"] != "failed" {
 		t.Fatalf("expected failed, got %v", body["status"])
+	}
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("expected integrity result file, got %v", err)
+	}
+	if !strings.Contains(string(data), "\"status\": \"failed\"") {
+		t.Fatalf("expected persisted failed status, got %s", string(data))
 	}
 }
 
@@ -261,6 +408,34 @@ func TestVerifyModelTamperedNotSafe(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &body)
 	if body["safe_to_use"] != "false" {
 		t.Fatalf("expected safe_to_use=false, got %v", body["safe_to_use"])
+	}
+}
+
+func TestDeleteRemovesDiffusionDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	registryDir = tmp
+	manifestPath = filepath.Join(tmp, "manifest.json")
+
+	writeTinyDiffusionModel(t, tmp, "diffusion-delete")
+
+	manifestMu.Lock()
+	manifest = Manifest{Version: 1, Models: []Artifact{{
+		Name:     "diffusion-delete",
+		Format:   "diffusion-directory",
+		Filename: "diffusion-delete",
+		SHA256:   "unused",
+	}}}
+	manifestMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/model/delete?name=diffusion-delete", nil)
+	w := httptest.NewRecorder()
+	handleDelete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "diffusion-delete")); !os.IsNotExist(err) {
+		t.Fatalf("expected diffusion directory to be removed, stat err=%v", err)
 	}
 }
 

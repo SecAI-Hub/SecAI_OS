@@ -1,0 +1,24 @@
+# Sandbox Tor configuration for the compose search profile.
+# Tor is reachable only on the internal compose network.
+
+SocksPort 0.0.0.0:9050 IsolateDestAddr IsolateDestPort
+SocksPolicy accept 10.0.0.0/8
+SocksPolicy accept 172.16.0.0/12
+SocksPolicy accept 192.168.0.0/16
+SocksPolicy reject *
+NewCircuitPeriod 60
+MaxCircuitDirtiness 30
+
+ConnectionPadding 1
+ReducedConnectionPadding 0
+
+ControlPort 0
+DNSPort 0
+
+Log notice stdout
+SafeLogging 1
+
+DataDirectory /var/lib/tor
+
+Sandbox 1
+NoExec 1

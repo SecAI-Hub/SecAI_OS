@@ -1,0 +1,14 @@
+FROM docker.io/library/python:3.13-alpine3.23@sha256:420cd0bf0f3998275875e02ecd5808168cf0843cbb4d3c536432f729247b2acc
+
+WORKDIR /app
+COPY requirements.txt .
+COPY setup.py .
+COPY agent/ agent/
+
+RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    python -m pip install --no-cache-dir .
+
+USER 65534:65534
+EXPOSE 8476
+ENTRYPOINT ["secai-agent"]

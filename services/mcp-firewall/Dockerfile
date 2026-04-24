@@ -1,11 +1,11 @@
-FROM golang:1.23-alpine@sha256:ef18ee7117463ac1055f5a370ed18b8750f01589f13ea0b48a1c3c025e611b02 AS build
+FROM docker.io/library/golang:1.25-alpine@sha256:5caaf1cca9dc351e13deafbc3879fd4754801acba8653fa9540cea125d01a71f AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /mcp-firewall .
 
-FROM alpine:3.20@sha256:1e42bbe2508154c9126d48c2b8a75420c3544343bf86fd041fb7527e017a4b4a
+FROM alpine:3.22@sha256:310c62b5e7ca5b08167e4384c68db0fd2905dd9c7493756d356e893909057601
 RUN apk add --no-cache ca-certificates
 COPY --from=build /mcp-firewall /usr/local/bin/mcp-firewall
 USER 65534:65534

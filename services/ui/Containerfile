@@ -1,12 +1,13 @@
-FROM docker.io/library/python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
+FROM docker.io/library/python:3.13-alpine3.23@sha256:420cd0bf0f3998275875e02ecd5808168cf0843cbb4d3c536432f729247b2acc
 
 WORKDIR /app
 COPY pyproject.toml .
 COPY requirements.lock .
 COPY ui/ ui/
 
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock && \
-    pip install --no-cache-dir --no-deps .
+RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
+    python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
+    python -m pip install --no-cache-dir --no-deps .
 
 USER 65534:65534
 EXPOSE 8480

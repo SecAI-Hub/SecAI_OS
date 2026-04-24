@@ -1,0 +1,40 @@
+FROM docker.io/searxng/searxng@sha256:37c616a774b90fb5df9239eb143f1b11866ddf7b830cd1ebcca6ba11b38cc2bf
+
+USER root
+
+RUN /usr/local/searxng/.venv/bin/python - <<'PY'
+from pathlib import Path
+import yaml
+
+path = Path("/usr/local/searxng/searx/settings.yml")
+cfg = yaml.safe_load(path.read_text())
+allowed_engines = {"duckduckgo", "wikipedia", "stackoverflow", "github"}
+
+cfg["general"]["instance_name"] = "SecAI Search"
+cfg["general"]["debug"] = False
+cfg["general"]["enable_metrics"] = False
+
+cfg["server"]["bind_address"] = "0.0.0.0"
+cfg["server"]["port"] = 8888
+cfg["server"]["limiter"] = False
+cfg["server"]["public_instance"] = False
+cfg["server"]["image_proxy"] = False
+
+cfg["search"]["safe_search"] = 1
+cfg["search"]["default_lang"] = "en"
+cfg["search"]["autocomplete"] = ""
+cfg["search"]["formats"] = ["html", "json"]
+cfg["engines"] = [engine for engine in cfg.get("engines", []) if engine.get("name") in allowed_engines]
+
+cfg["outgoing"]["request_timeout"] = 20
+cfg["outgoing"]["using_tor_proxy"] = True
+cfg["outgoing"]["extra_proxy_timeout"] = 10
+cfg["outgoing"]["proxies"] = {"all://": ["socks5h://tor:9050"]}
+cfg["plugins"] = {}
+
+path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+PY
+
+RUN chown searxng:searxng /usr/local/searxng/searx/settings.yml
+
+USER 977:977

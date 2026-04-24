@@ -1,0 +1,103 @@
+ARG COMPUTE=cpu
+
+FROM cgr.dev/chainguard/python:latest-dev AS build
+
+ARG COMPUTE
+
+USER root
+WORKDIR /app
+
+ENV PYTHON_VERSION=3.14.4 \
+    PYTHON_TARBALL_SHA256=d923c51303e38e249136fc1bdf3568d56ecb03214efdef48516176d3d7faaef8 \
+    PREFIX=/opt/python \
+    PATCH_DIR=/build/cpython-patches \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY build/custom-python/install-cpython-wolfi.sh /build/install-cpython.sh
+COPY build/cpython-patches/ /build/cpython-patches/
+RUN chmod 0555 /build/install-cpython.sh && /build/install-cpython.sh
+ENV PATH=/opt/venv/bin:/opt/python/bin:/usr/bin:/bin
+RUN /opt/python/bin/python3 -m venv "$VIRTUAL_ENV"
+RUN pip install --no-cache-dir --upgrade \
+    pip==26.0.1 \
+    setuptools==78.1.1 \
+    wheel==0.46.2
+
+# Install PyTorch with the appropriate compute backend for the sandbox profile.
+RUN if [ "$COMPUTE" = "cuda" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124; \
+    elif [ "$COMPUTE" = "rocm" ]; then \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/rocm6.1; \
+    else \
+        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
+    fi
+
+RUN pip install --no-cache-dir \
+    diffusers[torch] \
+    transformers \
+    accelerate \
+    safetensors \
+    flask \
+    gunicorn==23.0.0 \
+    imageio==2.37.3 \
+    imageio-ffmpeg==0.6.0 \
+    pyyaml \
+    Pillow==12.2.0
+
+# The runtime image does not need packaging tooling. Removing it trims unused
+# attack surface, including vendored helper packages bundled inside setuptools.
+RUN rm -rf \
+    /opt/venv/bin/pip* \
+    /opt/venv/lib/python3.14/site-packages/pip \
+    /opt/venv/lib/python3.14/site-packages/pip-*.dist-info \
+    /opt/venv/lib/python3.14/site-packages/pkg_resources \
+    /opt/venv/lib/python3.14/site-packages/setuptools \
+    /opt/venv/lib/python3.14/site-packages/setuptools-*.dist-info \
+    /opt/venv/lib/python3.14/site-packages/wheel \
+    /opt/venv/lib/python3.14/site-packages/wheel-*.dist-info
+
+COPY services/diffusion-worker/app.py /app/app.py
+COPY services/diffusion-worker/entrypoint.py /app/entrypoint.py
+
+RUN chmod 0555 /app/entrypoint.py && \
+    chown -R 65534:65534 /app /opt/python /opt/venv
+
+FROM cgr.dev/chainguard/wolfi-base:latest
+
+USER root
+WORKDIR /app
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:/opt/python/bin:/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apk add --no-cache \
+    ca-certificates \
+    expat \
+    gdbm \
+    libbz2-1 \
+    libffi \
+    libgcc \
+    libstdc++ \
+    ncurses \
+    openssl \
+    readline \
+    sqlite \
+    xz \
+    zlib
+
+COPY --from=build /opt/python /opt/python
+COPY --from=build /opt/venv /opt/venv
+COPY --from=build /app /app
+
+USER 65534:65534
+EXPOSE 8455
+ENTRYPOINT ["/opt/venv/bin/python", "/app/entrypoint.py"]

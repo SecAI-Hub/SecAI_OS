@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "search-mediator"))
 
 from app import (
+    _decoy_engines_param,
     app as search_app,
     build_context,
     check_injection,
@@ -58,6 +59,22 @@ class TestQuerySanitization:
     def test_api_key_stripped(self):
         result = sanitize_query("use api_key: sk-abc123def456ghi789jkl012mno345pqr")
         assert "[API_KEY]" in result["query"]
+
+    def test_bank_and_passport_identifiers_blocked(self):
+        result = sanitize_query(
+            "bank account 123456789012 routing number 021000021 passport number C01X00ABC "
+            "123 Main St Seattle WA"
+        )
+        assert result["blocked"]
+        assert "[BANK_ACCOUNT]" in result["query"]
+        assert "[BANK_ROUTING]" in result["query"]
+        assert "[PASSPORT]" in result["query"]
+        assert "[ADDRESS]" in result["query"]
+
+    def test_single_street_address_is_redacted_but_not_blocked(self):
+        result = sanitize_query("coffee near 123 Main St Seattle")
+        assert not result["blocked"]
+        assert "[ADDRESS]" in result["query"]
 
     def test_mostly_pii_blocked(self):
         result = sanitize_query("john@example.com 555-123-4567 123-45-6789")
@@ -234,3 +251,147 @@ class TestSearchEndpointAuth:
                     )
 
         assert resp.status_code == 200
+
+
+class TestHealthEndpoint:
+    def test_decoy_engines_prefer_lower_risk_subset(self, monkeypatch):
+        import app as sm
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "load_policy", lambda: {
+                "search": {"allowed_engines": ["duckduckgo", "wikipedia", "github"]}
+            })
+            assert _decoy_engines_param() == "wikipedia,github"
+
+    def test_health_skips_upstream_probe_when_search_disabled(self, monkeypatch):
+        import app as sm
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "_is_search_enabled", lambda: False)
+            m.setattr(sm, "_get_session_mode", lambda: "normal")
+
+            def fail_get(*args, **kwargs):
+                raise AssertionError("health should not probe searxng when search is disabled")
+
+            m.setattr(sm.requests, "get", fail_get)
+
+            with search_app.test_client() as client:
+                resp = client.get("/health")
+
+        assert resp.status_code == 200
+
+    def test_search_forwards_policy_allowed_engines(self, monkeypatch):
+        import app as sm
+
+        captured = {}
+
+        class MockResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["params"] = params
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return MockResp()
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "_is_search_enabled", lambda: True)
+            m.setattr(sm, "_get_session_mode", lambda: "normal")
+            m.setattr(sm, "_random_delay", lambda: 0.0)
+            m.setattr(sm, "_load_dp_config", lambda: {
+                "enabled": False,
+                "decoy_count": 0,
+                "uniqueness_mode": "warn",
+                "batch_window": 5.0,
+            })
+            m.setattr(sm, "load_policy", lambda: {
+                "search": {"allowed_engines": ["duckduckgo", "github"]}
+            })
+            m.setattr(sm.requests, "get", fake_get)
+
+            with search_app.test_client() as client:
+                resp = client.post("/v1/search", json={"query": "test search"})
+
+        assert resp.status_code == 200
+        assert captured["url"].endswith("/search")
+        assert captured["params"]["engines"] == "duckduckgo,github"
+        assert captured["headers"]["X-Forwarded-For"] == "127.0.0.1"
+
+    def test_search_uses_fixed_internal_headers_for_searxng(self, monkeypatch):
+        import app as sm
+
+        captured = {}
+
+        class MockResp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["params"] = params
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return MockResp()
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "_is_search_enabled", lambda: True)
+            m.setattr(sm, "_get_session_mode", lambda: "normal")
+            m.setattr(sm, "_random_delay", lambda: 0.0)
+            m.setattr(sm, "_load_dp_config", lambda: {
+                "enabled": False,
+                "decoy_count": 0,
+                "uniqueness_mode": "warn",
+                "batch_window": 5.0,
+            })
+            m.setattr(sm.requests, "get", fake_get)
+
+            with search_app.test_client() as client:
+                resp = client.post("/v1/search", json={"query": "test search"})
+
+        assert resp.status_code == 200
+        assert captured["url"].endswith("/search")
+        assert captured["headers"]["User-Agent"] == "SecAI-SearchMediator/1.0"
+        assert captured["headers"]["X-Forwarded-For"] == "127.0.0.1"
+        assert captured["headers"]["X-Real-IP"] == "127.0.0.1"
+        assert "application/json" in captured["headers"]["Accept"]
+
+    def test_health_uses_fast_configured_timeout_for_upstream_probe(self, monkeypatch):
+        import app as sm
+
+        captured = {}
+
+        class MockResp:
+            status_code = 200
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "_is_search_enabled", lambda: True)
+            m.setattr(sm, "_get_session_mode", lambda: "normal")
+            m.setattr(sm, "SEARCH_HEALTH_TIMEOUT", 0.75)
+
+            def fake_get(url, timeout):
+                captured["url"] = url
+                captured["timeout"] = timeout
+                return MockResp()
+
+            m.setattr(sm.requests, "get", fake_get)
+
+            with search_app.test_client() as client:
+                resp = client.get("/health")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["searxng_reachable"] is True
+        assert captured["url"].endswith("/healthz")
+        assert captured["timeout"] == 0.75

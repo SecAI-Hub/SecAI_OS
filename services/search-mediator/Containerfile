@@ -1,0 +1,105 @@
+FROM alpine:3.23 AS build
+
+USER root
+ENV PYTHON_VERSION=3.14.4
+ENV PYTHON_TARBALL_SHA256=d923c51303e38e249136fc1bdf3568d56ecb03214efdef48516176d3d7faaef8
+ENV PREFIX=/opt/python
+ENV PATCH_DIR=/build/cpython-patches
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PREFIX}/bin:${PATH}"
+
+WORKDIR /app
+COPY build/custom-python/install-cpython.sh /build/install-cpython.sh
+COPY build/cpython-patches/ /build/cpython-patches/
+RUN chmod 0555 /build/install-cpython.sh && /build/install-cpython.sh
+RUN python3 -m venv "${VIRTUAL_ENV}"
+
+COPY services/search-mediator/requirements.txt /app/requirements.txt
+COPY services/common/ /app/services/common/
+COPY services/search-mediator/ /app/services/search-mediator/
+COPY services/search-mediator/entrypoint.py /app/entrypoint.py
+
+RUN pip install --no-cache-dir --upgrade \
+        pip==26.0.1 \
+        setuptools==78.1.1 \
+        wheel==0.46.2 && \
+    pip install --no-cache-dir -r /app/requirements.txt && \
+    pip install --no-cache-dir gunicorn==23.0.0 && \
+    BASE_SITE_PACKAGES="$(python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
+    VENV_SITE_PACKAGES="$("${VIRTUAL_ENV}/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
+    rm -rf \
+        "${PREFIX}/bin/pip"* \
+        "${PREFIX}/lib/python3.14/ensurepip" \
+        "${BASE_SITE_PACKAGES}/pip" \
+        "${BASE_SITE_PACKAGES}"/pip-*.dist-info \
+        "${BASE_SITE_PACKAGES}/pkg_resources" \
+        "${BASE_SITE_PACKAGES}/setuptools" \
+        "${BASE_SITE_PACKAGES}"/setuptools-*.dist-info \
+        "${BASE_SITE_PACKAGES}/wheel" \
+        "${BASE_SITE_PACKAGES}"/wheel-*.dist-info \
+        "${VIRTUAL_ENV}/bin/pip"* \
+        "${VENV_SITE_PACKAGES}/pip" \
+        "${VENV_SITE_PACKAGES}"/pip-*.dist-info \
+        "${VENV_SITE_PACKAGES}/pkg_resources" \
+        "${VENV_SITE_PACKAGES}/setuptools" \
+        "${VENV_SITE_PACKAGES}"/setuptools-*.dist-info \
+        "${VENV_SITE_PACKAGES}/wheel" \
+        "${VENV_SITE_PACKAGES}"/wheel-*.dist-info && \
+    chmod 0555 /app/entrypoint.py && \
+    chown -R 65534:65534 /app "${VIRTUAL_ENV}" "${PREFIX}"
+
+FROM alpine:3.23 AS runtime-base
+
+RUN apk add --no-cache \
+        bzip2 \
+        ca-certificates \
+        expat \
+        gdbm \
+        libffi \
+        libgcc \
+        libstdc++ \
+        ncurses-libs \
+        openssl \
+        readline \
+        sqlite-libs \
+        xz \
+        zlib
+
+FROM scratch
+
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:/opt/python/bin:${PATH}"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/services
+
+WORKDIR /app
+COPY --from=runtime-base /etc/ssl /etc/ssl
+COPY --from=runtime-base /lib/ld-musl-x86_64.so.1 /lib/
+COPY --from=runtime-base /lib/libc.musl-x86_64.so.1 /lib/
+COPY --from=build /usr/lib/libbz2.so* /usr/lib/
+COPY --from=runtime-base /usr/lib/engines-3 /usr/lib/engines-3
+COPY --from=runtime-base /usr/lib/ossl-modules /usr/lib/ossl-modules
+COPY --from=runtime-base /usr/lib/libcrypto.so.3 /usr/lib/
+COPY --from=runtime-base /usr/lib/libssl.so.3 /usr/lib/
+COPY --from=runtime-base /usr/lib/libexpat.so.1* /usr/lib/
+COPY --from=runtime-base /usr/lib/libffi.so.8* /usr/lib/
+COPY --from=runtime-base /usr/lib/libformw.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libgcc_s.so.1 /usr/lib/
+COPY --from=runtime-base /usr/lib/libgdbm.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libgdbm_compat.so.4* /usr/lib/
+COPY --from=runtime-base /usr/lib/liblzma.so.5* /usr/lib/
+COPY --from=runtime-base /usr/lib/libmenuw.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libncursesw.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libpanelw.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libreadline.so.8* /usr/lib/
+COPY --from=runtime-base /usr/lib/libsqlite3.so.0* /usr/lib/
+COPY --from=runtime-base /usr/lib/libstdc++.so.6* /usr/lib/
+COPY --from=runtime-base /usr/lib/libz.so.1* /usr/lib/
+COPY --from=build /opt/python /opt/python
+COPY --from=build /opt/venv /opt/venv
+COPY --from=build /app /app
+
+USER 65534:65534
+EXPOSE 8485
+ENTRYPOINT ["/opt/venv/bin/python", "/app/entrypoint.py"]

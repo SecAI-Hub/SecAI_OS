@@ -53,8 +53,8 @@ _BIND_ADDR = os.getenv("BIND_ADDR", "127.0.0.1:8476")
 # --- Workspace registry (resolve IDs to real paths server-side) ------------
 
 _WORKSPACE_REGISTRY: dict[str, str] = {
-    "user_docs": "/var/lib/secure-ai/vault/user_docs/**",
-    "outputs": "/var/lib/secure-ai/vault/outputs/**",
+    "user_docs": "/var/lib/secure-ai/vault/user_docs",
+    "outputs": "/var/lib/secure-ai/vault/outputs",
 }
 
 
@@ -310,7 +310,17 @@ def approve_steps(task_id: str):
         if step.status != StepStatus.PENDING:
             continue
         if approve_all or step.step_id in step_ids:
-            assert task.capability is not None
+            if task.capability is None:
+                task.status = TaskStatus.FAILED
+                _audit_log("approval_rejected", {
+                    "task_id": task_id,
+                    "step_id": step.step_id,
+                    "reason": "missing capability token",
+                })
+                return jsonify({
+                    "error": "task integrity check failed: missing capability token",
+                    "step_id": step.step_id,
+                }), 409
             sig_valid, sig_reason = verify_step_signature(
                 step,
                 task.capability,
@@ -368,6 +378,8 @@ def deny_steps(task_id: str):
         task = _tasks.get(task_id)
     if not task:
         return jsonify({"error": "task not found"}), 404
+    if task.status != TaskStatus.PENDING_APPROVAL:
+        return jsonify({"error": f"task is {task.status.value}, not pending_approval"}), 409
 
     denied_count = 0
     for step in task.steps:
@@ -599,6 +611,38 @@ def security_headers(response):
 
 # --- Entrypoint ------------------------------------------------------------
 
+def _make_unix_server(sock_path: str):
+    """Build a WSGI server bound directly to a Unix domain socket."""
+    import socket as _socket
+    from pathlib import Path
+    from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
+
+    sock_file = Path(sock_path)
+    sock_file.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        sock_file.unlink()
+    except FileNotFoundError:
+        pass
+
+    class _UnixWSGIServer(WSGIServer):
+        address_family = _socket.AF_UNIX
+
+        def server_bind(self):
+            self.socket.bind(self.server_address)
+            self.server_name = "localhost"
+            self.server_port = 0
+            self.setup_environ()
+
+        def get_request(self):
+            request, _client_address = self.socket.accept()
+            return request, ("local", 0)
+
+    srv = _UnixWSGIServer(str(sock_file), WSGIRequestHandler)
+    srv.set_app(app)
+    os.chmod(sock_file, 0o660)
+    return srv
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -610,28 +654,8 @@ def main():
 
     if _BIND_ADDR.startswith("unix:"):
         # Production: listen on a Unix domain socket (no TCP attack surface).
-        import socket as _socket
-        from wsgiref.simple_server import WSGIServer, make_server
-
         sock_path = _BIND_ADDR[len("unix:"):]
-
-        # Remove stale socket file if present (e.g. after unclean shutdown).
-        try:
-            os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
-
-        class _UnixWSGIServer(WSGIServer):
-            address_family = _socket.AF_UNIX
-
-        srv = make_server("", 0, app, server_class=_UnixWSGIServer)
-        # Replace the TCP socket with a Unix one bound to sock_path.
-        srv.socket.close()
-        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        sock.bind(sock_path)
-        os.chmod(sock_path, 0o660)
-        sock.listen(128)
-        srv.socket = sock
+        srv = _make_unix_server(sock_path)
 
         log.info("agent service starting on unix:%s", sock_path)
         _audit_log("service_started", {"bind": _BIND_ADDR})
