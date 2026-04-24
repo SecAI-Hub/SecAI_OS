@@ -517,8 +517,8 @@ jobs:
         run: |
           pip install -r requirements-ci.txt
           echo "=== Python Dependency Audit ==="
-          # Run pip-audit, capture output
-          pip-audit --strict --desc -f json -o /tmp/pip-audit.json 2>/dev/null || true
+          # Audit the project-pinned dependency set, not the runner's bundled tooling.
+          pip-audit --strict --desc -r requirements-ci.txt -f json -o /tmp/pip-audit.json 2>/dev/null || true
           python3 -c "
           import json, sys, datetime
           # Load audit results

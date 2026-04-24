@@ -132,6 +132,10 @@ class TestCiWorkflowStructure:
         content = _read_ci_yml()
         assert "generate_custom_python_vex.py" in content
 
+    def test_python_dependency_audit_uses_project_requirements(self):
+        content = _read_ci_yml()
+        assert "pip-audit --strict --desc -r requirements-ci.txt" in content
+
 
 class TestSampleReleaseBundle:
     def test_mentions_iso(self):
