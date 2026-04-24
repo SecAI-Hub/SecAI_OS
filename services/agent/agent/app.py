@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import time
+from typing import Any, cast
 
 from flask import Flask, jsonify, request
 
@@ -631,6 +632,7 @@ def _make_unix_server(sock_path: str):
         def __init__(self, socket_path: str, handler_cls: type[WSGIRequestHandler]) -> None:
             self._socket_path = socket_path
             super().__init__(("localhost", 0), handler_cls, bind_and_activate=False)
+            self.server_address = cast(Any, socket_path)
             self.server_bind()
             self.server_activate()
 
