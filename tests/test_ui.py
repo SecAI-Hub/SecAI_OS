@@ -117,11 +117,12 @@ class TestModelImport:
         resp = client.post("/api/models/import", json={})
         assert resp.status_code == 400
 
-    def test_import_returns_507_when_storage_is_full(self, client):
+    def test_import_returns_507_when_storage_is_full(self, client, tmp_path):
         from io import BytesIO
 
         data = {"file": (BytesIO(b"fake"), "model.gguf")}
         with patch("ui.app._ui_audit.append") as mock_append, \
+             patch("ui.app.QUARANTINE_DIR", tmp_path / "quarantine"), \
              patch(
                  "werkzeug.datastructures.file_storage.FileStorage.save",
                  side_effect=OSError(errno.ENOSPC, "No space left on device"),
