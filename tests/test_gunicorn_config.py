@@ -18,6 +18,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UNITS_DIR = REPO_ROOT / "files" / "system" / "usr" / "lib" / "systemd" / "system"
+BUILD_SCRIPT = REPO_ROOT / "files" / "scripts" / "build-services.sh"
 
 # Services being migrated to Gunicorn (agent excluded)
 GUNICORN_SERVICES = {
@@ -108,6 +109,23 @@ class TestAgentExcludedFromGunicorn:
         exec_start = _parse_unit_value(content, "ExecStart")
         assert "gunicorn" not in (exec_start or "").lower(), \
             "Agent service should NOT use gunicorn (keeps make_server)"
+
+
+class TestOsVmGunicornRuntimeDefaults:
+    """OS and VM images should inherit the same stable runtime defaults as sandbox."""
+
+    def test_ui_unit_forces_single_worker(self):
+        content = _read_unit("secure-ai-ui.service")
+        assert "Environment=GUNICORN_WORKERS=1" in content
+
+    def test_ui_wrapper_defaults_to_single_worker(self):
+        content = BUILD_SCRIPT.read_text(encoding="utf-8")
+        assert '--workers "${GUNICORN_WORKERS:-1}"' in content
+
+    def test_diffusion_wrapper_sets_utf8_locale(self):
+        content = BUILD_SCRIPT.read_text(encoding="utf-8")
+        assert 'export LANG="${LANG:-C.UTF-8}"' in content
+        assert 'export LC_ALL="${LC_ALL:-C.UTF-8}"' in content
 
 
 class TestModuleExportsApp:

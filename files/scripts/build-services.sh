@@ -354,7 +354,7 @@ if [ -d "/tmp/services/ui" ]; then
 export PYTHONPATH="${PYTHONPATH:-/usr/lib/python3/site-packages}"
 exec gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8480}" \
-    --workers "${GUNICORN_WORKERS:-2}" \
+    --workers "${GUNICORN_WORKERS:-1}" \
     --threads "${GUNICORN_THREADS:-4}" \
     --timeout "${GUNICORN_TIMEOUT:-60}" \
     --graceful-timeout 15 \
@@ -393,6 +393,8 @@ if [ ! -f /var/lib/secure-ai/.diffusion-ready ]; then
     exit 1
 fi
 source /var/lib/secure-ai/diffusion-venv/bin/activate
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 export PYTHONPATH="/opt/secure-ai/services/diffusion-worker:${PYTHONPATH:-}"
 exec gunicorn \
     --chdir /opt/secure-ai/services/diffusion-worker \
