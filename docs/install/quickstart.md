@@ -246,8 +246,8 @@ The installer ISO and portable USB image are produced by every tagged release an
 
 ## Next Steps
 
-- [Import a GGUF Model](../examples/import-gguf-model.md)
-- [Enable Web Search](../examples/enable-web-search.md)
-- [Vault Management](../examples/lock-unlock-vault.md)
+- [Import a GGUF Model](../../examples/import-gguf-model.md)
+- [Enable Web Search](../../examples/enable-web-search.md)
+- [Vault Management](../../examples/lock-unlock-vault.md)
 - [Security Dashboard](http://127.0.0.1:8480/security) — verify your appliance health
 - [Why is this safe?](../why-is-this-safe.md) — plain-language security explanation

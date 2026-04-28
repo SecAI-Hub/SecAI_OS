@@ -406,7 +406,19 @@ jobs:
           python-version: "3.12"
 
       - name: Build sandbox images required for OpenVEX generation
-        run: docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion
+        run: |
+          for attempt in 1 2 3; do
+            if docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Sandbox image build failed after ${attempt} attempts"
+              exit 1
+            fi
+            sleep_seconds=$((attempt * 20))
+            echo "Sandbox image build failed; retrying in ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+          done
 
       - name: Generate sandbox OpenVEX document
         run: |
