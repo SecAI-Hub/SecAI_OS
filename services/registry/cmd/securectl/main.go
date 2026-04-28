@@ -9,9 +9,11 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 var registryURL = "http://127.0.0.1:8470"
+var apiClient = &http.Client{Timeout: 15 * time.Second}
 
 func init() {
 	if u := os.Getenv("REGISTRY_URL"); u != "" {
@@ -61,7 +63,7 @@ func apiRequest(method, path string, body io.Reader) ([]byte, int, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

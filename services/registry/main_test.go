@@ -89,6 +89,42 @@ func TestPromoteMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestRegistryPathRejectsEscapes(t *testing.T) {
+	tmp := t.TempDir()
+	oldRegistryDir := registryDir
+	registryDir = tmp
+	t.Cleanup(func() { registryDir = oldRegistryDir })
+
+	badNames := []string{
+		"../escape.gguf",
+		filepath.Join("..", "escape.gguf"),
+		filepath.Join(tmp, "..", "escape.gguf"),
+		"bad\x00name.gguf",
+	}
+	for _, name := range badNames {
+		if path, err := registryPath(name); err == nil {
+			t.Fatalf("expected %q to be rejected, got %q", name, path)
+		}
+	}
+
+	relative, err := registryPath(filepath.Join("nested", "model.gguf"))
+	if err != nil {
+		t.Fatalf("expected relative registry path to be accepted: %v", err)
+	}
+	if !strings.HasPrefix(relative, tmp) {
+		t.Fatalf("expected %q to stay under %q", relative, tmp)
+	}
+
+	absolute := filepath.Join(tmp, "model.gguf")
+	resolved, err := registryPath(absolute)
+	if err != nil {
+		t.Fatalf("expected absolute registry path to be accepted: %v", err)
+	}
+	if resolved != absolute {
+		t.Fatalf("expected %q, got %q", absolute, resolved)
+	}
+}
+
 func TestPromoteValidModel(t *testing.T) {
 	tmp := t.TempDir()
 	registryDir = tmp

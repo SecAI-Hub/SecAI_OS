@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var outboundHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 // ActionType identifies a response action.
 type ActionType string
 
@@ -34,19 +36,19 @@ type ActionConfig struct {
 
 // ActionResult records the outcome of an executed action.
 type ActionResult struct {
-	Action    string    `json:"action"`
+	Action    string     `json:"action"`
 	Type      ActionType `json:"type"`
-	Triggered bool      `json:"triggered"`
-	Success   bool      `json:"success"`
-	Message   string    `json:"message"`
-	Timestamp time.Time `json:"timestamp"`
+	Triggered bool       `json:"triggered"`
+	Success   bool       `json:"success"`
+	Message   string     `json:"message"`
+	Timestamp time.Time  `json:"timestamp"`
 }
 
 // ActionExecutor evaluates scoring results and triggers configured actions.
 type ActionExecutor struct {
-	actions    []ActionConfig
-	modelDir   string
-	inferURL   string
+	actions  []ActionConfig
+	modelDir string
+	inferURL string
 }
 
 // NewActionExecutor creates an executor with the given action configs.
@@ -118,7 +120,7 @@ func (e *ActionExecutor) executeReload(ac ActionConfig) ActionResult {
 
 	// Try llama.cpp-style reload endpoint
 	url := strings.TrimSuffix(target, "/") + "/reload"
-	resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+	resp, err := outboundHTTPClient.Post(url, "application/json", strings.NewReader("{}"))
 	if err != nil {
 		// Fall back to command if configured
 		if ac.Command != "" {
@@ -210,7 +212,7 @@ func (e *ActionExecutor) executeAlert(ac ActionConfig, entry ScoreEntry) ActionR
 
 	if ac.Webhook != "" {
 		body, _ := json.Marshal(payload)
-		resp, err := http.Post(ac.Webhook, "application/json", strings.NewReader(string(body)))
+		resp, err := outboundHTTPClient.Post(ac.Webhook, "application/json", strings.NewReader(string(body)))
 		if err != nil {
 			ar.Success = false
 			ar.Message = fmt.Sprintf("webhook failed: %v", err)
@@ -250,7 +252,7 @@ func (e *ActionExecutor) executeFailClosed(ac ActionConfig) ActionResult {
 	// Try to signal inference server shutdown
 	if e.inferURL != "" {
 		url := strings.TrimSuffix(e.inferURL, "/") + "/shutdown"
-		resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+		resp, err := outboundHTTPClient.Post(url, "application/json", strings.NewReader("{}"))
 		if err != nil {
 			ar.Success = false
 			ar.Message = fmt.Sprintf("fail-closed shutdown request failed: %v", err)
@@ -270,6 +272,12 @@ func (e *ActionExecutor) executeFailClosed(ac ActionConfig) ActionResult {
 // executeCommand runs a shell command for an action.
 func executeCommand(ac ActionConfig) ActionResult {
 	ar := ActionResult{Action: ac.Name, Type: ac.Type, Triggered: true}
+
+	if os.Getenv("GPU_WATCH_ALLOW_ACTION_COMMANDS") != "true" {
+		ar.Success = false
+		ar.Message = "command actions disabled; set GPU_WATCH_ALLOW_ACTION_COMMANDS=true"
+		return ar
+	}
 
 	cmd := exec.Command("sh", "-c", ac.Command)
 	output, err := cmd.CombinedOutput()

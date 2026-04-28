@@ -340,7 +340,7 @@ func cmdStatus() {
 		}
 	}
 
-	resp, err := http.Get(addr + "/v1/status")
+	resp, err := outboundHTTPClient.Get(addr + "/v1/status")
 	if err != nil {
 		log.Fatalf("cannot reach daemon: %v", err)
 	}

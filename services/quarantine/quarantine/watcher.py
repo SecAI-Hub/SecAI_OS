@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import sys
@@ -39,7 +40,7 @@ _services_root = str(Path(__file__).resolve().parent.parent.parent)
 if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
-from common.audit_chain import AuditChain
+from common.audit_chain import AuditChain  # noqa: E402
 
 log = logging.getLogger("quarantine")
 
@@ -176,6 +177,37 @@ def _policy_version_id() -> str:
     return str(info)
 
 
+def _stage_gguf_guard_manifest(pipeline_details: dict | None) -> None:
+    """Move a generated GGUF guard manifest into the registry directory."""
+    if not pipeline_details:
+        return
+    manifest_info = pipeline_details.get("gguf_guard_manifest", {})
+    if not isinstance(manifest_info, dict) or not manifest_info.get("generated"):
+        return
+    manifest_path = manifest_info.get("manifest_path")
+    if not manifest_path:
+        return
+
+    source = Path(manifest_path)
+    dest = REGISTRY_DIR / source.name
+    try:
+        if source.resolve() != dest.resolve():
+            if not source.exists():
+                log.warning("gguf-guard manifest missing before registry promotion: %s", source)
+                manifest_info["generated"] = False
+                manifest_info["manifest_path"] = ""
+                return
+            shutil.move(str(source), str(dest))
+            log.info("moved gguf-guard manifest to registry dir: %s", dest.name)
+    except OSError as e:
+        log.warning("could not stage gguf-guard manifest %s: %s", source, e)
+        manifest_info["generated"] = False
+        manifest_info["manifest_path"] = ""
+        return
+
+    manifest_info["manifest_path"] = dest.name
+
+
 def _service_headers() -> dict[str, str]:
     """Return inter-service auth headers when a token is configured."""
     try:
@@ -186,6 +218,15 @@ def _service_headers() -> dict[str, str]:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _http_urlopen(target, timeout: int = 30):
+    """Open only HTTP(S) URLs for registry service calls."""
+    raw_url = target.full_url if isinstance(target, Request) else str(target)
+    scheme = urlparse(raw_url).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise URLError(f"unsupported URL scheme: {scheme or 'none'}")
+    return urlopen(target, timeout=timeout)  # nosec B310
 
 
 def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
@@ -227,8 +268,9 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
         if fp:
             payload["gguf_guard_fingerprint"] = fp
         manifest_info = pipeline_details.get("gguf_guard_manifest", {})
-        if manifest_info.get("generated"):
-            payload["gguf_guard_manifest"] = manifest_info.get("manifest_path", "")
+        manifest_path = manifest_info.get("manifest_path", "")
+        if manifest_info.get("generated") and manifest_path:
+            payload["gguf_guard_manifest"] = Path(manifest_path).name
 
     try:
         req = Request(
@@ -237,7 +279,7 @@ def promote_to_registry(filename: str, file_hash: str, size_bytes: int,
             headers=_service_headers(),
             method="POST",
         )
-        with urlopen(req, timeout=30) as resp:
+        with _http_urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
             log.info("registry promotion response: %s", result)
             return resp.status == 201
@@ -304,6 +346,7 @@ def process_artifact(artifact_path: Path) -> bool:
 
     # Collect scan result summary
     details = result.get("details", {})
+    _stage_gguf_guard_manifest(details)
     scan_summary = _build_scan_summary(details)
 
     # Extract source revision
@@ -410,6 +453,7 @@ def process_directory(artifact_dir: Path) -> bool:
     )
 
     details = result.get("details", {})
+    _stage_gguf_guard_manifest(details)
     scan_summary = _build_scan_summary(details)
     scan_summary["model_type"] = "diffusion"
 

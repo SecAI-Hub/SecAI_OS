@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -322,13 +324,51 @@ func cleanAndResolvePath(raw string) (string, error) {
 	if strings.ContainsRune(raw, 0) {
 		return "", fmt.Errorf("path contains null byte")
 	}
-	cleaned := filepath.Clean(raw)
+	decoded, err := decodePath(raw)
+	if err != nil {
+		return "", err
+	}
+	if containsUnicodePathConfusable(decoded) {
+		return "", fmt.Errorf("path contains unicode path confusable")
+	}
+	cleaned := filepath.Clean(decoded)
 	// Resolve to absolute to catch ../../../etc/shadow style attacks
 	abs, err := filepath.Abs(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve path: %w", err)
 	}
 	return resolvePath(abs)
+}
+
+func decodePath(raw string) (string, error) {
+	decoded := raw
+	for i := 0; i < 3; i++ {
+		next, err := url.PathUnescape(decoded)
+		if err != nil {
+			return "", fmt.Errorf("path contains invalid percent-encoding")
+		}
+		if next == decoded {
+			return decoded, nil
+		}
+		if strings.ContainsRune(next, 0) {
+			return "", fmt.Errorf("path contains null byte")
+		}
+		decoded = next
+	}
+	return "", fmt.Errorf("path is percent-encoded too deeply")
+}
+
+func containsUnicodePathConfusable(raw string) bool {
+	for _, r := range raw {
+		switch r {
+		case '\u2044', '\u2215', '\u2216', '\u29f8', '\uff0e', '\uff0f', '\uff3c', '\ufffd':
+			return true
+		}
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolvePath(abs string) (string, error) {

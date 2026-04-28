@@ -33,11 +33,21 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import yaml
 
 log = logging.getLogger("quarantine.pipeline")
+
+
+def _http_urlopen(target, timeout: int = 30):
+    """Open only HTTP(S) URLs for scanner-local service calls."""
+    raw_url = target.full_url if isinstance(target, Request) else str(target)
+    scheme = urlparse(raw_url).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise URLError(f"unsupported URL scheme: {scheme or 'none'}")
+    return urlopen(target, timeout=timeout)  # nosec B310
 
 MODELS_LOCK_PATH = Path(
     os.getenv("MODELS_LOCK_PATH", "/etc/secure-ai/policy/models.lock.yaml")
@@ -1564,7 +1574,7 @@ def _wait_for_server(port: int, timeout: int = 30) -> bool:
     while time.monotonic() < deadline:
         for url in readiness_urls:
             try:
-                with urlopen(url, timeout=2) as resp:
+                with _http_urlopen(url, timeout=2) as resp:
                     if getattr(resp, "status", 200) == 200:
                         return True
             except (URLError, OSError):
@@ -1596,7 +1606,7 @@ def _query_llama(port: int, prompt_messages: list, timeout: int = 60) -> dict:
         method="POST",
     )
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with _http_urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
             return {
                 "ok": True,

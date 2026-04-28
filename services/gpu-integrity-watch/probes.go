@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -369,7 +368,7 @@ func (r *ProbeRunner) runSentinelInference(pc ProbeConfig) ProbeResult {
 // querySentinel sends a completion request to the inference endpoint.
 func querySentinel(endpoint, input string) (string, error) {
 	payload := fmt.Sprintf(`{"prompt":%q,"n_predict":64,"temperature":0}`, input)
-	resp, err := http.Post(endpoint+"/completion", "application/json", strings.NewReader(payload))
+	resp, err := outboundHTTPClient.Post(endpoint+"/completion", "application/json", strings.NewReader(payload))
 	if err != nil {
 		return "", err
 	}

@@ -169,6 +169,32 @@ func formatFromFilename(filename string) string {
 	}
 }
 
+func registryPath(filename string) (string, error) {
+	if filename == "" {
+		return "", fmt.Errorf("empty filename")
+	}
+	if strings.ContainsRune(filename, 0) {
+		return "", fmt.Errorf("filename contains null byte")
+	}
+
+	clean := filepath.Clean(filename)
+	if filepath.IsAbs(clean) {
+		rel, err := filepath.Rel(registryDir, clean)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve filename: %w", err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return "", fmt.Errorf("filename escapes registry directory")
+		}
+		return clean, nil
+	}
+
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("filename escapes registry directory")
+	}
+	return filepath.Join(registryDir, clean), nil
+}
+
 // verifyFileHash computes sha256 of a file and compares to expected.
 func verifyFileHash(path, expected string) (string, error) {
 	f, err := os.Open(path)
@@ -346,7 +372,11 @@ func handleModelPath(w http.ResponseWriter, r *http.Request) {
 	defer manifestMu.RUnlock()
 	for _, m := range manifest.Models {
 		if m.Name == name {
-			path := filepath.Join(registryDir, m.Filename)
+			path, err := registryPath(m.Filename)
+			if err != nil {
+				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
+				return
+			}
 			if _, err := os.Stat(path); err != nil {
 				http.Error(w, "model file not found on disk", http.StatusNotFound)
 				return
@@ -376,7 +406,11 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath := filepath.Join(registryDir, req.Filename)
+	filePath, err := registryPath(req.Filename)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid filename: %v", err), http.StatusBadRequest)
+		return
+	}
 	format, err := artifactFormatFromPath(filePath, req.Filename)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("artifact validation failed: %v", err), http.StatusForbidden)
@@ -461,7 +495,11 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		if m.Name == name {
 			found = true
 			// Remove the model artifact (file or directory) from disk.
-			filePath := filepath.Join(registryDir, m.Filename)
+			filePath, err := registryPath(m.Filename)
+			if err != nil {
+				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
+				return
+			}
 			if err := os.RemoveAll(filePath); err != nil && !os.IsNotExist(err) {
 				log.Printf("warning: could not remove %s: %v", filePath, err)
 			}
@@ -501,7 +539,16 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 	allOk := true
 
 	for _, m := range models {
-		filePath := filepath.Join(registryDir, m.Filename)
+		filePath, err := registryPath(m.Filename)
+		if err != nil {
+			allOk = false
+			results = append(results, map[string]string{
+				"name":   m.Name,
+				"status": "failed",
+				"error":  "invalid registry filename",
+			})
+			continue
+		}
 		actual, err := verifyArtifactHash(filePath, m.SHA256)
 		if err != nil {
 			allOk = false
@@ -602,7 +649,18 @@ func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 
 	for _, m := range manifest.Models {
 		if m.Name == name {
-			filePath := filepath.Join(registryDir, m.Filename)
+			filePath, err := registryPath(m.Filename)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{
+					"status":      "failed",
+					"name":        name,
+					"error":       "invalid registry filename",
+					"safe_to_use": "false",
+				})
+				return
+			}
 			actual, err := verifyArtifactHash(filePath, m.SHA256)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
@@ -672,8 +730,16 @@ func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			modelPath := filepath.Join(registryDir, m.Filename)
-			manifestFile := m.GGUFGuardManifest
+			modelPath, err := registryPath(m.Filename)
+			if err != nil {
+				http.Error(w, "invalid registry filename", http.StatusConflict)
+				return
+			}
+			manifestFile, err := registryPath(m.GGUFGuardManifest)
+			if err != nil {
+				http.Error(w, "invalid gguf-guard manifest path", http.StatusConflict)
+				return
+			}
 
 			cmd := fmt.Sprintf("%s", ggufGuardBin)
 			out, err := runGGUFGuardVerify(cmd, modelPath, manifestFile)

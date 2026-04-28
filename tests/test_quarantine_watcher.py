@@ -50,6 +50,26 @@ def test_promote_to_registry_sends_string_policy_version(monkeypatch):
     assert captured["payload"]["policy_version"] == "policy-hash-1"
 
 
+def test_stage_gguf_guard_manifest_moves_to_registry(monkeypatch, tmp_path):
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    manifest_path = tmp_path / "model.gguf.gguf-guard.json"
+    manifest_path.write_text("{}")
+    details = {
+        "gguf_guard_manifest": {
+            "generated": True,
+            "manifest_path": str(manifest_path),
+        }
+    }
+
+    monkeypatch.setattr(watcher, "REGISTRY_DIR", registry_dir)
+
+    watcher._stage_gguf_guard_manifest(details)
+
+    assert (registry_dir / manifest_path.name).exists()
+    assert details["gguf_guard_manifest"]["manifest_path"] == manifest_path.name
+
+
 def test_process_directory_writes_status_marker_when_cleanup_fails(monkeypatch, tmp_path):
     quarantine_dir = tmp_path / "quarantine"
     registry_dir = tmp_path / "registry"
