@@ -1,9 +1,9 @@
 ARG ALLOW_MISSING_QUARANTINE_SCANNERS=false
 ARG ENABLE_GARAK_SCANNER=false
-ARG MODELSCAN_PACKAGE=modelscan==0.8.8
-ARG FICKLING_PACKAGE=fickling==0.1.10
-ARG MODELAUDIT_PACKAGE=modelaudit==0.2.40
-ARG GARAK_PACKAGE=garak==0.14.1
+ARG MODELSCAN_PACKAGE=
+ARG FICKLING_PACKAGE=
+ARG MODELAUDIT_PACKAGE=
+ARG GARAK_PACKAGE=
 
 FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
 
@@ -44,6 +44,9 @@ RUN set -eu; \
             garak) scanner_package="$GARAK_PACKAGE" ;; \
             *) echo "ERROR: unknown quarantine scanner: $scanner"; exit 1 ;; \
         esac; \
+        if [ -z "$scanner_package" ]; then \
+            scanner_package="$(python -c 'import sys, tomllib; name = sys.argv[1]; data = tomllib.load(open("pyproject.toml", "rb")); group = "garak" if name == "garak" else "scan"; deps = data["project"]["optional-dependencies"][group]; matches = [dep for dep in deps if "==" in dep and dep.split("==", 1)[0] == name]; sys.exit(f"missing pinned scanner dependency: {name}") if len(matches) != 1 else print(matches[0])' "$scanner")"; \
+        fi; \
         python -m venv "$venv" || { missing=$((missing + 1)); continue; }; \
         "$venv/bin/python" -m pip install --no-cache-dir --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.2 && \
         "$venv/bin/python" -m pip install --no-cache-dir "$scanner_package" && \

@@ -150,9 +150,9 @@ class TestCiWorkflowStructure:
         dependencies = data["project"]["dependencies"]
         assert "garak" in optional
         assert all(not dep.startswith("garak") for dep in scan_deps)
-        assert "modelscan==0.8.8" in scan_deps
-        assert "fickling==0.1.10" in scan_deps
-        assert "modelaudit==0.2.40" in scan_deps
+        for package in ("modelscan", "fickling", "modelaudit"):
+            matches = [dep for dep in scan_deps if "==" in dep and dep.split("==", 1)[0] == package]
+            assert len(matches) == 1
         assert "yara-python==4.5.4" in dependencies
 
     def test_quarantine_container_scanners_are_pinned(self):
@@ -162,10 +162,12 @@ class TestCiWorkflowStructure:
         ):
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             assert "ARG ENABLE_GARAK_SCANNER=false" in content
-            assert "ARG MODELSCAN_PACKAGE=modelscan==0.8.8" in content
-            assert "ARG FICKLING_PACKAGE=fickling==0.1.10" in content
-            assert "ARG MODELAUDIT_PACKAGE=modelaudit==0.2.40" in content
-            assert "ARG GARAK_PACKAGE=garak==0.14.1" in content
+            assert "ARG MODELSCAN_PACKAGE=" in content
+            assert "ARG FICKLING_PACKAGE=" in content
+            assert "ARG MODELAUDIT_PACKAGE=" in content
+            assert "ARG GARAK_PACKAGE=" in content
+            assert "tomllib.load" in content
+            assert "missing pinned scanner dependency" in content
             assert 'scanners="modelscan fickling modelaudit"' in content
 
     def test_appsec_scanners_are_wired_into_ci(self):
