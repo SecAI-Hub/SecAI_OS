@@ -122,6 +122,7 @@ jobs:
         with:
           recipe: ${{ matrix.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
+          push: ${{ github.event_name != 'pull_request' }}
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
@@ -133,6 +134,7 @@ jobs:
         with:
           recipe: ${{ matrix.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
+          push: ${{ github.event_name != 'pull_request' }}
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
@@ -177,14 +179,16 @@ jobs:
           else
             echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
             echo "${DIGEST}" > IMAGE_DIGEST
-            echo "## Image Digest" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Pinned install reference:" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Full image ref: \`${IMAGE_REF}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Image Digest"
+              echo ""
+              echo "Pinned install reference:"
+              echo '```'
+              echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}"
+              echo '```'
+              echo ""
+              echo "Full image ref: \`${IMAGE_REF}@${DIGEST}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload image digest artifact
