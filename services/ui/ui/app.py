@@ -25,6 +25,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
+from markupsafe import escape as _html_escape
 from werkzeug.security import safe_join
 from werkzeug.utils import secure_filename
 
@@ -435,19 +436,14 @@ def _quarantine_path(name: str) -> Path:
 
 
 def _staged_import_path(raw_path: str) -> Path:
-    """Resolve a requested import path under IMPORT_STAGING_DIR only."""
+    """Resolve a relative import path under IMPORT_STAGING_DIR only."""
     raw_path = str(raw_path or "").strip()
     if not raw_path:
         raise ValueError("missing path")
 
     staging_root = IMPORT_STAGING_DIR.resolve()
-    requested = Path(raw_path)
-    if requested.is_absolute():
-        resolved = requested.resolve(strict=False)
-        try:
-            raw_path = str(resolved.relative_to(staging_root))
-        except ValueError as exc:
-            raise ValueError("outside staging directory") from exc
+    if Path(raw_path).is_absolute():
+        raise ValueError("absolute staging paths are not accepted")
 
     joined = safe_join(str(staging_root), raw_path)
     if joined is None:
@@ -1112,8 +1108,8 @@ def import_model():
 
     Accepts either:
     - A file upload (multipart form)
-    - A local filesystem path (JSON body with "path" field)
-      Local paths are restricted to IMPORT_STAGING_DIR (default:
+    - A relative local filesystem path (JSON body with "path" field)
+      Paths are resolved under IMPORT_STAGING_DIR (default:
       /var/lib/secure-ai/import-staging). This directory must be 0700
       root-only; untrusted users must not have write access.
 
@@ -2986,6 +2982,16 @@ def _agent_task_path(task_id: str, suffix: str = "") -> str:
     return f"/v1/task/{encoded}{suffix}"
 
 
+def _json_safe(value):
+    if isinstance(value, str):
+        return str(_html_escape(value))
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(_html_escape(str(key))): _json_safe(item) for key, item in value.items()}
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Agent mode endpoints (proxy to agent service)
 # ---------------------------------------------------------------------------
@@ -3002,7 +3008,7 @@ def agent_submit_task():
             "mode": body.get("mode", "standard"),
             "status_code": status,
         })
-        return jsonify(data), status
+        return jsonify(_json_safe(data)), status
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3016,7 +3022,7 @@ def agent_get_task(task_id):
         return jsonify({"error": "invalid task id"}), 400
     try:
         data, status = _agent_request("GET", _agent_task_path(task_id))
-        return jsonify(data), status
+        return jsonify(_json_safe(data)), status
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3033,7 +3039,7 @@ def agent_approve_steps(task_id):
         data, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
         event = "agent_steps_approved" if 200 <= status < 300 else "agent_steps_approve_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(data), status
+        return jsonify(_json_safe(data)), status
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3050,7 +3056,7 @@ def agent_deny_steps(task_id):
         data, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
         event = "agent_steps_denied" if 200 <= status < 300 else "agent_steps_deny_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(data), status
+        return jsonify(_json_safe(data)), status
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3066,7 +3072,7 @@ def agent_cancel_task(task_id):
         data, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
         event = "agent_task_cancelled" if 200 <= status < 300 else "agent_task_cancel_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(data), status
+        return jsonify(_json_safe(data)), status
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503

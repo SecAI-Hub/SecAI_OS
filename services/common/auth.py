@@ -155,8 +155,9 @@ class AuthManager:
 
             log.info("passphrase changed successfully")
             return {"success": True}
-        except OSError as e:
-            return {"success": False, "error": str(e)}
+        except OSError:
+            log.exception("failed to change passphrase")
+            return {"success": False, "error": "failed to change passphrase"}
 
     def login(self, passphrase: str) -> dict:
         """Attempt login. Returns {success, token} or {success, error, locked_until}."""

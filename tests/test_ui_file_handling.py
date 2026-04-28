@@ -176,7 +176,7 @@ class TestLocalImportStagingRestriction:
         model.write_bytes(b"valid gguf content")
         resp = client.post(
             "/api/models/import",
-            json={"path": str(model)},
+            json={"path": model.name},
             content_type="application/json",
         )
         # Should be accepted (202) or auth-blocked, not path-rejected
