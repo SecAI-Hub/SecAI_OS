@@ -1,0 +1,12 @@
+failure-threshold: warning
+ignored:
+  # We pin every external base image by digest and enforce that separately in
+  # check-container-pins.sh. DL3006 is noisy for scratch/local stage aliases.
+  - DL3006
+  # Build scripts intentionally use apk/apt package sets from digest-pinned
+  # base images. Vulnerability scanners enforce package posture separately.
+  - DL3018
+  - DL3008
+  # Some Python images use system-level pip installation inside disposable
+  # container layers; service isolation is provided by non-root runtime users.
+  - DL3042

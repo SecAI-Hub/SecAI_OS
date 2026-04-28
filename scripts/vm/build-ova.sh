@@ -37,7 +37,7 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 WORK_DIR=$(mktemp -d)
-trap "rm -rf $WORK_DIR" EXIT
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Step 1: Convert QCOW2 to VMDK (compatible with VirtualBox + VMware)
 echo "[1/3] Converting QCOW2 to VMDK..."

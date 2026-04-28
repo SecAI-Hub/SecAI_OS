@@ -1,6 +1,20 @@
+ARG ALLOW_MISSING_QUARANTINE_SCANNERS=false
+ARG ENABLE_GARAK_SCANNER=false
+ARG MODELSCAN_PACKAGE=modelscan==0.8.8
+ARG FICKLING_PACKAGE=fickling==0.1.10
+ARG MODELAUDIT_PACKAGE=modelaudit==0.2.40
+ARG GARAK_PACKAGE=garak==0.14.1
+
 FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
 
 FROM docker.io/library/python:3.12-slim@sha256:520153e2deb359602c9cffd84e491e3431d76e7bf95a3255c9ce9433b76ab99a
+
+ARG ALLOW_MISSING_QUARANTINE_SCANNERS
+ARG ENABLE_GARAK_SCANNER
+ARG MODELSCAN_PACKAGE
+ARG FICKLING_PACKAGE
+ARG MODELAUDIT_PACKAGE
+ARG GARAK_PACKAGE
 
 WORKDIR /app
 COPY services/quarantine/requirements.lock .
@@ -15,12 +29,30 @@ RUN apt-get update && \
 RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
     python -m pip install --no-cache-dir --require-hashes -r requirements.lock
 
-RUN python -m pip install --no-cache-dir modelscan || echo "WARN: modelscan not available"
-RUN python -m pip install --no-cache-dir fickling || echo "WARN: fickling not available"
-RUN python -m pip install --no-cache-dir garak || echo "WARN: garak not available"
-RUN python -m pip install --no-cache-dir modelaudit || echo "WARN: modelaudit not available"
-RUN python -m pip install --no-cache-dir litellm==1.83.11 && \
-    python -m pip install --no-cache-dir aiohttp==3.13.5 python-dotenv==1.2.2
+RUN set -eu; \
+    missing=0; \
+    mkdir -p /opt/secure-ai/scanners; \
+    scanners="modelscan fickling modelaudit"; \
+    if [ "$ENABLE_GARAK_SCANNER" = "true" ]; then scanners="$scanners garak"; else echo "Skipping optional garak scanner by default"; fi; \
+    for scanner in $scanners; do \
+        venv="/opt/secure-ai/scanners/$scanner"; \
+        case "$scanner" in \
+            modelscan) scanner_package="$MODELSCAN_PACKAGE" ;; \
+            fickling) scanner_package="$FICKLING_PACKAGE" ;; \
+            modelaudit) scanner_package="$MODELAUDIT_PACKAGE" ;; \
+            garak) scanner_package="$GARAK_PACKAGE" ;; \
+            *) echo "ERROR: unknown quarantine scanner: $scanner"; exit 1 ;; \
+        esac; \
+        python -m venv "$venv" || { missing=$((missing + 1)); continue; }; \
+        "$venv/bin/python" -m pip install --no-cache-dir --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.2 && \
+        "$venv/bin/python" -m pip install --no-cache-dir "$scanner_package" && \
+        "$venv/bin/python" -m pip check && \
+        ln -sf "$venv/bin/$scanner" "/usr/local/bin/$scanner" || missing=$((missing + 1)); \
+    done; \
+    if [ "$missing" -gt 0 ] && [ "$ALLOW_MISSING_QUARANTINE_SCANNERS" != "true" ]; then \
+        echo "ERROR: $missing quarantine scanner(s) failed to install"; \
+        exit 1; \
+    fi
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

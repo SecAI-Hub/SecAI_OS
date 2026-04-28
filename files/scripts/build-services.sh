@@ -3,14 +3,14 @@
 # Build and install Secure AI services into the OS image.
 # This runs during the BlueBuild image build process.
 #
-# FAIL-CLOSED: Required services that fail to build abort the entire image build.
-# Only truly optional components (scanner tools, pip packages) use soft warnings.
+# FAIL-CLOSED: Required services and scanner packages abort the image build when
+# unavailable. Optional components require an explicit ALLOW_* override.
 #
 # HERMETIC BUILD: When HERMETIC_BUILD=true (set by CI stage 2), all network
 # access is blocked. Source comes from vendored subtrees (upstreams/), Go vendor
 # dirs (services/*/vendor/), the committed Python wheelhouse (vendor/wheels/),
 # and the pre-staged llama.cpp tarball. The shell-function overrides below are
-# human-readable diagnostics — the real proof of hermeticity is the
+# human-readable diagnostics -- the real proof of hermeticity is the
 # network-disabled container/namespace that stage 2 runs in.
 #
 set -euo pipefail
@@ -25,7 +25,7 @@ echo "=== Building Secure AI services ==="
 # Hermetic build enforcement (stage 2)
 # ---------------------------------------------------------------------------
 if [ "${HERMETIC_BUILD:-}" = "true" ]; then
-    echo "HERMETIC BUILD MODE — all network access is blocked"
+    echo "HERMETIC BUILD MODE -- all network access is blocked"
 
     # Verify SOURCE_PREP_MANIFEST.json if present
     if [ -f "/tmp/SOURCE_PREP_MANIFEST.json" ]; then
@@ -85,7 +85,7 @@ fi
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Fatal error — abort the build
+# Fatal error -- abort the build
 fail_build() {
     echo "FATAL: $1" >&2
     exit 1
@@ -110,7 +110,7 @@ locate_source() {
         fi
     done
 
-    echo "WARNING: ${name} source not available — checked: ${paths[*]}" >&2
+    echo "WARNING: ${name} source not available -- checked: ${paths[*]}" >&2
     SOURCE_DIR=""
     return 1
 }
@@ -121,14 +121,14 @@ track_binary() {
 }
 
 # ---------------------------------------------------------------------------
-# Build dependencies — all come from recipe rpm-ostree, not ad hoc installs.
+# Build dependencies -- all come from recipe rpm-ostree, not ad hoc installs.
 # If a build-time package is missing, fix recipes/recipe.yml.
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
 # ===========================================================================
-# Go Services — skip gracefully if upstream source not yet available.
-# Once upstreams are populated (PENDING → pinned), missing source becomes fatal.
+# Go Services -- skip gracefully if upstream source not yet available.
+# Once upstreams are populated (PENDING -> pinned), missing source becomes fatal.
 # ===========================================================================
 GO_SKIPPED=0
 
@@ -167,7 +167,7 @@ if locate_source gpu-integrity-watch \
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
     track_binary "${INSTALL_DIR}/gpu-integrity-watch"
-    # Default profile (optional — runtime uses built-in defaults if missing)
+    # Default profile (optional -- runtime uses built-in defaults if missing)
     mkdir -p /etc/secure-ai/gpu-integrity
     cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || true
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
@@ -179,7 +179,7 @@ if locate_source mcp-firewall \
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
     track_binary "${INSTALL_DIR}/mcp-firewall"
-    # Default policy (optional — runtime uses built-in defaults if missing)
+    # Default policy (optional -- runtime uses built-in defaults if missing)
     mkdir -p /etc/secure-ai/mcp-firewall
     cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
@@ -230,12 +230,12 @@ if locate_source gguf-guard \
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 if [ "$GO_SKIPPED" -gt 0 ]; then
-    echo "WARNING: ${GO_SKIPPED} Go service(s) skipped — upstream source not available"
+    echo "WARNING: ${GO_SKIPPED} Go service(s) skipped -- upstream source not available"
     echo "  This is expected while upstreams are PENDING. Pin upstreams to fix."
 fi
 
 # ===========================================================================
-# llama.cpp (required — inference engine)
+# llama.cpp (required -- inference engine)
 #
 # Checksum verification provides integrity.
 # TODO: For full hermeticity, vendor the tarball into vendor/llama-cpp/
@@ -243,7 +243,7 @@ fi
 # ===========================================================================
 echo "Building: llama-server"
 LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-b5200}"
-# SHA256 of the release tarball — update when bumping LLAMA_CPP_VERSION
+# SHA256 of the release tarball -- update when bumping LLAMA_CPP_VERSION
 LLAMA_CPP_SHA256="${LLAMA_CPP_SHA256:-d823b3a8976743a83eaaf25451b6b3ed99d113d7c61f04d61dbe2aa9e46f1eec}"
 
 cd "$SRC_DIR"
@@ -267,7 +267,7 @@ echo "${LLAMA_CPP_SHA256}  ${LLAMA_TARBALL}" | sha256sum -c || \
 tar xzf "$LLAMA_TARBALL"
 cd "llama.cpp-${LLAMA_CPP_VERSION}"
 
-# GPU backend detection — best-effort fallback chain: CUDA → Vulkan → CPU
+# GPU backend detection -- best-effort fallback chain: CUDA -> Vulkan -> CPU
 # This is intentionally soft: the build must succeed even without GPU headers.
 GPU_BACKEND="cpu"
 if cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
@@ -297,7 +297,7 @@ GPUMETA
 echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
 
 # ===========================================================================
-# Python Services (required — build failures are fatal)
+# Python Services (required -- build failures are fatal)
 # ===========================================================================
 
 # --- ai-quarantine (seven-stage artifact admission-control) ---
@@ -314,17 +314,52 @@ WRAPPER
     chmod +x "${INSTALL_DIR}/quarantine-watcher"
     track_binary "${INSTALL_DIR}/quarantine-watcher"
 else
-    echo "WARNING: quarantine source not available, skipping"
+    fail_build "quarantine source not available"
 fi
 
-# Quarantine scanning tools (optional — individual tool failures are non-fatal)
+# Quarantine scanning tools are part of the admission-control boundary.
 echo "Installing: quarantine scanning tools"
-for scanner in modelscan fickling garak modelaudit; do
+SCANNER_FAILURES=0
+SCANNER_ROOT="/opt/secure-ai/scanners"
+mkdir -p "${SCANNER_ROOT}" /usr/local/bin
+SCANNERS="modelscan fickling modelaudit"
+if [ "${ENABLE_GARAK_SCANNER:-}" = "true" ]; then
+    SCANNERS="${SCANNERS} garak"
+else
+    echo "Skipping optional garak scanner by default"
+fi
+scanner_package_spec() {
+    case "$1" in
+        modelscan) printf '%s\n' "${MODELSCAN_PACKAGE:-modelscan==0.8.8}" ;;
+        fickling) printf '%s\n' "${FICKLING_PACKAGE:-fickling==0.1.10}" ;;
+        modelaudit) printf '%s\n' "${MODELAUDIT_PACKAGE:-modelaudit==0.2.40}" ;;
+        garak) printf '%s\n' "${GARAK_PACKAGE:-garak==0.14.1}" ;;
+        *) fail_build "unknown quarantine scanner: $1" ;;
+    esac
+}
+for scanner in ${SCANNERS}; do
     echo "  Installing: ${scanner}"
-    pip3 install --prefix=/usr --no-cache-dir "${scanner}" 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${scanner}" 2>/dev/null || \
-        echo "  WARNING: ${scanner} install failed — scanner will be skipped at runtime"
+    scanner_venv="${SCANNER_ROOT}/${scanner}"
+    scanner_package="$(scanner_package_spec "${scanner}")"
+    if python3 -m venv "${scanner_venv}" && \
+        "${scanner_venv}/bin/python" -m pip install --no-cache-dir --upgrade \
+            pip==26.0.1 setuptools==82.0.1 wheel==0.46.2 && \
+        "${scanner_venv}/bin/python" -m pip install --no-cache-dir "${scanner_package}" && \
+        "${scanner_venv}/bin/python" -m pip check && \
+        ln -sf "${scanner_venv}/bin/${scanner}" "/usr/local/bin/${scanner}"; then
+        :
+    else
+        echo "  ERROR: ${scanner} install failed"
+        SCANNER_FAILURES=$((SCANNER_FAILURES + 1))
+    fi
 done
+if [ "$SCANNER_FAILURES" -gt 0 ]; then
+    if [ "${ALLOW_MISSING_QUARANTINE_SCANNERS:-}" = "true" ]; then
+        echo "WARNING: ${SCANNER_FAILURES} scanner(s) missing under ALLOW_MISSING_QUARANTINE_SCANNERS=true"
+    else
+        fail_build "${SCANNER_FAILURES} quarantine scanner(s) failed to install"
+    fi
+fi
 
 # --- Agent service (policy-bound local autopilot) ---
 echo "Building: agent"
@@ -349,7 +384,7 @@ if [ -d "/tmp/services/ui" ]; then
         pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/ui
     cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
 #!/usr/bin/env bash
-# Production wrapper — Gunicorn with env-driven config.
+# Production wrapper -- Gunicorn with env-driven config.
 # The appliance runtime gets Gunicorn from the OS image (python3-gunicorn).
 export PYTHONPATH="${PYTHONPATH:-/usr/lib/python3/site-packages}"
 exec gunicorn \
@@ -371,10 +406,10 @@ else
 fi
 
 # ===========================================================================
-# Optional Services (warnings are acceptable — not core security)
+# Optional Services (warnings are acceptable -- not core security)
 # ===========================================================================
 
-# Diffusion worker (optional — disabled by default, opt-in via secai-enable-diffusion.sh)
+# Diffusion worker (optional -- disabled by default, opt-in via secai-enable-diffusion.sh)
 echo "Installing: diffusion-worker"
 DIFFUSION_DIR="/opt/secure-ai/services/diffusion-worker"
 mkdir -p "$DIFFUSION_DIR"
@@ -384,7 +419,7 @@ if [ -f "/tmp/services/diffusion-worker/app.py" ]; then
     # Wrapper for when diffusion is enabled via opt-in installer
     cat > "${INSTALL_DIR}/diffusion-worker" <<'WRAPPER'
 #!/usr/bin/env bash
-# Diffusion worker — requires opt-in via secai-enable-diffusion.sh.
+# Diffusion worker -- requires opt-in via secai-enable-diffusion.sh.
 # This wrapper is only used after the installer writes a systemd override
 # pointing to the venv's gunicorn. If called directly without the venv,
 # it fails with a helpful message.
@@ -410,10 +445,10 @@ exec gunicorn \
 WRAPPER
     chmod +x "${INSTALL_DIR}/diffusion-worker"
 else
-    echo "WARNING: diffusion-worker source not found — diffusion worker will not be available"
+    echo "WARNING: diffusion-worker source not found -- diffusion worker will not be available"
 fi
 
-# --- llm-search-mediator (optional — privacy-preserving search bridge) ---
+# --- llm-search-mediator (optional -- privacy-preserving search bridge) ---
 echo "Installing: llm-search-mediator"
 SEARCH_DIR="/opt/secure-ai/services/search-mediator"
 mkdir -p "$SEARCH_DIR"
@@ -424,7 +459,7 @@ elif [ -d "/tmp/llm-search-mediator" ]; then
 elif [ -d "/tmp/services/search-mediator" ]; then
     cp -r /tmp/services/search-mediator "${SRC_DIR}/llm-search-mediator"
 else
-    echo "WARNING: llm-search-mediator not available — search mediator will not be installed"
+    fail_build "search-mediator source not available"
 fi
 if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
     # Copy source to runtime location
@@ -439,11 +474,11 @@ if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
             -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
             pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
                 -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
-            echo "WARNING: search-mediator requirements install failed"
+            fail_build "search-mediator requirements install failed"
     fi
     cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
 #!/usr/bin/env bash
-# Production wrapper — Gunicorn for search mediator.
+# Production wrapper -- Gunicorn for search mediator.
 export PYTHONPATH="/opt/secure-ai/services/search-mediator:${PYTHONPATH:-}"
 exec gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8485}" \
@@ -459,17 +494,17 @@ WRAPPER
     echo "  -> ${INSTALL_DIR}/search-mediator"
 fi
 
-# HuggingFace CLI (optional — for model downloads)
+# HuggingFace CLI (optional -- for model downloads)
 echo "Installing: huggingface-hub"
 pip3 install --prefix=/usr --no-cache-dir huggingface-hub 2>/dev/null || \
     pip3 install --prefix=/usr --break-system-packages --no-cache-dir huggingface-hub 2>/dev/null || \
-    echo "WARNING: huggingface-hub install failed — model downloads will use git clone fallback"
+    echo "WARNING: huggingface-hub install failed -- model downloads will use git clone fallback"
 
-# SearXNG (optional — privacy search engine)
+# SearXNG (optional -- privacy search engine)
 echo "Installing: searxng"
 pip3 install --prefix=/usr --no-cache-dir searxng 2>/dev/null || \
     pip3 install --prefix=/usr --break-system-packages --no-cache-dir searxng 2>/dev/null || \
-    echo "WARNING: searxng pip install failed — SearXNG search will not be available"
+    echo "WARNING: searxng pip install failed -- SearXNG search will not be available"
 
 # ===========================================================================
 # Staging directory for local model imports (M54 hardening)
@@ -479,7 +514,7 @@ mkdir -p /var/lib/secure-ai/import-staging
 chmod 0700 /var/lib/secure-ai/import-staging
 
 # ===========================================================================
-# Final Verification — confirm all required binaries exist
+# Final Verification -- confirm all required binaries exist
 # ===========================================================================
 echo ""
 echo "=== Build Verification ==="
@@ -501,7 +536,7 @@ REQUIRED_BINARIES=(
     "/usr/bin/llama-server"
 )
 
-# Optional binaries — built from external upstreams, may be skipped
+# Optional binaries -- built from external upstreams, may be skipped
 OPTIONAL_BINARIES=(
     "/usr/local/bin/gguf-guard"
 )
@@ -519,7 +554,7 @@ done
 
 echo ""
 if [ "$MISSING" -gt 0 ]; then
-    fail_build "${MISSING} required binaries missing — image build aborted"
+    fail_build "${MISSING} required binaries missing -- image build aborted"
 fi
 echo "All ${#REQUIRED_BINARIES[@]} required binaries verified."
 
@@ -567,15 +602,15 @@ with open('${POLICY_JSON}', 'w') as f:
 print('  -> policy.json updated: sigstoreSigned entry for ghcr.io/secai-hub/secai_os')
 " || fail_build "Failed to update container signing policy"
     else
-        echo "WARNING: ${POLICY_JSON} not found — signing policy not configured"
+        fail_build "${POLICY_JSON} not found; signing policy not configured"
     fi
     echo "  -> ${COSIGN_PUB}: installed"
     echo "  -> ${REGISTRIES_D}: installed"
 else
-    echo "WARNING: signing policy files missing from image — cosign verification may not work"
+    fail_build "signing policy files missing from image"
 fi
 
-# Cleanup build artifacts (but not build tools — they come from the recipe)
+# Cleanup build artifacts (but not build tools -- they come from the recipe)
 rm -rf "$SRC_DIR"
 # Remove service source copied by containerfile COPY step (not needed at runtime)
 rm -rf /tmp/services

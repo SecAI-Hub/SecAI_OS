@@ -16,7 +16,7 @@ GO_SERVICES := airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
                policy-engine runtime-attestor integrity-monitor incident-recorder
 
 SCRIPTS_LIBEXEC := $(wildcard files/system/usr/libexec/secure-ai/*.sh)
-SCRIPTS_FILES   := $(wildcard files/scripts/*.sh)
+SCRIPTS_FILES   := $(wildcard files/scripts/*.sh) $(wildcard .github/scripts/*.sh)
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -59,8 +59,16 @@ test-python: ## Run Python tests (pytest tests/ -v)
 shellcheck: ## Lint all shell scripts with shellcheck
 	shellcheck -s bash $(SCRIPTS_LIBEXEC) $(SCRIPTS_FILES)
 
+.PHONY: hadolint
+hadolint: ## Lint Containerfiles and Dockerfiles with Hadolint
+	.github/scripts/check-hadolint.sh
+
+.PHONY: semgrep
+semgrep: ## Run repo-owned Semgrep security rules
+	.github/scripts/run-semgrep.sh
+
 .PHONY: lint
-lint: shellcheck ## Combined lint (shellcheck + ruff + go vet)
+lint: shellcheck hadolint semgrep ## Combined lint (shellcheck + hadolint + semgrep + ruff + go vet)
 	ruff check services/ tests/ --select E,F,W --ignore E501,E402
 	@for svc in $(GO_SERVICES); do \
 	  echo "--- vet: $${svc} ---" ; \

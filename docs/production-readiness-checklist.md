@@ -2,7 +2,7 @@
 
 Formal release gate checklist for SecAI OS deployments. Every item must be verified before a release is tagged as production-ready. This checklist is separate from the [production operations guide](production-operations.md), which covers day-to-day operational procedures.
 
-Last updated: 2026-03-14
+Last updated: 2026-04-25
 
 ---
 
@@ -15,12 +15,18 @@ Last updated: 2026-03-14
 - [ ] Python test suite passes (unit, integration, adversarial, M5 acceptance)
 - [ ] Ruff lint clean (no `E`, `F`, `W` errors)
 - [ ] Bandit security scan shows no high-severity findings
+- [ ] Semgrep project security rules pass
 - [ ] ShellCheck passes for all shell scripts
+- [ ] Hadolint passes for all Containerfiles and Dockerfiles
 - [ ] YAML policy validation passes
 - [ ] Test count drift check passes (no regression below [test-counts.json](test-counts.json))
 - [ ] Dependency vulnerability audit reviewed (govulncheck + pip-audit)
 - [ ] Action pins verified (all GitHub Actions pinned to commit SHAs)
-- [ ] Container base image pins verified (`check-container-pins.sh`)
+- [ ] Container base image pins verified for service, sandbox, and deploy images (`check-container-pins.sh`)
+- [ ] Runtime Python dependency audit reviewed for CI and service requirement files
+- [ ] Quarantine scanner package pins and Python compatibility reviewed before changing the quarantine base image
+- [ ] YARA rules compile and quarantine import scanning blocks suspicious payload signatures
+- [ ] Line-ending check passes for shell, workflow, config, and docs files
 - [ ] Release-gate job passes if on release branch (zero-tolerance bandit + CVE-ID govulncheck)
 - [ ] Branch protection rules configured per `.github/branch-protection.md`
 

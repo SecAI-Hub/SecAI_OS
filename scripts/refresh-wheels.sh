@@ -69,10 +69,12 @@ echo "Deduplicating wheels..."
 # Generate SHA256SUMS
 echo "Generating SHA256SUMS..."
 cd "$WHEELS_DIR"
-sha256sum *.whl > SHA256SUMS 2>/dev/null || {
+if find . -maxdepth 1 -name '*.whl' -print -quit | grep -q .; then
+    find . -maxdepth 1 -name '*.whl' -exec sha256sum -- {} + > SHA256SUMS
+else
     echo "WARNING: No wheel files found in $WHEELS_DIR"
     touch SHA256SUMS
-}
+fi
 cd - > /dev/null
 
 # Report size delta
@@ -85,7 +87,7 @@ echo ""
 echo "=== Wheelhouse refreshed ==="
 echo "  Total size:  ${TOTAL_MB} MB"
 echo "  Size delta:  ${DELTA_MB} MB"
-echo "  Wheel count: $(ls "$WHEELS_DIR"/*.whl 2>/dev/null | wc -l)"
+echo "  Wheel count: $(find "$WHEELS_DIR" -maxdepth 1 -name '*.whl' | wc -l)"
 echo ""
 echo "Next steps:"
 echo "  1. Review new/updated packages for license compliance"

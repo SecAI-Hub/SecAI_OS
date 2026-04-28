@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd)
 SANDBOX_DIR="$REPO_ROOT/deploy/sandbox"
 RUNTIME_DIR="$SANDBOX_DIR/runtime"
 ENV_EXAMPLE="$SANDBOX_DIR/.env.example"
@@ -76,10 +76,10 @@ fi
 
 if command -v docker >/dev/null 2>&1; then
     RUNTIME_CMD="docker"
-    COMPOSE_BIN="docker compose"
+    COMPOSE_RUNTIME="docker"
 elif command -v podman >/dev/null 2>&1; then
     RUNTIME_CMD="podman"
-    COMPOSE_BIN="podman compose"
+    COMPOSE_RUNTIME="podman"
 else
     echo "Neither docker nor podman was found in PATH." >&2
     exit 1
@@ -97,7 +97,7 @@ fi
     docker.io/library/alpine:3.20 \
     sh -c "mkdir -p /runstate && chown -R 65534:65534 /runstate && chmod 0770 /runstate" >/dev/null
 
-set -- $COMPOSE_BIN -f "$SANDBOX_DIR/compose.yaml"
+set -- "$COMPOSE_RUNTIME" compose -f "$SANDBOX_DIR/compose.yaml"
 if [ "$WITH_INFERENCE" -eq 1 ]; then
     set -- "$@" --profile llm
 fi

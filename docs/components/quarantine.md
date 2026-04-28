@@ -56,6 +56,9 @@ Performs deep static analysis of the model file without loading it for inference
 
 **Tools:**
 - **modelscan** -- scans for known malicious patterns in model files
+- **YARA** -- applies repo-owned malware signatures to imported artifacts
+- **fickling** -- inspects pickle-capable artifacts without executing them
+- **modelaudit** -- provides a second static scanner for model artifact structure and metadata
 - **Entropy analysis** -- detects anomalous entropy regions that may indicate embedded payloads
 - **gguf-guard** (GGUF files only) -- performs weight-level analysis:
   - Per-tensor hash manifest generation

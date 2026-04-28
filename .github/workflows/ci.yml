@@ -134,6 +134,35 @@ jobs:
             files/scripts/first-boot-check.sh \
             files/scripts/verify-release.sh
 
+  appsec-lint:
+    name: Hadolint & Semgrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Hadolint
+        run: |
+          HADOLINT_VERSION="v2.14.0"
+          HADOLINT_SHA256="6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47"
+          curl -sSfL "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-x86_64" \
+            -o /tmp/hadolint
+          echo "${HADOLINT_SHA256}  /tmp/hadolint" | sha256sum -c -
+          sudo install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
+
+      - name: Install Semgrep
+        run: python -m pip install semgrep==1.161.0
+
+      - name: Hadolint container build files
+        run: bash .github/scripts/check-hadolint.sh
+
+      - name: Semgrep project rules
+        run: bash .github/scripts/run-semgrep.sh
+
   policy-validate:
     name: Validate YAML configs
     runs-on: ubuntu-latest
@@ -209,7 +238,7 @@ jobs:
           echo "OK: All image references use canonical path: $CANONICAL"
 
   check-pins:
-    name: Verify action & container pins
+    name: Verify action, container, and EOL pins
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -217,6 +246,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - run: bash .github/scripts/check-action-pins.sh
       - run: bash .github/scripts/check-container-pins.sh
+      - run: bash .github/scripts/check-eol.sh
 
   supply-chain-verify:
     name: Supply Chain & SBOM Verification
@@ -354,7 +384,7 @@ jobs:
 
               # Verify no subtrees under vendor/ (must be under upstreams/)
               if local_path.startswith('vendor/') and not local_path.startswith('vendor/wheels'):
-                  print(f'FAIL: {name} subtree under vendor/ — must use upstreams/')
+                  print(f'FAIL: {name} subtree under vendor/ -- must use upstreams/')
                   errors += 1
 
           print(f'Checked {len(upstreams)} upstream(s): {pending} pending, {errors} error(s)')
@@ -488,7 +518,7 @@ jobs:
             fi
             cd ../..
           done
-          # Report results — count-based check with active waivers
+          # Report results -- count-based check with active waivers
           # NOTE: This is a service-count check, not per-CVE matching.
           # The release-gate job uses govulncheck-strict.sh for proper CVE-ID-level waivers.
           if [ "$VULN_ERRORS" -gt 0 ]; then
@@ -516,43 +546,7 @@ jobs:
       - name: Python dependency audit (enforced)
         run: |
           pip install -r requirements-ci.txt
-          echo "=== Python Dependency Audit ==="
-          # Audit the project-pinned dependency set, not the runner's bundled tooling.
-          pip-audit --strict --desc -r requirements-ci.txt -f json -o /tmp/pip-audit.json 2>/dev/null || true
-          python3 -c "
-          import json, sys, datetime
-          # Load audit results
-          try:
-              with open('/tmp/pip-audit.json') as f:
-                  data = json.load(f)
-          except (FileNotFoundError, json.JSONDecodeError):
-              print('OK: pip-audit produced no findings')
-              sys.exit(0)
-          vulns = data if isinstance(data, list) else data.get('dependencies', [])
-          findings = [d for d in vulns if d.get('vulns')]
-          if not findings:
-              print('OK: no Python dependency vulnerabilities')
-              sys.exit(0)
-          # Load waivers
-          with open('.github/vuln-waivers.json') as f:
-              waivers = json.load(f)
-          today = datetime.date.today().isoformat()
-          waived_ids = {w['id'] for w in waivers.get('python', []) if w.get('expires', '') >= today}
-          unwaived = 0
-          for dep in findings:
-              for v in dep.get('vulns', []):
-                  vid = v.get('id', '')
-                  if vid in waived_ids:
-                      print(f'WAIVED: {dep[\"name\"]} {vid}')
-                  else:
-                      print(f'::error::{dep[\"name\"]}: {vid} — {v.get(\"description\", \"\")}')
-                      unwaived += 1
-          if unwaived > 0:
-              print(f'FAIL: {unwaived} unwaived Python vulnerability finding(s)')
-              print('To waive a reviewed finding, add it to .github/vuln-waivers.json')
-              sys.exit(1)
-          print(f'OK: all Python findings waived ({len(waived_ids)} waiver(s) active)')
-          "
+          python .github/scripts/audit-python-deps.py
 
   docs-validation:
     name: Documentation Validation
@@ -801,6 +795,7 @@ jobs:
       - go-build-and-test
       - python-test
       - security-regression
+      - appsec-lint
       - dependency-audit
       - test-count-check
       - docs-validation

@@ -1,0 +1,35 @@
+name: Security hardening
+description: Propose a control, invariant, or assurance improvement
+title: "[Hardening]: "
+labels: ["security", "hardening"]
+body:
+  - type: textarea
+    id: control
+    attributes:
+      label: Control or Invariant
+      description: What security property should be added, tightened, or verified?
+    validations:
+      required: true
+  - type: textarea
+    id: threat
+    attributes:
+      label: Threat Scenario
+      description: What attack, misconfiguration, or regression does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Suggested Implementation
+      description: Mention affected services, docs, tests, and release checks if known.
+  - type: dropdown
+    id: assurance
+    attributes:
+      label: Assurance Impact
+      options:
+        - Blocks release readiness
+        - Improves production hardening
+        - Improves documentation or auditability
+        - Product enhancement
+    validations:
+      required: true

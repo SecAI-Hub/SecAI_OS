@@ -31,10 +31,15 @@ done
 OUTPUT_DIR="${POSITIONAL_ARGS[0]:-./output}"
 IMAGE_NAME="secai-os"
 DISK_SIZE="64G"
-VAULT_SIZE="32G"
 
 # SecAI OS container image (override with --image-ref for CI)
 CONTAINER_IMAGE="${CUSTOM_IMAGE_REF:-ghcr.io/secai-hub/secai_os:latest}"
+case "$CONTAINER_IMAGE" in
+    *[!A-Za-z0-9._:/@+-]*)
+        echo "ERROR: image ref contains unsupported characters: $CONTAINER_IMAGE" >&2
+        exit 1
+        ;;
+esac
 
 # Generate random passwords for VM build (never hardcoded)
 SECAI_VM_PASSWORD="${SECAI_VM_PASSWORD:-$(openssl rand -base64 18)}"
@@ -50,6 +55,10 @@ echo "  The host OS can inspect VM memory, including"
 echo "  decrypted vault contents and inference data."
 echo "  For maximum security, use bare-metal install."
 echo ""
+if [ "$CI_MODE" = true ]; then
+    echo "  CI mode: generating image inputs only; virt-install is printed below."
+    echo ""
+fi
 echo "=========================================="
 
 mkdir -p "$OUTPUT_DIR"
@@ -60,7 +69,7 @@ qemu-img create -f qcow2 "${OUTPUT_DIR}/${IMAGE_NAME}.qcow2" "$DISK_SIZE"
 
 # Step 2: Install using virt-install (unattended Fedora Silverblue + rebase)
 echo "[2/4] Creating installation kickstart..."
-cat > "${OUTPUT_DIR}/secai-ks.cfg" <<'KICKSTART'
+cat > "${OUTPUT_DIR}/secai-ks.cfg" <<KICKSTART
 # SecAI OS VM Kickstart — automated install
 lang en_US.UTF-8
 keyboard us
@@ -82,7 +91,7 @@ network --bootproto=dhcp --activate
 # Post-install: rebase to SecAI OS
 %post --log=/root/secai-post.log
 # Rebase to SecAI OS (unsigned first, then signed after reboot)
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/secai-hub/secai_os:latest || true
+rpm-ostree rebase "ostree-unverified-registry:${CONTAINER_IMAGE}" || true
 
 # Write a flag so firstboot knows this is a VM install
 mkdir -p /var/lib/secure-ai
@@ -97,7 +106,7 @@ echo "   sudo passwd secai"                       >> /etc/motd
 echo "   sudo cryptsetup luksChangeKey /dev/sda4" >> /etc/motd
 echo ""                                           >> /etc/motd
 echo " Then reboot to complete SecAI OS setup:"   >> /etc/motd
-echo "   sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest" >> /etc/motd
+echo "   sudo rpm-ostree rebase ostree-image-signed:docker://${CONTAINER_IMAGE}" >> /etc/motd
 echo "   sudo systemctl reboot"                   >> /etc/motd
 echo "============================================" >> /etc/motd
 %end
@@ -128,7 +137,7 @@ echo "    2. Log in as 'secai' (password: ${SECAI_VM_PASSWORD})"
 echo "    3. CHANGE BOTH PASSWORDS IMMEDIATELY:"
 echo "       sudo passwd secai"
 echo "       sudo cryptsetup luksChangeKey /dev/sda4  (current: ${SECAI_VAULT_PASSWORD})"
-echo "    4. Complete rebase: sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest"
+echo "    4. Complete rebase: sudo rpm-ostree rebase ostree-image-signed:docker://${CONTAINER_IMAGE}"
 echo "    5. Reboot: sudo systemctl reboot"
 echo ""
 echo "  The QCOW2 image is at: ${OUTPUT_DIR}/${IMAGE_NAME}.qcow2"

@@ -41,6 +41,7 @@ jobs:
             "Go Build & Test"
             "Python Test & Lint"
             "Security Regression Tests"
+            "Hadolint & Semgrep"
             "Dependency Vulnerability Audit"
             "Test Count Drift Check"
             "Documentation Validation"

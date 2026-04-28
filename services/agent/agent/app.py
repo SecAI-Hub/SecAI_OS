@@ -618,6 +618,11 @@ def _make_unix_server(sock_path: str):
     from pathlib import Path
     from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
+    af_unix_raw = getattr(_socket, "AF_UNIX", None)
+    if af_unix_raw is None:
+        raise RuntimeError("Unix domain sockets are not supported on this platform")
+    af_unix = int(af_unix_raw)
+
     sock_file = Path(sock_path)
     sock_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -627,7 +632,7 @@ def _make_unix_server(sock_path: str):
         pass
 
     class _UnixWSGIServer(WSGIServer):
-        address_family = _socket.AF_UNIX
+        address_family = af_unix
 
         def __init__(self, socket_path: str, handler_cls: type[WSGIRequestHandler]) -> None:
             self._socket_path = socket_path

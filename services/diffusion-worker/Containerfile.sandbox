@@ -1,9 +1,24 @@
 ARG COMPUTE=cpu
+ARG TORCH_CUDA_VERSION=2.6.0+cu124
+ARG TORCH_ROCM_VERSION=2.5.1+rocm6.1
+ARG TORCH_CPU_VERSION=2.6.0+cpu
+ARG TORCHVISION_CUDA_VERSION=0.21.0+cu124
+ARG TORCHVISION_ROCM_VERSION=0.20.1+rocm6.1
+ARG TORCHVISION_CPU_VERSION=0.21.0+cpu
+ARG IPEX_CPU_VERSION=2.6.0
 
-FROM cgr.dev/chainguard/python:latest-dev AS build
+FROM cgr.dev/chainguard/python:latest-dev@sha256:2c0fbbac86b72ebb4bfee15b64d8cd5fd6b49dfe7bb279b5c9f193198a84c1c9 AS build
 
 ARG COMPUTE
+ARG TORCH_CUDA_VERSION
+ARG TORCH_ROCM_VERSION
+ARG TORCH_CPU_VERSION
+ARG TORCHVISION_CUDA_VERSION
+ARG TORCHVISION_ROCM_VERSION
+ARG TORCHVISION_CPU_VERSION
+ARG IPEX_CPU_VERSION
 
+# hadolint ignore=DL3002
 USER root
 WORKDIR /app
 
@@ -25,28 +40,29 @@ ENV PATH=/opt/venv/bin:/opt/python/bin:/usr/bin:/bin
 RUN /opt/python/bin/python3 -m venv "$VIRTUAL_ENV"
 RUN pip install --no-cache-dir --upgrade \
     pip==26.0.1 \
-    setuptools==78.1.1 \
+    setuptools==82.0.1 \
     wheel==0.46.2
 
 # Install PyTorch with the appropriate compute backend for the sandbox profile.
 RUN if [ "$COMPUTE" = "cuda" ]; then \
-        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124; \
+        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url https://download.pytorch.org/whl/cu124; \
     elif [ "$COMPUTE" = "rocm" ]; then \
-        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/rocm6.1; \
+        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url https://download.pytorch.org/whl/rocm6.1; \
     else \
-        pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu; \
+        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url https://download.pytorch.org/whl/cpu && \
+        (pip install --no-cache-dir "intel-extension-for-pytorch==${IPEX_CPU_VERSION}" 2>/dev/null || true); \
     fi
 
 RUN pip install --no-cache-dir \
-    diffusers[torch] \
-    transformers \
-    accelerate \
-    safetensors \
-    flask \
+    "diffusers[torch]==0.37.1" \
+    transformers==5.6.2 \
+    accelerate==1.13.0 \
+    safetensors==0.7.0 \
+    flask==3.1.3 \
     gunicorn==23.0.0 \
     imageio==2.37.3 \
     imageio-ffmpeg==0.6.0 \
-    pyyaml \
+    pyyaml==6.0.3 \
     Pillow==12.2.0
 
 # The runtime image does not need packaging tooling. Removing it trims unused
@@ -67,7 +83,7 @@ COPY services/diffusion-worker/entrypoint.py /app/entrypoint.py
 RUN chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app /opt/python /opt/venv
 
-FROM cgr.dev/chainguard/wolfi-base:latest
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:70750dfde91b4c5804b4df269121253fbdff73a9122925c7acc067aa33f9f55e
 
 USER root
 WORKDIR /app

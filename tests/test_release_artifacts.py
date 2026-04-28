@@ -6,6 +6,7 @@ release-artifacts.json are all consistent with each other.
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -15,6 +16,7 @@ ARTIFACTS_JSON = REPO_ROOT / "docs" / "release-artifacts.json"
 SAMPLE_BUNDLE = REPO_ROOT / "docs" / "sample-release-bundle.md"
 VERIFY_RELEASE = REPO_ROOT / "files" / "scripts" / "verify-release.sh"
 MAKEFILE = REPO_ROOT / "Makefile"
+QUARANTINE_PYPROJECT = REPO_ROOT / "services" / "quarantine" / "pyproject.toml"
 
 
 def _load_artifacts_json():
@@ -134,7 +136,43 @@ class TestCiWorkflowStructure:
 
     def test_python_dependency_audit_uses_project_requirements(self):
         content = _read_ci_yml()
-        assert "pip-audit --strict --desc -r requirements-ci.txt" in content
+        audit_script = REPO_ROOT / ".github" / "scripts" / "audit-python-deps.py"
+        script_content = audit_script.read_text(encoding="utf-8")
+        assert "python .github/scripts/audit-python-deps.py" in content
+        assert "requirements-ci.txt" in script_content
+        assert "services/ui/requirements.lock" in script_content
+        assert "services/quarantine/requirements.lock" in script_content
+
+    def test_quarantine_scan_extra_keeps_garak_opt_in(self):
+        data = tomllib.loads(QUARANTINE_PYPROJECT.read_text(encoding="utf-8"))
+        optional = data["project"]["optional-dependencies"]
+        scan_deps = optional["scan"]
+        dependencies = data["project"]["dependencies"]
+        assert "garak" in optional
+        assert all(not dep.startswith("garak") for dep in scan_deps)
+        assert "modelscan==0.8.8" in scan_deps
+        assert "fickling==0.1.10" in scan_deps
+        assert "modelaudit==0.2.40" in scan_deps
+        assert "yara-python==4.5.4" in dependencies
+
+    def test_quarantine_container_scanners_are_pinned(self):
+        for rel_path in (
+            "services/quarantine/Containerfile",
+            "services/quarantine/Containerfile.sandbox",
+        ):
+            content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+            assert "ARG ENABLE_GARAK_SCANNER=false" in content
+            assert "ARG MODELSCAN_PACKAGE=modelscan==0.8.8" in content
+            assert "ARG FICKLING_PACKAGE=fickling==0.1.10" in content
+            assert "ARG MODELAUDIT_PACKAGE=modelaudit==0.2.40" in content
+            assert "ARG GARAK_PACKAGE=garak==0.14.1" in content
+            assert 'scanners="modelscan fickling modelaudit"' in content
+
+    def test_appsec_scanners_are_wired_into_ci(self):
+        content = _read_ci_yml()
+        assert "Hadolint & Semgrep" in content
+        assert ".github/scripts/check-hadolint.sh" in content
+        assert ".github/scripts/run-semgrep.sh" in content
 
 
 class TestSampleReleaseBundle:

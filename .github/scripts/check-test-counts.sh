@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ###############################################################################
-# check-test-counts.sh — Detect test-count drift against docs/test-counts.json
+# check-test-counts.sh -- Detect test-count drift against docs/test-counts.json
 #
 # Exits non-zero if any per-service count is LOWER than the documented count.
 # Counts that EXCEED the documented value are fine (docs just need updating).
@@ -16,9 +16,33 @@ if [[ ! -f "${COUNTS_FILE}" ]]; then
   exit 1
 fi
 
-# JSON helper — Python is already set up in CI.
+if command -v go >/dev/null 2>&1; then
+  GO_RUNNER=(go)
+elif command -v cmd.exe >/dev/null 2>&1 && cmd.exe /c where go >/dev/null 2>&1; then
+  GO_RUNNER=(cmd.exe /c go)
+else
+  echo "FATAL: go is required to check Go test counts."
+  exit 1
+fi
+
+PYTHON_RUNNER=()
+for candidate in "python3" "python" "cmd.exe /c python"; do
+  # shellcheck disable=SC2206
+  parts=($candidate)
+  if "${parts[@]}" -c "import pytest" >/dev/null 2>&1; then
+    PYTHON_RUNNER=("${parts[@]}")
+    break
+  fi
+done
+
+if [ "${#PYTHON_RUNNER[@]}" -eq 0 ]; then
+  echo "FATAL: Python with pytest is required to check Python test counts."
+  exit 1
+fi
+
+# JSON helper -- Python is already set up in CI.
 read_json() {
-  python3 -c "import json,sys; d=json.load(open('${COUNTS_FILE}')); print(d$1)"
+  (cd "${REPO_ROOT}" && "${PYTHON_RUNNER[@]}" -c "import json,sys; d=json.load(open('docs/test-counts.json')); print(d$1)") | tr -d '\r'
 }
 
 ###############################################################################
@@ -46,7 +70,7 @@ for svc in ${GO_SERVICES}; do
     echo "WARNING: services/${svc} directory not found, skipping."
     echo "0" > "${results_dir}/${svc}.actual"
   else
-    count=$(cd "${svc_dir}" && go test -v -count=1 ./... 2>&1 | grep -c "^--- PASS" || true)
+    count=$(cd "${svc_dir}" && "${GO_RUNNER[@]}" test -v -count=1 ./... 2>&1 | grep -c "^--- PASS" || true)
     echo "${count}" > "${results_dir}/${svc}.actual"
     go_total_actual=$((go_total_actual + count))
   fi
@@ -62,7 +86,7 @@ done
 echo "--- Python tests ---"
 
 python_actual=$(cd "${REPO_ROOT}" && \
-  PYTHONPATH=services python3 -m pytest tests/ --co -q 2>&1 | tail -1 | \
+  PYTHONPATH=services "${PYTHON_RUNNER[@]}" -m pytest tests/ --co -q 2>&1 | tail -1 | \
   grep -oE '^[0-9]+' || echo 0)
 
 python_expected=$(read_json "['python_total']" 2>/dev/null || echo 0)
@@ -98,7 +122,6 @@ for svc in ${GO_SERVICES}; do
   printf "  %-22s %8d %8d   %s\n" "go/${svc}" "${exp}" "${act}" "${status}"
 done
 
-# Python row
 if [ "${python_actual}" -lt "${python_expected}" ]; then
   py_status="DRIFT!"
   drift_found=1
@@ -124,11 +147,10 @@ if [ "${drift_found}" -eq 1 ]; then
   echo "FAIL: One or more test counts drifted DOWN from documented values."
   echo "      This means tests were removed or broken without updating docs/test-counts.json."
   exit 1
-else
-  echo "PASS: All test counts meet or exceed documented values."
-  if [ "${grand_actual}" -gt "${grand_expected}" ]; then
-    echo "NOTE: Grand total exceeds documented count (${grand_actual} > ${grand_expected})."
-    echo "      Consider updating docs/test-counts.json to reflect the new counts."
-  fi
-  exit 0
+fi
+
+echo "PASS: All test counts meet or exceed documented values."
+if [ "${grand_actual}" -gt "${grand_expected}" ]; then
+  echo "NOTE: Grand total exceeds documented count (${grand_actual} > ${grand_expected})."
+  echo "      Consider updating docs/test-counts.json to reflect the new counts."
 fi

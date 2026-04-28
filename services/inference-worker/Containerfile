@@ -40,6 +40,7 @@ RUN sed -i 's/\r$//' /entrypoint.sh \
 ENV LD_LIBRARY_PATH=/opt/llama-server
 ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server
 
+USER 65534:65534
 EXPOSE 8465
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD bash -ec 'port="${BIND_ADDR##*:}"; exec 3<>"/dev/tcp/127.0.0.1/${port}"'
 ENTRYPOINT ["/entrypoint.sh"]

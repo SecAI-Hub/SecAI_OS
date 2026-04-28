@@ -1,0 +1,62 @@
+rules:
+  - id: secai.python.subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Avoid shell=True; pass argv lists to subprocess APIs so policy and quoting stay explicit.
+    paths:
+      include:
+        - /services/**/*.py
+        - /scripts/**/*.py
+        - /.github/scripts/**/*.py
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.check_call(..., shell=True, ...)
+      - pattern: subprocess.check_output(..., shell=True, ...)
+
+  - id: secai.python.unsafe-yaml-load
+    languages: [python]
+    severity: ERROR
+    message: Use yaml.safe_load for project configuration and policy files.
+    paths:
+      include:
+        - /services/**/*.py
+        - /scripts/**/*.py
+        - /.github/scripts/**/*.py
+        - /tests/**/*.py
+    pattern: yaml.load(...)
+
+  - id: secai.python.unsafe-pickle-load
+    languages: [python]
+    severity: ERROR
+    message: Do not deserialize pickle in service code; model artifact parsing must stay in hardened scanners.
+    paths:
+      include:
+        - /services/**/*.py
+        - /scripts/**/*.py
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+
+  - id: secai.python.tempfile-mktemp
+    languages: [python]
+    severity: ERROR
+    message: tempfile.mktemp is race-prone; use TemporaryDirectory, NamedTemporaryFile, or mkstemp.
+    paths:
+      include:
+        - /services/**/*.py
+        - /scripts/**/*.py
+        - /tests/**/*.py
+    pattern: tempfile.mktemp(...)
+
+  - id: secai.python.flask-public-bind
+    languages: [python]
+    severity: ERROR
+    message: SecAI services must not bind Flask development servers to public interfaces.
+    paths:
+      include:
+        - /services/**/*.py
+    pattern-either:
+      - pattern: $APP.run(..., host="0.0.0.0", ...)
+      - pattern: $APP.run(..., host="::", ...)

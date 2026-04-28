@@ -124,7 +124,7 @@ cd tests
 python -m pytest -v
 
 # Specific test suites
-python -m pytest test_pipeline.py -v
+python -m pytest tests/test_quarantine_pipeline.py -v
 python -m pytest test_ui.py -v
 python -m pytest test_memory_protection.py -v
 python -m pytest test_differential_privacy.py -v

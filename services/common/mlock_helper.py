@@ -40,9 +40,16 @@ if _libc:
 
 def get_mlock_limit() -> int:
     """Return the current RLIMIT_MEMLOCK soft limit in bytes, or 0 if unavailable."""
+    if not _IS_LINUX:
+        return 0
     try:
         import resource
-        soft, _ = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+
+        getrlimit = getattr(resource, "getrlimit", None)
+        memlock = getattr(resource, "RLIMIT_MEMLOCK", None)
+        if getrlimit is None or memlock is None:
+            return 0
+        soft, _ = getrlimit(memlock)
         return soft
     except Exception:
         return 0

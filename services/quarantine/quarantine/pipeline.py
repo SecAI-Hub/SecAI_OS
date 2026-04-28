@@ -48,6 +48,8 @@ SOURCES_ALLOWLIST_PATH = Path(
 LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "/usr/bin/llama-server")
 GGUF_GUARD_BIN = os.getenv("GGUF_GUARD_BIN", "/usr/local/bin/gguf-guard")
 SMOKE_TEST_TIMEOUT = int(os.getenv("SMOKE_TEST_TIMEOUT", "120"))
+YARA_RULES_DIR = Path(os.getenv("YARA_RULES_DIR", Path(__file__).with_name("yara_rules")))
+YARA_SCAN_TIMEOUT = int(os.getenv("YARA_SCAN_TIMEOUT", "120"))
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +624,61 @@ def _run_modelaudit(filepath: Path) -> dict:
         return {"passed": True, "scanner": "modelaudit", "note": f"modelaudit error: {e}"}
 
 
+def _run_yara_scan(filepath: Path, policy: dict | None = None) -> dict:
+    """Run repo-owned YARA malware rules against an imported artifact."""
+    if policy is None:
+        policy = {}
+    require_yara = policy.get("models", {}).get(
+        "require_yara",
+        policy.get("models", {}).get("require_scan", True),
+    )
+
+    try:
+        import yara
+    except ImportError:
+        if require_yara:
+            return {"passed": False, "scanner": "yara", "reason": "YARA scanner required but not installed"}
+        return {"passed": True, "scanner": "yara", "note": "YARA not installed, skipped"}
+
+    rule_files = sorted(YARA_RULES_DIR.glob("*.yar"))
+    if not rule_files:
+        if require_yara:
+            return {"passed": False, "scanner": "yara", "reason": f"no YARA rules found in {YARA_RULES_DIR}"}
+        return {"passed": True, "scanner": "yara", "note": "no YARA rules configured, skipped"}
+
+    try:
+        rules = yara.compile(filepaths={rule.stem: str(rule) for rule in rule_files})
+        matches = rules.match(str(filepath), timeout=YARA_SCAN_TIMEOUT)
+    except getattr(yara, "TimeoutError", TimeoutError):
+        return {"passed": False, "scanner": "yara", "reason": f"YARA scan timed out after {YARA_SCAN_TIMEOUT}s"}
+    except Exception as e:
+        if require_yara:
+            return {"passed": False, "scanner": "yara", "reason": f"YARA scan failed: {e}"}
+        return {"passed": True, "scanner": "yara", "note": f"YARA error: {e}"}
+
+    if matches:
+        return {
+            "passed": False,
+            "scanner": "yara",
+            "reason": f"YARA matched {len(matches)} rule(s)",
+            "matches": [
+                {
+                    "rule": match.rule,
+                    "namespace": match.namespace,
+                    "tags": list(match.tags),
+                    "meta": dict(match.meta),
+                }
+                for match in matches
+            ],
+        }
+
+    return {
+        "passed": True,
+        "scanner": "yara",
+        "rules": len(rule_files),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Weight distribution statistical fingerprinting
 # ---------------------------------------------------------------------------
@@ -1104,7 +1161,7 @@ def _run_gguf_guard_fingerprint(artifact_path: Path) -> dict | None:
 
 
 def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
-    """Stage 5: Run modelscan + fickling + modelaudit + entropy + weight analysis + gguf-guard."""
+    """Stage 5: Run modelscan + YARA + fickling + modelaudit + entropy + gguf-guard."""
     if policy is None:
         policy = {}
     results = {}
@@ -1113,27 +1170,31 @@ def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
     ms_result = _run_modelscan(artifact_path, policy=policy)
     results["modelscan"] = ms_result
 
-    # 2. Fickling (new, optional)
+    # 2. YARA malware signature scan
+    yara_result = _run_yara_scan(artifact_path, policy=policy)
+    results["yara"] = yara_result
+
+    # 3. Fickling (new, optional)
     fk_result = _run_fickling_scan(artifact_path)
     results["fickling"] = fk_result
 
-    # 3. ModelAudit (new, optional)
+    # 4. ModelAudit (new, optional)
     ma_result = _run_modelaudit(artifact_path)
     results["modelaudit"] = ma_result
 
-    # 4. Polyglot check (new, always runs, no external dep)
+    # 5. Polyglot check (new, always runs, no external dep)
     pg_result = _check_pickle_polyglot(artifact_path)
     results["polyglot_check"] = pg_result
 
-    # 5. Entropy analysis (existing)
+    # 6. Entropy analysis (existing)
     entropy_result = _check_file_entropy(artifact_path)
     results["entropy"] = entropy_result
 
-    # 6. Weight distribution analysis (new, no external dep)
+    # 7. Weight distribution analysis (new, no external dep)
     weight_result = _analyze_weight_distribution(artifact_path)
     results["weight_stats"] = weight_result
 
-    # 7. gguf-guard deep integrity scan (GGUF files only)
+    # 8. gguf-guard deep integrity scan (GGUF files only)
     gguf_guard_result = _run_gguf_guard_scan(artifact_path, policy=policy)
     results["gguf_guard"] = gguf_guard_result
 
@@ -1578,7 +1639,7 @@ def _run_garak_scan(port: int) -> dict:
         try:
             # Check if garak is available
             ver_result = subprocess.run(
-                ["python", "-m", "garak", "--version"],
+                ["garak", "--version"],
                 capture_output=True, text=True, timeout=15,
                 env=garak_env, cwd=report_dir,
             )
@@ -1599,7 +1660,7 @@ def _run_garak_scan(port: int) -> dict:
         try:
             result = subprocess.run(
                 [
-                    "python", "-m", "garak",
+                    "garak",
                     "--model_type", "openai-compatible",
                     "--model_name", f"http://127.0.0.1:{port}/v1",
                     "--probes", probe_arg,

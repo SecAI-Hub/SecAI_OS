@@ -120,7 +120,7 @@ Every model passes through the same fully automatic pipeline:
 | 2 | **Format Gate** | Validates headers, rejects unsafe formats (pickle, .pt, .bin) |
 | 3 | **Integrity Check** | SHA-256 hash pinning verification |
 | 4 | **Provenance** | Cosign signature verification |
-| 5 | **Static Scan** | ModelScan + entropy analysis + gguf-guard (weight-level anomaly detection) |
+| 5 | **Static Scan** | ModelScan + YARA + fickling + modelaudit + entropy analysis + gguf-guard |
 | 6 | **Behavioral Test** | 22 adversarial prompts across 10 attack categories (LLM only) |
 | 7 | **Diffusion Scan** | Config integrity, symlink detection (diffusion only) |
 

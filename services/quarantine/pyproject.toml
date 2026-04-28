@@ -6,14 +6,21 @@ requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
     "watchdog>=4.0",
+    "yara-python==4.5.4",
 ]
 
 [project.optional-dependencies]
 scan = [
-    "modelscan>=0.8",
-    "fickling>=0.1",
-    "garak>=0.9",
+    "modelscan==0.8.8",
+    "fickling==0.1.10",
+    "modelaudit==0.2.40",
+]
+garak = [
+    "garak==0.14.1",
 ]
 
 [project.scripts]
 secure-ai-quarantine = "quarantine.watcher:main"
+
+[tool.setuptools.package-data]
+quarantine = ["yara_rules/*.yar"]

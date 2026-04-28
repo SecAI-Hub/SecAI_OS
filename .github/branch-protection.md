@@ -4,7 +4,7 @@ Required branch protection settings for SecAI OS release infrastructure.
 Configure these in GitHub Settings > Branches > Add branch protection rule,
 or use the setup script below.
 
-Last updated: 2026-03-14
+Last updated: 2026-04-28
 
 ---
 
@@ -24,18 +24,19 @@ Last updated: 2026-03-14
 
 ### Required status checks for `release/*`
 
-All 7 of these must pass before a PR can merge into a release branch:
+All 8 of these must pass before a PR can merge into a release branch:
 
-1. **Go Build & Test** (`go-build-and-test`) — Builds and tests all 9 Go services with race detector
-2. **Python Test & Lint** (`python-test`) — Ruff, bandit, mypy, unit/integration tests, adversarial + M5 acceptance
-3. **Security Regression Tests** (`security-regression`) — Adversarial tests (Python + Go MCP/policy/incident-recorder)
-4. **Dependency Vulnerability Audit** (`dependency-audit`) — govulncheck + pip-audit with waiver mechanism
-5. **Test Count Drift Check** (`test-count-check`) — Ensures test counts don't drop below documented floor
-6. **Documentation Validation** (`docs-validation`) — Broken links, required docs, milestone count consistency, test references
-7. **Release Branch Hardened Gate** (`release-gate`) — Zero-tolerance bandit, CVE-ID govulncheck waivers, M5 acceptance re-run
+1. **Go Build & Test** (`go-build-and-test`) -- Builds and tests all 9 Go services with race detector
+2. **Python Test & Lint** (`python-test`) -- Ruff, bandit, mypy, unit/integration tests, adversarial + M5 acceptance
+3. **Security Regression Tests** (`security-regression`) -- Adversarial tests (Python + Go MCP/policy/incident-recorder)
+4. **Hadolint & Semgrep** (`appsec-lint`) -- Container linting plus repo-owned application security rules
+5. **Dependency Vulnerability Audit** (`dependency-audit`) -- govulncheck + pip-audit with waiver mechanism
+6. **Test Count Drift Check** (`test-count-check`) -- Ensures test counts do not drop below documented floor
+7. **Documentation Validation** (`docs-validation`) -- Broken links, required docs, milestone count consistency, test references
+8. **Release Branch Hardened Gate** (`release-gate`) -- Zero-tolerance bandit, CVE-ID govulncheck waivers, M5 acceptance re-run
 
 The `release-gate` job has `needs:` on all of the above, so configuring it as the sole required check is sufficient.
-However, listing all 7 makes failure diagnosis easier in the GitHub UI.
+However, listing all 8 makes failure diagnosis easier in the GitHub UI.
 
 ---
 
@@ -71,7 +72,7 @@ patterns (`release/*`) requires using rulesets. The script below uses the
 branch protection API for `stable` (exact name) and documents the UI steps
 for wildcard patterns.
 
-### For `stable` branch (exact match — API supported)
+### For `stable` branch (exact match -- API supported)
 
 ```bash
 #!/usr/bin/env bash
@@ -90,6 +91,7 @@ gh api -X PUT "repos/${OWNER}/${REPO}/branches/stable/protection" \
       {"context": "Go Build & Test"},
       {"context": "Python Test & Lint"},
       {"context": "Security Regression Tests"},
+      {"context": "Hadolint & Semgrep"},
       {"context": "Dependency Vulnerability Audit"},
       {"context": "Test Count Drift Check"},
       {"context": "Documentation Validation"},
@@ -109,10 +111,10 @@ EOF
 echo "OK: Branch protection set for stable"
 ```
 
-### For `release/*` branches (wildcard — use GitHub UI)
+### For `release/*` branches (wildcard -- use GitHub UI)
 
 1. Go to **Settings > Branches > Add branch protection rule**
 2. Branch name pattern: `release/*`
 3. Enable all settings listed in the table above
-4. Under "Require status checks to pass", add all 7 check names listed above
+4. Under "Require status checks to pass", add all 8 check names listed above
 5. Save changes

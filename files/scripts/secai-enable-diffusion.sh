@@ -655,7 +655,7 @@ _progress "verifying" 70 "Verifying wheel cache"
 echo "=== Verifying wheel cache ==="
 
 _SECAI_MANIFEST="$MANIFEST" _SECAI_BACKEND="$GPU_BACKEND" _SECAI_SOURCE="$INSTALL_SOURCE" \
-python3 -c '
+python3 - <<'VERIFY_WHEELS' || rollback "wheel cache verification failed"
 import hashlib, os, platform, sys, zipfile
 import yaml
 
@@ -729,7 +729,7 @@ if errors:
         print(f'ERROR: {err}', file=sys.stderr)
     sys.exit(1)
 print(f"All {len(wheels)} wheels verified")
-' || rollback "wheel cache verification failed"
+VERIFY_WHEELS
 
 # ---------------------------------------------------------------------------
 # Step 5: Install into temporary venv

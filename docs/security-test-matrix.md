@@ -2,13 +2,13 @@
 
 This document maps each security feature to its corresponding test files, test counts, and coverage areas.
 
-Last updated: 2026-03-13
+Last updated: 2026-04-25
 
 ## Security Feature to Test Mapping
 
 | Security Feature | Test File | Language | Approx. Tests | Key Areas Covered |
 |-----------------|-----------|----------|---------------|-------------------|
-| Quarantine pipeline | tests/test_pipeline.py | Python | ~96 | 7-stage scanning, pass/fail logic, malformed input handling |
+| Quarantine pipeline | tests/test_quarantine_pipeline.py | Python | 10 | 7-stage scanning, pass/fail logic, malformed input handling |
 | PII stripping | tests/test_search.py | Python | ~27 | Email, phone, SSN, address redaction from search queries |
 | Injection detection | tests/test_search.py | Python | ~27 | Prompt injection, command injection, query sanitization |
 | Memory protection | tests/test_memory_protection.py | Python | ~37 | Swap encryption, zswap disabling, core dump prevention, mlock enforcement, TEE detection |
@@ -86,7 +86,7 @@ Last updated: 2026-03-13
 To run all security-related Python tests:
 
 ```bash
-pytest tests/test_pipeline.py tests/test_search.py tests/test_memory_protection.py \
+pytest tests/test_quarantine_pipeline.py tests/test_search.py tests/test_memory_protection.py \
        tests/test_traffic_analysis.py tests/test_differential_privacy.py \
        tests/test_clipboard_isolation.py tests/test_canary_tripwire.py \
        tests/test_emergency_wipe.py tests/test_update_rollback.py \

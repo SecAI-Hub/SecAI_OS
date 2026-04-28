@@ -8,7 +8,8 @@ for f in .github/workflows/*.yml .github/workflows/*.yaml; do
         # Match "uses: owner/repo@" lines that don't have a 40-char hex SHA
         if echo "$line" | grep -qE '^\s*-?\s*uses:\s+[^/]+/[^@]+@' && \
            ! echo "$line" | grep -qE '@[0-9a-f]{40}(\s|$)'; then
-            echo "ERROR: $f has unpinned action: $(echo "$line" | sed 's/^[[:space:]]*//')"
+            trimmed="${line#"${line%%[![:space:]]*}"}"
+            echo "ERROR: $f has unpinned action: ${trimmed}"
             ERRORS=$((ERRORS + 1))
         fi
     done < "$f"

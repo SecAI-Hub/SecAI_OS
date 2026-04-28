@@ -2916,7 +2916,10 @@ def _agent_request(method: str, path: str, *, json_body=None, params=None, timeo
         import socket as _socket
 
         conn = http.client.HTTPConnection("localhost")
-        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        af_unix = getattr(_socket, "AF_UNIX", None)
+        if af_unix is None:
+            raise RuntimeError("Unix domain sockets are not supported on this platform")
+        sock = _socket.socket(af_unix, _socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect(AGENT_SOCKET)
         conn.sock = sock

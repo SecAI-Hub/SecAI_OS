@@ -1,0 +1,12 @@
+{
+  "_comment": "Temporary waivers for FROM refs that cannot be represented as a single static digest because the build arg selects multiple upstream variants. Each waiver must expire and must be reviewed before renewal.",
+  "dynamic_from": [
+    {
+      "path": "services/inference-worker/Containerfile",
+      "image_ref": "ghcr.io/ggml-org/llama.cpp:${IMAGE_TAG}",
+      "reason": "IMAGE_TAG selects CPU/CUDA/ROCm/Vulkan/Intel llama.cpp variants. Production builds must pass the resolved digest through release metadata until this is split into per-variant pinned stages.",
+      "reviewer": "sec_ai",
+      "expires": "2026-06-30"
+    }
+  ]
+}

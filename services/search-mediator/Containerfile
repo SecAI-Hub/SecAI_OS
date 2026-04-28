@@ -1,5 +1,6 @@
 FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS build
 
+# hadolint ignore=DL3002
 USER root
 ENV PYTHON_VERSION=3.14.4
 ENV PYTHON_TARBALL_SHA256=d923c51303e38e249136fc1bdf3568d56ecb03214efdef48516176d3d7faaef8
@@ -21,7 +22,7 @@ COPY services/search-mediator/entrypoint.py /app/entrypoint.py
 
 RUN pip install --no-cache-dir --upgrade \
         pip==26.0.1 \
-        setuptools==78.1.1 \
+        setuptools==82.0.1 \
         wheel==0.46.2 && \
     pip install --no-cache-dir -r /app/requirements.txt && \
     pip install --no-cache-dir gunicorn==23.0.0 && \
