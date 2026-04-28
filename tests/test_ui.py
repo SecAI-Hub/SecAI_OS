@@ -606,11 +606,14 @@ class TestSandboxUnsupportedFeatures:
         assert resp.get_json()["feature"] == "emergency_panic"
 
     def test_agent_approve_logs_failure_when_agent_rejects(self, client):
-        with patch("ui.app._agent_request", return_value=({"error": "conflict"}, 409)), \
+        upstream_payload = {"error": "<script>alert(1)</script>", "task_id": "task-123"}
+        with patch("ui.app._agent_request", return_value=(upstream_payload, 409)), \
              patch("ui.app._ui_audit.append") as mock_append:
             resp = client.post("/api/agent/task/task-123/approve", json={"approve_all": True})
 
         assert resp.status_code == 409
+        assert resp.get_json() == {"ok": False, "status_code": 409}
+        assert "<script>" not in resp.get_data(as_text=True)
         mock_append.assert_called_once_with(
             "agent_steps_approve_failed",
             {"task_id": "task-123", "status_code": 409},

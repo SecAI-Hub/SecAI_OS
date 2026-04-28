@@ -2992,6 +2992,16 @@ def _json_safe(value):
     return value
 
 
+def _agent_status_response(status):
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        status_code = 502
+    if status_code < 100 or status_code > 599:
+        status_code = 502
+    return jsonify({"ok": 200 <= status_code < 300, "status_code": status_code}), status_code
+
+
 # ---------------------------------------------------------------------------
 # Agent mode endpoints (proxy to agent service)
 # ---------------------------------------------------------------------------
@@ -3021,8 +3031,8 @@ def agent_get_task(task_id):
     if task_id is None:
         return jsonify({"error": "invalid task id"}), 400
     try:
-        data, status = _agent_request("GET", _agent_task_path(task_id))
-        return jsonify(_json_safe(data)), status
+        _, status = _agent_request("GET", _agent_task_path(task_id))
+        return _agent_status_response(status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3036,10 +3046,10 @@ def agent_approve_steps(task_id):
         return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        data, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
+        _, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
         event = "agent_steps_approved" if 200 <= status < 300 else "agent_steps_approve_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(_json_safe(data)), status
+        return _agent_status_response(status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3053,10 +3063,10 @@ def agent_deny_steps(task_id):
         return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        data, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
+        _, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
         event = "agent_steps_denied" if 200 <= status < 300 else "agent_steps_deny_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(_json_safe(data)), status
+        return _agent_status_response(status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -3069,10 +3079,10 @@ def agent_cancel_task(task_id):
     if task_id is None:
         return jsonify({"error": "invalid task id"}), 400
     try:
-        data, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
+        _, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
         event = "agent_task_cancelled" if 200 <= status < 300 else "agent_task_cancel_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return jsonify(_json_safe(data)), status
+        return _agent_status_response(status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
