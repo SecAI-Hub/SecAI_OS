@@ -392,9 +392,9 @@ def generate_image():
             },
         })
 
-    except Exception as e:
+    except Exception:
         log.exception("image generation failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "image generation failed"}), 500
 
 
 # --- Video Generation ---
@@ -523,9 +523,9 @@ def generate_video():
             },
         })
 
-    except Exception as e:
+    except Exception:
         log.exception("video generation failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "video generation failed"}), 500
 
 
 # --- Image-to-Image ---
@@ -613,9 +613,9 @@ def generate_img2img():
             "elapsed_seconds": elapsed,
         })
 
-    except Exception as e:
+    except Exception:
         log.exception("img2img generation failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "img2img generation failed"}), 500
 
 
 # --- Unload / Memory Management ---

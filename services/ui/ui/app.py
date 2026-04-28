@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import shutil
 import errno
 import stat
@@ -22,8 +23,9 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
+from werkzeug.security import safe_join
 from werkzeug.utils import secure_filename
 
 import requests
@@ -49,28 +51,15 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 MAX_PASSPHRASE_LENGTH = 256
 MAX_CHAT_BODY_BYTES = 1_048_576
 
-# --- Flask secret key (persistent, regenerated on passphrase change) ---
-_FLASK_SECRET_FILE = Path(os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")) / "flask-secret"
+# --- Flask secret key (process-local unless explicitly injected) ---
 
 
 def _load_or_create_secret_key() -> str:
-    """Load the Flask secret key from file, or generate and save a new one."""
+    """Load the Flask secret key from env, or generate an ephemeral one."""
     env_key = os.getenv("FLASK_SECRET_KEY")
     if env_key:
         return env_key
-    try:
-        if _FLASK_SECRET_FILE.exists():
-            return _FLASK_SECRET_FILE.read_text().strip()
-    except OSError:
-        pass
-    new_key = os.urandom(32).hex()
-    try:
-        _FLASK_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _FLASK_SECRET_FILE.write_text(new_key)
-        os.chmod(str(_FLASK_SECRET_FILE), 0o600)
-    except OSError:
-        pass
-    return new_key
+    return _secrets_mod.token_urlsafe(32)
 
 
 app.secret_key = _load_or_create_secret_key()
@@ -416,18 +405,64 @@ MODEL_CATALOG: list[dict] = load_model_catalog()
 _active_downloads = {}
 _download_lock = threading.Lock()
 _CATALOG_MAX_REDIRECTS = 5
+_AGENT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def _is_safe_catalog_name(name: str) -> bool:
     """Return True when a catalog-managed file/dir name is a single path segment."""
     if not name or name in (".", ".."):
         return False
-    return Path(name).name == name and not Path(name).is_absolute()
+    return (
+        "/" not in name
+        and "\\" not in name
+        and Path(name).name == name
+        and not Path(name).is_absolute()
+    )
+
+
+def _confined_child(root: Path, name: str, *, kind: str) -> Path:
+    """Return a child path confined to root, or raise ValueError."""
+    if not _is_safe_catalog_name(name):
+        raise ValueError(f"invalid {kind} name")
+    joined = safe_join(str(root), name)
+    if joined is None:
+        raise ValueError(f"{kind} path escapes root")
+    return Path(joined)
+
+
+def _quarantine_path(name: str) -> Path:
+    return _confined_child(QUARANTINE_DIR, name, kind="quarantine")
+
+
+def _staged_import_path(raw_path: str) -> Path:
+    """Resolve a requested import path under IMPORT_STAGING_DIR only."""
+    raw_path = str(raw_path or "").strip()
+    if not raw_path:
+        raise ValueError("missing path")
+
+    staging_root = IMPORT_STAGING_DIR.resolve()
+    requested = Path(raw_path)
+    if requested.is_absolute():
+        resolved = requested.resolve(strict=False)
+        try:
+            raw_path = str(resolved.relative_to(staging_root))
+        except ValueError as exc:
+            raise ValueError("outside staging directory") from exc
+
+    joined = safe_join(str(staging_root), raw_path)
+    if joined is None:
+        raise ValueError("outside staging directory")
+    resolved = Path(joined).resolve(strict=False)
+    try:
+        resolved.relative_to(staging_root)
+    except ValueError as exc:
+        raise ValueError("outside staging directory") from exc
+    return resolved
 
 
 def _quarantine_partial_path(name: str) -> Path:
     """Return a hidden temporary path ignored by the quarantine watcher."""
-    return QUARANTINE_DIR / f".{name}.{uuid.uuid4().hex}.part"
+    return _quarantine_path(f".{name}.{uuid.uuid4().hex}.part")
 
 
 def _airlock_check_egress(destination: str, method: str = "GET", body: str = "") -> tuple[bool, int, str]:
@@ -661,15 +696,8 @@ def auth_change_passphrase():
     if result.get("success"):
         _ui_audit.append("passphrase_changed", {})
 
-        # Regenerate Flask secret key to invalidate ALL existing sessions
-        new_secret = os.urandom(32).hex()
-        app.secret_key = new_secret
-        try:
-            _FLASK_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _FLASK_SECRET_FILE.write_text(new_secret)
-            os.chmod(str(_FLASK_SECRET_FILE), 0o600)
-        except OSError:
-            pass
+        # Rotate Flask's in-memory signing key to invalidate existing sessions.
+        app.secret_key = _secrets_mod.token_urlsafe(32)
 
         # Give them a new session
         login_result = _auth.login(new_pass)
@@ -809,7 +837,11 @@ def catalog_download():
     with _download_lock:
         if filename in _active_downloads:
             return jsonify({"error": "download already in progress", "filename": filename}), 409
-    if (QUARANTINE_DIR / filename).exists():
+    try:
+        quarantine_target = _quarantine_path(filename)
+    except ValueError:
+        return jsonify({"error": "invalid catalog filename"}), 400
+    if quarantine_target.exists():
         return jsonify({
             "error": "artifact already exists in quarantine",
             "filename": filename,
@@ -856,10 +888,10 @@ def _background_download(url: str, filename: str, model_type: str,
             }
         log.info("download complete, in quarantine: %s", filename)
 
-    except Exception as e:
+    except Exception:
         log.exception("download failed: %s", filename)
         with _download_lock:
-            _active_downloads[filename] = {"status": "failed", "error": str(e)}
+            _active_downloads[filename] = {"status": "failed", "error": "download failed"}
 
 
 def _download_single_file(url: str, filename: str, catalog_entry: dict | None = None):
@@ -871,9 +903,9 @@ def _download_single_file(url: str, filename: str, catalog_entry: dict | None = 
     if not _is_safe_catalog_name(filename):
         raise ValueError("invalid catalog filename")
 
-    dest = QUARANTINE_DIR / filename
+    dest = _quarantine_path(filename)
     tmp_dest = _quarantine_partial_path(filename)
-    source_meta = QUARANTINE_DIR / f".{filename}.source"
+    source_meta = _quarantine_path(f".{filename}.source")
     if dest.exists():
         raise ValueError("artifact already exists in quarantine")
 
@@ -940,9 +972,9 @@ def _download_diffusion_model(url: str, dirname: str):
     if not allowed:
         raise ValueError(reason or "airlock blocked download")
 
-    dest = QUARANTINE_DIR / dirname
+    dest = _quarantine_path(dirname)
     tmp_dest = _quarantine_partial_path(dirname)
-    source_meta = QUARANTINE_DIR / f".{dirname}.source"
+    source_meta = _quarantine_path(f".{dirname}.source")
     if dest.exists():
         raise ValueError("artifact already exists in quarantine")
 
@@ -1114,7 +1146,7 @@ def import_model():
 
         # UUID prefix prevents collision (secure_filename can collapse names)
         dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-        dest = QUARANTINE_DIR / dest_name
+        dest = _quarantine_path(dest_name)
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         try:
             uploaded.save(str(dest))
@@ -1137,14 +1169,11 @@ def import_model():
     body = request.get_json(silent=True) or {}
     local_path = body.get("path", "")
     if local_path:
-        src = Path(local_path).resolve()
-
-        # Restrict to staging directory only
         try:
-            src.relative_to(IMPORT_STAGING_DIR.resolve())
+            src = _staged_import_path(local_path)
         except ValueError:
             _ui_audit.append("import_rejected", {
-                "reason": "outside_staging_dir", "path": str(src),
+                "reason": "outside_staging_dir", "path": str(local_path),
             })
             return jsonify({
                 "error": "local imports restricted to staging directory",
@@ -1172,7 +1201,7 @@ def import_model():
             return jsonify({"error": "invalid filename"}), 400
 
         dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-        dest = QUARANTINE_DIR / dest_name
+        dest = _quarantine_path(dest_name)
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(str(src), str(dest))
@@ -1335,7 +1364,18 @@ def _verify_active_model(body: dict | None = None) -> dict:
         }
     except Exception as e:
         log.warning("pre-inference verification failed: %s", e)
-        return {"safe": False, "detail": f"verification error: {e}"}
+        return {"safe": False, "detail": "verification error"}
+
+
+def _integrity_block_response(check: dict):
+    """Return a generic integrity failure while keeping details in logs."""
+    detail = str(check.get("detail") or "model integrity verification failed")
+    log.warning("inference blocked by integrity check: %s", detail)
+    return jsonify({
+        "error": "inference blocked: model integrity check failed",
+        "detail": "model integrity verification failed",
+        "integrity_failed": True,
+    }), 403
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -1349,11 +1389,7 @@ def chat():
     check = _verify_active_model(body)
     if not check["safe"]:
         _ui_audit.append("inference_blocked", {"reason": check["detail"]})
-        return jsonify({
-            "error": "inference blocked: model integrity check failed",
-            "detail": check["detail"],
-            "integrity_failed": True,
-        }), 403
+        return _integrity_block_response(check)
 
     try:
         resp = requests.post(
@@ -1376,11 +1412,7 @@ def chat_stream():
     # Pre-inference integrity check
     check = _verify_active_model(body)
     if not check["safe"]:
-        return jsonify({
-            "error": "inference blocked: model integrity check failed",
-            "detail": check["detail"],
-            "integrity_failed": True,
-        }), 403
+        return _integrity_block_response(check)
 
     def generate():
         try:
@@ -1471,11 +1503,7 @@ def chat_with_search():
     # Pre-inference integrity check
     check = _verify_active_model(body)
     if not check["safe"]:
-        return jsonify({
-            "error": "inference blocked: model integrity check failed",
-            "detail": check["detail"],
-            "integrity_failed": True,
-        }), 403
+        return _integrity_block_response(check)
 
     # If we got search context, inject it as a system message
     augmented_messages = list(messages)
@@ -2732,9 +2760,9 @@ def emergency_panic():
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "panic command timed out"}), 500
-    except Exception as e:
+    except Exception:
         log.exception("emergency panic failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "emergency panic failed"}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -2947,6 +2975,17 @@ def _agent_request(method: str, path: str, *, json_body=None, params=None, timeo
         return r.json(), r.status_code
 
 
+def _validate_agent_task_id(task_id: str) -> str | None:
+    if not _AGENT_TASK_ID_RE.fullmatch(str(task_id or "")):
+        return None
+    return task_id
+
+
+def _agent_task_path(task_id: str, suffix: str = "") -> str:
+    encoded = quote(task_id, safe="")
+    return f"/v1/task/{encoded}{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # Agent mode endpoints (proxy to agent service)
 # ---------------------------------------------------------------------------
@@ -2972,8 +3011,11 @@ def agent_submit_task():
 @app.route("/api/agent/task/<task_id>")
 def agent_get_task(task_id):
     """Get task status from agent service."""
+    task_id = _validate_agent_task_id(task_id)
+    if task_id is None:
+        return jsonify({"error": "invalid task id"}), 400
     try:
-        data, status = _agent_request("GET", f"/v1/task/{task_id}")
+        data, status = _agent_request("GET", _agent_task_path(task_id))
         return jsonify(data), status
     except Exception:
         log.exception("agent service unavailable")
@@ -2983,9 +3025,12 @@ def agent_get_task(task_id):
 @app.route("/api/agent/task/<task_id>/approve", methods=["POST"])
 def agent_approve_steps(task_id):
     """Approve pending steps in an agent task."""
+    task_id = _validate_agent_task_id(task_id)
+    if task_id is None:
+        return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        data, status = _agent_request("POST", f"/v1/task/{task_id}/approve", json_body=body)
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
         event = "agent_steps_approved" if 200 <= status < 300 else "agent_steps_approve_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
@@ -2997,9 +3042,12 @@ def agent_approve_steps(task_id):
 @app.route("/api/agent/task/<task_id>/deny", methods=["POST"])
 def agent_deny_steps(task_id):
     """Deny pending steps in an agent task."""
+    task_id = _validate_agent_task_id(task_id)
+    if task_id is None:
+        return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        data, status = _agent_request("POST", f"/v1/task/{task_id}/deny", json_body=body)
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
         event = "agent_steps_denied" if 200 <= status < 300 else "agent_steps_deny_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
@@ -3011,8 +3059,11 @@ def agent_deny_steps(task_id):
 @app.route("/api/agent/task/<task_id>/cancel", methods=["POST"])
 def agent_cancel_task(task_id):
     """Cancel an agent task."""
+    task_id = _validate_agent_task_id(task_id)
+    if task_id is None:
+        return jsonify({"error": "invalid task id"}), 400
     try:
-        data, status = _agent_request("POST", f"/v1/task/{task_id}/cancel", json_body={})
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
         event = "agent_task_cancelled" if 200 <= status < 300 else "agent_task_cancel_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
         return jsonify(data), status
@@ -3024,7 +3075,12 @@ def agent_cancel_task(task_id):
 @app.route("/api/agent/tasks")
 def agent_list_tasks():
     """List agent tasks."""
-    limit = request.args.get("limit", 50)
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid limit"}), 400
+    if limit < 1 or limit > 100:
+        return jsonify({"error": "invalid limit"}), 400
     try:
         data, status = _agent_request("GET", "/v1/tasks", params={"limit": limit})
         return jsonify(data), status

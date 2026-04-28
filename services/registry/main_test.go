@@ -99,6 +99,7 @@ func TestRegistryPathRejectsEscapes(t *testing.T) {
 		"../escape.gguf",
 		filepath.Join("..", "escape.gguf"),
 		filepath.Join(tmp, "..", "escape.gguf"),
+		filepath.Join(tmp, "model.gguf"),
 		"bad\x00name.gguf",
 	}
 	for _, name := range badNames {
@@ -107,21 +108,12 @@ func TestRegistryPathRejectsEscapes(t *testing.T) {
 		}
 	}
 
-	relative, err := registryPath(filepath.Join("nested", "model.gguf"))
+	relative, err := registryPath("nested/model.gguf")
 	if err != nil {
 		t.Fatalf("expected relative registry path to be accepted: %v", err)
 	}
 	if !strings.HasPrefix(relative, tmp) {
 		t.Fatalf("expected %q to stay under %q", relative, tmp)
-	}
-
-	absolute := filepath.Join(tmp, "model.gguf")
-	resolved, err := registryPath(absolute)
-	if err != nil {
-		t.Fatalf("expected absolute registry path to be accepted: %v", err)
-	}
-	if resolved != absolute {
-		t.Fatalf("expected %q, got %q", absolute, resolved)
 	}
 }
 
@@ -174,12 +166,17 @@ func TestPromoteValidDiffusionDirectory(t *testing.T) {
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
 	manifestMu.Unlock()
 
-	modelDir := writeTinyDiffusionModel(t, tmp, "tiny-diffusion")
-	hash, err := computeDirectoryHash(modelDir)
+	writeTinyDiffusionModel(t, tmp, "tiny-diffusion")
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	hash, err := computeDirectoryHash(root, "tiny-diffusion")
 	if err != nil {
 		t.Fatalf("computeDirectoryHash: %v", err)
 	}
-	size, err := artifactSize(modelDir)
+	size, err := artifactSize(root, "tiny-diffusion")
 	if err != nil {
 		t.Fatalf("artifactSize: %v", err)
 	}
@@ -313,7 +310,12 @@ func TestVerifyAllWithValidDiffusionDirectory(t *testing.T) {
 	registryDir = tmp
 
 	modelDir := writeTinyDiffusionModel(t, tmp, "diffusion-ok")
-	hash, err := computeDirectoryHash(modelDir)
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	hash, err := computeDirectoryHash(root, filepath.Base(modelDir))
 	if err != nil {
 		t.Fatalf("computeDirectoryHash: %v", err)
 	}

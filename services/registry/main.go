@@ -169,35 +169,39 @@ func formatFromFilename(filename string) string {
 	}
 }
 
-func registryPath(filename string) (string, error) {
+func registryRel(filename string) (string, error) {
 	if filename == "" {
 		return "", fmt.Errorf("empty filename")
 	}
 	if strings.ContainsRune(filename, 0) {
 		return "", fmt.Errorf("filename contains null byte")
 	}
-
-	clean := filepath.Clean(filename)
-	if filepath.IsAbs(clean) {
-		rel, err := filepath.Rel(registryDir, clean)
-		if err != nil {
-			return "", fmt.Errorf("cannot resolve filename: %w", err)
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return "", fmt.Errorf("filename escapes registry directory")
-		}
-		return clean, nil
+	if strings.Contains(filename, "\\") {
+		return "", fmt.Errorf("filename contains path separator")
 	}
 
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+	clean := filepath.Clean(filename)
+	if clean == "." || !filepath.IsLocal(clean) {
 		return "", fmt.Errorf("filename escapes registry directory")
+	}
+	return clean, nil
+}
+
+func registryPath(filename string) (string, error) {
+	clean, err := registryRel(filename)
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(registryDir, clean), nil
 }
 
+func openRegistryRoot() (*os.Root, error) {
+	return os.OpenRoot(registryDir)
+}
+
 // verifyFileHash computes sha256 of a file and compares to expected.
-func verifyFileHash(path, expected string) (string, error) {
-	f, err := os.Open(path)
+func verifyFileHash(root *os.Root, rel, expected string) (string, error) {
+	f, err := root.Open(rel)
 	if err != nil {
 		return "", err
 	}
@@ -214,31 +218,42 @@ func verifyFileHash(path, expected string) (string, error) {
 	return actual, nil
 }
 
-func computeDirectoryHash(path string) (string, error) {
-	root := filepath.Clean(path)
-	entries := make([]string, 0, 16)
-	if err := filepath.WalkDir(root, func(current string, d fs.DirEntry, err error) error {
+type hashedEntry struct {
+	fsPath   string
+	hashName string
+}
+
+func computeDirectoryHash(root *os.Root, rel string) (string, error) {
+	entries := make([]hashedEntry, 0, 16)
+	if err := fs.WalkDir(root.FS(), filepath.ToSlash(rel), func(current string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(root, current)
-		if err != nil {
-			return err
+		hashName := current
+		if rel != "." {
+			var relErr error
+			hashName, relErr = filepath.Rel(filepath.FromSlash(rel), filepath.FromSlash(current))
+			if relErr != nil {
+				return relErr
+			}
+			hashName = filepath.ToSlash(hashName)
 		}
-		entries = append(entries, filepath.ToSlash(rel))
+		entries = append(entries, hashedEntry{fsPath: current, hashName: hashName})
 		return nil
 	}); err != nil {
 		return "", err
 	}
-	sort.Strings(entries)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].hashName < entries[j].hashName
+	})
 
 	h := sha256.New()
-	for _, rel := range entries {
-		h.Write([]byte(rel))
-		f, err := os.Open(filepath.Join(root, filepath.FromSlash(rel)))
+	for _, entry := range entries {
+		h.Write([]byte(entry.hashName))
+		f, err := root.Open(entry.fsPath)
 		if err != nil {
 			return "", err
 		}
@@ -254,13 +269,13 @@ func computeDirectoryHash(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func verifyArtifactHash(path, expected string) (string, error) {
-	info, err := os.Stat(path)
+func verifyArtifactHash(root *os.Root, rel, expected string) (string, error) {
+	info, err := root.Stat(rel)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		actual, err := computeDirectoryHash(path)
+		actual, err := computeDirectoryHash(root, rel)
 		if err != nil {
 			return "", err
 		}
@@ -269,11 +284,11 @@ func verifyArtifactHash(path, expected string) (string, error) {
 		}
 		return actual, nil
 	}
-	return verifyFileHash(path, expected)
+	return verifyFileHash(root, rel, expected)
 }
 
-func artifactSize(path string) (int64, error) {
-	info, err := os.Stat(path)
+func artifactSize(root *os.Root, rel string) (int64, error) {
+	info, err := root.Stat(rel)
 	if err != nil {
 		return 0, err
 	}
@@ -281,7 +296,7 @@ func artifactSize(path string) (int64, error) {
 		return info.Size(), nil
 	}
 	var total int64
-	if err := filepath.WalkDir(path, func(current string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(root.FS(), filepath.ToSlash(rel), func(current string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -300,13 +315,13 @@ func artifactSize(path string) (int64, error) {
 	return total, nil
 }
 
-func artifactFormatFromPath(path, filename string) (string, error) {
-	info, err := os.Stat(path)
+func artifactFormatFromPath(root *os.Root, rel, filename string) (string, error) {
+	info, err := root.Stat(rel)
 	if err != nil {
 		return "", err
 	}
 	if info.IsDir() {
-		if _, err := os.Stat(filepath.Join(path, "model_index.json")); err != nil {
+		if _, err := root.Stat(filepath.Join(rel, "model_index.json")); err != nil {
 			if os.IsNotExist(err) {
 				return "", fmt.Errorf("directory artifact missing model_index.json")
 			}
@@ -372,13 +387,24 @@ func handleModelPath(w http.ResponseWriter, r *http.Request) {
 	defer manifestMu.RUnlock()
 	for _, m := range manifest.Models {
 		if m.Name == name {
-			path, err := registryPath(m.Filename)
+			rel, err := registryRel(m.Filename)
 			if err != nil {
 				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
 				return
 			}
-			if _, err := os.Stat(path); err != nil {
+			root, err := openRegistryRoot()
+			if err != nil {
+				http.Error(w, "registry unavailable", http.StatusInternalServerError)
+				return
+			}
+			defer root.Close()
+			if _, err := root.Stat(rel); err != nil {
 				http.Error(w, "model file not found on disk", http.StatusNotFound)
+				return
+			}
+			path, err := registryPath(rel)
+			if err != nil {
+				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -406,25 +432,31 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath, err := registryPath(req.Filename)
+	rel, err := registryRel(req.Filename)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid filename: %v", err), http.StatusBadRequest)
 		return
 	}
-	format, err := artifactFormatFromPath(filePath, req.Filename)
+	root, err := openRegistryRoot()
+	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer root.Close()
+	format, err := artifactFormatFromPath(root, rel, rel)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("artifact validation failed: %v", err), http.StatusForbidden)
 		return
 	}
 
 	// Verify the artifact exists in the registry directory and hash matches
-	actualHash, err := verifyArtifactHash(filePath, req.SHA256)
+	actualHash, err := verifyArtifactHash(root, rel, req.SHA256)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("hash verification failed: %v", err), http.StatusConflict)
 		return
 	}
 
-	sizeBytes, err := artifactSize(filePath)
+	sizeBytes, err := artifactSize(root, rel)
 	if err != nil {
 		http.Error(w, "cannot stat model artifact", http.StatusInternalServerError)
 		return
@@ -433,7 +465,7 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 	artifact := Artifact{
 		Name:                 req.Name,
 		Format:               format,
-		Filename:             req.Filename,
+		Filename:             rel,
 		SHA256:               actualHash,
 		SizeBytes:            sizeBytes,
 		Source:               req.Source,
@@ -495,13 +527,19 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		if m.Name == name {
 			found = true
 			// Remove the model artifact (file or directory) from disk.
-			filePath, err := registryPath(m.Filename)
+			rel, err := registryRel(m.Filename)
 			if err != nil {
 				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
 				return
 			}
-			if err := os.RemoveAll(filePath); err != nil && !os.IsNotExist(err) {
-				log.Printf("warning: could not remove %s: %v", filePath, err)
+			root, rootErr := openRegistryRoot()
+			if rootErr != nil {
+				http.Error(w, "registry unavailable", http.StatusInternalServerError)
+				return
+			}
+			defer root.Close()
+			if err := root.RemoveAll(rel); err != nil && !os.IsNotExist(err) {
+				log.Printf("warning: could not remove %s: %v", m.Filename, err)
 			}
 			log.Printf("REMOVED: %s (%s)", m.Name, m.Filename)
 		} else {
@@ -537,9 +575,19 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]map[string]string, 0, len(models))
 	allOk := true
+	var root *os.Root
+	if len(models) > 0 {
+		var rootErr error
+		root, rootErr = openRegistryRoot()
+		if rootErr != nil {
+			http.Error(w, "registry unavailable", http.StatusInternalServerError)
+			return
+		}
+		defer root.Close()
+	}
 
 	for _, m := range models {
-		filePath, err := registryPath(m.Filename)
+		rel, err := registryRel(m.Filename)
 		if err != nil {
 			allOk = false
 			results = append(results, map[string]string{
@@ -549,7 +597,7 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		actual, err := verifyArtifactHash(filePath, m.SHA256)
+		actual, err := verifyArtifactHash(root, rel, m.SHA256)
 		if err != nil {
 			allOk = false
 			results = append(results, map[string]string{
@@ -649,7 +697,7 @@ func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 
 	for _, m := range manifest.Models {
 		if m.Name == name {
-			filePath, err := registryPath(m.Filename)
+			rel, err := registryRel(m.Filename)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
@@ -661,7 +709,13 @@ func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			actual, err := verifyArtifactHash(filePath, m.SHA256)
+			root, rootErr := openRegistryRoot()
+			if rootErr != nil {
+				http.Error(w, "registry unavailable", http.StatusInternalServerError)
+				return
+			}
+			defer root.Close()
+			actual, err := verifyArtifactHash(root, rel, m.SHA256)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)

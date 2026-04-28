@@ -792,10 +792,10 @@ def search():
     except requests.Timeout:
         audit_search(raw_query, san["redactions"], 0, False)
         return jsonify({"error": "search timed out (Tor may be connecting)"}), 504
-    except Exception as e:
+    except Exception:
         log.exception("SearXNG request failed")
         audit_search(raw_query, san["redactions"], 0, False)
-        return jsonify({"error": f"search failed: {str(e)}"}), 502
+        return jsonify({"error": "search failed"}), 502
 
     # Sanitize the inbound results
     raw_results = data.get("results", [])
@@ -854,10 +854,11 @@ def search_test():
             "searxng_status": resp.status_code,
             "tor_routed": True,
         })
-    except Exception as e:
+    except Exception:
+        log.exception("SearXNG health check failed")
         return jsonify({
             "status": "error",
-            "error": str(e),
+            "error": "search health check failed",
         }), 502
 
 

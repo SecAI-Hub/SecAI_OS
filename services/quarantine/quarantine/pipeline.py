@@ -49,6 +49,20 @@ def _http_urlopen(target, timeout: int = 30):
         raise URLError(f"unsupported URL scheme: {scheme or 'none'}")
     return urlopen(target, timeout=timeout)  # nosec B310
 
+
+def _source_registry_host(source_url: str) -> str:
+    """Extract a registry host from a URL or image reference."""
+    raw = str(source_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or "").lower().rstrip(".")
+
+
+def _supports_cosign_provenance(source_url: str) -> bool:
+    host = _source_registry_host(source_url)
+    return host in {"ghcr.io", "docker.io"} or host.endswith(".docker.io")
+
 MODELS_LOCK_PATH = Path(
     os.getenv("MODELS_LOCK_PATH", "/etc/secure-ai/policy/models.lock.yaml")
 )
@@ -533,7 +547,7 @@ def check_provenance(artifact_path: Path, source_url: str) -> dict:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         has_cosign = False
 
-    if has_cosign and ("ghcr.io" in source_url or "docker.io" in source_url):
+    if has_cosign and _supports_cosign_provenance(source_url):
         try:
             result = subprocess.run(
                 ["cosign", "verify", "--key", "/etc/secure-ai/keys/cosign.pub", source_url],

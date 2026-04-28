@@ -341,7 +341,15 @@ for scanner in ${SCANNERS}; do
     echo "  Installing: ${scanner}"
     scanner_venv="${SCANNER_ROOT}/${scanner}"
     scanner_package="$(scanner_package_spec "${scanner}")"
-    if python3 -m venv "${scanner_venv}" && \
+    scanner_python="${SCANNER_PYTHON:-python3}"
+    if [ "${scanner}" = "modelscan" ]; then
+        # Upstream modelscan 0.8.x currently declares Python <3.13. Keep it
+        # isolated on Fedora's still-supported Python 3.12 until the audited
+        # fork is intentionally integrated.
+        scanner_python="${MODELSCAN_PYTHON:-python3.12}"
+    fi
+    if command -v "${scanner_python}" >/dev/null 2>&1 && \
+        "${scanner_python}" -m venv "${scanner_venv}" && \
         "${scanner_venv}/bin/python" -m pip install --no-cache-dir --upgrade \
             pip==26.0.1 setuptools==82.0.1 wheel==0.46.2 && \
         "${scanner_venv}/bin/python" -m pip install --no-cache-dir "${scanner_package}" && \
