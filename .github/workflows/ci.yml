@@ -561,10 +561,9 @@ jobs:
           echo "=== Checking internal doc links ==="
           ERRORS=0
           # Find all markdown links to local files
-          for md in $(find docs/ README.md CONTRIBUTING.md SECURITY.md -name '*.md' 2>/dev/null); do
+          while IFS= read -r md; do
             # Extract relative links (not URLs, not anchors)
-            grep -oP '\[([^\]]*)\]\((?!https?://|#)([^)]+)\)' "$md" 2>/dev/null | \
-              grep -oP '\(([^)]+)\)' | tr -d '()' | while read -r link; do
+            while IFS= read -r link; do
                 # Strip anchor fragments
                 target="${link%%#*}"
                 [ -z "$target" ] && continue
@@ -575,8 +574,8 @@ jobs:
                   echo "BROKEN: ${md} -> ${link} (resolved: ${resolved})"
                   ERRORS=$((ERRORS + 1))
                 fi
-              done
-          done
+            done < <(grep -oP '\[([^\]]*)\]\((?!https?://|#)([^)]+)\)' "$md" 2>/dev/null | grep -oP '\(([^)]+)\)' | tr -d '()')
+          done < <(find docs/ README.md CONTRIBUTING.md SECURITY.md -name '*.md' 2>/dev/null)
           if [ "$ERRORS" -gt 0 ]; then
             echo "FAIL: ${ERRORS} broken internal links found"
             exit 1
@@ -849,6 +848,8 @@ jobs:
 
       - name: Release gate summary
         run: |
-          echo "## Release Gate: PASSED" >> "$GITHUB_STEP_SUMMARY"
-          echo "Branch: ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "All hardened checks passed for release branch." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Release Gate: PASSED"
+            echo "Branch: ${{ github.ref_name }}"
+            echo "All hardened checks passed for release branch."
+          } >> "$GITHUB_STEP_SUMMARY"

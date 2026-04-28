@@ -362,10 +362,12 @@ jobs:
           if [ -n "$DIGEST" ] && [ "$DIGEST" != "null" ]; then
             echo "${DIGEST}" > dist/IMAGE_DIGEST
             echo "${IMAGE_REF}@${DIGEST}" > dist/IMAGE_REF_PINNED
-            echo "## Install with digest pinning" >> "$GITHUB_STEP_SUMMARY"
-            echo '```bash' >> "$GITHUB_STEP_SUMMARY"
-            echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Install with digest pinning"
+              echo '```bash'
+              echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "WARNING: Could not extract image digest for tag ${TAG}"
             echo "unknown" > dist/IMAGE_DIGEST
@@ -484,7 +486,8 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS
+          rm -f SHA256SUMS
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign checksums with cosign
@@ -505,10 +508,11 @@ jobs:
         run: |
           for sbom in dist/*-sbom.cdx.json; do
             service=$(basename "$sbom" -sbom.cdx.json)
+            image_ref="ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${service}"
             cosign attest --yes --type cyclonedx \
               --predicate "$sbom" \
               --key env://COSIGN_PRIVATE_KEY \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${service} || \
+              "$image_ref" || \
               echo "WARN: cosign attest skipped for ${service} (no matching image)"
           done
         env:
@@ -540,14 +544,16 @@ jobs:
       - name: Note on large artifacts
         if: ${{ !inputs.dry_run }}
         run: |
-          echo "## Large Artifacts" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Install media files can exceed GitHub Releases' 2GB limit." >> "$GITHUB_STEP_SUMMARY"
-          echo "Their cosign signatures (.sig) are included in the release." >> "$GITHUB_STEP_SUMMARY"
-          echo "Full images are available as workflow artifacts (90-day retention)." >> "$GITHUB_STEP_SUMMARY"
-          for f in dist/secai-os-*.iso dist/secai-os-*-usb.raw.xz dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
-            [ -f "$f" ] || continue
-            SIZE=$(stat -c%s "$f" 2>/dev/null || echo 0)
-            SIZE_MB=$((SIZE / 1048576))
-            echo "  - $(basename "$f"): ${SIZE_MB} MB" >> "$GITHUB_STEP_SUMMARY"
-          done
+          {
+            echo "## Large Artifacts"
+            echo ""
+            echo "Install media files can exceed GitHub Releases' 2GB limit."
+            echo "Their cosign signatures (.sig) are included in the release."
+            echo "Full images are available as workflow artifacts (90-day retention)."
+            for f in dist/secai-os-*.iso dist/secai-os-*-usb.raw.xz dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
+              [ -f "$f" ] || continue
+              SIZE=$(stat -c%s "$f" 2>/dev/null || echo 0)
+              SIZE_MB=$((SIZE / 1048576))
+              echo "  - $(basename "$f"): ${SIZE_MB} MB"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
