@@ -12,7 +12,7 @@ Get SecAI OS running in the fewest steps possible. Choose the path that fits you
 | **Sandbox Stack** | ~10 min | Easy | Evaluate the control plane on an existing workstation |
 | **Development** | ~10 min | Easy | Service development only (no OS features) |
 
-> **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). Pre-built VM images (OVA/QCOW2) still require build infrastructure not yet provisioned. The bootstrap path remains the recommended production install, but the portable USB artifact is the right choice when you want to boot and evaluate directly from removable media. See [Artifact Availability](#artifact-availability) for details.
+> **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). Pre-built VM images (OVA/QCOW2) are optional release artifacts and only appear when the repository has a self-hosted KVM runner configured. The bootstrap path remains the recommended production install, but the portable USB artifact is the right choice when you want to boot and evaluate directly from removable media. See [Artifact Availability](#artifact-availability) for details.
 
 ---
 
@@ -127,14 +127,18 @@ If you want a self-contained VM image without installing Fedora first, you can b
 git clone https://github.com/SecAI-Hub/SecAI_OS.git
 cd SecAI_OS
 
-# Build QCOW2 (requires: virt-install, qemu-img, libvirt)
+# Create the QCOW2 disk and a signed-first kickstart.
+# The script prints the virt-install command to complete the install.
 bash scripts/vm/build-qcow2.sh
 
-# Optionally convert to OVA for VirtualBox/VMware
+# On a self-hosted KVM runner, run the install unattended.
+bash scripts/vm/build-qcow2.sh --ci
+
+# After the QCOW2 install completes, optionally convert to OVA for VirtualBox/VMware.
 bash scripts/vm/build-ova.sh
 ```
 
-The build scripts pull the signed OCI image and create a bootable disk with root + encrypted vault partitions. Credentials are randomly generated and printed at build time.
+The QCOW2 builder installs the SecAI signing policy in the kickstart before the first image pull and rebases with `ostree-image-signed:docker://`. It creates root + encrypted vault partitions, writes the temporary kickstart with mode `0600`, and randomly generates temporary VM/vault credentials that are printed at build time. Change those credentials immediately after first boot.
 
 **2. Start the VM**
 
@@ -238,7 +242,7 @@ make verify-release
 | **ISO signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.iso.sig` file for verification |
 | **Portable USB image** | Release workflow artifact (90-day retention) | Built in CI as `secai-os-*-usb.raw.xz`; flash directly to removable media |
 | **Portable USB signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.raw.xz.sig` file for verification |
-| **QCOW2 / OVA** | `scripts/vm/build-qcow2.sh` / `build-ova.sh` | Build locally; CI build requires self-hosted KVM runner |
+| **QCOW2 / OVA** | Release workflow artifact when `HAS_KVM_RUNNER=true`, or `scripts/vm/build-qcow2.sh` / `build-ova.sh` locally | Optional; CI build requires self-hosted KVM runner |
 
 The installer ISO and portable USB image are produced by every tagged release and are available as [workflow artifacts](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml) with 90-day retention. Their cosign signatures are published to GitHub Releases for verification. For permanent hosting, an external storage solution is still needed.
 

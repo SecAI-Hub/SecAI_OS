@@ -2,7 +2,7 @@
 
 This document summarizes the test coverage for SecAI_OS across all languages and test categories.
 
-Last updated: 2026-04-28
+Last updated: 2026-04-29
 
 > **Canonical source of truth for test counts:** [`docs/test-counts.json`](test-counts.json).
 > CI enforces that actual counts never drift below documented values.
@@ -11,15 +11,15 @@ Last updated: 2026-04-28
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 427 | `go test -race ./...` |
-| Python | 1117 | `pytest` |
-| Shell | All .sh files | `shellcheck` |
+| Go | 428 | `go test -race ./...` |
+| Python | 1132 | `pytest` |
+| Shell | CI-scoped scripts plus Makefile target for all repo shell scripts | `shellcheck` |
 
-## Go Tests (427 total)
+## Go Tests (428 total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
-| Registry | services/registry/ | 21 | Trusted model registry, hash pinning, cosign verification |
+| Registry | services/registry/ | 22 | Trusted model registry, hash pinning, cosign verification |
 | Tool Firewall | services/tool-firewall/ | 15 | Default-deny egress policy, rule evaluation |
 | Airlock | services/airlock/ | 11 | Online airlock, request sanitization, policy enforcement |
 | GPU Integrity Watch | services/gpu-integrity-watch/ | 62 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
@@ -29,7 +29,7 @@ Last updated: 2026-04-28
 | Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
 | Incident Recorder | services/incident-recorder/ | 97 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43), persistence durability (fsync) |
 
-## Python Tests (1117 total)
+## Python Tests (1132 total)
 
 | Test File | Location | Tests | Description |
 |-----------|----------|-------|-------------|
@@ -54,12 +54,12 @@ Last updated: 2026-04-28
 | test_m5_acceptance.py | tests/ | 32 | M5 acceptance certification across attestation, integrity, policy, recovery, and workspace isolation |
 | test_memory_protection.py | tests/ | 37 | Swap encryption, zswap, core dumps, mlock, TEE detection |
 | test_profile_system.py | tests/ | 32 | Profile loading, validation, and policy behavior |
-| test_quarantine_pipeline.py | tests/ | 12 | Quarantine pipeline stages, scanning, pass/fail logic |
-| test_quarantine_watcher.py | tests/ | 4 | Quarantine watcher startup and filesystem behavior |
+| test_quarantine_pipeline.py | tests/ | 13 | Quarantine pipeline stages, scanning, pass/fail logic, YARA rule handling |
+| test_quarantine_watcher.py | tests/ | 5 | Quarantine watcher startup and filesystem behavior |
 | test_recipe_validation.py | tests/ | 26 | Recipe and packaged-file validation |
-| test_release_artifacts.py | tests/ | 41 | Release workflow, artifact manifest, and verification UX consistency |
+| test_release_artifacts.py | tests/ | 52 | Release workflow, artifact manifest, and verification UX consistency |
 | test_sandbox.py | tests/ | 31 | Sandbox compose, policy, and runtime constraints |
-| test_sandbox_bundle.py | tests/ | 5 | Sandbox bundle and artifact checks |
+| test_sandbox_bundle.py | tests/ | 7 | Sandbox bundle and artifact checks |
 | test_search.py | tests/ | 36 | Search mediator, PII stripping, injection detection |
 | test_secure_boot.py | tests/ | 38 | Secure boot and measured boot behavior |
 | test_traffic_analysis.py | tests/ | 41 | Padding, timing jitter, dummy traffic generation |
@@ -97,7 +97,7 @@ Last updated: 2026-04-28
 
 ## Shell Checks
 
-All shell scripts under `files/system/` are validated with `shellcheck`. This is enforced in CI.
+CI validates the production shell entrypoints that directly affect boot, service build, first-boot validation, MOK generation, and release verification. The repo-root `make shellcheck` target covers the broader repo-owned script set, including `.github/scripts/*.sh`, `files/scripts/*.sh`, and `files/system/usr/libexec/secure-ai/*.sh`.
 
 ## CI Pipeline
 
@@ -106,11 +106,13 @@ CI is defined in `.github/workflows/ci.yml` and runs on every push and pull requ
 Steps:
 1. Build and test all 9 Go services (`go test -race ./...`)
 2. Lint Python (py_compile for all service modules including agent)
-3. Run Python tests (`pytest tests/`) -- includes agent tests
-4. Lint shell scripts with shellcheck
-5. Validate YAML configs (policy, agent, recipes)
-6. Verify action pins (SHA-256 pinned GitHub Actions)
-7. Supply chain verification: SBOM generation (Syft), cosign availability, release workflow provenance validation
+3. Run Python tests (`pytest tests/`) split into unit/integration and adversarial/acceptance gates
+4. Run Ruff, Bandit, mypy, dependency audits, and vulnerability waiver checks
+5. Lint shell scripts with ShellCheck
+6. Lint container build files with Hadolint and repo-owned app-security rules with Semgrep
+7. Validate YAML configs (policy, agent, recipes)
+8. Verify action pins, container image pins, docs consistency, line endings, and image references
+9. Supply chain verification: SBOM generation via pinned Anchore action, cosign availability, and release/build provenance validation
 
 ## Test Categories
 
@@ -139,20 +141,20 @@ cd services/incident-recorder && go test ./...
 ### Python tests
 
 ```bash
-pip install pytest flask requests pyyaml
-pytest tests/
+python -m pip install -r requirements-ci.txt
+PYTHONPATH=services python -m pytest tests/ -v
 ```
 
 To run a specific test file:
 
 ```bash
-pytest tests/test_pipeline.py
-pytest tests/test_search.py
-pytest tests/test_agent.py
+PYTHONPATH=services python -m pytest tests/test_release_artifacts.py -v
+PYTHONPATH=services python -m pytest tests/test_search.py -v
+PYTHONPATH=services python -m pytest tests/test_agent.py -v
 ```
 
 ### Shell checks
 
 ```bash
-shellcheck files/system/usr/libexec/secure-ai/*.sh
+make shellcheck
 ```

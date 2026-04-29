@@ -207,6 +207,8 @@ Tagged releases (`v*`) are built by the [Release workflow](.github/workflows/rel
 | `RELEASE_MANIFEST.json` | Machine-readable release manifest (binaries, SBOMs, provenance, build metadata) |
 | `secai-os-*.iso.sig` | Cosign signature for the bootable ISO |
 | `secai-os-*-usb.raw.xz.sig` | Cosign signature for the portable USB image |
+| `secai-os-*.qcow2(.sig)` | Optional KVM/QEMU disk image and signature when a self-hosted KVM runner is configured |
+| `secai-os-*.ova(.sig)` | Optional VirtualBox/VMware appliance and signature when a self-hosted KVM runner is configured |
 
 Go services shipped as release binaries: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, `incident-recorder`.
 
@@ -226,19 +228,20 @@ For Windows users writing the portable USB image:
 To build portable USB or VM media locally from the OCI image:
 
 ```bash
-bash scripts/build-usb-image.sh      # produces output/secai-os-<version>-x86_64-usb.raw(.xz)
-bash scripts/vm/build-qcow2.sh        # produces output/secai-os.qcow2
-bash scripts/vm/build-ova.sh           # produces output/secai-os.ova
+bash scripts/build-usb-image.sh       # produces output/secai-os-<version>-x86_64-usb.raw(.xz)
+bash scripts/vm/build-qcow2.sh        # creates output/secai-os.qcow2 and prints the virt-install command
+bash scripts/vm/build-qcow2.sh --ci   # runs virt-install unattended on a KVM build runner
+bash scripts/vm/build-ova.sh          # converts output/secai-os.qcow2 to output/secai-os.ova
 ```
 
-Requires a Linux host with `virt-install`, `qemu-img`, and `libvirt`.
+The USB builder uses a digest-pinned bootc-image-builder image by default. VM builds require a Linux host with `virt-install`, `virsh`, `qemu-img`, and `libvirt`.
 
 ### Verify a Release
 
 ```bash
 # Download and verify checksums
-curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/download/v0.1.0/SHA256SUMS -o SHA256SUMS
-curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/download/v0.1.0/SHA256SUMS.sig -o SHA256SUMS.sig
+curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/latest/download/SHA256SUMS -o SHA256SUMS
+curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/latest/download/SHA256SUMS.sig -o SHA256SUMS.sig
 cosign verify-blob --key cosign.pub --signature SHA256SUMS.sig SHA256SUMS
 sha256sum -c SHA256SUMS
 
@@ -312,13 +315,14 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Job | Workflow Link | What It Proves |
 |-----|--------------|---------------|
-| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 413 Go tests across 9 services with `-race` (build, test, vet) |
-| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 998 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
+| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 428 Go tests across 9 services with `-race` (build, test, vet) |
+| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 1,132 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
+| `appsec-lint` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Hadolint for container build files and Semgrep project security rules |
 | `security-regression` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Adversarial test suite: prompt injection, policy bypass, containment, recovery |
 | `supply-chain-verify` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | SBOM generation via Syft, cosign availability, provenance keywords in release/build workflows |
 | `test-count-check` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Prevents documented test counts from drifting below actual (source of truth: [test-counts.json](docs/test-counts.json)) |
 | `dependency-audit` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Enforced Go vulnerability scanning (govulncheck) + Python dependency audit (pip-audit) with [waiver mechanism](.github/vuln-waivers.json) |
-| `shellcheck` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Static analysis of all shell scripts (first-boot, build, verify-release, etc.) |
+| `shellcheck` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Static analysis of production shell entrypoints (first-boot, service build, MOK generation, verify-release, etc.) |
 | `policy-validate` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | YAML schema validation for all policy and recipe files |
 | `check-pins` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Verifies all GitHub Actions are pinned to specific commit SHAs (not tags) |
 | `docs-validation` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Broken link detection, required docs presence, test-counts.json format validation |
@@ -334,7 +338,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
 | [Security Status](docs/security-status.md) | Implementation status of all 54 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,411 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
+| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,560 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -452,18 +456,18 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (413 total across 9 services)
+# Go tests (428 total across 9 services)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd services/$svc && go test -v -race ./...)
 done
 
-# Python tests (923 total)
-pip install pytest flask requests pyyaml
-python -m pytest tests/ -v
+# Python tests (1,132 total)
+python -m pip install -r requirements-ci.txt
+PYTHONPATH=services python -m pytest tests/ -v
 
 # Shell script linting
-shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
+make shellcheck
 ```
 
 See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
@@ -560,7 +564,7 @@ services/
   search-mediator/          Python -- Tor-routed web search (:8485)
   ui/                       Python/Flask -- Web UI (:8480)
   common/                   Python -- Shared utilities (audit, auth, mlock)
-tests/                      998 Python tests, 413 Go tests (1,411 total)
+tests/                      1,132 Python tests, 428 Go tests (1,560 total)
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs

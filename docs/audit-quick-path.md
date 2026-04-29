@@ -188,8 +188,9 @@ Expected: verification succeeds with no errors. Output shows the signing certifi
 Verify that Software Bill of Materials can be generated for each service:
 
 ```bash
-# Install syft if not present
-# curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+# Install Syft from a trusted package source or a pinned upstream release.
+# CI uses a pinned Anchore SBOM action instead of executing the moving
+# install.sh script from the upstream main branch.
 
 # Generate and inspect SBOMs for Go services
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
@@ -200,7 +201,7 @@ for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
 done
 
 # Generate SBOMs for Python services
-for svc in agent ui quarantine common; do
+for svc in agent ui quarantine common diffusion-worker search-mediator; do
   if [ -d "services/${svc}" ]; then
     syft dir:services/${svc} -o cyclonedx-json=sbom-${svc}.json
     echo "OK: ${svc} — $(jq '.components | length' sbom-${svc}.json) components"

@@ -7,7 +7,7 @@ This guide covers running SecAI OS services locally for development and testing,
 ## Prerequisites
 
 - **Go 1.25+** for building Go services
-- **Python 3.11+** for running Python services (quarantine, UI, search-mediator)
+- **Python 3.12 recommended** for running Python services. CI and lockfiles use Python 3.12; package metadata still allows Python 3.11 where scanner compatibility requires it.
 - **pip** for Python dependency management
 - **git** for version control
 - **make** (optional, for convenience targets)
@@ -102,11 +102,11 @@ make test-go
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Specific test suites
-python -m pytest tests/test_quarantine_pipeline.py -v
-python -m pytest tests/test_ui.py -v
-python -m pytest tests/test_memory_protection.py -v
-python -m pytest tests/test_differential_privacy.py -v
-python -m pytest tests/test_traffic_analysis.py -v
+PYTHONPATH=services python -m pytest tests/test_quarantine_pipeline.py -v
+PYTHONPATH=services python -m pytest tests/test_ui.py -v
+PYTHONPATH=services python -m pytest tests/test_memory_protection.py -v
+PYTHONPATH=services python -m pytest tests/test_differential_privacy.py -v
+PYTHONPATH=services python -m pytest tests/test_traffic_analysis.py -v
 ```
 
 ---
