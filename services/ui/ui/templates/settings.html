@@ -25,7 +25,7 @@
         <label class="form-label" for="vault-pass">LUKS Passphrase</label>
         <input class="form-input" type="password" id="vault-pass" placeholder="Enter LUKS passphrase" maxlength="256">
     </div>
-    <button class="btn btn-primary" onclick="unlockVault()">Unlock Vault</button>
+    <button class="btn btn-primary" id="vault-unlock-btn" type="button">Unlock Vault</button>
 </div>
 
 <!-- Session Section -->
@@ -39,7 +39,7 @@
     </div>
     <p class="meta" id="session-info">Loading...</p>
     <div class="btn-group mt-md">
-        <button class="btn btn-danger" onclick="doLogout()">Log Out</button>
+        <button class="btn btn-danger" id="logout-btn" type="button">Log Out</button>
     </div>
 </div>
 
@@ -47,7 +47,7 @@
 <div class="section-title">Change Passphrase</div>
 <div class="card">
     <div id="change-msg"></div>
-    <form onsubmit="changePassphrase(event)">
+    <form id="change-passphrase-form">
         <div class="form-group">
             <label class="form-label" for="current">Current Passphrase</label>
             <input class="form-input" type="password" id="current" required maxlength="256">
@@ -151,16 +151,16 @@
                 detail.style.color = 'var(--success)';
                 badge.className = 'badge badge-success';
                 badge.textContent = 'unlocked';
-                actions.innerHTML = '<button class="btn btn-danger btn-sm" onclick="lockVault()">Lock Vault Now</button>' +
-                    '<button class="btn btn-sm" onclick="keepalive()">Keep Alive</button>';
+                actions.innerHTML = '<button class="btn btn-danger btn-sm" type="button" data-vault-action="lock">Lock Vault Now</button>' +
+                    '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Keep Alive</button>';
                 unlockCard.classList.add('hidden');
             } else if (s === 'locking_soon') {
                 detail.textContent = 'Vault will lock soon due to inactivity.';
                 detail.style.color = 'var(--warning)';
                 badge.className = 'badge badge-warning';
                 badge.textContent = 'locking soon';
-                actions.innerHTML = '<button class="btn btn-sm" onclick="keepalive()">Stay Unlocked</button>' +
-                    '<button class="btn btn-danger btn-sm" onclick="lockVault()">Lock Now</button>';
+                actions.innerHTML = '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Stay Unlocked</button>' +
+                    '<button class="btn btn-danger btn-sm" type="button" data-vault-action="lock">Lock Now</button>';
                 unlockCard.classList.add('hidden');
             } else if (s === 'locked') {
                 detail.textContent = 'Vault is locked. Enter the LUKS passphrase to unlock.';
@@ -214,6 +214,16 @@
         loadVault();
         toast('Vault keep-alive sent.', 'info');
     }
+
+    document.getElementById('vault-unlock-btn').addEventListener('click', unlockVault);
+    document.getElementById('logout-btn').addEventListener('click', doLogout);
+    document.getElementById('change-passphrase-form').addEventListener('submit', changePassphrase);
+    document.getElementById('vault-actions').addEventListener('click', function(e) {
+        var target = e.target.closest('[data-vault-action]');
+        if (!target) return;
+        if (target.getAttribute('data-vault-action') === 'lock') lockVault();
+        if (target.getAttribute('data-vault-action') === 'keepalive') keepalive();
+    });
 
     loadSession();
     loadVault();

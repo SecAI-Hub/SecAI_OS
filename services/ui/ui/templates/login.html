@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>SecAI OS - Login</title>
-    <style>
+    <style nonce="{{ csp_nonce }}">
         :root {
             --bg: #0f1117;
             --surface: #1a1b26;
@@ -144,7 +144,7 @@
 
             <div class="error-msg" id="error-msg"></div>
 
-            <form id="auth-form" onsubmit="handleSubmit(event)">
+            <form id="auth-form">
                 <div class="form-group">
                     <label class="form-label" for="passphrase">Passphrase</label>
                     <input class="form-input" type="password" id="passphrase" name="passphrase"
@@ -265,6 +265,7 @@
             }
         }
 
+        document.getElementById('auth-form').addEventListener('submit', handleSubmit);
         checkSetup();
     </script>
 </body>

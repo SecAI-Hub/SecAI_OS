@@ -29,6 +29,10 @@ class TestHealthAndStatus:
         resp = client.get("/health")
 
         assert resp.status_code == 200
+        csp = resp.headers["Content-Security-Policy"]
+        assert "script-src 'self' 'nonce-" in csp
+        assert "style-src-elem 'self' 'nonce-" in csp
+        assert "style-src-attr 'unsafe-inline'" in csp
         assert resp.get_json() == {
             "status": "ok",
             "deployment_mode": "sandbox",
@@ -109,15 +113,20 @@ class TestHealthAndStatus:
         assert not (tmp_path / ".initialized").exists()
 
     def test_setup_template_uses_explicit_completion_flow(self):
-        template = (Path(__file__).parent.parent / "services" / "ui" / "ui" / "templates" / "setup.html").read_text(
-            encoding="utf-8"
-        )
+        templates_dir = Path(__file__).parent.parent / "services" / "ui" / "ui" / "templates"
+        template = (templates_dir / "setup.html").read_text(encoding="utf-8")
 
         assert "/api/setup/complete" in template
         assert "X-CSRF-Token" in template
-        assert "Use Current Sandbox Profile" in template
+        assert "Continue with Current Profile" in template
         assert "isGgufModel" in template
         assert "window.location.assign" in template
+        for path in templates_dir.glob("*.html"):
+            text = path.read_text(encoding="utf-8")
+            assert "onclick=" not in text
+            assert "onsubmit=" not in text
+            if "<style" in text:
+                assert "<style nonce=\"{{ csp_nonce }}\"" in text
 
 
 class TestProxyErrorHandling:

@@ -16,7 +16,7 @@
     </div>
     <p class="meta" id="update-detail">Loading update status...</p>
     <div class="btn-group mt-md">
-        <button class="btn btn-sm btn-primary" id="btn-check" onclick="checkUpdates()">Check for Updates</button>
+        <button class="btn btn-sm btn-primary" id="btn-check" type="button">Check for Updates</button>
     </div>
 </div>
 
@@ -27,7 +27,7 @@
     </div>
     <p class="meta" id="update-available-detail"></p>
     <div class="btn-group mt-md">
-        <button class="btn btn-sm btn-primary" id="btn-stage" onclick="stageUpdate()">Download &amp; Stage</button>
+        <button class="btn btn-sm btn-primary" id="btn-stage" type="button">Download &amp; Stage</button>
     </div>
 </div>
 
@@ -39,7 +39,7 @@
     </div>
     <p class="meta" id="update-staged-detail">An update has been downloaded and verified. Apply when ready.</p>
     <div class="btn-group mt-md">
-        <button class="btn btn-sm btn-primary" id="btn-apply" onclick="applyUpdate()">Apply &amp; Reboot</button>
+        <button class="btn btn-sm btn-primary" id="btn-apply" type="button">Apply &amp; Reboot</button>
     </div>
     <p class="form-hint mt-sm">The system will reboot to apply the update. A health check will run automatically after reboot.</p>
 </div>
@@ -64,7 +64,7 @@
         </span>
     </div>
     <p class="meta mb-md">If the current deployment has issues, roll back to the previous rpm-ostree deployment.</p>
-    <button class="btn btn-danger btn-sm" onclick="rollbackUpdate()">Rollback &amp; Reboot</button>
+    <button class="btn btn-danger btn-sm" id="btn-rollback" type="button">Rollback &amp; Reboot</button>
     <p class="form-hint mt-sm">The system will reboot into the previous deployment. A health check will verify system integrity.</p>
 </div>
 
@@ -244,6 +244,11 @@
             toast('Could not initiate rollback.', 'error');
         }
     }
+
+    document.getElementById('btn-check').addEventListener('click', checkUpdates);
+    document.getElementById('btn-stage').addEventListener('click', stageUpdate);
+    document.getElementById('btn-apply').addEventListener('click', applyUpdate);
+    document.getElementById('btn-rollback').addEventListener('click', rollbackUpdate);
 
     loadUpdateStatus();
     loadHealthStatus();

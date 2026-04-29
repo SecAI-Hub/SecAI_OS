@@ -6,7 +6,7 @@
     <meta name="referrer" content="no-referrer">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>SecAI OS - Setup</title>
-    <style>
+    <style nonce="{{ csp_nonce }}">
         :root {
             --bg: #101217;
             --panel: #181b22;
@@ -195,9 +195,12 @@
             border-color: rgba(122, 162, 247, 0.75);
         }
 
-        .profile-card.is-disabled {
-            cursor: default;
-            opacity: 0.55;
+        .profile-card.is-active {
+            border-color: rgba(139, 209, 124, 0.65);
+        }
+
+        .profile-card.is-preview {
+            border-color: rgba(228, 184, 107, 0.6);
         }
 
         .profile-title {
@@ -441,7 +444,7 @@
                     </div>
 
                     <div class="actions">
-                        <button class="primary" id="profile-button" type="button" onclick="applyProfile()">Confirm Level</button>
+                        <button class="primary" id="profile-button" type="button">Confirm Level</button>
                     </div>
                     <div class="message" id="profile-message">Loading current profile...</div>
                 </section>
@@ -492,7 +495,7 @@
                     </div>
                 </div>
 
-                <button class="primary open-chat" id="open-chat" type="button" onclick="completeSetup()" disabled>
+                <button class="primary open-chat" id="open-chat" type="button" disabled>
                     Open Chat
                 </button>
                 <a class="link-button secondary open-chat" href="/generate" id="open-generate" style="display:none">
@@ -546,6 +549,11 @@
             document.querySelectorAll('input[name="profile"]').forEach(function(input) {
                 input.checked = input.value === profile;
             });
+            document.querySelectorAll('.profile-card').forEach(function(card) {
+                var cardProfile = card.getAttribute('data-profile-card');
+                card.classList.toggle('is-active', cardProfile === activeProfile);
+                card.classList.toggle('is-preview', cardProfile === profile && cardProfile !== activeProfile);
+            });
         }
 
         function commandForProfile(profile) {
@@ -559,6 +567,20 @@
             document.getElementById('summary-services').textContent = servicesOk ? 'Healthy' : 'Checking';
             document.getElementById('summary-model').textContent = chatModelReady ? chatModelName : (diffusionModelReady ? 'Diffusion model only' : 'No GGUF model');
             document.getElementById('open-chat').disabled = !(profileSet && servicesOk && chatModelReady);
+        }
+
+        function updateSandboxProfilePreview(profile) {
+            selectProfileCard(profile);
+            if (!isSandbox) return;
+            if (profile === activeProfile) {
+                setMessage('profile-message', 'ok', 'Using current sandbox profile: ' + profileLabels[activeProfile] + '.');
+            } else {
+                setMessage(
+                    'profile-message',
+                    'warn',
+                    profileLabels[profile] + ' requires restarting this sandbox. Run ' + commandForProfile(profile) + ' later; Open Chat will continue with ' + profileLabels[activeProfile] + ' now.'
+                );
+            }
         }
 
         async function loadDeployment() {
@@ -580,18 +602,12 @@
                     document.querySelectorAll('input[name="profile"]').forEach(function(input) { input.disabled = true; });
                     setMessage('profile-message', 'ok', 'Using locked profile: ' + profileLabels[activeProfile]);
                 } else if (isSandbox) {
-                    document.getElementById('profile-copy').textContent = 'This sandbox was launched with a fixed runtime profile.';
-                    document.getElementById('profile-button').textContent = 'Use Current Sandbox Profile';
-                    document.querySelectorAll('input[name="profile"]').forEach(function(input) {
-                        if (input.value !== activeProfile) input.disabled = true;
-                    });
-                    document.querySelectorAll('.profile-card').forEach(function(card) {
-                        if (card.getAttribute('data-profile-card') !== activeProfile) card.classList.add('is-disabled');
-                    });
+                    document.getElementById('profile-copy').textContent = 'This sandbox uses the launch mode selected when it started.';
+                    document.getElementById('profile-button').textContent = 'Continue with Current Profile';
                     setMessage(
                         'profile-message',
-                        'warn',
-                        'Current sandbox profile: ' + profileLabels[activeProfile] + '. To switch later, stop the stack and run ' + commandForProfile('research') + ' or ' + commandForProfile('full_lab') + '.'
+                        'ok',
+                        'Current sandbox profile: ' + profileLabels[activeProfile] + '. Select another card to see the restart command.'
                     );
                 } else {
                     setMessage('profile-message', '', 'Choose a profile, then confirm it.');
@@ -613,6 +629,7 @@
                 markDone('profile-step');
                 setChip('profile-chip', 'ok', profileLabels[activeProfile]);
                 setMessage('profile-message', 'ok', 'Using current sandbox profile: ' + profileLabels[activeProfile] + '.');
+                selectProfileCard(activeProfile);
                 btn.textContent = 'Profile Ready';
                 updateReadyState();
                 return;
@@ -746,6 +763,14 @@
                 updateReadyState();
             }
         }
+
+        document.getElementById('profile-button').addEventListener('click', applyProfile);
+        document.getElementById('open-chat').addEventListener('click', completeSetup);
+        document.querySelectorAll('input[name="profile"]').forEach(function(input) {
+            input.addEventListener('change', function() {
+                updateSandboxProfilePreview(this.value);
+            });
+        });
 
         document.getElementById('model-file').addEventListener('change', async function(e) {
             var file = e.target.files[0];

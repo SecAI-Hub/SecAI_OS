@@ -9,7 +9,7 @@
 <div id="integrity-banner" class="alert alert-info mb-lg">
     <span class="status-dot gray" id="integrity-dot" style="width:8px;height:8px"></span>
     <span id="integrity-text">Checking model integrity...</span>
-    <button class="btn btn-sm" id="verify-all-btn" onclick="verifyAll()" style="margin-left:auto">Verify All</button>
+    <button class="btn btn-sm" id="verify-all-btn" type="button" style="margin-left:auto">Verify All</button>
 </div>
 
 <div class="section-title">Model Catalog</div>
@@ -19,7 +19,7 @@
 </div>
 
 <div class="section-title">Import Model</div>
-<div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+<div class="upload-zone" id="upload-zone" role="button" tabindex="0">
     <p style="font-size:0.9rem;margin-bottom:0.35rem">Drag and drop a model file here</p>
     <p style="font-size:0.8rem">.gguf or .safetensors &mdash; or click to browse</p>
     <input type="file" id="file-input" accept=".gguf,.safetensors">
@@ -126,7 +126,7 @@
                 }
                 var manifestBtn = '';
                 if (m.gguf_guard_manifest) {
-                    manifestBtn = '<button class="btn btn-sm btn-accent" onclick="verifyManifest(\'' + esc(m.name) + '\')">Verify Tensors</button>';
+                    manifestBtn = '<button class="btn btn-sm btn-accent" type="button" data-action="verify-manifest" data-name="' + encodeURIComponent(m.name) + '">Verify Tensors</button>';
                 }
                 return '<div class="card">' +
                     '<div class="card-header">' +
@@ -140,9 +140,9 @@
                     '</div>' +
                     guardInfo +
                     '<div class="btn-group mt-md">' +
-                        '<button class="btn btn-sm btn-success" onclick="verifyModel(\'' + esc(m.name) + '\')">Verify Hash</button>' +
+                        '<button class="btn btn-sm btn-success" type="button" data-action="verify-model" data-name="' + encodeURIComponent(m.name) + '">Verify Hash</button>' +
                         manifestBtn +
-                        '<button class="btn btn-sm btn-danger" onclick="deleteModel(\'' + esc(m.name) + '\')">Delete</button>' +
+                        '<button class="btn btn-sm btn-danger" type="button" data-action="delete-model" data-name="' + encodeURIComponent(m.name) + '">Delete</button>' +
                     '</div>' +
                 '</div>';
             }).join('');
@@ -315,9 +315,9 @@
                     btnHtml = '<span class="badge badge-warning">Scanning...</span>';
                 } else if (dl && dl.status === 'failed') {
                     btnHtml = '<span class="badge badge-danger">Failed</span>' +
-                        '<button class="btn btn-sm" onclick="downloadCatalogModel(\'' + esc(m.url) + '\',\'' + esc(m.filename) + '\',\'' + esc(m.type) + '\')">Retry</button>';
+                        '<button class="btn btn-sm" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Retry</button>';
                 } else {
-                    btnHtml = '<button class="btn btn-sm btn-primary" onclick="downloadCatalogModel(\'' + esc(m.url) + '\',\'' + esc(m.filename) + '\',\'' + esc(m.type) + '\')">Download</button>';
+                    btnHtml = '<button class="btn btn-sm btn-primary" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Download</button>';
                 }
 
                 return '<div class="card">' +
@@ -364,6 +364,34 @@
             toast('Could not start download.', 'error');
         }
     }
+
+    document.getElementById('verify-all-btn').addEventListener('click', verifyAll);
+    uploadZone.addEventListener('click', function() {
+        fileInput.click();
+    });
+    uploadZone.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            fileInput.click();
+        }
+    });
+    document.getElementById('models-list').addEventListener('click', function(e) {
+        var target = e.target.closest('[data-action]');
+        if (!target) return;
+        var name = decodeURIComponent(target.getAttribute('data-name') || '');
+        if (target.getAttribute('data-action') === 'verify-model') verifyModel(name);
+        if (target.getAttribute('data-action') === 'verify-manifest') verifyManifest(name);
+        if (target.getAttribute('data-action') === 'delete-model') deleteModel(name);
+    });
+    document.getElementById('catalog-list').addEventListener('click', function(e) {
+        var target = e.target.closest('[data-action="catalog-download"]');
+        if (!target) return;
+        downloadCatalogModel(
+            decodeURIComponent(target.getAttribute('data-url') || ''),
+            decodeURIComponent(target.getAttribute('data-filename') || ''),
+            decodeURIComponent(target.getAttribute('data-type') || '')
+        );
+    });
 
     function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); loadCatalog(); }
     refreshAll();

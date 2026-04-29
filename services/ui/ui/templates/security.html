@@ -99,7 +99,7 @@
 <div class="card">
     <div class="card-header">
         <span class="card-title">Hash-Chained Audit Logs</span>
-        <button class="btn btn-sm" onclick="verifyAudit()">Verify Now</button>
+        <button class="btn btn-sm" id="verify-audit-btn" type="button">Verify Now</button>
     </div>
     <p class="meta" id="audit-detail">Loading audit status...</p>
 </div>
@@ -141,7 +141,7 @@
         <span class="card-title">Forensic Export</span>
     </div>
     <p class="meta mb-md">Download a signed forensic bundle containing all incidents, audit log entries, system state, and policy digest for offline analysis or external audit.</p>
-    <button class="btn btn-sm" onclick="downloadForensicBundle()">Download Bundle</button>
+    <button class="btn btn-sm" id="download-forensic-btn" type="button">Download Bundle</button>
 </div>
 
 <!-- Emergency Controls -->
@@ -156,9 +156,9 @@
     </div>
     <p class="meta mb-md" id="panic-detail">System operating normally.</p>
     <div class="btn-group">
-        <button class="btn btn-warning btn-sm" onclick="triggerPanic(1)">Level 1: Lock</button>
-        <button class="btn btn-danger btn-sm" onclick="triggerPanic(2)">Level 2: Shred Keys</button>
-        <button class="btn btn-danger btn-sm" onclick="triggerPanic(3)">Level 3: Wipe All</button>
+        <button class="btn btn-warning btn-sm" type="button" data-panic-level="1">Level 1: Lock</button>
+        <button class="btn btn-danger btn-sm" type="button" data-panic-level="2">Level 2: Shred Keys</button>
+        <button class="btn btn-danger btn-sm" type="button" data-panic-level="3">Level 3: Wipe All</button>
     </div>
     <p class="form-hint mt-sm">Level 1 is reversible. Levels 2-3 require passphrase and are irreversible.</p>
 </div>
@@ -588,6 +588,14 @@
             toast('Could not export forensic bundle.', 'error');
         }
     }
+
+    document.getElementById('verify-audit-btn').addEventListener('click', verifyAudit);
+    document.getElementById('download-forensic-btn').addEventListener('click', downloadForensicBundle);
+    document.querySelectorAll('[data-panic-level]').forEach(function(button) {
+        button.addEventListener('click', function() {
+            triggerPanic(parseInt(button.getAttribute('data-panic-level'), 10));
+        });
+    });
 
     /* Load all sections */
     loadApplianceState();

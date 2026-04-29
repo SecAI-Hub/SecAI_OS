@@ -6,7 +6,7 @@
     <meta name="referrer" content="no-referrer">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>{% block title %}SecAI OS{% endblock %}</title>
-    <style>
+    <style nonce="{{ csp_nonce }}">
         /* -- Reset & Variables -- */
         :root {
             --bg: #0f1117;
@@ -40,6 +40,15 @@
             height: 100vh;
             overflow: hidden;
             display: flex;
+        }
+        img,
+        video,
+        canvas {
+            max-width: 100%;
+            height: auto;
+        }
+        svg {
+            flex-shrink: 0;
         }
 
         /* -- Sidebar -- */
@@ -596,7 +605,7 @@
     <main class="main">
         <header class="topbar">
             <div class="topbar-left">
-                <button class="mobile-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">
+                <button class="mobile-toggle" id="mobile-toggle" type="button" aria-label="Toggle navigation">
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                 </button>
                 <h1>{% block page_title %}{% endblock %}</h1>
@@ -622,8 +631,8 @@
             <h3 id="modal-title"></h3>
             <p id="modal-body"></p>
             <div class="modal-actions">
-                <button class="btn" id="modal-cancel" onclick="closeModal(false)">Cancel</button>
-                <button class="btn btn-danger" id="modal-confirm" onclick="closeModal(true)">Confirm</button>
+                <button class="btn" id="modal-cancel" type="button">Cancel</button>
+                <button class="btn btn-danger" id="modal-confirm" type="button">Confirm</button>
             </div>
         </div>
     </div>
@@ -679,6 +688,16 @@
             document.getElementById('modal-overlay').classList.add('hidden');
             if (_modalResolve) { _modalResolve(result); _modalResolve = null; }
         }
+        document.getElementById('mobile-toggle').addEventListener('click', function(e) {
+            e.stopPropagation();
+            document.getElementById('sidebar').classList.toggle('open');
+        });
+        document.getElementById('modal-cancel').addEventListener('click', function() {
+            closeModal(false);
+        });
+        document.getElementById('modal-confirm').addEventListener('click', function() {
+            closeModal(true);
+        });
         document.getElementById('modal-overlay').addEventListener('click', function(e) {
             if (e.target === e.currentTarget) closeModal(false);
         });
