@@ -78,9 +78,9 @@ Last updated: 2026-04-29
 
 | Language | Current Automated Tests | Source of Truth |
 |----------|--------------------------|-----------------|
-| Python | 1132 | `docs/test-counts.json` and `pytest --collect-only` |
+| Python | 1133 | `docs/test-counts.json` and `pytest --collect-only` |
 | Go | 428 | `docs/test-counts.json` and `go test -v -count=1 ./...` |
-| **Total** | **1560** | Enforced by `.github/scripts/check-test-counts.sh` |
+| **Total** | **1561** | Enforced by `.github/scripts/check-test-counts.sh` |
 
 Security coverage overlaps heavily with functional coverage, so the feature tables above use exact file or service totals rather than attempting to split each test into exclusive "security" and "non-security" buckets.
 

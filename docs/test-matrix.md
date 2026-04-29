@@ -12,7 +12,7 @@ Last updated: 2026-04-29
 | Language | Test Count | Runner |
 |----------|-----------|--------|
 | Go | 428 | `go test -race ./...` |
-| Python | 1132 | `pytest` |
+| Python | 1133 | `pytest` |
 | Shell | CI-scoped scripts plus Makefile target for all repo shell scripts | `shellcheck` |
 
 ## Go Tests (428 total)
@@ -29,7 +29,7 @@ Last updated: 2026-04-29
 | Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
 | Incident Recorder | services/incident-recorder/ | 97 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43), persistence durability (fsync) |
 
-## Python Tests (1132 total)
+## Python Tests (1133 total)
 
 | Test File | Location | Tests | Description |
 |-----------|----------|-------|-------------|
@@ -59,7 +59,7 @@ Last updated: 2026-04-29
 | test_recipe_validation.py | tests/ | 26 | Recipe and packaged-file validation |
 | test_release_artifacts.py | tests/ | 52 | Release workflow, artifact manifest, and verification UX consistency |
 | test_sandbox.py | tests/ | 31 | Sandbox compose, policy, and runtime constraints |
-| test_sandbox_bundle.py | tests/ | 7 | Sandbox bundle and artifact checks |
+| test_sandbox_bundle.py | tests/ | 8 | Sandbox bundle and artifact checks |
 | test_search.py | tests/ | 36 | Search mediator, PII stripping, injection detection |
 | test_secure_boot.py | tests/ | 38 | Secure boot and measured boot behavior |
 | test_traffic_analysis.py | tests/ | 41 | Padding, timing jitter, dummy traffic generation |

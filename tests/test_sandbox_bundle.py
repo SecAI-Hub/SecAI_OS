@@ -80,6 +80,7 @@ def test_sandbox_bundle_has_docs_and_helpers():
         "scripts/sandbox/stop.sh",
         "scripts/sandbox/start.ps1",
         "scripts/sandbox/stop.ps1",
+        "secai-sandbox.cmd",
     ]:
         assert (REPO_ROOT / rel_path).exists()
 
@@ -96,6 +97,22 @@ def test_sandbox_start_helpers_use_digest_pinned_alpine():
     assert PINNED_ALPINE_HELPER in powershell_helper
     assert "docker.io/library/alpine:3.20" not in shell_helper
     assert "docker.io/library/alpine:3.20" not in powershell_helper
+
+
+def test_windows_sandbox_launcher_delegates_to_hardened_helpers():
+    launcher = (REPO_ROOT / "secai-sandbox.cmd").read_text(encoding="utf-8")
+
+    assert "scripts\\sandbox\\start.ps1" in launcher
+    assert "scripts\\sandbox\\stop.ps1" in launcher
+    assert "-ExecutionPolicy Bypass" in launcher
+    for option, ps_switch in {
+        "--with-search": "-WithSearch",
+        "--with-airlock": "-WithAirlock",
+        "--with-inference": "-WithInference",
+        "--with-diffusion": "-WithDiffusion",
+    }.items():
+        assert option in launcher
+        assert ps_switch in launcher
 
 
 def test_sandbox_stop_helpers_include_optional_profiles():

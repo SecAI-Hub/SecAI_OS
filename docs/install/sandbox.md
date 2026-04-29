@@ -34,6 +34,13 @@ Treat the host OS, container runtime, and anyone with host admin access as fully
 
 ## Start The Stack
 
+**Windows (one-command launcher from the repo root)**
+
+```powershell
+.\secai-sandbox.cmd start
+.\secai-sandbox.cmd open
+```
+
 **Linux / macOS**
 
 ```bash
@@ -122,6 +129,12 @@ bash scripts/sandbox/start.sh --with-search --with-airlock --with-inference
 ```
 
 ## Stop The Stack
+
+**Windows (one-command launcher from the repo root)**
+
+```powershell
+.\secai-sandbox.cmd stop
+```
 
 **Linux / macOS**
 
