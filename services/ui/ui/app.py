@@ -733,6 +733,70 @@ def has_models() -> bool:
         return False
 
 
+def _is_gguf_model_record(model: object) -> bool:
+    if not isinstance(model, dict):
+        return False
+    model_format = str(model.get("format") or "").lower()
+    filename = str(model.get("filename") or model.get("name") or "").lower()
+    return model_format == "gguf" or filename.endswith(".gguf")
+
+
+def has_chat_model() -> bool:
+    try:
+        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=2)
+        models = resp.json()
+        return isinstance(models, list) and any(
+            _is_gguf_model_record(model) for model in models
+        )
+    except Exception:
+        return False
+
+
+def _write_setup_marker(profile: str) -> None:
+    """Mark the first-run setup flow as complete."""
+    SECURE_AI_ROOT.mkdir(parents=True, exist_ok=True)
+    marker = SECURE_AI_ROOT / ".initialized"
+    tmp_marker = SECURE_AI_ROOT / f".initialized.{os.getpid()}.tmp"
+    payload = {
+        "completed_at": time.time(),
+        "deployment_mode": _deployment_mode(),
+        "profile": profile,
+    }
+    with open(tmp_marker, "w", encoding="utf-8") as f:
+        json.dump(payload, f, sort_keys=True)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp_marker, 0o600)
+    os.replace(tmp_marker, marker)
+
+
+@app.route("/api/setup/complete", methods=["POST"])
+def setup_complete():
+    """Complete the first-run setup flow and route the user to chat."""
+    data = request.get_json(silent=True) or {}
+    active, locked = _read_active_profile()
+    profile = data.get("profile") or active
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": f"invalid profile: {profile}"}), 400
+    if (locked or _is_sandbox_deployment()) and profile != active:
+        return jsonify({"error": "profile does not match active runtime"}), 409
+    if not has_chat_model():
+        return jsonify({"error": "GGUF chat model required"}), 409
+
+    try:
+        _write_setup_marker(profile)
+    except OSError:
+        log.exception("failed to write setup marker")
+        return jsonify({"error": "failed to complete setup"}), 500
+
+    _ui_audit.append("setup_complete", {
+        "deployment_mode": _deployment_mode(),
+        "profile": profile,
+    })
+    return jsonify({"success": True, "redirect": "/chat", "profile": profile})
+
+
 def load_appliance_config() -> dict:
     try:
         with open(APPLIANCE_CONFIG) as f:
@@ -745,7 +809,7 @@ def load_appliance_config() -> dict:
 
 @app.route("/")
 def index():
-    if is_first_boot() or not has_models():
+    if is_first_boot() or not has_chat_model():
         return render_template("setup.html")
     return render_template("index.html", active_page="chat")
 

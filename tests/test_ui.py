@@ -74,6 +74,51 @@ class TestHealthAndStatus:
         assert resp.status_code == 200
         assert resp.get_json()["profile"] == "research"
 
+    def test_setup_complete_writes_initialized_marker(self, client, tmp_path, monkeypatch):
+        import json
+        import ui.app as ui_app
+
+        monkeypatch.setattr(ui_app, "SECURE_AI_ROOT", tmp_path)
+        with patch("ui.app._read_active_profile", return_value=("offline_private", False)), \
+             patch("ui.app.has_chat_model", return_value=True), \
+             patch("ui.app._ui_audit.append") as mock_audit:
+            resp = client.post("/api/setup/complete", json={"profile": "offline_private"})
+
+        assert resp.status_code == 200
+        assert resp.get_json()["redirect"] == "/chat"
+        marker = tmp_path / ".initialized"
+        assert marker.exists()
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        assert data["profile"] == "offline_private"
+        mock_audit.assert_called_once()
+
+    def test_setup_complete_rejects_invalid_profile(self, client, tmp_path, monkeypatch):
+        import ui.app as ui_app
+
+        monkeypatch.setattr(ui_app, "SECURE_AI_ROOT", tmp_path)
+        resp = client.post("/api/setup/complete", json={"profile": "unknown"})
+
+        assert resp.status_code == 400
+        assert not (tmp_path / ".initialized").exists()
+
+        with patch("ui.app._read_active_profile", return_value=("offline_private", False)), \
+             patch("ui.app.has_chat_model", return_value=False):
+            resp = client.post("/api/setup/complete", json={"profile": "offline_private"})
+
+        assert resp.status_code == 409
+        assert not (tmp_path / ".initialized").exists()
+
+    def test_setup_template_uses_explicit_completion_flow(self):
+        template = (Path(__file__).parent.parent / "services" / "ui" / "ui" / "templates" / "setup.html").read_text(
+            encoding="utf-8"
+        )
+
+        assert "/api/setup/complete" in template
+        assert "X-CSRF-Token" in template
+        assert "Use Current Sandbox Profile" in template
+        assert "isGgufModel" in template
+        assert "window.location.assign" in template
+
 
 class TestProxyErrorHandling:
     def test_verify_model_relays_plain_text_upstream_error(self, client):

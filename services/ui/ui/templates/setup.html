@@ -4,374 +4,753 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>SecAI OS - Setup</title>
     <style>
         :root {
-            --bg: #0f1117;
-            --surface: #1a1b26;
-            --surface-hover: #1e2030;
-            --border: #2a2b3d;
-            --text: #c0caf5;
-            --text-secondary: #a9b1d6;
-            --text-muted: #565f89;
-            --accent: #7aa2f7;
-            --accent-hover: #89b4fa;
-            --accent-subtle: rgba(122, 162, 247, 0.1);
-            --success: #9ece6a;
-            --success-subtle: rgba(158, 206, 106, 0.1);
-            --warning: #e0af68;
-            --danger: #f7768e;
+            --bg: #101217;
+            --panel: #181b22;
+            --panel-2: #20242d;
+            --line: #303642;
+            --text: #edf2f7;
+            --muted: #a9b4c0;
+            --quiet: #778391;
+            --blue: #7aa2f7;
+            --green: #8bd17c;
+            --amber: #e4b86b;
+            --red: #f17c8b;
             --radius: 8px;
-            --radius-lg: 12px;
-            --transition: 0.15s ease;
         }
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
-        .setup-container {
-            max-width: 560px;
-            width: 100%;
-            padding: 2rem;
+
+        .shell {
+            width: min(1120px, 100%);
+            margin: 0 auto;
+            padding: 32px 20px;
         }
+
+        .top {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 20px;
+            align-items: end;
+            margin-bottom: 22px;
+        }
+
         .brand {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
+            gap: 10px;
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
         }
-        .brand svg { width: 32px; height: 32px; color: var(--accent); }
-        .brand span { font-size: 1.25rem; font-weight: 700; }
+
+        .brand-mark {
+            width: 30px;
+            height: 30px;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            display: grid;
+            place-items: center;
+            color: var(--green);
+            background: var(--panel);
+        }
+
         h1 {
-            font-size: 1.5rem;
-            text-align: center;
-            margin-bottom: 0.5rem;
+            font-size: 2rem;
+            line-height: 1.15;
+            font-weight: 720;
+            margin-bottom: 8px;
         }
+
         .subtitle {
-            text-align: center;
-            color: var(--text-muted);
-            margin-bottom: 2rem;
-            line-height: 1.6;
+            max-width: 720px;
+            color: var(--muted);
+            line-height: 1.55;
+            font-size: 0.98rem;
+        }
+
+        .status-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .chip {
+            min-height: 32px;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 6px 10px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            color: var(--muted);
+            background: var(--panel);
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--quiet);
+        }
+
+        .chip.ok .dot { background: var(--green); }
+        .chip.warn .dot { background: var(--amber); }
+        .chip.err .dot { background: var(--red); }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 18px;
+            align-items: start;
+        }
+
+        .steps {
+            display: grid;
+            gap: 12px;
+        }
+
+        .step {
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: var(--panel);
+            padding: 18px;
+        }
+
+        .step.done {
+            border-color: rgba(139, 209, 124, 0.45);
+        }
+
+        .step-head {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .num {
+            width: 30px;
+            height: 30px;
+            flex: 0 0 30px;
+            display: grid;
+            place-items: center;
+            border-radius: 50%;
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            color: var(--muted);
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+
+        .step.done .num {
+            background: rgba(139, 209, 124, 0.12);
+            border-color: rgba(139, 209, 124, 0.55);
+            color: var(--green);
+        }
+
+        .step h2 {
+            font-size: 1rem;
+            margin-bottom: 3px;
+            font-weight: 680;
+        }
+
+        .step p {
+            color: var(--muted);
+            line-height: 1.5;
             font-size: 0.9rem;
         }
-        .step {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 1.25rem;
-            margin-bottom: 0.75rem;
-            transition: border-color var(--transition);
+
+        .profile-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
         }
-        .step.done { border-color: rgba(158, 206, 106, 0.3); }
-        .step-header {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 0.5rem;
-        }
-        .step-num {
-            width: 28px;
-            height: 28px;
-            background: var(--accent);
-            color: var(--bg);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 0.85rem;
-            flex-shrink: 0;
-            transition: background var(--transition);
-        }
-        .step-num.done { background: var(--success); }
-        .step-header h3 { font-size: 0.95rem; font-weight: 600; }
-        .step p {
-            color: var(--text-muted);
-            font-size: 0.85rem;
-            line-height: 1.5;
-            margin-left: 2.5rem;
-        }
-        .step .check {
-            display: none;
-            color: var(--success);
-            font-size: 0.85rem;
-            margin-left: 2.5rem;
-            margin-top: 0.35rem;
-        }
-        .upload-area {
-            margin-left: 2.5rem;
-            margin-top: 0.75rem;
-        }
-        .upload-btn {
-            display: inline-block;
-            padding: 0.5rem 1.25rem;
-            background: var(--accent);
-            color: var(--bg);
+
+        .profile-card {
+            display: grid;
+            gap: 8px;
+            min-height: 150px;
+            padding: 13px;
+            border: 1px solid var(--line);
             border-radius: var(--radius);
+            background: #12151b;
             cursor: pointer;
-            font-weight: 600;
-            font-size: 0.85rem;
-            transition: background var(--transition);
         }
-        .upload-btn:hover { background: var(--accent-hover); }
-        .upload-area input[type="file"] { display: none; }
-        .upload-status {
+
+        .profile-card:hover,
+        .profile-card:has(input:checked) {
+            border-color: rgba(122, 162, 247, 0.75);
+        }
+
+        .profile-card.is-disabled {
+            cursor: default;
+            opacity: 0.55;
+        }
+
+        .profile-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-weight: 680;
+        }
+
+        .profile-card input {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--blue);
+        }
+
+        .profile-card small {
+            color: var(--muted);
+            line-height: 1.45;
             font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-top: 0.5rem;
         }
-        .btn-start {
-            display: block;
-            width: 100%;
-            padding: 0.75rem;
-            background: var(--accent);
-            color: var(--bg);
-            border: none;
-            border-radius: var(--radius);
-            font-size: 1rem;
-            font-weight: 600;
-            font-family: inherit;
-            cursor: pointer;
-            margin-top: 1.25rem;
-            opacity: 0.4;
-            pointer-events: none;
-            transition: all var(--transition);
-        }
-        .btn-start.ready { opacity: 1; pointer-events: all; }
-        .btn-start:hover { background: var(--accent-hover); }
-        .security-note {
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 0.75rem;
-            margin-top: 1.25rem;
-            line-height: 1.5;
+
+        .actions {
             display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-top: 14px;
+        }
+
+        button,
+        .link-button {
+            min-height: 40px;
+            border: 1px solid transparent;
+            border-radius: var(--radius);
+            padding: 0 14px;
+            font: inherit;
+            font-size: 0.9rem;
+            font-weight: 650;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.5rem;
+            gap: 8px;
         }
-        .security-note svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+        .primary {
+            background: var(--blue);
+            color: #0b1018;
+        }
+
+        .secondary {
+            background: transparent;
+            color: var(--text);
+            border-color: var(--line);
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+        }
+
+        .message {
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: var(--radius);
+            border: 1px solid var(--line);
+            color: var(--muted);
+            background: #12151b;
+            font-size: 0.85rem;
+            line-height: 1.45;
+        }
+
+        .message.ok {
+            border-color: rgba(139, 209, 124, 0.35);
+            color: var(--green);
+        }
+
+        .message.warn {
+            border-color: rgba(228, 184, 107, 0.35);
+            color: var(--amber);
+        }
+
+        .message.err {
+            border-color: rgba(241, 124, 139, 0.35);
+            color: var(--red);
+        }
+
+        .upload-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-top: 14px;
+        }
+
+        input[type="file"] {
+            position: absolute;
+            left: -9999px;
+        }
+
+        .aside {
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: var(--panel);
+            padding: 18px;
+            position: sticky;
+            top: 20px;
+        }
+
+        .aside h2 {
+            font-size: 0.95rem;
+            margin-bottom: 12px;
+        }
+
+        .summary-list {
+            display: grid;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .summary-item {
+            display: grid;
+            gap: 2px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .summary-item:last-child {
+            border-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .summary-item strong {
+            font-size: 0.78rem;
+            color: var(--quiet);
+            text-transform: uppercase;
+        }
+
+        .summary-item span {
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+
+        .open-chat {
+            width: 100%;
+            min-height: 46px;
+            margin-top: 8px;
+        }
+
+        .fine-print {
+            margin-top: 14px;
+            color: var(--quiet);
+            line-height: 1.45;
+            font-size: 0.78rem;
+        }
+
+        code {
+            color: var(--text);
+            background: #0b0d12;
+            border: 1px solid var(--line);
+            border-radius: 5px;
+            padding: 1px 5px;
+        }
+
+        @media (max-width: 860px) {
+            .top,
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .status-row {
+                justify-content: flex-start;
+            }
+
+            .profile-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .aside {
+                position: static;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="setup-container">
-        <div class="brand">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            <span>SecAI OS</span>
-        </div>
-        <h1>Welcome</h1>
-        <p class="subtitle">
-            Your local-first, private AI appliance. Everything runs on this device.<br>
-            No data leaves unless you explicitly allow it.
-        </p>
-
-        <div class="step" id="step-profile">
-            <div class="step-header">
-                <div class="step-num" id="step-profile-num">1</div>
-                <h3 id="step-profile-title">Choose Your Privacy Level</h3>
+    <main class="shell">
+        <section class="top">
+            <div>
+                <div class="brand">
+                    <div class="brand-mark">S</div>
+                    <span>SecAI OS</span>
+                </div>
+                <h1>Set Up Your Local AI Workspace</h1>
+                <p class="subtitle">
+                    Choose the runtime posture, confirm the services are healthy, and start with a chat-ready GGUF model.
+                    The sandbox keeps this as an evaluation environment while preserving the same local-first workflow.
+                </p>
             </div>
-            <p id="step-profile-desc">How do you want to use this appliance?</p>
-            <div id="profile-cards" style="display:flex;flex-direction:column;gap:0.5rem;margin-top:0.75rem">
-                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
-                    <input type="radio" name="profile" value="offline_private" checked style="margin-top:3px">
-                    <div>
-                        <strong style="color:var(--success)">Maximum Privacy</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">No network access. All AI runs locally. Smallest attack surface.</div>
+            <div class="status-row" aria-live="polite">
+                <span class="chip warn" id="profile-chip"><span class="dot"></span><span>profile pending</span></span>
+                <span class="chip warn" id="services-chip"><span class="dot"></span><span>services checking</span></span>
+                <span class="chip warn" id="model-chip"><span class="dot"></span><span>model checking</span></span>
+            </div>
+        </section>
+
+        <section class="layout">
+            <div class="steps">
+                <section class="step" id="profile-step">
+                    <div class="step-head">
+                        <div class="num">1</div>
+                        <div>
+                            <h2>Privacy Level</h2>
+                            <p id="profile-copy">Select the posture that matches this session.</p>
+                        </div>
                     </div>
-                </label>
-                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
-                    <input type="radio" name="profile" value="research" style="margin-top:3px">
-                    <div>
-                        <strong style="color:var(--warning)">Web-Assisted Research</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">Privacy-preserving web search via Tor. Queries are anonymized.</div>
+
+                    <div class="profile-grid" id="profile-grid">
+                        <label class="profile-card" data-profile-card="offline_private">
+                            <div class="profile-title">
+                                <span>Maximum Privacy</span>
+                                <input type="radio" name="profile" value="offline_private" checked>
+                            </div>
+                            <small>No outbound network by default. Best for local-only exploration.</small>
+                        </label>
+                        <label class="profile-card" data-profile-card="research">
+                            <div class="profile-title">
+                                <span>Web-Assisted Research</span>
+                                <input type="radio" name="profile" value="research">
+                            </div>
+                            <small>Tor-routed search and filtered outbound access when launched with search support.</small>
+                        </label>
+                        <label class="profile-card" data-profile-card="full_lab">
+                            <div class="profile-title">
+                                <span>Full Lab</span>
+                                <input type="radio" name="profile" value="full_lab">
+                            </div>
+                            <small>Enables heavier lab features such as diffusion when the matching profile is running.</small>
+                        </label>
                     </div>
-                </label>
-                <label class="profile-card" style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:border-color 0.15s">
-                    <input type="radio" name="profile" value="full_lab" style="margin-top:3px">
-                    <div>
-                        <strong style="color:var(--accent)">Full Lab</strong>
-                        <div style="font-size:0.8rem;color:var(--text-muted);margin-top:2px">All features enabled. Network filtered through airlock. For evaluation and research.</div>
+
+                    <div class="actions">
+                        <button class="primary" id="profile-button" type="button" onclick="applyProfile()">Confirm Level</button>
                     </div>
-                </label>
-            </div>
-            <button id="btn-profile" onclick="applyProfile()" style="margin-top:0.75rem;padding:0.5rem 1rem;background:var(--accent);color:#0f1117;border:none;border-radius:var(--radius);cursor:pointer;font-weight:600">Confirm</button>
-            <div class="check" id="step-profile-check"></div>
-        </div>
+                    <div class="message" id="profile-message">Loading current profile...</div>
+                </section>
 
-        <div class="step" id="step1">
-            <div class="step-header">
-                <div class="step-num" id="step1-num">2</div>
-                <h3>System Check</h3>
-            </div>
-            <p>Verifying core services are running...</p>
-            <div class="check" id="step1-check"></div>
-        </div>
+                <section class="step" id="services-step">
+                    <div class="step-head">
+                        <div class="num">2</div>
+                        <div>
+                            <h2>Service Health</h2>
+                            <p>Core services need to be reachable before the workspace opens.</p>
+                        </div>
+                    </div>
+                    <div class="message" id="services-message">Checking registry, policy, and UI services...</div>
+                </section>
 
-        <div class="step" id="step2">
-            <div class="step-header">
-                <div class="step-num" id="step2-num">3</div>
-                <h3>Import a Model</h3>
-            </div>
-            <p>Upload a .gguf model file. It will be verified and scanned before becoming available.</p>
-            <div class="upload-area">
-                <label class="upload-btn" for="model-file">Choose model file</label>
-                <input type="file" id="model-file" accept=".gguf,.safetensors">
-                <div class="upload-status" id="upload-status"></div>
-            </div>
-            <div class="check" id="step2-check"></div>
-        </div>
+                <section class="step" id="model-step">
+                    <div class="step-head">
+                        <div class="num">3</div>
+                        <div>
+                            <h2>Chat Model</h2>
+                            <p>A promoted GGUF model is required for chat. Diffusion-only models will stay available on Generate.</p>
+                        </div>
+                    </div>
 
-        <div class="step" id="step3">
-            <div class="step-header">
-                <div class="step-num" id="step3-num">4</div>
-                <h3>Start Chatting</h3>
+                    <div class="upload-row">
+                        <label class="link-button secondary" for="model-file">Choose Model File</label>
+                        <input type="file" id="model-file" accept=".gguf,.safetensors">
+                        <a class="link-button secondary" href="/models">Open Models</a>
+                    </div>
+                    <div class="message" id="model-message">Looking for promoted models...</div>
+                </section>
             </div>
-            <p>Once a model is promoted, you can start using the AI assistant.</p>
-        </div>
 
-        <button class="btn-start" id="btn-start" onclick="window.location='/chat'">
-            Open Chat
-        </button>
+            <aside class="aside">
+                <h2>Ready Check</h2>
+                <div class="summary-list">
+                    <div class="summary-item">
+                        <strong>Profile</strong>
+                        <span id="summary-profile">Pending</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Services</strong>
+                        <span id="summary-services">Checking</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>Chat Model</strong>
+                        <span id="summary-model">Checking</span>
+                    </div>
+                </div>
 
-        <p class="security-note">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            All traffic stays on this device. Firewall and encryption are active.
-        </p>
-    </div>
+                <button class="primary open-chat" id="open-chat" type="button" onclick="completeSetup()" disabled>
+                    Open Chat
+                </button>
+                <a class="link-button secondary open-chat" href="/generate" id="open-generate" style="display:none">
+                    Open Generate
+                </a>
+                <p class="fine-print" id="aside-note">
+                    The chat button activates when setup is complete and a GGUF model is ready.
+                </p>
+            </aside>
+        </section>
+    </main>
 
     <script nonce="{{ csp_nonce }}">
+        var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        var isSandbox = false;
+        var activeProfile = 'offline_private';
         var profileSet = false;
         var servicesOk = false;
-        var modelReady = false;
+        var chatModelReady = false;
+        var diffusionModelReady = false;
+        var chatModelName = '';
 
-        function updateButton() {
-            if (modelReady) document.getElementById('btn-start').classList.add('ready');
+        var profileLabels = {
+            offline_private: 'Maximum Privacy',
+            research: 'Web-Assisted Research',
+            full_lab: 'Full Lab'
+        };
+
+        function setChip(id, state, text) {
+            var el = document.getElementById(id);
+            el.className = 'chip ' + state;
+            el.querySelector('span:last-child').textContent = text;
         }
 
-        /* --- Profile selection (Step 1) --- */
-        async function checkProfileLock() {
+        function setMessage(id, state, text) {
+            var el = document.getElementById(id);
+            el.className = 'message ' + (state || '');
+            el.textContent = text;
+        }
+
+        function markDone(stepId) {
+            document.getElementById(stepId).classList.add('done');
+        }
+
+        function selectedProfile() {
+            var input = document.querySelector('input[name="profile"]:checked');
+            return input ? input.value : activeProfile;
+        }
+
+        function selectProfileCard(profile) {
+            document.querySelectorAll('input[name="profile"]').forEach(function(input) {
+                input.checked = input.value === profile;
+            });
+        }
+
+        function commandForProfile(profile) {
+            if (profile === 'research') return '.\\secai-sandbox.cmd start --with-search';
+            if (profile === 'full_lab') return '.\\secai-sandbox.cmd start --with-diffusion';
+            return '.\\secai-sandbox.cmd start';
+        }
+
+        function updateReadyState() {
+            document.getElementById('summary-profile').textContent = profileSet ? profileLabels[activeProfile] : 'Pending';
+            document.getElementById('summary-services').textContent = servicesOk ? 'Healthy' : 'Checking';
+            document.getElementById('summary-model').textContent = chatModelReady ? chatModelName : (diffusionModelReady ? 'Diffusion model only' : 'No GGUF model');
+            document.getElementById('open-chat').disabled = !(profileSet && servicesOk && chatModelReady);
+        }
+
+        async function loadDeployment() {
             try {
-                var resp = await fetch('/api/profile');
-                var data = await resp.json();
-                if (data.locked) {
-                    /* Operator override active — skip profile selection */
-                    var step = document.getElementById('step-profile');
-                    var num = document.getElementById('step-profile-num');
-                    document.getElementById('step-profile-title').textContent = 'Profile Set by Administrator';
-                    document.getElementById('step-profile-desc').textContent =
-                        'Profile "' + data.active + '" is locked by operator override.';
-                    document.getElementById('profile-cards').style.display = 'none';
-                    document.getElementById('btn-profile').style.display = 'none';
-                    var check = document.getElementById('step-profile-check');
-                    check.textContent = 'Profile: ' + data.active + ' (locked)';
-                    check.style.display = 'block';
-                    num.classList.add('done');
-                    step.classList.add('done');
-                    profileSet = true;
+                var health = await fetch('/health').then(function(resp) { return resp.json(); });
+                isSandbox = health.deployment_mode === 'sandbox';
+            } catch(e) {
+                isSandbox = false;
+            }
+
+            try {
+                var profile = await fetch('/api/profile').then(function(resp) { return resp.json(); });
+                activeProfile = profile.active || 'offline_private';
+                selectProfileCard(activeProfile);
+
+                if (profile.locked) {
+                    document.getElementById('profile-copy').textContent = 'This profile is locked by operator policy.';
+                    document.getElementById('profile-button').textContent = 'Use Locked Profile';
+                    document.querySelectorAll('input[name="profile"]').forEach(function(input) { input.disabled = true; });
+                    setMessage('profile-message', 'ok', 'Using locked profile: ' + profileLabels[activeProfile]);
+                } else if (isSandbox) {
+                    document.getElementById('profile-copy').textContent = 'This sandbox was launched with a fixed runtime profile.';
+                    document.getElementById('profile-button').textContent = 'Use Current Sandbox Profile';
+                    document.querySelectorAll('input[name="profile"]').forEach(function(input) {
+                        if (input.value !== activeProfile) input.disabled = true;
+                    });
+                    document.querySelectorAll('.profile-card').forEach(function(card) {
+                        if (card.getAttribute('data-profile-card') !== activeProfile) card.classList.add('is-disabled');
+                    });
+                    setMessage(
+                        'profile-message',
+                        'warn',
+                        'Current sandbox profile: ' + profileLabels[activeProfile] + '. To switch later, stop the stack and run ' + commandForProfile('research') + ' or ' + commandForProfile('full_lab') + '.'
+                    );
+                } else {
+                    setMessage('profile-message', '', 'Choose a profile, then confirm it.');
                 }
-            } catch(e) { /* non-critical */ }
+            } catch(e) {
+                setMessage('profile-message', 'warn', 'Could not read the current profile. Maximum Privacy will be used.');
+            }
+            updateReadyState();
         }
-        checkProfileLock();
 
         async function applyProfile() {
-            var selected = document.querySelector('input[name="profile"]:checked');
-            if (!selected) return;
-            var profile = selected.value;
-            var btn = document.getElementById('btn-profile');
+            var target = selectedProfile();
+            var btn = document.getElementById('profile-button');
             btn.disabled = true;
-            btn.textContent = 'Applying...';
 
+            if (isSandbox) {
+                activeProfile = activeProfile || target;
+                profileSet = true;
+                markDone('profile-step');
+                setChip('profile-chip', 'ok', profileLabels[activeProfile]);
+                setMessage('profile-message', 'ok', 'Using current sandbox profile: ' + profileLabels[activeProfile] + '.');
+                btn.textContent = 'Profile Ready';
+                updateReadyState();
+                return;
+            }
+
+            btn.textContent = 'Applying...';
             try {
                 var resp = await fetch('/api/profile/select', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+                        'X-CSRF-Token': csrfToken
                     },
-                    body: JSON.stringify({profile: profile})
+                    body: JSON.stringify({profile: target})
                 });
                 var data = await resp.json();
-                var check = document.getElementById('step-profile-check');
-                var num = document.getElementById('step-profile-num');
                 if (resp.ok || data.status === 'already_active') {
-                    check.textContent = 'Profile set: ' + profile;
-                    check.style.display = 'block';
-                    num.classList.add('done');
-                    document.getElementById('step-profile').classList.add('done');
+                    activeProfile = data.profile || target;
                     profileSet = true;
-                    btn.textContent = 'Done';
+                    markDone('profile-step');
+                    setChip('profile-chip', 'ok', profileLabels[activeProfile]);
+                    setMessage('profile-message', 'ok', 'Profile set: ' + profileLabels[activeProfile] + '.');
+                    btn.textContent = 'Profile Ready';
                 } else {
-                    check.textContent = data.error || 'Failed to set profile';
-                    check.style.display = 'block';
-                    check.style.color = 'var(--danger)';
+                    setMessage('profile-message', 'err', data.error || 'Profile change failed.');
                     btn.textContent = 'Retry';
                     btn.disabled = false;
                 }
             } catch(e) {
-                var check = document.getElementById('step-profile-check');
-                check.textContent = 'Could not reach profile API';
-                check.style.display = 'block';
-                check.style.color = 'var(--warning)';
+                setMessage('profile-message', 'err', 'Could not reach the profile service.');
                 btn.textContent = 'Retry';
                 btn.disabled = false;
             }
+            updateReadyState();
         }
 
         async function checkServices() {
             try {
-                var resp = await fetch('/api/status');
+                var resp = await fetch('/health');
                 var data = await resp.json();
-                var regOk = data.services && data.services.registry && data.services.registry.status === 'ok';
-                var el = document.getElementById('step1-check');
-                var num = document.getElementById('step1-num');
-                if (regOk) {
-                    el.textContent = 'All services running.';
-                    el.style.display = 'block';
-                    num.classList.add('done');
-                    document.getElementById('step1').classList.add('done');
+                if (data.status === 'ok') {
                     servicesOk = true;
+                    markDone('services-step');
+                    setChip('services-chip', 'ok', 'services healthy');
+                    setMessage('services-message', 'ok', 'The UI is healthy. Model registry readiness is checked below.');
                 } else {
-                    el.textContent = 'Waiting for services to start...';
-                    el.style.display = 'block';
-                    el.style.color = 'var(--warning)';
+                    servicesOk = false;
+                    setChip('services-chip', 'warn', 'services waiting');
+                    setMessage('services-message', 'warn', 'Waiting for the UI service to report healthy.');
                 }
             } catch(e) {
-                document.getElementById('step1-check').textContent = 'Connecting...';
-                document.getElementById('step1-check').style.display = 'block';
+                servicesOk = false;
+                setChip('services-chip', 'err', 'services unavailable');
+                setMessage('services-message', 'err', 'Could not reach the health endpoint.');
             }
+            updateReadyState();
+        }
+
+        function isGgufModel(model) {
+            var format = String(model.format || '').toLowerCase();
+            var filename = String(model.filename || model.name || '').toLowerCase();
+            return format === 'gguf' || filename.endsWith('.gguf');
+        }
+
+        function modelDisplayName(model) {
+            return model.name || model.filename || 'promoted GGUF model';
         }
 
         async function checkModels() {
             try {
-                var resp = await fetch('/api/models');
-                var models = await resp.json();
-                if (models.length > 0) {
-                    var el = document.getElementById('step2-check');
-                    el.textContent = 'Model ready: ' + models[0].name + ' (' + models[0].format + ')';
-                    el.style.display = 'block';
-                    document.getElementById('step2-num').classList.add('done');
-                    document.getElementById('step3-num').classList.add('done');
-                    document.getElementById('step2').classList.add('done');
-                    document.getElementById('step3').classList.add('done');
-                    modelReady = true;
-                    updateButton();
+                var models = await fetch('/api/models').then(function(resp) { return resp.json(); });
+                var gguf = models.find(isGgufModel);
+                var diffusion = models.find(function(model) {
+                    return String(model.format || '').toLowerCase().indexOf('diffusion') >= 0;
+                });
+
+                if (gguf) {
+                    chatModelReady = true;
+                    chatModelName = modelDisplayName(gguf);
+                    markDone('model-step');
+                    setChip('model-chip', 'ok', 'GGUF ready');
+                    setMessage('model-message', 'ok', 'Chat-ready model: ' + chatModelName + '.');
+                } else if (diffusion) {
+                    chatModelReady = false;
+                    diffusionModelReady = true;
+                    setChip('model-chip', 'warn', 'image model ready');
+                    setMessage('model-message', 'warn', 'A diffusion model is ready. Import a GGUF model for chat, or open Generate.');
+                    document.getElementById('open-generate').style.display = 'inline-flex';
+                } else {
+                    chatModelReady = false;
+                    diffusionModelReady = false;
+                    setChip('model-chip', 'warn', 'no GGUF model');
+                    setMessage('model-message', '', 'No promoted GGUF chat model found yet.');
                 }
-            } catch(e) { }
+            } catch(e) {
+                chatModelReady = false;
+                setChip('model-chip', 'err', 'model check failed');
+                setMessage('model-message', 'err', 'Could not reach the model registry.');
+            }
+            updateReadyState();
+        }
+
+        async function completeSetup() {
+            if (!(profileSet && servicesOk && chatModelReady)) {
+                setMessage('model-message', 'warn', 'Finish the ready checks before opening chat.');
+                return;
+            }
+
+            var btn = document.getElementById('open-chat');
+            btn.disabled = true;
+            btn.textContent = 'Opening...';
+
+            try {
+                var resp = await fetch('/api/setup/complete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
+                    },
+                    body: JSON.stringify({profile: activeProfile})
+                });
+                var data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.error || 'setup completion failed');
+                }
+                window.location.assign(data.redirect || '/chat');
+            } catch(e) {
+                btn.disabled = false;
+                btn.textContent = 'Open Chat';
+                setMessage('model-message', 'err', 'Could not complete setup: ' + e.message);
+                updateReadyState();
+            }
         }
 
         document.getElementById('model-file').addEventListener('change', async function(e) {
             var file = e.target.files[0];
             if (!file) return;
-            var status = document.getElementById('upload-status');
-            status.textContent = 'Uploading ' + file.name + '...';
-            status.style.color = 'var(--text-muted)';
+            setMessage('model-message', '', 'Uploading ' + file.name + '...');
 
             var formData = new FormData();
             formData.append('file', file);
@@ -379,30 +758,29 @@
             try {
                 var resp = await fetch('/api/models/import', { method: 'POST', body: formData });
                 if (resp.ok) {
-                    status.textContent = file.name + ' imported. Scanning...';
-                    status.style.color = 'var(--success)';
+                    setMessage('model-message', 'ok', file.name + ' imported. Waiting for promotion...');
                     pollForModel();
                 } else {
                     var data = await resp.json();
-                    status.textContent = 'Error: ' + (data.error || 'unknown');
-                    status.style.color = 'var(--danger)';
+                    setMessage('model-message', 'err', data.error || 'Model import failed.');
                 }
             } catch(e) {
-                status.textContent = 'Upload failed.';
-                status.style.color = 'var(--danger)';
+                setMessage('model-message', 'err', 'Upload failed.');
             }
         });
 
         function pollForModel() {
-            var interval = setInterval(async function() {
+            var attempts = 0;
+            var timer = setInterval(async function() {
+                attempts += 1;
                 await checkModels();
-                if (modelReady) {
-                    clearInterval(interval);
-                    document.getElementById('upload-status').textContent = 'Model promoted and ready!';
-                }
+                if (chatModelReady || attempts > 40) clearInterval(timer);
             }, 3000);
         }
 
+        loadDeployment().then(function() {
+            if (isSandbox) applyProfile();
+        });
         checkServices();
         checkModels();
         setInterval(checkServices, 5000);

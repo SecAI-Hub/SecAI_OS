@@ -19,7 +19,7 @@ Last updated: 2026-04-29
 | Emergency wipe | tests/test_emergency_wipe.py | Python | 65 | 3-level panic escalation, secure deletion, vault destruction, recovery prevention |
 | Update verification | tests/test_update_rollback.py | Python | 74 | Signature verification, rollback triggers, version pinning, recovery |
 | Vault auto-lock | tests/test_vault_watchdog.py | Python | 21 | Idle detection, lock timer, UI lock/unlock controls |
-| Web UI security | tests/test_ui.py, tests/test_ui_cookies.py, tests/test_ui_file_handling.py | Python | 79 total | Route protection, input validation, CSP/cookie headers, upload/path handling |
+| Web UI security | tests/test_ui.py, tests/test_ui_cookies.py, tests/test_ui_file_handling.py | Python | 82 total | Route protection, input validation, CSP/cookie headers, setup completion, upload/path handling |
 | Tool firewall | services/tool-firewall/*_test.go | Go | 15 | Default-deny policy, rule evaluation, egress filtering |
 | Airlock | services/airlock/*_test.go | Go | 11 | Request sanitization, policy enforcement, disabled-by-default |
 | Trusted registry | services/registry/*_test.go | Go | 22 | Hash pinning, cosign verification, model fetch authorization |
@@ -72,15 +72,15 @@ Last updated: 2026-04-29
 |------|-------|-------|
 | Memory protection | 37 | Prevents secrets from leaking to disk |
 | Vault auto-lock | 21 | Automatic vault lock on idle |
-| Web UI security | 79 total | CSRF, CSP, cookie flags, input validation, upload/path handling |
+| Web UI security | 82 total | CSRF, CSP, cookie flags, setup completion, input validation, upload/path handling |
 
 ## Total Test Counts
 
 | Language | Current Automated Tests | Source of Truth |
 |----------|--------------------------|-----------------|
-| Python | 1133 | `docs/test-counts.json` and `pytest --collect-only` |
+| Python | 1136 | `docs/test-counts.json` and `pytest --collect-only` |
 | Go | 428 | `docs/test-counts.json` and `go test -v -count=1 ./...` |
-| **Total** | **1561** | Enforced by `.github/scripts/check-test-counts.sh` |
+| **Total** | **1564** | Enforced by `.github/scripts/check-test-counts.sh` |
 
 Security coverage overlaps heavily with functional coverage, so the feature tables above use exact file or service totals rather than attempting to split each test into exclusive "security" and "non-security" buckets.
 
