@@ -129,6 +129,19 @@ virt-install \
   --network bridge=virbr0
 ```
 
+### Automated QCOW2/OVA Builders
+
+The repository includes helper scripts for local KVM builders and release runners:
+
+```bash
+bash scripts/vm/build-qcow2.sh --image-ref ghcr.io/secai-hub/secai_os@sha256:<digest>
+bash scripts/vm/build-ova.sh output/secai-os.qcow2 output
+```
+
+The QCOW2 builder installs the SecAI signing policy in the kickstart and rebases with `ostree-image-signed:docker://` on the first pull. It does not perform an unsigned bootstrap pull. The generated kickstart is written with mode `0600` because it contains temporary VM and vault passwords.
+
+On a self-hosted KVM release runner, `build-qcow2.sh --ci` runs `virt-install` unattended and fails if the required virtualization tooling is missing.
+
 ### GPU Passthrough (KVM/QEMU)
 
 This is the most reliable GPU passthrough option.

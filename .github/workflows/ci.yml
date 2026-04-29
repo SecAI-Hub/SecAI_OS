@@ -259,9 +259,6 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Install Syft (SBOM generator)
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-
       - name: Install cosign (signing & attestation)
         run: |
           COSIGN_VERSION="v2.4.3"
@@ -269,24 +266,13 @@ jobs:
             -o /usr/local/bin/cosign
           chmod +x /usr/local/bin/cosign
 
-      - name: Verify SBOM generation (Go services)
-        run: |
-          echo "=== SBOM generation verification ==="
-          for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-                     policy-engine runtime-attestor integrity-monitor incident-recorder; do
-            echo "--- ${svc} ---"
-            syft dir:services/${svc} -o cyclonedx-json=/dev/null
-            echo "OK: ${svc} SBOM generated"
-          done
-
-      - name: Verify SBOM generation (Python services)
-        run: |
-          for svc in agent ui quarantine common diffusion-worker search-mediator; do
-            if [ -d "services/${svc}" ]; then
-              syft dir:services/${svc} -o cyclonedx-json=/dev/null
-              echo "OK: ${svc} SBOM generated"
-            fi
-          done
+      - name: Verify SBOM generation
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: /tmp/secai-os-sbom.cdx.json
+          upload-artifact: false
 
       - name: Verify cosign is functional
         run: |
@@ -514,7 +500,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
       - name: Go vulnerability scan (enforced)
         run: |
@@ -827,7 +813,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements-ci.txt
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
       - name: Bandit (release-strict)
         run: |

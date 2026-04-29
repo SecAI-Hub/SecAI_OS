@@ -89,8 +89,9 @@ use the bare-metal installation method instead.
 GPU passthrough is disabled by default. Enable it in the UI under
 Settings if you have a dedicated GPU passed through to the VM.
 
-Default user: secai (password: changeme — CHANGE THIS IMMEDIATELY)
-Vault passphrase: changeme — CHANGE THIS IMMEDIATELY
+Default user: secai (temporary password is set during QCOW2 generation)
+Vault passphrase: temporary passphrase is set during QCOW2 generation
+Change both immediately after first boot.
 
 Web UI: http://127.0.0.1:8480 (port-forward or access from within VM)</Annotation>
     </AnnotationSection>
@@ -192,7 +193,7 @@ echo ""
 echo " Import in VMware:"
 echo "   File -> Open -> ${OVA_NAME}.ova"
 echo ""
-echo " IMPORTANT: Change default passwords after first boot!"
+echo " IMPORTANT: Change temporary passwords after first boot!"
 echo "   sudo passwd secai"
 echo "   sudo cryptsetup luksChangeKey /dev/sda4"
 echo "=========================================="

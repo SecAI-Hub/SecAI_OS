@@ -15,6 +15,7 @@ $tokenFile = Join-Path $runtimeDir "service-token"
 $composeFile = Join-Path $sandboxDir "compose.yaml"
 $stateVolume = "secai-sandbox_secai-state"
 $runVolume = "secai-sandbox_secai-run"
+$alpineHelperImage = "docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"
 
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
@@ -79,14 +80,14 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
 & $runtimeCmd run --rm `
     -v "${stateVolume}:/state" `
     -v "${runtimeDir}:/overlay:ro" `
-    docker.io/library/alpine:3.20 `
+    $alpineHelperImage `
     sh -c "mkdir -p /state/auth /state/import-staging /state/logs /state/quarantine /state/registry /state/state /state/vault/user_docs /state/vault/outputs && if [ -f /overlay/state/profile.json ]; then cp /overlay/state/profile.json /state/state/profile.json; chmod 0644 /state/state/profile.json; fi && chown -R 65534:65534 /state" | Out-Null
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 & $runtimeCmd run --rm `
     -v "${runVolume}:/runstate" `
-    docker.io/library/alpine:3.20 `
+    $alpineHelperImage `
     sh -c "mkdir -p /runstate && chown -R 65534:65534 /runstate && chmod 0770 /runstate" | Out-Null
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

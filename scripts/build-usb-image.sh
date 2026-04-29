@@ -7,7 +7,7 @@ set -euo pipefail
 IMAGE_REF="ghcr.io/secai-hub/secai_os:latest"
 OUTPUT_DIR="./output"
 VERSION="dev"
-BUILDER_IMAGE="quay.io/centos-bootc/bootc-image-builder:latest"
+BUILDER_IMAGE="quay.io/centos-bootc/bootc-image-builder:latest@sha256:754fc17718f977313885379e2c779066aba7d15af88fe04b486baec74759f574"
 ROOTFS="btrfs"
 XZ_LEVEL="-3"
 
@@ -63,6 +63,34 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+validate_image_ref() {
+    case "$2" in
+        ""|*[!A-Za-z0-9._:/@+-]*)
+            echo "Invalid $1 image reference: $2" >&2
+            exit 2
+            ;;
+    esac
+}
+
+validate_image_ref "--image-ref" "$IMAGE_REF"
+validate_image_ref "--builder-image" "$BUILDER_IMAGE"
+
+case "$ROOTFS" in
+    btrfs|ext4|xfs) ;;
+    *)
+        echo "Unsupported --rootfs value: $ROOTFS (expected btrfs, ext4, or xfs)" >&2
+        exit 2
+        ;;
+esac
+
+case "$XZ_LEVEL" in
+    -[0-9]) ;;
+    *)
+        echo "Unsupported --xz-level value: $XZ_LEVEL (expected -0 through -9)" >&2
+        exit 2
+        ;;
+esac
 
 if ! command -v podman >/dev/null 2>&1; then
     echo "podman is required to build the portable USB image" >&2

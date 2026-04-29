@@ -6,6 +6,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.yaml"
 DOC_PATH = REPO_ROOT / "docs" / "install" / "sandbox.md"
+PINNED_ALPINE_HELPER = "docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"
 
 
 def test_sandbox_compose_defines_core_services():
@@ -81,6 +82,33 @@ def test_sandbox_bundle_has_docs_and_helpers():
         "scripts/sandbox/stop.ps1",
     ]:
         assert (REPO_ROOT / rel_path).exists()
+
+
+def test_sandbox_start_helpers_use_digest_pinned_alpine():
+    shell_helper = (REPO_ROOT / "scripts" / "sandbox" / "start.sh").read_text(
+        encoding="utf-8"
+    )
+    powershell_helper = (REPO_ROOT / "scripts" / "sandbox" / "start.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert PINNED_ALPINE_HELPER in shell_helper
+    assert PINNED_ALPINE_HELPER in powershell_helper
+    assert "docker.io/library/alpine:3.20" not in shell_helper
+    assert "docker.io/library/alpine:3.20" not in powershell_helper
+
+
+def test_sandbox_stop_helpers_include_optional_profiles():
+    shell_helper = (REPO_ROOT / "scripts" / "sandbox" / "stop.sh").read_text(
+        encoding="utf-8"
+    )
+    powershell_helper = (REPO_ROOT / "scripts" / "sandbox" / "stop.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    for profile in ("search", "llm", "diffusion"):
+        assert f"--profile {profile}" in shell_helper
+        assert f"--profile {profile}" in powershell_helper
 
 
 def test_optional_profiles_are_hardened_and_use_production_entrypoints():

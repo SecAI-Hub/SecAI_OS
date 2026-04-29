@@ -6,7 +6,7 @@ This guide covers running SecAI OS services locally for development and testing,
 
 ## Prerequisites
 
-- **Go 1.22+** for building Go services (registry, tool-firewall, airlock)
+- **Go 1.25+** for building Go services
 - **Python 3.11+** for running Python services (quarantine, UI, search-mediator)
 - **pip** for Python dependency management
 - **git** for version control
@@ -25,9 +25,13 @@ cd SecAI_OS
 
 ## Build Go Services
 
-Each Go service is in its own directory under `services/`.
+Each Go service is in its own directory under `services/`. To exercise the same service set as CI:
 
-### Registry
+```bash
+make test-go
+```
+
+To build or run an individual service, enter that service directory and use the normal Go tooling:
 
 ```bash
 cd services/registry
@@ -35,37 +39,19 @@ go build -o registry .
 ./registry
 ```
 
-The registry listens on port 8470. It will create a manifest file at the configured path (defaults to `./manifest.yaml` in dev mode).
-
-### Tool Firewall
-
-```bash
-cd services/tool-firewall
-go build -o tool-firewall .
-./tool-firewall
-```
-
-The tool firewall listens on port 8475.
-
-### Airlock
-
-```bash
-cd services/airlock
-go build -o airlock .
-./airlock
-```
-
-The airlock listens on port 8490. It is disabled by default; set `AIRLOCK_ENABLED=true` to activate it in dev mode.
+The Go service set is: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, and `incident-recorder`.
 
 ---
 
 ## Install Python Dependencies
 
 ```bash
-pip install -r services/quarantine/requirements.txt
-pip install -r services/ui/requirements.txt
-pip install -r services/search-mediator/requirements.txt
-pip install -r tests/requirements.txt
+python -m pip install -r requirements-ci.txt
+python -m pip install -r services/agent/requirements.txt
+python -m pip install -r services/search-mediator/requirements.txt
+python -m pip install --require-hashes -r services/ui/requirements.lock
+python -m pip install --require-hashes -r services/quarantine/requirements.lock
+python -m pip install -e services/agent -e services/ui -e services/quarantine
 ```
 
 ---
@@ -76,7 +62,7 @@ pip install -r tests/requirements.txt
 
 ```bash
 cd services/ui
-python app.py
+python -m ui.app
 ```
 
 The UI listens on port 8480. Open `http://localhost:8480` in a browser.
@@ -87,7 +73,7 @@ The quarantine pipeline runs as a watcher service that monitors the quarantine d
 
 ```bash
 cd services/quarantine
-python watcher.py
+python -m quarantine.watcher
 ```
 
 ### Search Mediator
@@ -106,29 +92,21 @@ The search mediator listens on port 8485. Requires a running SearXNG instance an
 ### Go Tests
 
 ```bash
-# Registry tests
-cd services/registry && go test -v ./...
-
-# Tool Firewall tests
-cd services/tool-firewall && go test -v ./...
-
-# Airlock tests
-cd services/airlock && go test -v ./...
+make test-go
 ```
 
 ### Python Tests
 
 ```bash
 # All Python tests
-cd tests
-python -m pytest -v
+PYTHONPATH=services python -m pytest tests/ -v
 
 # Specific test suites
 python -m pytest tests/test_quarantine_pipeline.py -v
-python -m pytest test_ui.py -v
-python -m pytest test_memory_protection.py -v
-python -m pytest test_differential_privacy.py -v
-python -m pytest test_traffic_analysis.py -v
+python -m pytest tests/test_ui.py -v
+python -m pytest tests/test_memory_protection.py -v
+python -m pytest tests/test_differential_privacy.py -v
+python -m pytest tests/test_traffic_analysis.py -v
 ```
 
 ---

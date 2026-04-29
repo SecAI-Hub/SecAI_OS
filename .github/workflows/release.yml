@@ -91,6 +91,7 @@ jobs:
       - name: Build (linux/amd64)
         working-directory: services/${{ matrix.service }}
         run: |
+          mkdir -p ../../dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../../dist/${{ matrix.service }}-linux-amd64 .
@@ -98,6 +99,7 @@ jobs:
       - name: Build (linux/arm64)
         working-directory: services/${{ matrix.service }}
         run: |
+          mkdir -p ../../dist
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
             go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
             -o ../../dist/${{ matrix.service }}-linux-arm64 .
@@ -126,23 +128,56 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Syft
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+      - name: Prepare SBOM output directory
+        run: mkdir -p dist
 
-      - name: Generate Python SBOMs
-        run: |
-          mkdir -p dist
-          for svc in agent ui quarantine common; do
-            if [ -d "services/${svc}" ]; then
-              syft dir:services/${svc} -o cyclonedx-json=dist/${svc}-sbom.cdx.json
-            fi
-          done
-          # Diffusion worker and search mediator
-          for svc in diffusion-worker search-mediator; do
-            if [ -d "services/${svc}" ]; then
-              syft dir:services/${svc} -o cyclonedx-json=dist/${svc}-sbom.cdx.json
-            fi
-          done
+      - name: Generate agent SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/agent
+          format: cyclonedx-json
+          output-file: dist/agent-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Generate ui SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/ui
+          format: cyclonedx-json
+          output-file: dist/ui-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Generate quarantine SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/quarantine
+          format: cyclonedx-json
+          output-file: dist/quarantine-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Generate common SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/common
+          format: cyclonedx-json
+          output-file: dist/common-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Generate diffusion-worker SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/diffusion-worker
+          format: cyclonedx-json
+          output-file: dist/diffusion-worker-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Generate search-mediator SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: services/search-mediator
+          format: cyclonedx-json
+          output-file: dist/search-mediator-sbom.cdx.json
+          upload-artifact: false
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -158,7 +193,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Build sandbox images required for VEX generation
-        run: docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion
+        run: |
+          for attempt in 1 2 3; do
+            if docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Sandbox image build failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Sandbox image build failed; retrying in $((attempt * 15)) seconds..."
+            sleep $((attempt * 15))
+          done
 
       - name: Generate sandbox OpenVEX document
         run: |
@@ -301,7 +347,7 @@ jobs:
       - name: Build QCOW2
         run: |
           bash scripts/vm/build-qcow2.sh --ci \
-            --image-ref "ghcr.io/secai-hub/secai_os:${{ github.ref_name }}"
+            --image-ref "ghcr.io/secai-hub/secai_os:latest"
 
       - name: Build OVA from QCOW2
         run: bash scripts/vm/build-ova.sh

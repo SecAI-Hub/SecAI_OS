@@ -3,7 +3,8 @@ name: VM Boot Smoke Test (Tier 2)
 # Tier 2: Real VM boot test on self-hosted KVM runner.
 # All checks run inside the guest via SSH (not host-side).
 #
-# REQUIRES: self-hosted runner with KVM, QEMU, cloud-utils, and ssh-keygen.
+# REQUIRES: self-hosted runner with KVM, QEMU, libvirt/virt-install, cloud-utils,
+# and ssh-keygen.
 # Gate: only runs when vars.HAS_KVM_RUNNER == 'true'.
 #
 # SECURITY: Never triggered by pull_request (fork safety for self-hosted runners).
@@ -110,9 +111,9 @@ jobs:
       - name: Wait for SSH readiness
         run: |
           echo "Waiting for guest SSH (up to 5 minutes)..."
-          SSH_OPTS="-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key"
+          SSH_OPTS=(-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key)
           for i in $(seq 1 60); do
-            if ssh $SSH_OPTS -p 2222 root@localhost echo "SSH ready" 2>/dev/null; then
+            if ssh "${SSH_OPTS[@]}" -p 2222 root@localhost echo "SSH ready" 2>/dev/null; then
               echo "Guest SSH is up after $((i * 5)) seconds"
               break
             fi
@@ -121,34 +122,34 @@ jobs:
 
       - name: "Check: systemd system state"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          STATE=$($SSH "systemctl is-system-running" 2>/dev/null || true)
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          STATE=$("${SSH[@]}" "systemctl is-system-running" 2>/dev/null || true)
           echo "System state: $STATE"
           if [ "$STATE" != "running" ] && [ "$STATE" != "degraded" ]; then
             echo "FAIL: expected running or degraded, got $STATE"
-            $SSH "systemctl --failed" || true
+            "${SSH[@]}" "systemctl --failed" || true
             exit 1
           fi
 
       - name: "Check: auth endpoint responds"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          $SSH "curl -sf http://127.0.0.1:8480/api/auth/status" || {
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          "${SSH[@]}" "curl -sf http://127.0.0.1:8480/api/auth/status" || {
             echo "FAIL: auth endpoint did not respond"
             exit 1
           }
 
       - name: "Check: health endpoint"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          $SSH "curl -sf http://127.0.0.1:8480/health" || {
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          "${SSH[@]}" "curl -sf http://127.0.0.1:8480/health" || {
             echo "FAIL: health endpoint did not respond"
             exit 1
           }
 
       - name: "Check: disabled services stay inactive (offline_private profile)"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
           DISABLED=(
             secure-ai-diffusion.service
             secure-ai-airlock.service
@@ -158,7 +159,7 @@ jobs:
             secure-ai-enable-diffusion.path
           )
           for svc in "${DISABLED[@]}"; do
-            if $SSH "systemctl is-active --quiet $svc" 2>/dev/null; then
+            if "${SSH[@]}" "systemctl is-active --quiet $svc" 2>/dev/null; then
               echo "FAIL: $svc is active (should be disabled in offline_private)"
               exit 1
             fi
@@ -167,31 +168,31 @@ jobs:
 
       - name: "Check: default profile is offline_private"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          PROFILE=$($SSH "cat /var/lib/secure-ai/state/profile.json 2>/dev/null || echo '{}'")
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          PROFILE=$("${SSH[@]}" "cat /var/lib/secure-ai/state/profile.json 2>/dev/null || echo '{}'")
           echo "Profile state: $PROFILE"
           # On first boot without wizard, profile.json may not exist yet — fallback is offline_private
 
       - name: "Check: vault API responds"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          $SSH "curl -sf http://127.0.0.1:8480/api/vault/status" || {
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          "${SSH[@]}" "curl -sf http://127.0.0.1:8480/api/vault/status" || {
             echo "FAIL: vault status endpoint did not respond"
             exit 1
           }
 
       - name: "Check: quarantine directory exists"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          $SSH "test -d /var/lib/secure-ai/quarantine" || {
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          "${SSH[@]}" "test -d /var/lib/secure-ai/quarantine" || {
             echo "FAIL: quarantine directory does not exist"
             exit 1
           }
 
       - name: "Check: rpm-ostree deployment"
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost"
-          $SSH "rpm-ostree status" || {
+          SSH=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key -p 2222 root@localhost)
+          "${SSH[@]}" "rpm-ostree status" || {
             echo "FAIL: rpm-ostree status failed"
             exit 1
           }

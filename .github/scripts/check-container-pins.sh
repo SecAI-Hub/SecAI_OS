@@ -80,6 +80,18 @@ def compose_files() -> list[pathlib.Path]:
     return sorted(set(files))
 
 
+def helper_script_files() -> list[pathlib.Path]:
+    roots = [repo / "scripts", repo / ".github" / "scripts", repo / "files" / "scripts"]
+    files: list[pathlib.Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix in {".sh", ".bash", ".ps1"}:
+                files.append(path)
+    return sorted(files)
+
+
 errors = 0
 checked = 0
 
@@ -119,6 +131,21 @@ for path in compose_files():
         if "@sha256:" not in image_ref:
             print(f"ERROR: {rel(path)}:{line_no}: unpinned compose image {image_ref}")
             errors += 1
+
+script_image_re = re.compile(
+    r"(?P<ref>(?:docker\.io|quay\.io|ghcr\.io)/(?!secai-hub/secai_os\b)"
+    r"[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+(?:@[A-Za-z0-9:]+)?)"
+)
+for path in helper_script_files():
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        for match in script_image_re.finditer(line):
+            image_ref = match.group("ref").strip('"\'')
+            checked += 1
+            if "@sha256:" not in image_ref:
+                print(f"ERROR: {rel(path)}:{line_no}: unpinned helper image {image_ref}")
+                errors += 1
 
 if errors:
     print(f"FAIL: {errors} unpinned container image reference(s) found")

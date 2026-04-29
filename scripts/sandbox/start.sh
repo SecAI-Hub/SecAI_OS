@@ -10,6 +10,7 @@ ENV_FILE="$SANDBOX_DIR/.env"
 TOKEN_FILE="$RUNTIME_DIR/service-token"
 STATE_VOLUME="secai-sandbox_secai-state"
 RUN_VOLUME="secai-sandbox_secai-run"
+ALPINE_HELPER_IMAGE="docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"
 
 WITH_INFERENCE=0
 WITH_DIFFUSION=0
@@ -90,11 +91,11 @@ fi
 "$RUNTIME_CMD" run --rm \
     -v "$STATE_VOLUME:/state" \
     -v "$RUNTIME_DIR:/overlay:ro" \
-    docker.io/library/alpine:3.20 \
+    "$ALPINE_HELPER_IMAGE" \
     sh -c "mkdir -p /state/auth /state/import-staging /state/logs /state/quarantine /state/registry /state/state /state/vault/user_docs /state/vault/outputs && if [ -f /overlay/state/profile.json ]; then cp /overlay/state/profile.json /state/state/profile.json; chmod 0644 /state/state/profile.json; fi && chown -R 65534:65534 /state" >/dev/null
 "$RUNTIME_CMD" run --rm \
     -v "$RUN_VOLUME:/runstate" \
-    docker.io/library/alpine:3.20 \
+    "$ALPINE_HELPER_IMAGE" \
     sh -c "mkdir -p /runstate && chown -R 65534:65534 /runstate && chmod 0770 /runstate" >/dev/null
 
 set -- "$COMPOSE_RUNTIME" compose -f "$SANDBOX_DIR/compose.yaml"

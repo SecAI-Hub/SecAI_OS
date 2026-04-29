@@ -15,8 +15,10 @@ CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 ARTIFACTS_JSON = REPO_ROOT / "docs" / "release-artifacts.json"
 SAMPLE_BUNDLE = REPO_ROOT / "docs" / "sample-release-bundle.md"
 VERIFY_RELEASE = REPO_ROOT / "files" / "scripts" / "verify-release.sh"
+BOOTSTRAP = REPO_ROOT / "files" / "scripts" / "secai-bootstrap.sh"
 MAKEFILE = REPO_ROOT / "Makefile"
 QUARANTINE_PYPROJECT = REPO_ROOT / "services" / "quarantine" / "pyproject.toml"
+BUILD_USB = REPO_ROOT / "scripts" / "build-usb-image.sh"
 
 
 def _load_artifacts_json():
@@ -124,6 +126,21 @@ class TestReleaseWorkflowStructure:
         content = _read_release_yml()
         assert "Sandbox OpenVEX Smoke" in content
 
+    def test_release_go_build_creates_dist_directory(self):
+        content = _read_release_yml()
+        assert "mkdir -p ../../dist" in content
+
+    def test_release_python_sboms_use_pinned_action(self):
+        content = _read_release_yml()
+        assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
+        assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
+        assert "dist/search-mediator-sbom.cdx.json" in content
+
+    def test_release_sandbox_vex_build_retries(self):
+        content = _read_release_yml()
+        assert "for attempt in 1 2 3" in content
+        assert "Sandbox image build failed after" in content
+
 
 class TestCiWorkflowStructure:
     def test_ci_has_sandbox_openvex_smoke_job(self):
@@ -175,6 +192,16 @@ class TestCiWorkflowStructure:
         assert "Hadolint & Semgrep" in content
         assert ".github/scripts/check-hadolint.sh" in content
         assert ".github/scripts/run-semgrep.sh" in content
+
+    def test_ci_syft_usage_comes_from_pinned_action(self):
+        content = _read_ci_yml()
+        assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
+        assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
+
+    def test_ci_govulncheck_install_is_pinned(self):
+        content = _read_ci_yml()
+        assert "golang.org/x/vuln/cmd/govulncheck@latest" not in content
+        assert "golang.org/x/vuln/cmd/govulncheck@v1.3.0" in content
 
 
 class TestSampleReleaseBundle:
@@ -239,6 +266,23 @@ class TestVerifyReleaseScript:
         assert "release-keys" in content
 
 
+class TestBootstrapScript:
+    def test_dry_run_does_not_install_policy_before_rebase(self):
+        content = BOOTSTRAP.read_text(encoding="utf-8")
+        assert 'VERIFY_KEY="$TEMP_KEY"' in content
+        assert "would install cosign via dnf" in content
+        assert "DRY RUN — would install public key" in content
+        policy_section = content.split('step "Configuring container signing policy"', 1)[1]
+        dry_run_block = policy_section.split('if [ "$DRY_RUN" = true ]; then', 1)[1].split("else", 1)[0]
+        assert "cp \"$TEMP_KEY\" \"$COSIGN_PUB_DEST\"" not in dry_run_block
+        assert "cat > \"$REGISTRIES_YAML\"" not in dry_run_block
+
+    def test_fresh_policy_fails_closed_and_digest_is_validated(self):
+        content = BOOTSTRAP.read_text(encoding="utf-8")
+        assert "^sha256:[0-9A-Fa-f]{64}$" in content
+        assert "'default': [{'type': 'reject'}]" in content
+
+
 class TestMakefileTargets:
     def test_has_sandbox_vex_target(self):
         content = MAKEFILE.read_text(encoding="utf-8")
@@ -257,3 +301,32 @@ class TestBuildQcow2Script:
             encoding="utf-8"
         )
         assert "--image-ref" in content
+
+    def test_vm_rebase_is_signed_first(self):
+        content = (REPO_ROOT / "scripts" / "vm" / "build-qcow2.sh").read_text(
+            encoding="utf-8"
+        )
+        assert "ostree-unverified-registry" not in content
+        assert "ostree-image-signed:docker://${CONTAINER_IMAGE}" in content
+        assert "secai-cosign.pub" in content
+        assert "use-sigstore-attachments: true" in content
+
+    def test_vm_ci_runs_installer_and_protects_kickstart_secrets(self):
+        content = (REPO_ROOT / "scripts" / "vm" / "build-qcow2.sh").read_text(
+            encoding="utf-8"
+        )
+        assert 'if [ "$CI_MODE" = true ]; then' in content
+        assert 'virt-install "${VIRT_INSTALL_ARGS[@]}"' in content
+        assert 'chmod 0600 "${OUTPUT_DIR}/secai-ks.cfg"' in content
+
+
+class TestBuildUsbScript:
+    def test_builder_image_is_digest_pinned(self):
+        content = BUILD_USB.read_text(encoding="utf-8")
+        assert "bootc-image-builder:latest@sha256:" in content
+
+    def test_user_supplied_options_are_validated(self):
+        content = BUILD_USB.read_text(encoding="utf-8")
+        assert "validate_image_ref" in content
+        assert "Unsupported --rootfs value" in content
+        assert "Unsupported --xz-level value" in content

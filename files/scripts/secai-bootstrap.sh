@@ -110,6 +110,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ -n "$DIGEST" ] && ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9A-Fa-f]{64}$'; then
+    fatal "--digest must be a sha256 digest in the form sha256:<64 hex characters>"
+fi
+
+if ! printf '%s' "$TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+    fatal "--tag contains unsupported characters. Use an OCI tag such as latest or v1.2.3."
+fi
+
 # Build the image reference
 if [ -n "$DIGEST" ]; then
     IMAGE_REF="${REGISTRY}@${DIGEST}"
@@ -141,7 +149,7 @@ if [ "$FEDORA_VERSION" != "unknown" ] && [ "$FEDORA_VERSION" -lt 42 ] 2>/dev/nul
 fi
 
 # Check for required tools
-for tool in curl sha256sum; do
+for tool in curl grep python3 sha256sum; do
     command -v "$tool" &>/dev/null || fatal "Required tool not found: $tool"
 done
 info "Required tools: present"
@@ -154,6 +162,10 @@ step "Ensuring cosign is installed"
 if command -v cosign &>/dev/null; then
     info "cosign: already installed ($(cosign version 2>/dev/null | head -1 || echo 'unknown version'))"
 else
+    if [ "$DRY_RUN" = true ]; then
+        warn "DRY RUN — would install cosign via dnf before verifying the image signature."
+        fatal "cosign is required for --dry-run verification; install cosign or rerun without --dry-run."
+    fi
     info "Installing cosign via dnf..."
     dnf install -y cosign || fatal "Failed to install cosign"
     command -v cosign &>/dev/null || fatal "cosign not available after install"
@@ -186,30 +198,38 @@ info "Key fingerprint verified: ${ACTUAL_SHA256:0:16}..."
 # ---------------------------------------------------------------------------
 step "Configuring container signing policy"
 
-# Install the public key
-mkdir -p "$(dirname "$COSIGN_PUB_DEST")"
-cp "$TEMP_KEY" "$COSIGN_PUB_DEST"
-chmod 0644 "$COSIGN_PUB_DEST"
-info "Installed public key: ${COSIGN_PUB_DEST}"
+VERIFY_KEY="$COSIGN_PUB_DEST"
 
-# Write registries.d config
-mkdir -p "$(dirname "$REGISTRIES_YAML")"
-cat > "$REGISTRIES_YAML" <<'YAML'
+if [ "$DRY_RUN" = true ]; then
+    VERIFY_KEY="$TEMP_KEY"
+    warn "DRY RUN — would install public key: ${COSIGN_PUB_DEST}"
+    warn "DRY RUN — would write registries config: ${REGISTRIES_YAML}"
+    warn "DRY RUN — would merge sigstore policy into: ${POLICY_JSON}"
+else
+    # Install the public key
+    mkdir -p "$(dirname "$COSIGN_PUB_DEST")"
+    cp "$TEMP_KEY" "$COSIGN_PUB_DEST"
+    chmod 0644 "$COSIGN_PUB_DEST"
+    info "Installed public key: ${COSIGN_PUB_DEST}"
+
+    # Write registries.d config
+    mkdir -p "$(dirname "$REGISTRIES_YAML")"
+    cat > "$REGISTRIES_YAML" <<'YAML'
 ## SecAI OS — enable sigstore signature attachments for cosign-signed images.
 docker:
   ghcr.io/secai-hub/secai_os:
     use-sigstore-attachments: true
 YAML
-chmod 0644 "$REGISTRIES_YAML"
-info "Wrote registries config: ${REGISTRIES_YAML}"
+    chmod 0644 "$REGISTRIES_YAML"
+    info "Wrote registries config: ${REGISTRIES_YAML}"
 
-# Merge sigstore verification into policy.json
-if [ -f "$POLICY_JSON" ]; then
-    # Back up the original
-    cp "$POLICY_JSON" "${POLICY_JSON}.pre-secai"
-    info "Backed up original policy: ${POLICY_JSON}.pre-secai"
+    # Merge sigstore verification into policy.json
+    if [ -f "$POLICY_JSON" ]; then
+        # Back up the original
+        cp "$POLICY_JSON" "${POLICY_JSON}.pre-secai"
+        info "Backed up original policy: ${POLICY_JSON}.pre-secai"
 
-    python3 -c "
+        python3 -c "
 import json, sys
 
 with open('${POLICY_JSON}') as f:
@@ -228,14 +248,15 @@ with open('${POLICY_JSON}', 'w') as f:
     json.dump(policy, f, indent=2)
     f.write('\n')
 " || fatal "Failed to update ${POLICY_JSON}"
-    info "Updated policy.json with sigstoreSigned entry for ${REGISTRY}"
-else
-    # Create a minimal policy from scratch
-    python3 -c "
+        info "Updated policy.json with sigstoreSigned entry for ${REGISTRY}"
+    else
+        # Create a minimal policy from scratch. Fail closed for all other
+        # remote image pulls on hosts that do not already define a policy.
+        python3 -c "
 import json
 
 policy = {
-    'default': [{'type': 'insecureAcceptAnything'}],
+    'default': [{'type': 'reject'}],
     'transports': {
         'docker': {
             'ghcr.io/secai-hub/secai_os': [{
@@ -252,7 +273,8 @@ with open('${POLICY_JSON}', 'w') as f:
     json.dump(policy, f, indent=2)
     f.write('\n')
 " || fatal "Failed to create ${POLICY_JSON}"
-    info "Created policy.json with sigstoreSigned entry"
+        info "Created policy.json with sigstoreSigned entry and reject-by-default fallback"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -261,7 +283,7 @@ fi
 step "Verifying image signature"
 
 info "Image: ${IMAGE_REF}"
-if cosign verify --key "$COSIGN_PUB_DEST" "$IMAGE_REF" 2>&1; then
+if cosign verify --key "$VERIFY_KEY" "$IMAGE_REF" 2>&1; then
     info "Image signature: VERIFIED"
 else
     fatal "Image signature verification FAILED for ${IMAGE_REF}. Aborting."

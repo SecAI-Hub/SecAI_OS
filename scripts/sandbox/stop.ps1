@@ -4,12 +4,12 @@ $sandboxDir = Join-Path $repoRoot "deploy\\sandbox"
 $composeFile = Join-Path $sandboxDir "compose.yaml"
 
 if (Get-Command docker -ErrorAction SilentlyContinue) {
-    & docker compose -f $composeFile down --remove-orphans
+    & docker compose -f $composeFile --profile search --profile llm --profile diffusion down --remove-orphans
     exit $LASTEXITCODE
 }
 
 if (Get-Command podman -ErrorAction SilentlyContinue) {
-    & podman compose -f $composeFile down --remove-orphans
+    & podman compose -f $composeFile --profile search --profile llm --profile diffusion down --remove-orphans
     exit $LASTEXITCODE
 }
 
