@@ -189,21 +189,32 @@
             svcList.forEach(function(svc) {
                 var s = services[svc.key] || {};
                 var ok = s.status === 'ok';
+                var policyDisabled = ok && (
+                    (svc.key === 'airlock' && s.enabled === false) ||
+                    (svc.key === 'search_mediator' && s.search_enabled === false)
+                );
                 var optionalDisabled =
                     deploymentMode === 'sandbox' &&
                     (svc.key === 'inference' || svc.key === 'diffusion') &&
-                    (s.status === 'unreachable' || s.status === 'circuit_open');
-                if (ok) onlineCount++;
+                    (s.status === 'unreachable' || s.status === 'circuit_open' || s.status === 'not_available');
+                if (ok && !policyDisabled) onlineCount++;
                 if (optionalDisabled) optionalCount++;
+                var statusLabel = optionalDisabled ? 'not available' : (policyDisabled ? 'policy off' : (ok ? 'online' : 'offline'));
+                var statusClass = ok && !policyDisabled ? 'badge-success' : 'badge-muted';
+                var detail = ok ? 'Healthy' : 'Not responding';
+                if (optionalDisabled) {
+                    detail = s.detail || 'Optional in sandbox mode. Use Settings to start the matching profile.';
+                } else if (policyDisabled && svc.key === 'airlock') {
+                    detail = 'Airlock service is healthy, but outbound downloads are disabled by the active offline policy. Start Web-Assisted Research mode to allow approved downloads.';
+                } else if (policyDisabled && svc.key === 'search_mediator') {
+                    detail = 'Search mediator is healthy, but web search is disabled by the active offline policy. Start Web-Assisted Research mode to enable Tor-routed search.';
+                } else if (s.detail) {
+                    detail = s.detail;
+                }
                 rows += '<tr>' +
                     '<td style="font-weight:500">' + esc(svc.name) + '</td>' +
-                    '<td><span class="badge ' + (ok ? 'badge-success' : 'badge-muted') + '">' +
-                    (optionalDisabled ? 'optional' : (ok ? 'online' : 'offline')) + '</span></td>' +
-                    '<td>' + (
-                        optionalDisabled
-                            ? 'Disabled in sandbox mode until the matching profile is enabled.'
-                            : (s.detail ? esc(s.detail) : (ok ? 'Healthy' : 'Not responding'))
-                    ) + '</td>' +
+                    '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>' +
+                    '<td title="' + esc(detail) + '">' + esc(detail) + '</td>' +
                 '</tr>';
             });
 
@@ -292,7 +303,12 @@
             var data = await resp.json();
             var badge = document.getElementById('secureboot-badge');
             var detail = document.getElementById('secureboot-detail');
-            if (data.enabled) {
+            if (data.supported === false || data.status === 'not_available' || data.secure_boot === 'not_available') {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                detail.textContent = data.detail || 'Secure Boot status is not available in this deployment.';
+                badge.title = detail.textContent;
+            } else if (data.enabled) {
                 badge.className = 'badge badge-success';
                 badge.textContent = 'enabled';
                 detail.textContent = data.detail || 'Secure Boot chain verified.';
@@ -312,7 +328,12 @@
             var data = await resp.json();
             var badge = document.getElementById('tpm2-badge');
             var detail = document.getElementById('tpm2-detail');
-            if (data.sealed) {
+            if (data.supported === false || data.status === 'not_available') {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                detail.textContent = data.detail || 'TPM2 status is not available in this deployment.';
+                badge.title = detail.textContent;
+            } else if (data.sealed) {
                 badge.className = 'badge badge-success';
                 badge.textContent = 'sealed';
                 detail.textContent = data.detail || 'Vault key sealed to TPM2 PCRs.';
@@ -431,21 +452,33 @@
 
             var verityCount = 0;
             var signedCount = 0;
+            var notAvailableCount = 0;
             var rows = '';
             models.forEach(function(m) {
                 if (m.fsverity_enabled) verityCount++;
                 if (m.provenance_signed) signedCount++;
+                if (m.fsverity_status === 'not_available' || m.provenance_status === 'not_available') notAvailableCount++;
+                var verityLabel = m.fsverity_status === 'not_available' ? 'not available' : (m.fsverity_enabled ? 'enabled' : 'off');
+                var provenanceLabel = m.provenance_status === 'not_available' ? 'not available' : (m.provenance_signed ? 'signed' : 'unsigned');
+                var rowTitle = m.detail || '';
                 rows += '<tr>' +
                     '<td style="font-weight:500">' + esc(m.name) + '</td>' +
-                    '<td><span class="badge ' + (m.fsverity_enabled ? 'badge-success' : 'badge-muted') + '">' +
-                        (m.fsverity_enabled ? 'enabled' : 'off') + '</span></td>' +
-                    '<td><span class="badge ' + (m.provenance_signed ? 'badge-success' : 'badge-muted') + '">' +
-                        (m.provenance_signed ? 'signed' : 'unsigned') + '</span></td>' +
+                    '<td title="' + esc(rowTitle) + '"><span class="badge ' + (m.fsverity_enabled ? 'badge-success' : 'badge-muted') + '">' +
+                        esc(verityLabel) + '</span></td>' +
+                    '<td title="' + esc(rowTitle) + '"><span class="badge ' + (m.provenance_signed ? 'badge-success' : 'badge-muted') + '">' +
+                        esc(provenanceLabel) + '</span></td>' +
                 '</tr>';
             });
 
             tbody.innerHTML = rows;
             table.style.display = '';
+            if (notAvailableCount === models.length) {
+                detail.textContent = models[0].detail || 'Host-backed fs-verity and signed provenance are not available in this deployment.';
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                return;
+            }
+
             detail.textContent = verityCount + '/' + models.length + ' models with fs-verity, ' +
                 signedCount + '/' + models.length + ' provenance manifests signed.';
 
@@ -500,20 +533,31 @@
             var subs = data.subsystems || {};
             var detailParts = [];
             var rows = '';
+            function stateLabel(value) {
+                return value === 'not_available' ? 'not available' : value;
+            }
+            function stateBadge(value, successValue, warningValues, dangerValues) {
+                if (value === successValue) return 'badge-success';
+                if (warningValues.indexOf(value) !== -1) return 'badge-warning';
+                if (dangerValues.indexOf(value) !== -1) return 'badge-danger';
+                return 'badge-muted';
+            }
 
             /* Attestor */
             var att = subs.attestor || 'unknown';
-            detailParts.push('Attestor: ' + att);
+            detailParts.push('Attestor: ' + stateLabel(att));
             rows += '<tr><td>Runtime Attestor</td><td><span class="badge ' +
-                (att === 'attested' ? 'badge-success' : att === 'degraded' ? 'badge-warning' : att === 'failed' ? 'badge-danger' : 'badge-muted') +
-                '">' + att + '</span></td></tr>';
+                stateBadge(att, 'attested', ['degraded', 'pending', 'unknown'], ['failed']) +
+                '" title="' + (att === 'not_available' ? 'Host runtime attestation is not available inside the Docker sandbox.' : '') + '">' +
+                stateLabel(att) + '</span></td></tr>';
 
             /* Integrity Monitor */
             var integ = subs.integrity_monitor || 'unknown';
-            detailParts.push('Integrity: ' + integ);
+            detailParts.push('Integrity: ' + stateLabel(integ));
             rows += '<tr><td>Integrity Monitor</td><td><span class="badge ' +
-                (integ === 'trusted' ? 'badge-success' : integ === 'degraded' ? 'badge-warning' : integ === 'recovery_required' ? 'badge-danger' : 'badge-muted') +
-                '">' + integ + '</span></td></tr>';
+                stateBadge(integ, 'trusted', ['degraded', 'unknown'], ['recovery_required']) +
+                '" title="' + (integ === 'not_available' ? 'Host integrity monitor is not included in the Docker sandbox.' : '') + '">' +
+                stateLabel(integ) + '</span></td></tr>';
 
             /* Incidents */
             var inc = subs.incidents || {};
@@ -550,19 +594,22 @@
             var allCompliant = true;
             var rows = '';
             slos.forEach(function(s) {
-                if (!s.compliant) allCompliant = false;
+                var notApplicable = s.status === 'not_applicable';
+                if (!s.compliant && !notApplicable) allCompliant = false;
+                var label = notApplicable ? 'n/a' : (s.compliant ? 'met' : 'unmet');
+                var badgeClass = notApplicable ? 'badge-muted' : (s.compliant ? 'badge-success' : 'badge-warning');
                 rows += '<tr>' +
                     '<td>' + esc(s.name) + '</td>' +
                     '<td>' + esc(s.target) + '</td>' +
                     '<td>' + esc(s.current_value) + '</td>' +
-                    '<td><span class="badge ' + (s.compliant ? 'badge-success' : 'badge-danger') + '">' +
-                        (s.compliant ? 'met' : 'breached') + '</span></td>' +
+                    '<td><span class="badge ' + badgeClass + '" title="' + esc(s.detail || '') + '">' +
+                        label + '</span></td>' +
                 '</tr>';
             });
 
             tbody.innerHTML = rows;
             badge.className = allCompliant ? 'badge badge-success' : 'badge badge-warning';
-            badge.textContent = allCompliant ? 'all met' : 'breach';
+            badge.textContent = allCompliant ? 'all met' : 'unmet';
         } catch(e) {
             document.getElementById('slo-tbody').innerHTML = '<tr><td colspan="4" class="text-muted">Could not load SLO data</td></tr>';
         }

@@ -76,13 +76,16 @@ def main() -> int:
 
     source_policy = repo_root / "files" / "system" / "etc" / "secure-ai" / "policy"
     source_config = repo_root / "files" / "system" / "etc" / "secure-ai" / "config"
+    source_catalog = repo_root / "files" / "system" / "etc" / "secure-ai" / "model-catalog.yaml"
 
     runtime_policy = runtime_dir / "policy"
     runtime_config = runtime_dir / "config"
     runtime_state = runtime_dir / "state"
+    runtime_catalog = runtime_dir / "model-catalog.yaml"
 
     _copy_tree(source_policy, runtime_policy)
     _copy_tree(source_config, runtime_config)
+    shutil.copy2(source_catalog, runtime_catalog)
 
     policy_path = runtime_policy / "policy.yaml"
     config_path = runtime_config / "appliance.yaml"

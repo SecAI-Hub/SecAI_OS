@@ -285,6 +285,7 @@ airlock:
     - "https://registry.ollama.ai/"
     - "https://cdn-lfs.huggingface.co/"
     - "https://cdn-lfs-us-1.huggingface.co/"
+    - "https://cas-bridge.xethub.hf.co/"
 
   # HTTP methods allowed for egress. Only GET and POST by default.
   allowed_methods: ["GET", "POST"]

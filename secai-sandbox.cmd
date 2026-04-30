@@ -23,7 +23,11 @@ if /I "%ACTION%"=="up" (
 )
 if /I "%ACTION%"=="stop" goto stop_stack
 if /I "%ACTION%"=="down" goto stop_stack
-if /I "%ACTION%"=="restart" goto restart_stack
+if /I "%ACTION%"=="restart" (
+    shift
+    set "RESTART_FIRST=1"
+    goto start_stack
+)
 if /I "%ACTION%"=="status" goto status_stack
 if /I "%ACTION%"=="ps" goto status_stack
 if /I "%ACTION%"=="logs" goto logs_stack
@@ -81,17 +85,15 @@ echo Unknown start option: %~1
 exit /b 2
 
 :run_start
+if defined RESTART_FIRST (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%STOP_SCRIPT%"
+    if errorlevel 1 exit /b !ERRORLEVEL!
+)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%START_SCRIPT%" !PS_ARGS!
 exit /b %ERRORLEVEL%
 
 :stop_stack
 powershell -NoProfile -ExecutionPolicy Bypass -File "%STOP_SCRIPT%"
-exit /b %ERRORLEVEL%
-
-:restart_stack
-call "%~f0" stop
-if errorlevel 1 exit /b %ERRORLEVEL%
-call "%~f0" start
 exit /b %ERRORLEVEL%
 
 :status_stack

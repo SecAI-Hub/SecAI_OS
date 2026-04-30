@@ -3,6 +3,34 @@
 {% block page_title %}Model Management{% endblock %}
 {% block content_class %}content-wide{% endblock %}
 
+{% block extra_css %}
+<style nonce="{{ csp_nonce }}">
+    .catalog-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.75rem;
+    }
+    .catalog-filter {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 0.45rem 0.65rem;
+        font-size: 0.82rem;
+        font-family: inherit;
+    }
+    .catalog-note {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+        margin-bottom: 0.75rem;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="status-alert"></div>
 
@@ -14,6 +42,16 @@
 
 <div class="section-title">Model Catalog</div>
 <p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">One-click download from verified sources. Models are scanned in quarantine before use.</p>
+<p class="catalog-note" id="catalog-auth-note">Checking download credential mode...</p>
+<div class="catalog-toolbar">
+    <label class="form-label" for="catalog-filter" style="margin:0">Catalog Type</label>
+    <select class="catalog-filter" id="catalog-filter">
+        <option value="all">All model types</option>
+        <option value="llm">LLM</option>
+        <option value="image">Image</option>
+        <option value="video">Video</option>
+    </select>
+</div>
 <div id="catalog-list" class="mb-lg">
     <div class="empty-state"><p>Loading catalog...</p></div>
 </div>
@@ -44,6 +82,8 @@
 <script nonce="{{ csp_nonce }}">
     var uploadZone = document.getElementById('upload-zone');
     var fileInput = document.getElementById('file-input');
+    var catalogFilter = document.getElementById('catalog-filter');
+    var trustedModels = [];
 
     function showAlert(msg, type) {
         var el = document.getElementById('status-alert');
@@ -106,14 +146,15 @@
         try {
             var resp = await fetch('/api/models');
             var models = await resp.json();
+            trustedModels = Array.isArray(models) ? models : [];
             var container = document.getElementById('models-list');
 
-            if (!models.length) {
+            if (!trustedModels.length) {
                 container.innerHTML = '<div class="empty-state"><p>No models registered yet. Import one above.</p></div>';
                 return;
             }
 
-            container.innerHTML = models.map(function(m) {
+            container.innerHTML = trustedModels.map(function(m) {
                 var fp = m.gguf_guard_fingerprint;
                 var guardInfo = '';
                 if (fp) {
@@ -128,6 +169,10 @@
                 if (m.gguf_guard_manifest) {
                     manifestBtn = '<button class="btn btn-sm btn-accent" type="button" data-action="verify-manifest" data-name="' + encodeURIComponent(m.name) + '">Verify Tensors</button>';
                 }
+                var isGguf = String(m.format || '').toLowerCase() === 'gguf' || String(m.filename || '').toLowerCase().endsWith('.gguf');
+                var chatBtn = isGguf
+                    ? '<a class="btn btn-sm btn-primary" href="/chat?model=' + encodeURIComponent(m.name || m.filename) + '">Use in Chat</a>'
+                    : '';
                 return '<div class="card">' +
                     '<div class="card-header">' +
                         '<span class="card-title">' + esc(m.name) + '</span>' +
@@ -140,6 +185,7 @@
                     '</div>' +
                     guardInfo +
                     '<div class="btn-group mt-md">' +
+                        chatBtn +
                         '<button class="btn btn-sm btn-success" type="button" data-action="verify-model" data-name="' + encodeURIComponent(m.name) + '">Verify Hash</button>' +
                         manifestBtn +
                         '<button class="btn btn-sm btn-danger" type="button" data-action="delete-model" data-name="' + encodeURIComponent(m.name) + '">Delete</button>' +
@@ -289,23 +335,61 @@
     }
 
     /* --- Model Catalog --- */
+    async function loadCatalogAuthStatus() {
+        try {
+            var resp = await fetch('/api/catalog/auth/status');
+            var data = await resp.json();
+            var note = document.getElementById('catalog-auth-note');
+            note.textContent = data.detail || 'Catalog downloads use public provider URLs.';
+            if (data.shared_provider_token_configured) {
+                note.style.color = 'var(--warning)';
+            }
+        } catch(e) {
+            document.getElementById('catalog-auth-note').textContent = 'Could not check download credential mode.';
+        }
+    }
+
     async function loadCatalog() {
         try {
             var resp = await fetch('/api/catalog');
             var catalog = await resp.json();
             var dlResp = await fetch('/api/catalog/downloads');
             var downloads = await dlResp.json();
+            var modelResp = await fetch('/api/models');
+            trustedModels = await modelResp.json();
             var container = document.getElementById('catalog-list');
+            var activeFilter = catalogFilter.value || 'all';
+            var trustedByFilename = {};
+            (trustedModels || []).forEach(function(model) {
+                if (model.filename) trustedByFilename[model.filename] = model;
+            });
 
             if (!catalog.length) {
                 container.innerHTML = '<div class="empty-state"><p>No catalog entries configured.</p></div>';
                 return;
             }
 
-            container.innerHTML = catalog.map(function(m) {
+            var visible = catalog.filter(function(m) {
+                var category = m.category || m.type || 'other';
+                return activeFilter === 'all' || category === activeFilter;
+            });
+            if (!visible.length) {
+                container.innerHTML = '<div class="empty-state"><p>No catalog entries for this type.</p></div>';
+                return;
+            }
+
+            container.innerHTML = visible.map(function(m) {
                 var dl = downloads[m.filename];
+                var trusted = trustedByFilename[m.filename];
                 var btnHtml;
-                if (dl && dl.status === 'downloading') {
+                if (trusted) {
+                    if ((m.type || '').toLowerCase() === 'llm') {
+                        btnHtml = '<a class="btn btn-sm btn-primary" href="/chat?model=' + encodeURIComponent(trusted.name || trusted.filename) + '">Use in Chat</a>' +
+                            '<span class="badge badge-success">trusted</span>';
+                    } else {
+                        btnHtml = '<span class="badge badge-success">trusted</span>';
+                    }
+                } else if (dl && dl.status === 'downloading') {
                     var pct = dl.progress || 0;
                     btnHtml = '<div style="flex:1;max-width:200px">' +
                         '<div class="progress-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
@@ -319,18 +403,26 @@
                 } else {
                     btnHtml = '<button class="btn btn-sm btn-primary" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Download</button>';
                 }
+                var category = m.category || m.type || 'model';
+                var terms = m.requires_terms && m.terms_url
+                    ? '<a class="btn btn-sm" href="' + esc(m.terms_url) + '" target="_blank" rel="noopener noreferrer">Provider Terms</a>'
+                    : '';
+                var failedDetail = dl && dl.status === 'failed' && dl.detail
+                    ? '<p class="meta mt-sm">' + esc(dl.detail) + '</p>'
+                    : '';
 
                 return '<div class="card">' +
                     '<div class="card-header">' +
                         '<span class="card-title">' + esc(m.name) + '</span>' +
-                        '<span class="badge badge-accent">' + esc(m.type) + '</span>' +
+                        '<span class="badge badge-accent">' + esc(category) + '</span>' +
                     '</div>' +
                     '<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0.5rem">' + esc(m.description) + '</p>' +
                     '<div class="meta">' +
                         '<span>' + m.size_gb + ' GB</span>' +
                         '<span>VRAM: ~' + m.vram_gb + ' GB</span>' +
                     '</div>' +
-                    '<div class="btn-group mt-md" style="align-items:center">' + btnHtml + '</div>' +
+                    failedDetail +
+                    '<div class="btn-group mt-md" style="align-items:center">' + btnHtml + terms + '</div>' +
                 '</div>';
             }).join('');
         } catch(e) {
@@ -358,7 +450,26 @@
                     });
                 }, 3000);
             } else {
-                toast(data.error || 'Download failed.', 'error');
+                var message = data.message || data.error || 'Download failed.';
+                if (data.requires_mode === 'research' && data.automation_available) {
+                    showAlert(message, 'warning');
+                    var confirmed = await showConfirm(
+                        'Enable Downloads',
+                        message + ' The sandbox will restart into Web-Assisted Research, then you can retry the download.',
+                        'Restart',
+                        false
+                    );
+                    if (confirmed) {
+                        await applySandboxControl(
+                            {profile: 'research'},
+                            'Sandbox restart started for model downloads.'
+                        );
+                    }
+                    return;
+                }
+                if (data.command) message += ' Fallback: ' + data.command;
+                showAlert(message, data.requires_mode ? 'warning' : 'danger');
+                toast(data.message || data.error || 'Download failed.', data.requires_mode ? 'warning' : 'error');
             }
         } catch(e) {
             toast('Could not start download.', 'error');
@@ -392,8 +503,9 @@
             decodeURIComponent(target.getAttribute('data-type') || '')
         );
     });
+    catalogFilter.addEventListener('change', loadCatalog);
 
-    function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); loadCatalog(); }
+    function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); loadCatalog(); loadCatalogAuthStatus(); }
     refreshAll();
     setInterval(refreshAll, 10000);
 </script>

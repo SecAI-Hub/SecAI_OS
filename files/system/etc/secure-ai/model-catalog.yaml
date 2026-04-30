@@ -8,6 +8,7 @@
 models:
   - name: "Phi-3 Mini 3.8B (Q4_K_M)"
     type: llm
+    category: llm
     filename: "Phi-3-mini-4k-instruct-q4.gguf"
     url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
     size_gb: 2.3
@@ -16,6 +17,7 @@ models:
 
   - name: "Mistral 7B Instruct (Q4_K_M)"
     type: llm
+    category: llm
     filename: "mistral-7b-instruct-v0.3.Q4_K_M.gguf"
     url: "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"
     size_gb: 4.4
@@ -24,22 +26,63 @@ models:
 
   - name: "Llama 3.1 8B Instruct (Q4_K_M)"
     type: llm
+    category: llm
     filename: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
     url: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
     size_gb: 4.9
     vram_gb: 7
     description: "Strong reasoning and instruction following."
 
+  - name: "TinyLlama 1.1B Chat (Q4_K_M)"
+    type: llm
+    category: llm
+    filename: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    size_gb: 0.7
+    vram_gb: 2
+    description: "Very small chat model for smoke tests and CPU-only systems."
+
+  - name: "Qwen2.5 1.5B Instruct (Q4_K_M)"
+    type: llm
+    category: llm
+    filename: "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    size_gb: 1.1
+    vram_gb: 3
+    description: "Compact multilingual instruction model."
+
+  - name: "Qwen2.5 7B Instruct (Q4_K_M)"
+    type: llm
+    category: llm
+    filename: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    size_gb: 4.7
+    vram_gb: 7
+    description: "Stronger general-purpose chat and coding model."
+
+  - name: "Llama 3.2 3B Instruct (Q4_K_M)"
+    type: llm
+    category: llm
+    filename: "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+    url: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+    size_gb: 2.0
+    vram_gb: 4
+    description: "Small instruction model with a good quality-to-size tradeoff."
+
   - name: "Stable Diffusion XL Base"
     type: diffusion
+    category: image
     filename: "stable-diffusion-xl-base-1.0"
     url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
     size_gb: 6.9
     vram_gb: 8
     description: "Image generation. 1024x1024 output. Requires 8GB+ VRAM."
+    requires_terms: true
+    terms_url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
 
   - name: "Stable Diffusion 1.5"
     type: diffusion
+    category: image
     filename: "stable-diffusion-v1-5"
     url: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
     size_gb: 4.3
@@ -48,8 +91,11 @@ models:
 
   - name: "Stable Video Diffusion XT"
     type: diffusion
+    category: video
     filename: "stable-video-diffusion-img2vid-xt"
     url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
     size_gb: 9.6
     vram_gb: 16
     description: "Video generation from image. 25 frames. Requires 16GB+ VRAM."
+    requires_terms: true
+    terms_url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"

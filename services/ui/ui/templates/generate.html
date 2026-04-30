@@ -95,6 +95,23 @@
         el.classList.remove('hidden');
     }
 
+    async function maybeStartDiffusion(data) {
+        if (!data || data.error !== 'diffusion worker not available') return false;
+        var confirmed = await showConfirm(
+            'Start Generation Worker',
+            'Image and video generation need the diffusion worker. The sandbox can restart into Full Lab mode to enable it.',
+            'Restart',
+            false
+        );
+        if (confirmed) {
+            await applySandboxControl(
+                {profile: 'full_lab'},
+                'Sandbox restart started for image and video generation.'
+            );
+        }
+        return true;
+    }
+
     async function generateImage() {
         var btn = document.getElementById('btn-image');
         btn.disabled = true;
@@ -114,6 +131,7 @@
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
             });
             var data = await resp.json();
+            if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
             if (data.error) { showGenStatus('Error: ' + data.error); return; }
             var html = '';
             (data.images || []).forEach(function(b64) {
@@ -142,6 +160,7 @@
                 })
             });
             var data = await resp.json();
+            if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
             if (data.error) { showGenStatus('Error: ' + data.error); return; }
             document.getElementById('result').innerHTML =
                 '<video class="generated-media" controls autoplay><source src="data:video/mp4;base64,' + data.video + '" type="video/mp4"></video>';
@@ -171,6 +190,7 @@
                     })
                 });
                 var data = await resp.json();
+                if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
                 if (data.error) { showGenStatus('Error: ' + data.error); return; }
                 document.getElementById('result').innerHTML =
                     '<img class="generated-media" src="data:image/png;base64,' + data.image + '" alt="Generated image">';

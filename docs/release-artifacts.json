@@ -51,6 +51,15 @@
       "image_digest": {
         "files": ["IMAGE_DIGEST"],
         "description": "OCI image digest for this release"
+      },
+      "release_scripts": {
+        "files": [
+          "secai-os-build-iso.sh",
+          "secai-os-build-usb.sh",
+          "secai-os-run-docker.sh",
+          "secai-os-run-docker.ps1"
+        ],
+        "description": "Standalone helper scripts for building ISO/USB media and launching the Docker sandbox from a release"
       }
     },
     "optional": {

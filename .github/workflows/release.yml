@@ -42,6 +42,7 @@ jobs:
             "Python Test & Lint"
             "Security Regression Tests"
             "Hadolint & Semgrep"
+            "Release Helper Script Smoke"
             "Dependency Vulnerability Audit"
             "Test Count Drift Check"
             "Documentation Validation"
@@ -400,6 +401,13 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      - name: Stage release helper scripts
+        run: |
+          install -m 0755 scripts/release/secai-os-build-iso.sh dist/secai-os-build-iso.sh
+          install -m 0755 scripts/release/secai-os-build-usb.sh dist/secai-os-build-usb.sh
+          install -m 0755 scripts/release/secai-os-run-docker.sh dist/secai-os-run-docker.sh
+          install -m 0644 scripts/release/secai-os-run-docker.ps1 dist/secai-os-run-docker.ps1
+
       - name: Record release image digest
         run: |
           IMAGE_REF="ghcr.io/${{ github.repository }}"
@@ -451,6 +459,16 @@ jobs:
               '. + [$name]')
           done
 
+          # Collect release helper scripts
+          RELEASE_SCRIPTS_JSON="[]"
+          for helper in secai-os-build-iso.sh secai-os-build-usb.sh secai-os-run-docker.sh secai-os-run-docker.ps1; do
+            [ -f "$helper" ] || continue
+            HASH=$(sha256sum "$helper" | awk '{print $1}')
+            RELEASE_SCRIPTS_JSON=$(echo "$RELEASE_SCRIPTS_JSON" | jq \
+              --arg name "$helper" --arg sha256 "$HASH" \
+              '. + [{"name": $name, "sha256": $sha256}]')
+          done
+
           # Read image digest
           IMAGE_DIGEST="unknown"
           if [ -f IMAGE_DIGEST ]; then
@@ -471,6 +489,7 @@ jobs:
             --argjson binaries "$BINARIES_JSON" \
             --argjson sboms "$SBOMS_JSON" \
             --argjson vex "$VEX_JSON" \
+            --argjson release_scripts "$RELEASE_SCRIPTS_JSON" \
             --arg provenance_type "https://slsa.dev/provenance/v1" \
             --arg checksum_file "SHA256SUMS" \
             --arg signature_file "SHA256SUMS.sig" \
@@ -489,6 +508,7 @@ jobs:
               binaries: $binaries,
               sboms: $sboms,
               vex: $vex,
+              release_scripts: $release_scripts,
               provenance: {
                 type: $provenance_type,
                 attested: true
@@ -577,6 +597,10 @@ jobs:
             dist/IMAGE_DIGEST
             dist/IMAGE_REF_PINNED
             dist/RELEASE_MANIFEST.json
+            dist/secai-os-build-iso.sh
+            dist/secai-os-build-usb.sh
+            dist/secai-os-run-docker.sh
+            dist/secai-os-run-docker.ps1
             dist/secai-os-*.iso.sig
             dist/secai-os-*-usb.raw.xz.sig
             dist/secai-os-*.qcow2.sig

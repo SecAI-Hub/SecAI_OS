@@ -558,7 +558,7 @@
 
         function commandForProfile(profile) {
             if (profile === 'research') return '.\\secai-sandbox.cmd start --with-search';
-            if (profile === 'full_lab') return '.\\secai-sandbox.cmd start --with-diffusion';
+            if (profile === 'full_lab') return '.\\secai-sandbox.cmd start --with-search --with-diffusion';
             return '.\\secai-sandbox.cmd start';
         }
 
@@ -578,7 +578,7 @@
                 setMessage(
                     'profile-message',
                     'warn',
-                    profileLabels[profile] + ' requires restarting this sandbox. Run ' + commandForProfile(profile) + ' later; Open Chat will continue with ' + profileLabels[activeProfile] + ' now.'
+                    profileLabels[profile] + ' requires a sandbox restart. Apply Profile will restart automatically when the sandbox controller is available.'
                 );
             }
         }
@@ -602,12 +602,12 @@
                     document.querySelectorAll('input[name="profile"]').forEach(function(input) { input.disabled = true; });
                     setMessage('profile-message', 'ok', 'Using locked profile: ' + profileLabels[activeProfile]);
                 } else if (isSandbox) {
-                    document.getElementById('profile-copy').textContent = 'This sandbox uses the launch mode selected when it started.';
-                    document.getElementById('profile-button').textContent = 'Continue with Current Profile';
+                    document.getElementById('profile-copy').textContent = 'This sandbox can restart into another profile automatically when host control is available.';
+                    document.getElementById('profile-button').textContent = 'Use Current Profile';
                     setMessage(
                         'profile-message',
                         'ok',
-                        'Current sandbox profile: ' + profileLabels[activeProfile] + '. Select another card to see the restart command.'
+                        'Current sandbox profile: ' + profileLabels[activeProfile] + '. Select another card to apply a restart.'
                     );
                 } else {
                     setMessage('profile-message', '', 'Choose a profile, then confirm it.');
@@ -624,6 +624,31 @@
             btn.disabled = true;
 
             if (isSandbox) {
+                if (target !== activeProfile) {
+                    var confirmed = await showConfirm(
+                        'Restart Sandbox',
+                        'Switch to ' + profileLabels[target] + '? The setup page will reconnect after the sandbox restarts.',
+                        'Restart',
+                        false
+                    );
+                    if (!confirmed) {
+                        btn.disabled = false;
+                        return;
+                    }
+                    btn.textContent = 'Restarting...';
+                    var result = await applySandboxControl(
+                        {profile: target},
+                        'Sandbox restart started for ' + profileLabels[target] + '.'
+                    );
+                    if (!result.ok) {
+                        var detail = result.data && (result.data.detail || result.data.error);
+                        var command = commandForProfile(target);
+                        setMessage('profile-message', 'err', (detail || 'Automatic restart is unavailable.') + ' Fallback: ' + command);
+                        btn.textContent = 'Retry';
+                        btn.disabled = false;
+                    }
+                    return;
+                }
                 activeProfile = activeProfile || target;
                 profileSet = true;
                 markDone('profile-step');

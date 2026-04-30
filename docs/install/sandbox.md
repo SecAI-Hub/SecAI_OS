@@ -57,8 +57,10 @@ The helper script will:
 
 1. Create `deploy/sandbox/.env` from the template if needed.
 2. Generate a per-stack service token in `deploy/sandbox/runtime/service-token`.
-3. Render a runtime policy/config overlay for the selected profiles.
-4. Build, harden, and wait for the sandbox services to become healthy.
+3. Generate a separate host-control token in `deploy/sandbox/runtime/control-token`.
+4. Start a loopback-only host controller used by the UI for profile/service automation.
+5. Render a runtime policy/config overlay for the selected profiles.
+6. Build, harden, and wait for the sandbox services to become healthy.
 
 Then open:
 
@@ -69,6 +71,13 @@ http://127.0.0.1:8480
 ## Optional Profiles
 
 The default stack starts the control plane only. Inference and diffusion are opt-in because they are heavier and usually need user-supplied model paths or extra runtime dependencies.
+
+When the stack is started through `secai-sandbox.cmd` or `scripts/sandbox/start.*`,
+the UI can start these profiles for you from **Settings**, **Chat**, **Models**, or
+**Generate**. The UI does not receive the Docker socket; it calls a host-side
+controller on `127.0.0.1:${SECAI_CONTROL_PORT:-8498}` with a random bearer token
+mounted read-only into the UI container. The controller only accepts allowlisted
+profile actions.
 
 **Enable local LLM inference**
 
@@ -126,6 +135,12 @@ example:
 
 ```bash
 bash scripts/sandbox/start.sh --with-search --with-airlock --with-inference
+```
+
+On Windows, the convenience launcher also supports restart options:
+
+```powershell
+.\secai-sandbox.cmd restart --with-search --with-inference
 ```
 
 ## Stop The Stack

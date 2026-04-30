@@ -118,7 +118,7 @@ class TestHealthAndStatus:
 
         assert "/api/setup/complete" in template
         assert "X-CSRF-Token" in template
-        assert "Continue with Current Profile" in template
+        assert "Use Current Profile" in template
         assert "isGgufModel" in template
         assert "window.location.assign" in template
         for path in templates_dir.glob("*.html"):
@@ -227,6 +227,25 @@ class TestCatalogDownloads:
         assert "allowlist" in resp.get_json()["error"]
         _, kwargs = mock_post.call_args
         assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
+
+    def test_catalog_download_guides_sandbox_users_when_airlock_disabled(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        catalog = load_model_catalog()
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"allowed": False, "reason": "airlock disabled"},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app.requests.post", return_value=mock_resp):
+            resp = client.post("/api/catalog/download", json={
+                "url": catalog[0]["url"],
+                "filename": catalog[0]["filename"],
+            })
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["requires_mode"] == "research"
+        assert "--with-search" in data["command"]
 
     def test_single_file_download_hides_partial_until_complete(self, tmp_path):
         import ui.app as ui_app
@@ -591,6 +610,21 @@ class TestIntegrityMonitoring:
         assert resp.status_code == 401
         assert resp.get_json()["error"] == "authentication required"
 
+    def test_first_boot_requires_setup_before_pages_are_available(self, client):
+        old_testing = app.config["TESTING"]
+        app.config["TESTING"] = False
+        try:
+            with patch("ui.app._auth.is_configured", return_value=False):
+                page_resp = client.get("/chat")
+                api_resp = client.get("/api/models")
+        finally:
+            app.config["TESTING"] = old_testing
+
+        assert page_resp.status_code == 200
+        assert "Set Up Passphrase" in page_resp.get_data(as_text=True)
+        assert api_resp.status_code == 401
+        assert api_resp.get_json()["setup_required"] is True
+
 
 class TestSandboxUnsupportedFeatures:
     def test_profile_select_reports_unsupported_in_sandbox(self, client, monkeypatch):
@@ -598,6 +632,56 @@ class TestSandboxUnsupportedFeatures:
         resp = client.post("/api/profile/select", json={"profile": "research"})
         assert resp.status_code == 501
         assert resp.get_json()["feature"] == "profile_select"
+
+    def test_sandbox_control_status_proxies_allowlisted_controller(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        with patch("ui.app._sandbox_control_request", return_value=({"status": "idle"}, 200)) as mock_control:
+            resp = client.get("/api/sandbox/control/status")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "idle"
+        assert "profiles" in data
+        mock_control.assert_called_once_with("GET", "/v1/status", timeout=2.0)
+
+    def test_sandbox_control_apply_rejects_invalid_profile(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        resp = client.post("/api/sandbox/control/apply", json={"profile": "unknown"})
+
+        assert resp.status_code == 400
+        assert "invalid profile" in resp.get_json()["error"]
+
+    def test_sandbox_control_apply_rejects_unsafe_model_filename(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        resp = client.post(
+            "/api/sandbox/control/apply",
+            json={"profile": "offline_private", "inference": True, "model_filename": "../model.gguf"},
+        )
+
+        assert resp.status_code == 400
+        assert "model_filename" in resp.get_json()["error"]
+
+    def test_sandbox_control_apply_proxies_safe_profile_and_model(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        with patch("ui.app._sandbox_control_request", return_value=({"status": "accepted"}, 202)) as mock_control, \
+             patch("ui.app._ui_audit.append") as mock_audit:
+            resp = client.post(
+                "/api/sandbox/control/apply",
+                json={
+                    "profile": "research",
+                    "inference": True,
+                    "model_filename": "test-model.gguf",
+                },
+            )
+
+        assert resp.status_code == 202
+        _, kwargs = mock_control.call_args
+        assert kwargs["body"] == {
+            "profile": "research",
+            "inference": True,
+            "model_filename": "test-model.gguf",
+        }
+        mock_audit.assert_called_once()
 
     def test_diffusion_enable_reports_unsupported_in_sandbox(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
@@ -787,6 +871,17 @@ class TestApplianceState:
             assert data["subsystems"]["attestor"] == "unknown"
             assert data["subsystems"]["integrity_monitor"] == "unknown"
 
+    def test_appliance_state_marks_host_attestation_not_available_in_sandbox(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        with patch("ui.app.requests") as mock_req:
+            mock_req.get.side_effect = Exception("not running")
+            resp = client.get("/api/observability/appliance-state")
+
+        data = resp.get_json()
+        assert data["subsystems"]["attestor"] == "not_available"
+        assert data["subsystems"]["integrity_monitor"] == "not_available"
+        assert data["appliance_state"] == "trusted"
+
 
 class TestSLOEndpoint:
     """Tests for the /api/observability/slos endpoint."""
@@ -812,6 +907,15 @@ class TestSLOEndpoint:
         assert len(registry_slo) > 0
         # Should have a real current_value (not N/A)
         assert registry_slo[0]["current_value"] != "N/A"
+
+    def test_sandbox_optional_worker_slos_are_not_applicable(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        _slo_tracker.record_health_check("inference", False, 2000.0)
+        resp = client.get("/api/observability/slos")
+        data = resp.get_json()
+        inference_slo = [s for s in data["slos"] if s["name"] == "inference availability"][0]
+        assert inference_slo["status"] == "not_applicable"
+        assert inference_slo["compliant"] is True
 
 
 class TestForensicExportProxy:

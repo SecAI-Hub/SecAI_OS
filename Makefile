@@ -16,7 +16,8 @@ GO_SERVICES := airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
                policy-engine runtime-attestor integrity-monitor incident-recorder
 
 SCRIPTS_LIBEXEC := $(wildcard files/system/usr/libexec/secure-ai/*.sh)
-SCRIPTS_FILES   := $(wildcard files/scripts/*.sh) $(wildcard .github/scripts/*.sh)
+SCRIPTS_FILES   := $(wildcard files/scripts/*.sh) $(wildcard .github/scripts/*.sh) \
+                   $(wildcard scripts/release/*.sh)
 
 # ---------------------------------------------------------------------------
 # Targets

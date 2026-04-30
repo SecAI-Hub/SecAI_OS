@@ -107,7 +107,7 @@ Proxy an outbound request through the Airlock.
   }
   ```
 - **Error:** `429 Too Many Requests` -- rate limit exceeded
-- **Error:** `503 Service Unavailable` -- Airlock is disabled
+- **Error:** `503 Service Unavailable` -- Airlock policy is disabled in the current runtime profile
 
 ---
 

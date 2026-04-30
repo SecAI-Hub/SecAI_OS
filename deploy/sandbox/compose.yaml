@@ -307,6 +307,8 @@ services:
       SECURE_AI_DEPLOYMENT_MODE: sandbox
       SECURE_AI_DEPLOYMENT_PROVIDER: compose
       SECURE_AI_ASSURANCE_TIER: evaluation
+      SANDBOX_CONTROL_URL: http://host.docker.internal:${SECAI_CONTROL_PORT:-8498}
+      SANDBOX_CONTROL_TOKEN_PATH: /run/secrets/sandbox-control-token
       GUNICORN_WORKERS: 1
       GUNICORN_THREADS: 4
       GUNICORN_TIMEOUT: 60
@@ -316,10 +318,14 @@ services:
       - secai-state:/var/lib/secure-ai
       - secai-run:/run/secure-ai
       - ./runtime/config:/etc/secure-ai/config:ro
+      - ./runtime/model-catalog.yaml:/etc/secure-ai/model-catalog.yaml:ro
       - ./runtime/service-token:/run/secrets/service-token:ro
+      - ./runtime/control-token:/run/secrets/sandbox-control-token:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
       - /run/secure-ai-ui:rw,noexec,nosuid,nodev,mode=0770,uid=65534,gid=65534,size=16m
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${SECAI_UI_PORT:-8480}:8480"
     healthcheck:

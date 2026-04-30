@@ -669,6 +669,47 @@
             }, duration);
         }
 
+        function waitForSandboxRestart(message) {
+            toast(message || 'Sandbox restart started. This page will reconnect automatically.', 'info', 9000);
+            var startedAt = Date.now();
+            var sawUnavailable = false;
+            function check() {
+                fetch('/health', { cache: 'no-store' }).then(function(resp) {
+                    if (resp.ok && (sawUnavailable || Date.now() - startedAt > 6000)) {
+                        window.location.reload();
+                        return;
+                    }
+                    setTimeout(check, 3000);
+                }).catch(function() {
+                    sawUnavailable = true;
+                    setTimeout(check, 3000);
+                });
+            }
+            setTimeout(check, 3000);
+        }
+
+        async function applySandboxControl(payload, successMessage) {
+            try {
+                var resp = await fetch('/api/sandbox/control/apply', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload || {}),
+                });
+                var data = await resp.json();
+                if (resp.status === 202 || data.status === 'accepted') {
+                    waitForSandboxRestart(successMessage);
+                    return { ok: true, data: data };
+                }
+                var msg = data.detail || data.error || 'Sandbox automation is unavailable.';
+                if (data.command) msg += ' Fallback: ' + data.command;
+                toast(msg, 'warning', 9000);
+                return { ok: false, data: data };
+            } catch(e) {
+                toast('Could not reach sandbox automation.', 'error');
+                return { ok: false, data: { error: 'request failed' } };
+            }
+        }
+
         /* -- Modal system -- */
         var _modalResolve = null;
         function showConfirm(title, message, confirmLabel, danger) {
@@ -752,6 +793,13 @@
                     badge.style.color = 'var(--danger)';
                     dot.className = 'status-dot red';
                     text.textContent = 'Vault locked';
+                } else if (s === 'not_available') {
+                    badge.textContent = 'vault n/a';
+                    badge.style.borderColor = 'var(--text-muted)';
+                    badge.style.color = 'var(--text-muted)';
+                    badge.title = data.detail || 'Vault locking is not available in this deployment';
+                    dot.className = 'status-dot gray';
+                    text.textContent = 'Vault not available';
                 } else {
                     badge.textContent = 'vault';
                     badge.style.borderColor = '';
@@ -809,21 +857,21 @@
                     badge.textContent = locked ? 'offline (locked)' : 'offline';
                     badge.style.borderColor = 'var(--success)';
                     badge.style.color = 'var(--success)';
-                    badge.title = 'Profile: Maximum isolation — no network';
+                    badge.title = 'Profile: Maximum isolation - no network';
                     trustDot.className = 'status-dot green';
                     trustText.textContent = 'Offline Private';
                 } else if (p === 'research') {
                     badge.textContent = locked ? 'research (locked)' : 'tor only';
                     badge.style.borderColor = 'var(--warning)';
                     badge.style.color = 'var(--warning)';
-                    badge.title = 'Profile: Privacy-preserving research — Tor-routed';
+                    badge.title = 'Profile: Privacy-preserving research - Tor-routed';
                     trustDot.className = 'status-dot yellow';
                     trustText.textContent = 'Tor Only';
                 } else if (p === 'full_lab') {
                     badge.textContent = locked ? 'full lab (locked)' : 'filtered';
                     badge.style.borderColor = 'var(--accent)';
                     badge.style.color = 'var(--accent)';
-                    badge.title = 'Profile: Full capability lab — filtered network';
+                    badge.title = 'Profile: Full capability lab - filtered network';
                     trustDot.className = 'status-dot yellow';
                     trustText.textContent = 'Filtered';
                 } else {
@@ -845,7 +893,8 @@
                 var banner = document.getElementById('degraded-banner');
                 var trustDot = document.getElementById('sidebar-trust-dot');
                 var trustText = document.getElementById('sidebar-trust-text');
-                if (data.state && data.state !== 'trusted') {
+                var state = data.appliance_state || data.state;
+                if (state && state !== 'trusted') {
                     banner.style.display = 'block';
                     trustDot.className = 'status-dot red';
                     trustText.textContent = 'Degraded';

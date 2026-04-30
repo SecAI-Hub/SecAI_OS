@@ -58,10 +58,64 @@
         padding: 1rem 1.5rem;
         border-top: 1px solid var(--border);
         display: flex;
+        flex-direction: column;
         gap: 0.75rem;
-        align-items: flex-end;
+        align-items: stretch;
         background: var(--bg);
     }
+    .chat-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+    .chat-control-group {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 220px;
+    }
+    .chat-control-label {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .model-select {
+        min-width: 220px;
+        max-width: min(420px, 60vw);
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 0.45rem 0.65rem;
+        font-size: 0.82rem;
+        font-family: inherit;
+    }
+    .mode-control {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+        background: var(--surface);
+    }
+    .mode-btn {
+        border: 0;
+        border-right: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-secondary);
+        padding: 0.45rem 0.7rem;
+        font-size: 0.78rem;
+        font-family: inherit;
+        cursor: pointer;
+    }
+    .mode-btn:last-child { border-right: 0; }
+    .mode-btn.active { background: var(--accent-subtle); color: var(--accent); }
+    .mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .mode-status { font-size: 0.76rem; color: var(--text-muted); }
+    .chat-composer { display: flex; gap: 0.75rem; align-items: flex-end; }
     .chat-input-area textarea {
         flex: 1;
         resize: none;
@@ -81,6 +135,12 @@
     .chat-input-area textarea:focus { border-color: var(--accent); }
     .chat-input-area textarea::placeholder { color: var(--text-muted); }
     .chat-input-area .btn-primary { min-height: 44px; padding: 0 1.25rem; }
+    @media (max-width: 768px) {
+        .chat-controls { align-items: stretch; }
+        .chat-control-group { width: 100%; min-width: 0; align-items: stretch; flex-direction: column; }
+        .model-select { max-width: none; width: 100%; }
+        .chat-composer { flex-direction: column; align-items: stretch; }
+    }
     .typing-indicator {
         align-self: flex-start;
         padding: 0.75rem 1rem;
@@ -116,11 +176,27 @@
     </div>
 </div>
 <div class="chat-input-area">
-    <button class="btn btn-sm" id="search-toggle" type="button" title="Toggle web search (Tor-routed)" style="min-height:44px;padding:0 0.65rem;opacity:0.4">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </button>
-    <textarea id="user-input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" autofocus></textarea>
-    <button class="btn btn-primary" id="send-btn" type="button">Send</button>
+    <div class="chat-controls">
+        <div class="chat-control-group">
+            <label class="chat-control-label" for="model-select">Model</label>
+            <select class="model-select" id="model-select">
+                <option value="">Loading models...</option>
+            </select>
+            <button class="btn btn-sm hidden" id="start-inference-btn" type="button">Start Inference</button>
+        </div>
+        <div class="chat-control-group" style="justify-content:flex-end">
+            <span class="chat-control-label">Mode</span>
+            <div class="mode-control" role="group" aria-label="Chat mode">
+                <button class="mode-btn active" id="mode-local" type="button" data-mode="local">Local</button>
+                <button class="mode-btn" id="mode-web" type="button" data-mode="web">Web</button>
+            </div>
+            <span class="mode-status" id="search-status">Checking...</span>
+        </div>
+    </div>
+    <div class="chat-composer">
+        <textarea id="user-input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" autofocus></textarea>
+        <button class="btn btn-primary" id="send-btn" type="button">Send</button>
+    </div>
 </div>
 {% endblock %}
 
@@ -129,11 +205,18 @@
     var chatContainer = document.getElementById('chat-container');
     var userInput = document.getElementById('user-input');
     var sendBtn = document.getElementById('send-btn');
-    var searchToggle = document.getElementById('search-toggle');
+    var modeLocal = document.getElementById('mode-local');
+    var modeWeb = document.getElementById('mode-web');
+    var searchStatus = document.getElementById('search-status');
+    var modelSelect = document.getElementById('model-select');
     var emptyState = document.getElementById('empty-state');
     var messages = [];
     var searchEnabled = false;
     var searchAvailable = false;
+    var searchAutomationAvailable = false;
+    var selectedModel = '';
+    var inferenceAvailable = false;
+    var startInferenceBtn = document.getElementById('start-inference-btn');
 
     /* Check if search mediator is reachable */
     (async function() {
@@ -141,36 +224,114 @@
             var resp = await fetch('/api/search/status');
             var data = await resp.json();
             searchAvailable = data.search_enabled !== false;
+            searchAutomationAvailable = data.automation_available === true;
             if (searchAvailable) {
-                searchToggle.title = 'Toggle web search (Tor-routed)';
+                modeWeb.disabled = false;
+                modeWeb.title = 'Use Tor-routed web search';
+                searchStatus.textContent = 'Web ready';
             } else {
-                searchToggle.title = 'Web search unavailable (Tor not running)';
-                searchToggle.style.opacity = '0.15';
-                searchToggle.style.cursor = 'not-allowed';
+                modeWeb.disabled = !searchAutomationAvailable;
+                modeWeb.title = searchAutomationAvailable
+                    ? 'Start Web-Assisted Research'
+                    : (data.command ? ('Fallback: ' + data.command) : 'Web search unavailable');
+                searchStatus.textContent = 'Offline only';
             }
         } catch(e) {
-            searchToggle.style.opacity = '0.15';
-            searchToggle.style.cursor = 'not-allowed';
+            modeWeb.disabled = true;
+            searchStatus.textContent = 'Offline only';
         }
     })();
 
-    function toggleSearch() {
-        if (!searchAvailable) {
-            toast('Web search unavailable. Tor and the search mediator must be running.', 'warning');
+    async function loadChatModels() {
+        try {
+            var resp = await fetch('/api/inference/status');
+            var data = await resp.json();
+            var models = data.chat_models || [];
+            var requested = new URLSearchParams(window.location.search).get('model') || '';
+            inferenceAvailable = data.available === true;
+            if (!models.length) {
+                modelSelect.innerHTML = '<option value="">No trusted GGUF models</option>';
+                modelSelect.disabled = true;
+                startInferenceBtn.classList.add('hidden');
+                return;
+            }
+            modelSelect.disabled = false;
+            modelSelect.innerHTML = models.map(function(m) {
+                var label = m.name || m.filename;
+                if (m.loaded) label += ' (loaded)';
+                else if (!data.available) label += ' (start inference to use)';
+                else label += ' (not loaded)';
+                var value = m.name || m.filename;
+                return '<option value="' + esc(value) + '" data-filename="' + esc(m.filename || '') + '">' + esc(label) + '</option>';
+            }).join('');
+            if (requested) {
+                modelSelect.value = requested;
+            }
+            selectedModel = modelSelect.value || '';
+            if (data.guidance && !data.available) {
+                modelSelect.title = data.command ? (data.guidance + ' Command: ' + data.command) : data.guidance;
+            }
+            startInferenceBtn.classList.toggle('hidden', data.available === true || data.deployment_mode !== 'sandbox');
+            startInferenceBtn.disabled = data.automation_available !== true;
+            startInferenceBtn.title = data.automation_available === true
+                ? 'Start the inference worker with the selected model'
+                : (data.command ? ('Fallback: ' + data.command) : 'Sandbox automation unavailable');
+        } catch(e) {
+            modelSelect.innerHTML = '<option value="">Could not load models</option>';
+            modelSelect.disabled = true;
+            startInferenceBtn.classList.add('hidden');
+        }
+    }
+
+    async function startResearchMode() {
+        var confirmed = await showConfirm(
+            'Start Web Mode',
+            'Switch to Web-Assisted Research? Web search uses Tor routing and the airlock policy, and the sandbox will restart.',
+            'Restart',
+            false
+        );
+        if (!confirmed) return;
+        await applySandboxControl(
+            {profile: 'research'},
+            'Sandbox restart started for Web-Assisted Research.'
+        );
+    }
+
+    async function startInference() {
+        var option = modelSelect.options[modelSelect.selectedIndex];
+        var filename = option ? (option.getAttribute('data-filename') || '') : '';
+        var profile = 'offline_private';
+        try {
+            var profileResp = await fetch('/api/profile');
+            var profileData = await profileResp.json();
+            profile = profileData.active || profile;
+        } catch(e) {}
+        var confirmed = await showConfirm(
+            'Start Inference',
+            'Start the local inference worker with the selected model? The sandbox will restart to enable it.',
+            'Start',
+            false
+        );
+        if (!confirmed) return;
+        await applySandboxControl(
+            {profile: profile, inference: true, model_filename: filename},
+            'Sandbox restart started for local inference.'
+        );
+    }
+
+    async function setMode(mode) {
+        if (mode === 'web' && !searchAvailable) {
+            if (searchAutomationAvailable) {
+                await startResearchMode();
+            } else {
+                toast(modeWeb.title || 'Web search unavailable. Start the search profile first.', 'warning');
+            }
             return;
         }
-        searchEnabled = !searchEnabled;
-        if (searchEnabled) {
-            searchToggle.style.opacity = '1';
-            searchToggle.style.background = 'var(--accent-subtle)';
-            searchToggle.style.borderColor = 'var(--accent)';
-            toast('Web search enabled (Tor-routed)', 'info');
-        } else {
-            searchToggle.style.opacity = '0.4';
-            searchToggle.style.background = '';
-            searchToggle.style.borderColor = '';
-            toast('Web search disabled', 'info');
-        }
+        searchEnabled = mode === 'web';
+        modeLocal.classList.toggle('active', !searchEnabled);
+        modeWeb.classList.toggle('active', searchEnabled);
+        searchStatus.textContent = searchEnabled ? 'Tor-routed' : (searchAvailable ? 'Local only' : 'Offline only');
     }
 
     userInput.addEventListener('keydown', function(e) {
@@ -184,7 +345,10 @@
         userInput.style.height = 'auto';
         userInput.style.height = Math.min(userInput.scrollHeight, 160) + 'px';
     });
-    searchToggle.addEventListener('click', toggleSearch);
+    modeLocal.addEventListener('click', function() { setMode('local'); });
+    modeWeb.addEventListener('click', function() { setMode('web'); });
+    modelSelect.addEventListener('change', function() { selectedModel = modelSelect.value || ''; });
+    startInferenceBtn.addEventListener('click', startInference);
     sendBtn.addEventListener('click', sendMessage);
 
     async function sendMessage() {
@@ -208,12 +372,15 @@
         chatContainer.scrollTop = chatContainer.scrollHeight;
 
         var endpoint = searchEnabled ? '/api/chat/search' : '/api/chat';
+        var payload = { messages: messages };
+        if (searchEnabled) payload.search = true;
+        if (selectedModel) payload.model = selectedModel;
 
         try {
             var resp = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: messages }),
+                body: JSON.stringify(payload),
             });
             var data = await resp.json();
 
@@ -221,7 +388,7 @@
             if (typingEl) typingEl.remove();
 
             if (data.error) {
-                appendMessage('assistant', 'Error: ' + data.error);
+                appendMessage('assistant', 'Error: ' + (data.detail || data.error));
             } else {
                 var content = (data.choices && data.choices[0] && data.choices[0].message)
                     ? data.choices[0].message.content : 'No response';
@@ -266,5 +433,7 @@
         chatContainer.appendChild(div);
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
+
+    loadChatModels();
 </script>
 {% endblock %}

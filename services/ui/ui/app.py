@@ -239,6 +239,96 @@ def _is_sandbox_deployment() -> bool:
     return _deployment_mode() == "sandbox"
 
 
+def _sandbox_launch_command(*features: str) -> str:
+    """Return the Windows sandbox command for enabling optional features."""
+    args: list[str] = []
+    feature_set = set(features)
+    if "search" in feature_set or "airlock" in feature_set:
+        args.append("--with-search")
+    if "inference" in feature_set:
+        args.append("--with-inference")
+    if "diffusion" in feature_set:
+        if "--with-search" not in args:
+            args.append("--with-search")
+        args.append("--with-diffusion")
+    return ".\\secai-sandbox.cmd start" + ((" " + " ".join(args)) if args else "")
+
+
+def _sandbox_features_for_profile(profile: str) -> tuple[str, ...]:
+    """Return optional sandbox features required by a profile."""
+    if profile == "full_lab":
+        return ("search", "diffusion")
+    if profile == "research":
+        return ("search",)
+    return ()
+
+
+def _sandbox_launch_command_for_profile(profile: str, *, inference: bool = False) -> str:
+    features = list(_sandbox_features_for_profile(profile))
+    if inference:
+        features.append("inference")
+    return _sandbox_launch_command(*features)
+
+
+def _sandbox_control_config() -> tuple[str, str]:
+    """Return the host-side sandbox control URL and bearer token, if configured."""
+    url = os.getenv("SANDBOX_CONTROL_URL", "").strip().rstrip("/")
+    token_path = os.getenv("SANDBOX_CONTROL_TOKEN_PATH", "").strip()
+    if not url or not token_path:
+        return "", ""
+    try:
+        token = Path(token_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    return url, token
+
+
+def _sandbox_control_configured() -> bool:
+    url, token = _sandbox_control_config()
+    return bool(url and token)
+
+
+def _sandbox_control_request(
+    method: str,
+    path: str,
+    *,
+    body: dict | None = None,
+    timeout: float = 5.0,
+) -> tuple[dict, int]:
+    """Call the host-side sandbox controller without exposing its token to JS."""
+    url, token = _sandbox_control_config()
+    if not url or not token:
+        return {
+            "error": "sandbox controller is not configured",
+            "available": False,
+            "detail": (
+                "Start the sandbox with the current launcher so the host-side "
+                "automation controller can be started and mounted into the UI."
+            ),
+        }, 503
+    try:
+        resp = requests.request(
+            method,
+            f"{url}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=body,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return {
+            "error": "sandbox controller is not reachable",
+            "available": False,
+            "detail": str(exc),
+        }, 503
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": f"sandbox controller returned HTTP {resp.status_code}"}
+    if isinstance(payload, dict):
+        payload.setdefault("available", 200 <= resp.status_code < 300)
+    return payload if isinstance(payload, dict) else {"payload": payload}, resp.status_code
+
+
 def _unsupported_feature(feature: str, detail: str):
     """Return a consistent response for appliance-only features."""
     return jsonify({
@@ -315,6 +405,7 @@ _MODEL_CATALOG_PATH = os.getenv(
 _FALLBACK_CATALOG: list[dict] = [
     {
         "name": "Phi-3 Mini 3.8B (Q4_K_M)", "type": "llm",
+        "category": "llm",
         "filename": "Phi-3-mini-4k-instruct-q4.gguf",
         "url": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
         "size_gb": 2.3, "vram_gb": 4,
@@ -322,6 +413,7 @@ _FALLBACK_CATALOG: list[dict] = [
     },
     {
         "name": "Mistral 7B Instruct (Q4_K_M)", "type": "llm",
+        "category": "llm",
         "filename": "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
         "url": "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf",
         "size_gb": 4.4, "vram_gb": 6,
@@ -329,20 +421,57 @@ _FALLBACK_CATALOG: list[dict] = [
     },
     {
         "name": "Llama 3.1 8B Instruct (Q4_K_M)", "type": "llm",
+        "category": "llm",
         "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "size_gb": 4.9, "vram_gb": 7,
         "description": "Strong reasoning and instruction following.",
     },
     {
+        "name": "TinyLlama 1.1B Chat (Q4_K_M)", "type": "llm",
+        "category": "llm",
+        "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "url": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "size_gb": 0.7, "vram_gb": 2,
+        "description": "Very small chat model for smoke tests and CPU-only systems.",
+    },
+    {
+        "name": "Qwen2.5 1.5B Instruct (Q4_K_M)", "type": "llm",
+        "category": "llm",
+        "filename": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        "size_gb": 1.1, "vram_gb": 3,
+        "description": "Compact multilingual instruction model.",
+    },
+    {
+        "name": "Qwen2.5 7B Instruct (Q4_K_M)", "type": "llm",
+        "category": "llm",
+        "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "size_gb": 4.7, "vram_gb": 7,
+        "description": "Stronger general-purpose chat and coding model.",
+    },
+    {
+        "name": "Llama 3.2 3B Instruct (Q4_K_M)", "type": "llm",
+        "category": "llm",
+        "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        "size_gb": 2.0, "vram_gb": 4,
+        "description": "Small instruction model with a good quality-to-size tradeoff.",
+    },
+    {
         "name": "Stable Diffusion XL Base", "type": "diffusion",
+        "category": "image",
         "filename": "stable-diffusion-xl-base-1.0",
         "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
         "size_gb": 6.9, "vram_gb": 8,
         "description": "Image generation. 1024x1024 output. Requires 8GB+ VRAM.",
+        "requires_terms": True,
+        "terms_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
     },
     {
         "name": "Stable Diffusion 1.5", "type": "diffusion",
+        "category": "image",
         "filename": "stable-diffusion-v1-5",
         "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
         "size_gb": 4.3, "vram_gb": 4,
@@ -350,10 +479,13 @@ _FALLBACK_CATALOG: list[dict] = [
     },
     {
         "name": "Stable Video Diffusion XT", "type": "diffusion",
+        "category": "video",
         "filename": "stable-video-diffusion-img2vid-xt",
         "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
         "size_gb": 9.6, "vram_gb": 16,
         "description": "Video generation from image. 25 frames. Requires 16GB+ VRAM.",
+        "requires_terms": True,
+        "terms_url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
     },
 ]
 
@@ -493,6 +625,26 @@ def _airlock_check_egress(destination: str, method: str = "GET", body: str = "")
     return allowed, (200 if allowed else 403), reason
 
 
+def _catalog_download_blocked_response(reason: str, status: int):
+    """Return a user-oriented error when catalog downloads are profile-gated."""
+    normalized = (reason or "").lower()
+    if _is_sandbox_deployment() and (
+        "airlock" in normalized or "disabled" in normalized or status in (403, 503)
+    ):
+        return jsonify({
+            "error": "model downloads are unavailable in the current offline sandbox mode",
+            "message": (
+                "Model downloads require the Web-Assisted Research mode so the "
+                "airlock can approve and log outbound Hugging Face requests."
+            ),
+            "requires_mode": "research",
+            "command": _sandbox_launch_command("search"),
+            "automation_available": _sandbox_control_configured(),
+            "detail": reason or "airlock is not allowing downloads",
+        }), 409
+    return jsonify({"error": reason or "airlock blocked download"}), status
+
+
 def _catalog_download_response(url: str):
     """Fetch a catalog artifact while validating every redirect hop via the airlock."""
     current = url
@@ -570,14 +722,22 @@ def _read_vault_state() -> dict:
 def require_auth():
     """Enforce authentication on all endpoints except public ones."""
     # Skip auth for public endpoints
-    if request.path in _PUBLIC_ENDPOINTS:
+    if request.path in _PUBLIC_ENDPOINTS or request.path.startswith("/static/"):
         return None
 
-    # Skip auth if not yet configured (first boot)
+    # Unit tests exercise many internal endpoints directly before test auth is
+    # configured. Production first boot must still route users through setup.
+    if app.config.get("TESTING") and not _auth.is_configured():
+        return None
+
+    # First boot requires passphrase setup before the UI or APIs are usable.
     if not _auth.is_configured():
-        if request.path == "/login":
-            return None
-        return None  # Allow everything during first boot until passphrase is set
+        if request.path.startswith("/api/"):
+            return jsonify({
+                "error": "passphrase setup required",
+                "setup_required": True,
+            }), 401
+        return render_template("login.html")
 
     # Check for valid session
     token = _get_session_token()
@@ -892,7 +1052,7 @@ def catalog_download():
         return jsonify({"error": "only HTTPS downloads allowed"}), 400
     allowed, status, reason = _airlock_check_egress(url, method="GET")
     if not allowed:
-        return jsonify({"error": reason or "airlock blocked download"}), status
+        return _catalog_download_blocked_response(reason, status)
 
     model_type = catalog_entry.get("type", "llm")
 
@@ -950,10 +1110,15 @@ def _background_download(url: str, filename: str, model_type: str,
             }
         log.info("download complete, in quarantine: %s", filename)
 
-    except Exception:
+    except Exception as exc:
         log.exception("download failed: %s", filename)
+        detail = str(exc)[:240] if str(exc) else "download failed"
         with _download_lock:
-            _active_downloads[filename] = {"status": "failed", "error": "download failed"}
+            _active_downloads[filename] = {
+                "status": "failed",
+                "error": "download failed",
+                "detail": detail,
+            }
 
 
 def _download_single_file(url: str, filename: str, catalog_entry: dict | None = None):
@@ -1080,6 +1245,88 @@ def list_models():
         return jsonify([])
 
 
+@app.route("/api/inference/status")
+def inference_status():
+    """Return trusted chat models and whether the inference worker can use them."""
+    try:
+        models_resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(),
+            timeout=5,
+        )
+        registry_models = models_resp.json()
+        if not isinstance(registry_models, list):
+            registry_models = []
+    except Exception:
+        registry_models = []
+
+    loaded_filenames: list[str] = []
+    inference_available = False
+    try:
+        loaded_filenames = _loaded_inference_model_filenames(
+            timeout=0.75 if _is_sandbox_deployment() else 1.0
+        )
+        inference_available = bool(loaded_filenames)
+    except Exception:
+        loaded_filenames = []
+
+    loaded_set = set(loaded_filenames)
+    chat_models = []
+    for model in registry_models:
+        if not _is_gguf_model_record(model):
+            continue
+        filename = str(model.get("filename") or "").strip()
+        name = str(model.get("name") or filename).strip()
+        chat_models.append({
+            "name": name,
+            "filename": filename,
+            "format": model.get("format", "gguf"),
+            "size_bytes": model.get("size_bytes"),
+            "loaded": filename in loaded_set or name in loaded_set,
+            "usable": inference_available and (filename in loaded_set or name in loaded_set),
+        })
+
+    guidance = ""
+    command = ""
+    if _is_sandbox_deployment() and not inference_available:
+        command = _sandbox_launch_command("inference")
+        guidance = (
+            "Start the sandbox inference profile. The UI can do this automatically "
+            "when the host-side sandbox controller is available."
+        )
+
+    return jsonify({
+        "available": inference_available,
+        "loaded_models": loaded_filenames,
+        "chat_models": chat_models,
+        "deployment_mode": _deployment_mode(),
+        "guidance": guidance,
+        "command": command,
+        "automation_available": _is_sandbox_deployment() and _sandbox_control_configured(),
+    })
+
+
+@app.route("/api/catalog/auth/status")
+def catalog_auth_status():
+    """Report whether catalog downloads are using shared provider credentials."""
+    token_vars = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN")
+    configured = [name for name in token_vars if os.getenv(name)]
+    return jsonify({
+        "shared_provider_token_configured": bool(configured),
+        "provider": "huggingface",
+        "token_env_vars": configured,
+        "credential_mode": "operator-supplied-token" if configured else "public-catalog-only",
+        "detail": (
+            "No shared Hugging Face token is configured for the sandbox; catalog "
+            "downloads use public URLs unless the operator injects a token into "
+            "the container environment."
+            if not configured else
+            "A Hugging Face token is present in the container environment. Treat "
+            "this as an operator credential, not a bundled project account."
+        ),
+    })
+
+
 @app.route("/api/models/fsverity")
 def model_fsverity_status():
     """Check fs-verity status of all trusted models."""
@@ -1087,16 +1334,26 @@ def model_fsverity_status():
         resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=5)
         models = resp.json()
         results = []
+        sandbox = _is_sandbox_deployment()
         for m in models:
             provenance_path = SECURE_AI_ROOT / "registry" / f"{m['filename']}.provenance.json"
             prov = {}
             if provenance_path.exists():
                 prov = json.loads(provenance_path.read_text())
+            fsverity_enabled = prov.get("integrity", {}).get("fsverity_enabled", False)
+            provenance_signed = Path(str(provenance_path) + ".sig").exists()
             results.append({
                 "name": m["name"],
-                "fsverity_enabled": prov.get("integrity", {}).get("fsverity_enabled", False),
+                "fsverity_enabled": fsverity_enabled,
                 "fsverity_digest": prov.get("integrity", {}).get("fsverity_digest"),
-                "provenance_signed": Path(str(provenance_path) + ".sig").exists(),
+                "provenance_signed": provenance_signed,
+                "fsverity_status": "not_available" if sandbox else ("enabled" if fsverity_enabled else "off"),
+                "provenance_status": "not_available" if sandbox else ("signed" if provenance_signed else "unsigned"),
+                "detail": (
+                    "fs-verity and provenance signing are appliance host features; "
+                    "the Docker sandbox still uses registry hash verification and GGUF tensor manifests."
+                    if sandbox else ""
+                ),
             })
         return jsonify(results)
     except Exception:
@@ -1319,9 +1576,9 @@ def _requested_model_name(body: dict | None = None) -> str:
     return configured
 
 
-def _loaded_inference_model_filenames() -> list[str]:
+def _loaded_inference_model_filenames(timeout: float = 5.0) -> list[str]:
     """Return the model filenames currently loaded by the inference worker."""
-    resp = requests.get(f"{INFERENCE_URL}/v1/models", timeout=5)
+    resp = requests.get(f"{INFERENCE_URL}/v1/models", timeout=timeout)
     payload = resp.json()
 
     candidates: list[str] = []
@@ -1454,9 +1711,13 @@ def chat():
         return _integrity_block_response(check)
 
     try:
+        payload = {"messages": messages, "stream": False}
+        requested_model = _requested_model_name(body)
+        if requested_model:
+            payload["model"] = requested_model
         resp = requests.post(
             f"{INFERENCE_URL}/v1/chat/completions",
-            json={"messages": messages, "stream": False},
+            json=payload,
             timeout=300,
         )
         return jsonify(resp.json())
@@ -1478,9 +1739,13 @@ def chat_stream():
 
     def generate():
         try:
+            payload = {"messages": messages, "stream": True}
+            requested_model = _requested_model_name(body)
+            if requested_model:
+                payload["model"] = requested_model
             resp = requests.post(
                 f"{INFERENCE_URL}/v1/chat/completions",
-                json={"messages": messages, "stream": True},
+                json=payload,
                 stream=True,
                 timeout=300,
             )
@@ -1518,9 +1783,19 @@ def search_status():
     """Check if Tor-routed search is available."""
     try:
         resp = requests.get(f"{SEARCH_MEDIATOR_URL}/health", timeout=5)
-        return jsonify(resp.json())
+        data = resp.json()
+        if data.get("search_enabled") is False and _is_sandbox_deployment():
+            data.setdefault("message", "Web search is available after starting the sandbox with the search profile.")
+            data.setdefault("command", _sandbox_launch_command("search"))
+            data.setdefault("automation_available", _sandbox_control_configured())
+        return jsonify(data)
     except requests.ConnectionError:
-        return jsonify({"status": "unavailable", "search_enabled": False})
+        payload = {"status": "unavailable", "search_enabled": False}
+        if _is_sandbox_deployment():
+            payload["message"] = "Web search is available after starting the sandbox with the search profile."
+            payload["command"] = _sandbox_launch_command("search")
+            payload["automation_available"] = _sandbox_control_configured()
+        return jsonify(payload)
 
 
 @app.route("/api/chat/search", methods=["POST"])
@@ -1584,9 +1859,13 @@ def chat_with_search():
         })
 
     try:
+        payload = {"messages": augmented_messages, "stream": False}
+        requested_model = _requested_model_name(body)
+        if requested_model:
+            payload["model"] = requested_model
         resp = requests.post(
             f"{INFERENCE_URL}/v1/chat/completions",
-            json={"messages": augmented_messages, "stream": False},
+            json=payload,
             timeout=300,
         )
         result = resp.json()
@@ -1934,6 +2213,80 @@ def profile_status():
     return jsonify({"status": "idle", "profile": active, "locked": locked})
 
 
+@app.route("/api/sandbox/control/status")
+def sandbox_control_status():
+    """Report whether sandbox profile/service automation is available."""
+    if not _is_sandbox_deployment():
+        return _unsupported_feature(
+            "sandbox_control",
+            "Host-side sandbox automation is only used by the Docker sandbox.",
+        )
+    payload, status_code = _sandbox_control_request("GET", "/v1/status", timeout=2.0)
+    payload.pop("output_tail", None)
+    active, _ = _read_active_profile()
+    payload.setdefault("profile", active)
+    payload.setdefault("command", _sandbox_launch_command_for_profile(active))
+    payload.setdefault("profiles", {
+        name: {
+            "command": _sandbox_launch_command_for_profile(name),
+        } for name in sorted(VALID_PROFILES)
+    })
+    return jsonify(payload), status_code
+
+
+@app.route("/api/sandbox/control/apply", methods=["POST"])
+def sandbox_control_apply():
+    """Apply a Docker sandbox profile through the host-side allowlisted controller."""
+    if not _is_sandbox_deployment():
+        return _unsupported_feature(
+            "sandbox_control",
+            "Host-side sandbox automation is only used by the Docker sandbox.",
+        )
+
+    data = request.get_json(silent=True) or {}
+    current, _ = _read_active_profile()
+    profile = str(data.get("profile") or current)
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": f"invalid profile: {profile}"}), 400
+
+    inference = bool(data.get("inference", False))
+    model_filename = str(data.get("model_filename") or "").strip()
+    if model_filename:
+        if not _is_safe_catalog_name(model_filename) or not model_filename.lower().endswith(".gguf"):
+            return jsonify({"error": "model_filename must be a trusted GGUF filename"}), 400
+
+    body = {
+        "profile": profile,
+        "inference": inference,
+    }
+    if model_filename:
+        body["model_filename"] = model_filename
+
+    payload, status_code = _sandbox_control_request(
+        "POST",
+        "/v1/apply",
+        body=body,
+        timeout=5.0,
+    )
+    payload.setdefault("command", _sandbox_launch_command_for_profile(profile, inference=inference))
+    payload.setdefault("profile", profile)
+    payload.setdefault("inference", inference)
+    if status_code in (200, 202):
+        _ui_audit.append("sandbox_control_apply", {
+            "profile": profile,
+            "inference": inference,
+            "model_filename": model_filename,
+            "status_code": status_code,
+        })
+    else:
+        _ui_audit.append("sandbox_control_apply_failed", {
+            "profile": profile,
+            "inference": inference,
+            "status_code": status_code,
+        })
+    return jsonify(payload), status_code
+
+
 @app.route("/api/diffusion/runtime/status")
 def diffusion_runtime_status():
     """Return diffusion runtime state for the first-use flow.
@@ -2114,6 +2467,24 @@ def diffusion_runtime_progress():
 
 # --- API: Status ---
 
+def _sandbox_optional_service_status(name: str) -> dict | None:
+    """Return a not-available status for optional sandbox services."""
+    if not _is_sandbox_deployment() or name not in {"inference", "diffusion"}:
+        return None
+    feature = "inference" if name == "inference" else "diffusion"
+    return {
+        "status": "not_available",
+        "supported": False,
+        "optional": True,
+        "detail": (
+            f"{name.replace('_', ' ').title()} is optional in the Docker sandbox. "
+            "Use Settings to start the matching sandbox profile automatically."
+        ),
+        "command": _sandbox_launch_command(feature),
+        "automation_available": _sandbox_control_configured(),
+    }
+
+
 @app.route("/health")
 def health():
     """Fast liveness probe for container and local health checks."""
@@ -2152,11 +2523,19 @@ def status():
             checks[name] = r.json()
             _slo_tracker.record_health_check(name, r.status_code == 200, latency_ms)
         except CircuitOpenError:
-            checks[name] = {"status": "circuit_open"}
-            _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
+            optional = _sandbox_optional_service_status(name)
+            if optional:
+                checks[name] = optional
+            else:
+                checks[name] = {"status": "circuit_open"}
+                _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
         except Exception:
-            checks[name] = {"status": "unreachable"}
-            _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
+            optional = _sandbox_optional_service_status(name)
+            if optional:
+                checks[name] = optional
+            else:
+                checks[name] = {"status": "unreachable"}
+                _slo_tracker.record_health_check(name, False, (time.time() - t0) * 1000)
 
     config = load_appliance_config()
     return jsonify({
@@ -2188,24 +2567,30 @@ def appliance_state():
     subsystems = {}
 
     # Runtime Attestor state
-    try:
-        r = _breakers["attestor"].call(
-            requests.get, f"{ATTESTOR_URL}/api/v1/attest", timeout=3
-        )
-        data = r.json()
-        subsystems["attestor"] = data.get("attestation_state", "unknown")
-    except (CircuitOpenError, Exception):
-        subsystems["attestor"] = "unknown"
+    if _is_sandbox_deployment():
+        subsystems["attestor"] = "not_available"
+    else:
+        try:
+            r = _breakers["attestor"].call(
+                requests.get, f"{ATTESTOR_URL}/api/v1/attest", timeout=3
+            )
+            data = r.json()
+            subsystems["attestor"] = data.get("attestation_state", "unknown")
+        except (CircuitOpenError, Exception):
+            subsystems["attestor"] = "unknown"
 
     # Integrity Monitor state
-    try:
-        r = _breakers["integrity_monitor"].call(
-            requests.get, f"{INTEGRITY_MONITOR_URL}/api/v1/status", timeout=3
-        )
-        data = r.json()
-        subsystems["integrity_monitor"] = data.get("state", "unknown")
-    except (CircuitOpenError, Exception):
-        subsystems["integrity_monitor"] = "unknown"
+    if _is_sandbox_deployment():
+        subsystems["integrity_monitor"] = "not_available"
+    else:
+        try:
+            r = _breakers["integrity_monitor"].call(
+                requests.get, f"{INTEGRITY_MONITOR_URL}/api/v1/status", timeout=3
+            )
+            data = r.json()
+            subsystems["integrity_monitor"] = data.get("state", "unknown")
+        except (CircuitOpenError, Exception):
+            subsystems["integrity_monitor"] = "unknown"
 
     # Incident Recorder — open incident counts
     try:
@@ -2252,8 +2637,20 @@ def appliance_state():
 @app.route("/api/observability/slos")
 def slo_status():
     """Return current SLO compliance measurements from the in-process tracker."""
+    slos = _slo_tracker.get_all_slos()
+    if _is_sandbox_deployment():
+        for slo in slos:
+            service = str(slo.get("name", "")).split(" ", 1)[0]
+            if service in {"inference", "diffusion"}:
+                slo["current_value"] = "N/A"
+                slo["compliant"] = True
+                slo["status"] = "not_applicable"
+                slo["detail"] = (
+                    "Optional in the Docker sandbox; enable the matching "
+                    "compose profile before treating this as an SLO."
+                )
     return jsonify({
-        "slos": _slo_tracker.get_all_slos(),
+        "slos": slos,
         "window": "7d",
         "timestamp": time.time(),
     })
@@ -2392,6 +2789,14 @@ def boot_status():
 @app.route("/api/boot/tpm2/status")
 def tpm2_status():
     """Return TPM2 state from the runtime state file."""
+    if _is_sandbox_deployment():
+        return jsonify({
+            "tpm2_available": False,
+            "sealed": False,
+            "supported": False,
+            "status": "not_available",
+            "detail": "TPM2 vault sealing is a host firmware feature and cannot be attested from the Docker sandbox.",
+        })
     state_path = Path("/run/secure-ai/tpm2-state")
     if not state_path.exists():
         return jsonify({"tpm2_available": False, "sealed": False, "detail": "no TPM2 state"})
@@ -2404,6 +2809,14 @@ def tpm2_status():
 @app.route("/api/boot/secureboot/status")
 def secureboot_status():
     """Return Secure Boot state from the runtime state file."""
+    if _is_sandbox_deployment():
+        return jsonify({
+            "secure_boot": "not_available",
+            "enabled": False,
+            "supported": False,
+            "status": "not_available",
+            "detail": "Secure Boot is a host firmware feature and cannot be attested from the Docker sandbox.",
+        })
     state_path = Path("/run/secure-ai/secureboot-state")
     if not state_path.exists():
         return jsonify({"secure_boot": "unknown", "mok_enrolled": "unknown"})
@@ -2419,6 +2832,15 @@ def secureboot_status():
 def vault_status():
     """Return the current vault lock state and idle time."""
     state = _read_vault_state()
+    if _is_sandbox_deployment() and state.get("state") == "unknown":
+        state = {
+            "state": "not_available",
+            "detail": (
+                "Encrypted LUKS vault locking is not available in the Docker "
+                "sandbox. Imported and generated files still stay inside the "
+                "local Docker volume."
+            ),
+        }
     last_activity = 0.0
     try:
         last_activity = float(VAULT_ACTIVITY_FILE.read_text().strip())

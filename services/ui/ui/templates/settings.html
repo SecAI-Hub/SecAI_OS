@@ -18,6 +18,20 @@
     <div class="btn-group mt-md" id="vault-actions"></div>
 </div>
 
+<!-- Runtime Mode Section -->
+<div class="section-title">Runtime Mode</div>
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+            Offline / Online Profile
+        </span>
+        <span class="badge badge-muted" id="runtime-mode-badge">loading</span>
+    </div>
+    <p class="meta" id="runtime-mode-detail">Loading runtime mode...</p>
+    <div class="btn-group mt-md" id="runtime-mode-actions"></div>
+</div>
+
 <!-- Vault unlock form (shown when locked) -->
 <div class="card hidden" id="vault-unlock-card">
     <div class="card-title mb-md">Unlock Vault</div>
@@ -169,8 +183,15 @@
                 badge.textContent = 'locked';
                 actions.innerHTML = '';
                 unlockCard.classList.remove('hidden');
+            } else if (s === 'not_available') {
+                detail.textContent = data.detail || 'Vault locking is not available in this deployment.';
+                detail.style.color = 'var(--text-muted)';
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                actions.innerHTML = '';
+                unlockCard.classList.add('hidden');
             } else {
-                detail.textContent = 'Vault status unknown.';
+                detail.textContent = data.detail || 'Vault status has not been reported yet.';
                 detail.style.color = 'var(--text-muted)';
                 badge.className = 'badge badge-muted';
                 badge.textContent = 'unknown';
@@ -180,6 +201,120 @@
         } catch(e) {
             detail.textContent = 'Could not check vault status.';
             detail.style.color = 'var(--text-muted)';
+        }
+    }
+
+    async function loadRuntimeMode() {
+        var badge = document.getElementById('runtime-mode-badge');
+        var detail = document.getElementById('runtime-mode-detail');
+        var actions = document.getElementById('runtime-mode-actions');
+        try {
+            var profileResp = await fetch('/api/profile');
+            var statusResp = await fetch('/api/status');
+            var profile = await profileResp.json();
+            var status = await statusResp.json();
+            var active = profile.active || 'offline_private';
+            var sandbox = status.deployment_mode === 'sandbox';
+            var control = {};
+            if (sandbox) {
+                try {
+                    var controlResp = await fetch('/api/sandbox/control/status');
+                    control = await controlResp.json();
+                } catch(e) {
+                    control = {available: false};
+                }
+            }
+            var labels = {
+                offline_private: 'Offline Private',
+                research: 'Web-Assisted Research',
+                full_lab: 'Full Lab',
+            };
+            var descriptions = {
+                offline_private: 'No outbound network. Local files, trusted models, and local automation only.',
+                research: 'Tor-routed search and airlock-approved model downloads are enabled.',
+                full_lab: 'Research mode plus optional diffusion/image/video generation workers.',
+            };
+            var commands = {
+                offline_private: '.\\secai-sandbox.cmd start',
+                research: '.\\secai-sandbox.cmd start --with-search',
+                full_lab: '.\\secai-sandbox.cmd start --with-search --with-diffusion',
+            };
+
+            badge.className = active === 'offline_private' ? 'badge badge-success' : 'badge badge-warning';
+            badge.textContent = labels[active] || active;
+            detail.textContent = (descriptions[active] || 'Runtime profile loaded.') +
+                (sandbox
+                    ? (control.available === false
+                        ? ' Automatic mode changes are unavailable until the sandbox controller is running.'
+                        : ' Mode changes restart the sandbox automatically from this screen.')
+                    : '');
+
+            actions.innerHTML = ['offline_private', 'research', 'full_lab'].map(function(key) {
+                var activeClass = key === active ? ' btn-success' : '';
+                var title = sandbox
+                    ? (control.available === false ? ('Fallback: ' + commands[key]) : ('Restart into ' + labels[key]))
+                    : descriptions[key];
+                var label = labels[key];
+                return '<button class="btn btn-sm' + activeClass + '" type="button" data-profile="' + key + '" title="' + esc(title) + '">' +
+                    esc(label) + (key === active ? ' Active' : '') + '</button>';
+            }).join('');
+            actions.setAttribute('data-sandbox', sandbox ? 'true' : 'false');
+            actions.setAttribute('data-active', active);
+            actions.setAttribute('data-control-available', control.available === false ? 'false' : 'true');
+        } catch(e) {
+            badge.textContent = 'unknown';
+            detail.textContent = 'Could not load runtime mode.';
+            actions.innerHTML = '';
+        }
+    }
+
+    async function selectRuntimeMode(profile) {
+        var actions = document.getElementById('runtime-mode-actions');
+        var sandbox = actions.getAttribute('data-sandbox') === 'true';
+        var commands = {
+            offline_private: '.\\secai-sandbox.cmd start',
+            research: '.\\secai-sandbox.cmd start --with-search',
+            full_lab: '.\\secai-sandbox.cmd start --with-search --with-diffusion',
+        };
+        if (sandbox) {
+            var active = actions.getAttribute('data-active');
+            if (profile === active) {
+                toast('That profile is already active.', 'info');
+                return;
+            }
+            var labels = {
+                offline_private: 'Offline Private',
+                research: 'Web-Assisted Research',
+                full_lab: 'Full Lab',
+            };
+            var confirmed = await showConfirm(
+                'Restart Sandbox',
+                'Switch to ' + (labels[profile] || profile) + '? Running conversations and downloads will pause while the sandbox restarts.',
+                'Restart',
+                false
+            );
+            if (!confirmed) return;
+            await applySandboxControl(
+                {profile: profile},
+                'Sandbox restart started for ' + (labels[profile] || profile) + '.'
+            );
+            return;
+        }
+        try {
+            var resp = await fetch('/api/profile/select', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({profile: profile}),
+            });
+            var data = await resp.json();
+            if (resp.ok) {
+                toast('Profile change requested.', 'success');
+                loadRuntimeMode();
+            } else {
+                toast(data.error || 'Profile change failed.', 'error');
+            }
+        } catch(e) {
+            toast('Could not request profile change.', 'error');
         }
     }
 
@@ -224,9 +359,15 @@
         if (target.getAttribute('data-vault-action') === 'lock') lockVault();
         if (target.getAttribute('data-vault-action') === 'keepalive') keepalive();
     });
+    document.getElementById('runtime-mode-actions').addEventListener('click', function(e) {
+        var target = e.target.closest('[data-profile]');
+        if (!target) return;
+        selectRuntimeMode(target.getAttribute('data-profile'));
+    });
 
     loadSession();
     loadVault();
+    loadRuntimeMode();
     setInterval(loadVault, 10000);
 </script>
 {% endblock %}

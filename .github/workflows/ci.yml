@@ -134,6 +134,17 @@ jobs:
             files/scripts/first-boot-check.sh \
             files/scripts/verify-release.sh
 
+  release-helper-smoke:
+    name: Release Helper Script Smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Validate release helper scripts
+        run: bash .github/scripts/check-release-installers.sh
+
   appsec-lint:
     name: Hadolint & Semgrep
     runs-on: ubuntu-latest
@@ -289,6 +300,11 @@ jobs:
             grep -q "${keyword}" .github/workflows/release.yml || \
               { echo "FAIL: release.yml missing '${keyword}'"; exit 1; }
             echo "OK: release.yml contains '${keyword}'"
+          done
+          for helper in "secai-os-build-iso.sh" "secai-os-build-usb.sh" "secai-os-run-docker.sh" "secai-os-run-docker.ps1"; do
+            grep -q "${helper}" .github/workflows/release.yml || \
+              { echo "FAIL: release.yml missing release helper '${helper}'"; exit 1; }
+            echo "OK: release.yml publishes '${helper}'"
           done
 
           # Verify build workflow has SBOM attestation

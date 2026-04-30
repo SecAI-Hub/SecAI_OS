@@ -12,6 +12,7 @@ $runtimeDir = Join-Path $sandboxDir "runtime"
 $envExample = Join-Path $sandboxDir ".env.example"
 $envFile = Join-Path $sandboxDir ".env"
 $tokenFile = Join-Path $runtimeDir "service-token"
+$controlTokenFile = Join-Path $runtimeDir "control-token"
 $composeFile = Join-Path $sandboxDir "compose.yaml"
 $stateVolume = "secai-sandbox_secai-state"
 $runVolume = "secai-sandbox_secai-run"
@@ -31,6 +32,13 @@ if ((-not (Test-Path $tokenFile)) -or ((Get-Item $tokenFile).Length -eq 0)) {
     Write-Host "Created sandbox service token at $tokenFile."
 }
 
+if ((-not (Test-Path $controlTokenFile)) -or ((Get-Item $controlTokenFile).Length -eq 0)) {
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    (($bytes | ForEach-Object { $_.ToString("x2") }) -join "") | Set-Content -Path $controlTokenFile -NoNewline
+    Write-Host "Created sandbox control token at $controlTokenFile."
+}
+
 $pythonCmd = $null
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pythonCmd = "python"
@@ -38,6 +46,56 @@ if (Get-Command python -ErrorAction SilentlyContinue) {
     $pythonCmd = "py"
 } else {
     throw "python or py is required to render the sandbox runtime configuration."
+}
+
+function Get-SandboxEnvValue {
+    param(
+        [string]$Name,
+        [string]$DefaultValue
+    )
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ($value) {
+        return $value
+    }
+    if (Test-Path $envFile) {
+        $line = Get-Content $envFile | Where-Object { $_ -match "^$([Regex]::Escape($Name))=" } | Select-Object -Last 1
+        if ($line) {
+            return ($line -split "=", 2)[1].Trim()
+        }
+    }
+    return $DefaultValue
+}
+
+$controlPort = Get-SandboxEnvValue "SECAI_CONTROL_PORT" "8498"
+
+function Test-SandboxControlServer {
+    try {
+        $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$controlPort/health" -TimeoutSec 1
+        return $resp.status -eq "ok"
+    } catch {
+        return $false
+    }
+}
+
+if (-not (Test-SandboxControlServer)) {
+    $controlOut = Join-Path $runtimeDir "control-server.out.log"
+    $controlErr = Join-Path $runtimeDir "control-server.err.log"
+    $controlScript = Join-Path $repoRoot "scripts\sandbox\control_server.py"
+    $controlArgs = @(
+        "`"$controlScript`"",
+        "--repo-root", "`"$repoRoot`"",
+        "--runtime-dir", "`"$runtimeDir`"",
+        "--token-path", "`"$controlTokenFile`"",
+        "--host", "127.0.0.1",
+        "--port", $controlPort
+    )
+    Start-Process -WindowStyle Hidden -FilePath $pythonCmd -ArgumentList $controlArgs -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr
+    Start-Sleep -Milliseconds 500
+    if (Test-SandboxControlServer) {
+        Write-Host "Sandbox control server is listening on http://127.0.0.1:$controlPort."
+    } else {
+        Write-Warning "Sandbox control server did not answer yet; UI automation may be unavailable until it starts."
+    }
 }
 
 $renderArgs = @(
@@ -91,6 +149,30 @@ if ($LASTEXITCODE -ne 0) {
     sh -c "mkdir -p /runstate && chown -R 65534:65534 /runstate && chmod 0770 /runstate" | Out-Null
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
+}
+
+$allProfileComposeArgs = @(
+    "compose", "-f", $composeFile,
+    "--profile", "search",
+    "--profile", "llm",
+    "--profile", "diffusion"
+)
+$disabledServices = @()
+if (-not $WithSearch) {
+    $disabledServices += @("tor", "searxng")
+}
+if (-not $WithInference) {
+    $disabledServices += "inference"
+}
+if (-not $WithDiffusion) {
+    $disabledServices += "diffusion"
+}
+if ($disabledServices.Count -gt 0) {
+    $rmArgs = $allProfileComposeArgs + @("rm", "-sf") + $disabledServices
+    & $composeCmd @rmArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 if ($WithInference) {

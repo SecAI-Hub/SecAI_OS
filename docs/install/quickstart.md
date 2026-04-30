@@ -180,6 +180,11 @@ Common flags:
 - `--with-airlock` / `-WithAirlock` turns on airlock-mediated outbound downloads in the sandbox runtime policy.
 - `--with-inference` / `-WithInference` and `--with-diffusion` / `-WithDiffusion` enable the heavier model-serving profiles.
 
+The sandbox launcher now starts a loopback-only, token-authenticated host
+controller so the UI can apply these same profile changes from Settings and
+service-specific buttons without mounting the Docker socket into the UI
+container.
+
 > **Security note:** This is a lower-assurance path than the full OS or VM image. The host kernel and container runtime can inspect container memory, mounted files, and network activity. Use it for evaluation and workflow testing, not sensitive workloads.
 
 ---

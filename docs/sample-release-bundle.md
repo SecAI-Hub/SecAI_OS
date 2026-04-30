@@ -53,6 +53,12 @@ v1.0.0/
   # Release manifest (machine-readable)
   RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, OpenVEX docs, provenance, build metadata
 
+  # Release helper scripts
+  secai-os-build-iso.sh          # Build the bootable ISO locally from the release image
+  secai-os-build-usb.sh          # Build the direct-flash usb.raw.xz locally from the release image
+  secai-os-run-docker.sh         # Download the release source and start the Docker sandbox on Linux/macOS
+  secai-os-run-docker.ps1        # Download the release source and start the Docker sandbox on Windows
+
   # Install artifacts (bootable images)
   secai-os-v1.0.0-x86_64.iso        # Bootable ISO (from isogenerator)
   secai-os-v1.0.0-x86_64.iso.sig    # cosign detached signature
@@ -82,6 +88,33 @@ ghcr.io/secai-hub/secai_os@sha256:a1b2c3d4e5f6...  (example)
 ```
 
 The digest is immutable and can be used in place of a mutable tag for pinned deployments.
+
+## Release Helper Scripts
+
+Each release includes small helper scripts for users who want a single command
+per deployment style:
+
+```bash
+# Build a bootable ISO from the signed release image.
+bash secai-os-build-iso.sh --tag v1.0.0
+
+# Build a direct-flash portable USB image from the signed release image.
+bash secai-os-build-usb.sh --tag v1.0.0
+
+# Download the release source bundle and start the Docker sandbox.
+bash secai-os-run-docker.sh --tag v1.0.0 --profile offline-private
+```
+
+On Windows, use the PowerShell Docker helper:
+
+```powershell
+.\secai-os-run-docker.ps1 -Tag v1.0.0 -Profile offline-private
+```
+
+The ISO and USB helpers use the digest-pinned bootc image builder declared in
+the repository scripts. The Docker helpers download the matching release source
+archive, build the sandbox containers locally, and launch the UI at
+`http://127.0.0.1:8480`.
 
 ## Signed Checksum File
 
@@ -127,6 +160,12 @@ Example structure:
   ],
   "vex": [
     "custom-python.vex.json"
+  ],
+  "release_scripts": [
+    {"name": "secai-os-build-iso.sh", "sha256": "7d865e959b24..."},
+    {"name": "secai-os-build-usb.sh", "sha256": "a1b2c3d4e5f6..."},
+    {"name": "secai-os-run-docker.sh", "sha256": "e3b0c44298fc..."},
+    {"name": "secai-os-run-docker.ps1", "sha256": "1234abcd5678..."}
   ],
   "provenance": {
     "type": "https://slsa.dev/provenance/v1",

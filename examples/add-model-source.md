@@ -20,6 +20,8 @@ models:
     url_prefix: "https://cdn-lfs.huggingface.co/"
   - name: "Hugging Face CDN US"
     url_prefix: "https://cdn-lfs-us-1.huggingface.co/"
+  - name: "Hugging Face Xet CAS Bridge"
+    url_prefix: "https://cas-bridge.xethub.hf.co/"
 
   # New source
   - name: "My Organization Models"
@@ -45,6 +47,7 @@ airlock:
     - "https://registry.ollama.ai/"
     - "https://cdn-lfs.huggingface.co/"
     - "https://cdn-lfs-us-1.huggingface.co/"
+    - "https://cas-bridge.xethub.hf.co/"
     # New source
     - "https://models.myorg.example.com/"
 ```

@@ -11,6 +11,12 @@ models:
     allowed_formats: ["safetensors", "gguf"]
     notes: "Pin exact commit hashes in models.lock.yaml"
 
+  - name: "Hugging Face Xet CAS Bridge"
+    url_prefix: "https://cas-bridge.xethub.hf.co/"
+    require_signature: false
+    allowed_formats: ["safetensors", "gguf"]
+    notes: "Hugging Face redirects large file downloads through this content-addressed storage bridge"
+
   - name: "Ollama Library"
     url_prefix: "https://registry.ollama.ai/"
     require_signature: false

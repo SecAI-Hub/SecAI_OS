@@ -19,6 +19,12 @@ BOOTSTRAP = REPO_ROOT / "files" / "scripts" / "secai-bootstrap.sh"
 MAKEFILE = REPO_ROOT / "Makefile"
 QUARANTINE_PYPROJECT = REPO_ROOT / "services" / "quarantine" / "pyproject.toml"
 BUILD_USB = REPO_ROOT / "scripts" / "build-usb-image.sh"
+RELEASE_HELPERS = [
+    REPO_ROOT / "scripts" / "release" / "secai-os-build-iso.sh",
+    REPO_ROOT / "scripts" / "release" / "secai-os-build-usb.sh",
+    REPO_ROOT / "scripts" / "release" / "secai-os-run-docker.sh",
+    REPO_ROOT / "scripts" / "release" / "secai-os-run-docker.ps1",
+]
 
 
 def _load_artifacts_json():
@@ -118,6 +124,16 @@ class TestReleaseWorkflowStructure:
         content = _read_release_yml()
         assert ".vex.json" in content
 
+    def test_release_files_include_helper_scripts(self):
+        content = _read_release_yml()
+        for helper in (
+            "secai-os-build-iso.sh",
+            "secai-os-build-usb.sh",
+            "secai-os-run-docker.sh",
+            "secai-os-run-docker.ps1",
+        ):
+            assert helper in content
+
     def test_has_sandbox_vex_job(self):
         content = _read_release_yml()
         assert "build-sandbox-vex:" in content
@@ -193,6 +209,11 @@ class TestCiWorkflowStructure:
         assert ".github/scripts/check-hadolint.sh" in content
         assert ".github/scripts/run-semgrep.sh" in content
 
+    def test_release_helper_smoke_is_wired_into_ci(self):
+        content = _read_ci_yml()
+        assert "Release Helper Script Smoke" in content
+        assert ".github/scripts/check-release-installers.sh" in content
+
     def test_ci_syft_usage_comes_from_pinned_action(self):
         content = _read_ci_yml()
         assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
@@ -233,6 +254,16 @@ class TestSampleReleaseBundle:
     def test_mentions_openvex(self):
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         assert "custom-python.vex.json" in content
+
+    def test_mentions_release_helper_scripts(self):
+        content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
+        for helper in (
+            "secai-os-build-iso.sh",
+            "secai-os-build-usb.sh",
+            "secai-os-run-docker.sh",
+            "secai-os-run-docker.ps1",
+        ):
+            assert helper in content
 
 
 class TestVerifyReleaseScript:
@@ -330,3 +361,27 @@ class TestBuildUsbScript:
         assert "validate_image_ref" in content
         assert "Unsupported --rootfs value" in content
         assert "Unsupported --xz-level value" in content
+
+
+class TestReleaseHelperScripts:
+    def test_release_helpers_exist(self):
+        for helper in RELEASE_HELPERS:
+            assert helper.exists()
+
+    def test_release_helpers_are_documented_as_artifacts(self):
+        data = _load_artifacts_json()
+        files = data["artifacts"]["required"]["release_scripts"]["files"]
+        for helper in RELEASE_HELPERS:
+            assert helper.name in files
+
+    def test_iso_and_usb_helpers_pin_builder_image(self):
+        for helper in RELEASE_HELPERS[:2]:
+            content = helper.read_text(encoding="utf-8")
+            assert "bootc-image-builder:latest@sha256:" in content
+
+    def test_docker_helpers_support_profiles(self):
+        for helper in RELEASE_HELPERS[2:]:
+            content = helper.read_text(encoding="utf-8")
+            assert "offline-private" in content
+            assert "research" in content
+            assert "full-lab" in content
