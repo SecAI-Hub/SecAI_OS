@@ -238,7 +238,7 @@ jobs:
           sudo docker image prune -af
 
       - name: Build ISO
-        uses: jasonn3/build-container-installer@207e927e28c92704c4cdbe10b980643b3771ef01 # main
+        uses: jasonn3/build-container-installer@9c889bd0cf7c8fabf375a24e8d113a1212a32413 # main
         id: isogen
         with:
           arch: x86_64
