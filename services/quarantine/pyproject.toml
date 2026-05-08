@@ -16,7 +16,7 @@ scan = [
     "modelaudit==0.2.42",
 ]
 garak = [
-    "garak==0.14.1",
+    "garak==0.15.0",
 ]
 
 [project.scripts]
