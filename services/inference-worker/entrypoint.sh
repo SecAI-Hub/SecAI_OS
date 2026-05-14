@@ -9,7 +9,11 @@ GPU_LAYERS="${GPU_LAYERS:--1}"
 REGISTRY_DIR="${REGISTRY_DIR:-/var/lib/secure-ai/registry}"
 
 if [ -z "$MODEL" ]; then
-    MODEL_CANDIDATES=$(find "$REGISTRY_DIR" -maxdepth 1 -type f -name '*.gguf' | sort || true)
+    if [ -d "$REGISTRY_DIR" ]; then
+        MODEL_CANDIDATES=$(find "$REGISTRY_DIR" -maxdepth 1 -type f -name '*.gguf' | sort || true)
+    else
+        MODEL_CANDIDATES=""
+    fi
     MODEL_COUNT=$(printf '%s\n' "$MODEL_CANDIDATES" | sed '/^$/d' | wc -l | tr -d ' ')
     if [ "$MODEL_COUNT" -eq 1 ]; then
         MODEL=$(printf '%s\n' "$MODEL_CANDIDATES" | sed '/^$/d')

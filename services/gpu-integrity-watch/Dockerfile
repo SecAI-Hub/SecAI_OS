@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.26-alpine@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS build
+FROM docker.io/library/golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -10,4 +10,5 @@ RUN apk add --no-cache ca-certificates
 COPY --from=build /gpu-integrity-watch /usr/local/bin/gpu-integrity-watch
 USER 65534:65534
 EXPOSE 8505
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 CMD wget -q -T 3 -O - http://127.0.0.1:8505/health >/dev/null || exit 1
 ENTRYPOINT ["gpu-integrity-watch"]

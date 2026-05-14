@@ -16,8 +16,8 @@ import hmac
 import html
 import logging
 import os
-import random
 import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -37,6 +37,7 @@ from common.audit_chain import AuditChain
 log = logging.getLogger("search-mediator")
 
 app = Flask(__name__)
+_privacy_random = secrets.SystemRandom()
 
 BIND_ADDR = os.getenv("BIND_ADDR", "127.0.0.1:8485")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://127.0.0.1:8888")
@@ -196,7 +197,7 @@ _last_batch_time = 0.0
 
 def _random_delay() -> float:
     """Sleep a random duration to decorrelate query timing."""
-    delay = random.uniform(QUERY_DELAY_MIN, QUERY_DELAY_MAX)
+    delay = _privacy_random.uniform(QUERY_DELAY_MIN, QUERY_DELAY_MAX)
     time.sleep(delay)
     return delay
 
@@ -259,7 +260,7 @@ def check_query_uniqueness(query: str) -> dict:
 def generate_decoy_queries(count: int) -> list:
     """Select random decoy queries from the curated list."""
     count = min(count, len(DECOY_QUERIES))
-    return random.sample(DECOY_QUERIES, count)
+    return _privacy_random.sample(DECOY_QUERIES, count)
 
 
 def send_decoy_search(query: str) -> None:
@@ -291,7 +292,7 @@ def run_decoy_searches(count: int) -> int:
     """Send decoy searches with random timing. Returns count sent."""
     decoys = generate_decoy_queries(count)
     for dq in decoys:
-        delay = random.uniform(0.2, 1.5)
+        delay = _privacy_random.uniform(0.2, 1.5)
         time.sleep(delay)
         send_decoy_search(dq)
     return len(decoys)

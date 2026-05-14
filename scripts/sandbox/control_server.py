@@ -359,7 +359,7 @@ def _stop_existing(runtime_dir: Path, token_path: Path, host: str, port: int) ->
     try:
         token = token_path.read_text(encoding="utf-8").strip()
     except OSError:
-        token = ""
+        token = None
     if token:
         conn = http.client.HTTPConnection(host, port, timeout=2)
         try:

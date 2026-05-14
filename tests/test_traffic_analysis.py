@@ -128,7 +128,7 @@ class TestQueryTimingConstants:
     def test_random_delay_sleeps(self):
         import app as sm_module
         with patch.object(sm_module.time, "sleep") as mock_sleep:
-            with patch.object(sm_module.random, "uniform", return_value=1.5):
+            with patch.object(sm_module._privacy_random, "uniform", return_value=1.5):
                 delay = sm_module._random_delay()
                 mock_sleep.assert_called_once_with(1.5)
                 assert delay == 1.5

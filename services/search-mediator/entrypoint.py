@@ -1,8 +1,10 @@
 #!/opt/venv/bin/python
 import os
+import tempfile
 
 
 def main() -> None:
+    container_tmp = tempfile.gettempdir()
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     os.environ.setdefault("PYTHONPATH", "/app/services")
@@ -22,7 +24,7 @@ def main() -> None:
         "--graceful-timeout",
         os.getenv("GUNICORN_GRACEFUL_TIMEOUT", "10"),
         "--worker-tmp-dir",
-        "/tmp",
+        container_tmp,
         "--max-requests",
         os.getenv("GUNICORN_MAX_REQUESTS", "1000"),
         "--max-requests-jitter",

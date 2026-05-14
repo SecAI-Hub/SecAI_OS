@@ -14,6 +14,7 @@ from typing import Any
 
 CVE_PATTERN = re.compile(r"(CVE-\d{4}-\d+)", re.IGNORECASE)
 DEFAULT_MANIFEST_PATH = "/opt/python/share/secai-cpython-build.json"
+LINUX_SANDBOX_NOT_AFFECTED_CVES = ("CVE-2026-3087",)
 
 VEX_METADATA: dict[str, dict[str, str]] = {
     "CVE-2026-6100": {
@@ -37,11 +38,33 @@ VEX_METADATA: dict[str, dict[str, str]] = {
             "the recvfrom_into boundary-check patch."
         ),
     },
+    "CVE-2026-3087": {
+        "justification": "vulnerable_code_not_in_execute_path",
+        "impact_statement": (
+            "The sandbox images are Linux-only runtimes and do not execute Windows "
+            "absolute path handling in shutil ZIP extraction."
+        ),
+    },
     "CVE-2026-1502": {
         "justification": "vulnerable_code_not_present",
         "impact_statement": (
             "The custom CPython runtime rejects CR/LF bytes in HTTP proxy tunnel "
             "hosts and headers."
+        ),
+    },
+    "CVE-2026-6019": {
+        "justification": "vulnerable_code_not_present",
+        "impact_statement": (
+            "The custom CPython runtime includes the http.cookies js_output() "
+            "hardening that base64-encodes values embedded in JavaScript."
+        ),
+    },
+    "CVE-2026-7210": {
+        "justification": "inline_mitigations_already_exist",
+        "impact_statement": (
+            "The custom CPython runtime includes the pyexpat and ElementTree "
+            "hash-flooding hardening that uses 16 bytes of entropy with bundled "
+            "or system libexpat 2.8.0 or newer."
         ),
     },
     "CVE-2025-15366": {
@@ -221,9 +244,10 @@ def collect_image_build_metadata(
         python_version = str(manifest.get("upstream_version", "")).strip()
         if not python_version:
             raise ValueError(f"{image_ref} is missing upstream_version in {manifest_path}")
-        cves = extract_cves_from_manifest(manifest)
-        if not cves:
+        patch_cves = extract_cves_from_manifest(manifest)
+        if not patch_cves:
             raise ValueError(f"{image_ref} does not advertise any CVE-tagged patches in {manifest_path}")
+        cves = tuple(dict.fromkeys((*patch_cves, *LINUX_SANDBOX_NOT_AFFECTED_CVES)))
         metadata.append(
             ImageBuildMetadata(
                 image_ref=image_ref,

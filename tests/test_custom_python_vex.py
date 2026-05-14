@@ -43,12 +43,12 @@ def test_build_vex_document_uses_exact_image_refs_and_python_subcomponents():
     images = [
         module.ImageBuildMetadata(
             image_ref="secai-sandbox-ui:latest",
-            python_version="3.14.4",
+            python_version="3.14.5",
             cves=("CVE-2026-1502", "CVE-2025-12781"),
         ),
         module.ImageBuildMetadata(
             image_ref="secai-sandbox-agent:latest",
-            python_version="3.14.4",
+            python_version="3.14.5",
             cves=("CVE-2026-1502",),
         ),
     ]
@@ -77,11 +77,11 @@ def test_build_vex_document_uses_exact_image_refs_and_python_subcomponents():
     assert cve_1502["products"] == [
         {
             "@id": "secai-sandbox-ui:latest",
-            "subcomponents": [{"@id": "pkg:generic/python@3.14.4"}],
+            "subcomponents": [{"@id": "pkg:generic/python@3.14.5"}],
         },
         {
             "@id": "secai-sandbox-agent:latest",
-            "subcomponents": [{"@id": "pkg:generic/python@3.14.4"}],
+            "subcomponents": [{"@id": "pkg:generic/python@3.14.5"}],
         },
     ]
 
@@ -91,14 +91,14 @@ def test_collect_image_build_metadata_reads_manifest_from_each_image():
 
     manifests = {
         "secai-sandbox-ui:latest": """{
-  "upstream_version": "3.14.4",
+  "upstream_version": "3.14.5",
   "patches": [
     {"name": "0001-cve-2026-4786-webbrowser-action-bypass.patch"},
     {"name": "0002-cve-2026-6100-decompressor-uaf.patch"}
   ]
 }""",
         "secai-sandbox-search-mediator:latest": """{
-  "upstream_version": "3.14.4",
+  "upstream_version": "3.14.5",
   "patches": [
     {"name": "0001-cve-2026-4786-webbrowser-action-bypass.patch"},
     {"name": "0002-cve-2026-6100-decompressor-uaf.patch"},
@@ -119,13 +119,13 @@ def test_collect_image_build_metadata_reads_manifest_from_each_image():
     assert metadata == [
         module.ImageBuildMetadata(
             image_ref="secai-sandbox-ui:latest",
-            python_version="3.14.4",
-            cves=("CVE-2026-4786", "CVE-2026-6100"),
+            python_version="3.14.5",
+            cves=("CVE-2026-4786", "CVE-2026-6100", "CVE-2026-3087"),
         ),
         module.ImageBuildMetadata(
             image_ref="secai-sandbox-search-mediator:latest",
-            python_version="3.14.4",
-            cves=("CVE-2026-4786", "CVE-2026-6100", "CVE-2026-1502"),
+            python_version="3.14.5",
+            cves=("CVE-2026-4786", "CVE-2026-6100", "CVE-2026-1502", "CVE-2026-3087"),
         ),
     ]
 
@@ -179,7 +179,7 @@ def test_build_vex_document_can_include_unicode_locale_glibc_statement():
     images = [
         module.ImageBuildMetadata(
             image_ref="secai-sandbox-diffusion:latest",
-            python_version="3.14.4",
+            python_version="3.14.5",
             cves=("CVE-2026-1502",),
         ),
     ]

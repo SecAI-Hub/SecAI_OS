@@ -2,8 +2,8 @@ FROM docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096b
 
 # hadolint ignore=DL3002
 USER root
-ENV PYTHON_VERSION=3.14.4
-ENV PYTHON_TARBALL_SHA256=d923c51303e38e249136fc1bdf3568d56ecb03214efdef48516176d3d7faaef8
+ENV PYTHON_VERSION=3.14.5
+ENV PYTHON_TARBALL_SHA256=7e32597b99e5d9a39abed35de4693fa169df3e5850d4c334337ffd6a19a36db6
 ENV PREFIX=/opt/python
 ENV PATCH_DIR=/build/cpython-patches
 ENV VIRTUAL_ENV=/opt/venv
@@ -99,4 +99,5 @@ COPY --from=build /opt/venv /opt/venv
 COPY --from=build /app /app
 
 USER 65534:65534
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 CMD ["/opt/venv/bin/python", "-c", "import os, socket, sys; bind=os.getenv('BIND_ADDR','127.0.0.1:8476');\nif bind.startswith('unix:'):\n    s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3); s.connect(bind[5:]); s.sendall(b'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n'); data=s.recv(1024); s.close(); sys.exit(0 if b'200 OK' in data else 1)\nelse:\n    from urllib.request import urlopen; port=bind.rsplit(':',1)[-1]; sys.exit(0 if urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status == 200 else 1)"]
 ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent.app"]

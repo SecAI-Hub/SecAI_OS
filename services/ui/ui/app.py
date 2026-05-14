@@ -279,8 +279,8 @@ def _sandbox_control_config() -> tuple[str, str]:
     try:
         token = Path(token_path).read_text(encoding="utf-8").strip()
     except OSError:
-        token = ""
-    return url, token
+        token = None
+    return url, token or ""
 
 
 def _sandbox_control_configured() -> bool:

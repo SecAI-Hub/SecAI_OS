@@ -400,7 +400,8 @@ class ModelWorkerProfile:
         ]
         self.allowed_shm_size: int = 2 * 1024 * 1024 * 1024  # 2 GB
         self.allowed_tmp_paths: list[str] = [
-            "/tmp/secai-inference-*",
+            # Inference sandboxes mount this pattern as an isolated tmpfs.
+            "/tmp/secai-inference-*",  # nosec B108
         ]
         self.allowed_model_paths: list[str] = [
             "/var/lib/secure-ai/registry/models/*",

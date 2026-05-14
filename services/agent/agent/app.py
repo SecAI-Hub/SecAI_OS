@@ -520,7 +520,12 @@ def _execute_task(task: Task):
                 })
                 break
 
-            assert task.capability is not None
+            if task.capability is None:
+                step.status = StepStatus.FAILED
+                step.error = "missing capability token"
+                task.status = TaskStatus.FAILED
+                _audit_log("capability_missing", {"task_id": task.task_id})
+                break
             token_valid, token_reason = verify_token(
                 task.capability,
                 consume_nonce=False,

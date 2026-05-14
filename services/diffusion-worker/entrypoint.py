@@ -1,5 +1,6 @@
 import locale
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -34,13 +35,14 @@ def _enforce_unicode_locale() -> tuple[str, str]:
 
 
 def main() -> None:
+    container_tmp = tempfile.gettempdir()
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
-    os.environ.setdefault("HOME", "/tmp")
+    os.environ.setdefault("HOME", container_tmp)
     _enforce_unicode_locale()
-    _ensure_dir("XDG_CACHE_HOME", "/tmp/.cache")
-    _ensure_dir("HF_HOME", "/tmp/.hf")
-    _ensure_dir("TORCH_HOME", "/tmp/.torch")
+    _ensure_dir("XDG_CACHE_HOME", str(Path(container_tmp) / ".cache"))
+    _ensure_dir("HF_HOME", str(Path(container_tmp) / ".hf"))
+    _ensure_dir("TORCH_HOME", str(Path(container_tmp) / ".torch"))
 
     gunicorn = os.path.join(os.getenv("VIRTUAL_ENV", "/opt/venv"), "bin", "gunicorn")
     cmd = [
@@ -51,7 +53,7 @@ def main() -> None:
         "--threads", os.getenv("GUNICORN_THREADS", "2"),
         "--timeout", os.getenv("GUNICORN_TIMEOUT", "1800"),
         "--graceful-timeout", os.getenv("GUNICORN_GRACEFUL_TIMEOUT", "30"),
-        "--worker-tmp-dir", "/tmp",
+        "--worker-tmp-dir", container_tmp,
         "--max-requests", os.getenv("GUNICORN_MAX_REQUESTS", "500"),
         "--max-requests-jitter", os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "25"),
         "--access-logfile", "-",

@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.25.10-alpine@sha256:8d22e29d960bc50cd025d93d5b7c7d220b1ee9aa7a239b3c8f55a57e987e8d45 AS build
+FROM docker.io/library/golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download 2>/dev/null || true
@@ -10,4 +10,5 @@ RUN apk add --no-cache ca-certificates
 COPY --from=build /tool-firewall /usr/local/bin/tool-firewall
 USER 65534:65534
 EXPOSE 8475
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 CMD port="${BIND_ADDR##*:}"; port="${port:-8475}"; wget -q -T 3 -O - "http://127.0.0.1:${port}/health" >/dev/null || exit 1
 ENTRYPOINT ["tool-firewall"]

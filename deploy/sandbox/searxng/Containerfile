@@ -38,3 +38,4 @@ PY
 RUN chown searxng:searxng /usr/local/searxng/searx/settings.yml
 
 USER 977:977
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD ["/usr/local/searxng/.venv/bin/python", "-c", "from urllib.request import urlopen; import os, sys; port=os.getenv('SEARXNG_PORT','8888'); sys.exit(0 if urlopen(f'http://127.0.0.1:{port}/healthz', timeout=5).status == 200 else 1)"]
