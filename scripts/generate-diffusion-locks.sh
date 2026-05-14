@@ -31,10 +31,11 @@ pip install --quiet pip-tools pyyaml
 # Write the input requirements file (the packages we need)
 cat > "${WORK}/diffusion-in.txt" <<'EOF'
 torch
-diffusers
+diffusers==0.38.0
 transformers
-safetensors
+safetensors==0.8.0rc0
 accelerate
+urllib3==2.7.0
 EOF
 
 # Generate lockfiles for each backend

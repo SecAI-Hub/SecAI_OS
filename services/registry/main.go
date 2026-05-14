@@ -657,7 +657,15 @@ func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(data, &payload); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "unknown",
+			"detail": "integrity status file is not valid JSON",
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(payload)
 }
 
 func integrityResultPath() string {
@@ -755,7 +763,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // ggufGuardBin is the path to the gguf-guard binary for manifest verification.
-var ggufGuardBin = "/usr/local/bin/gguf-guard"
+const ggufGuardBin = "/usr/local/bin/gguf-guard"
 
 func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -795,8 +803,7 @@ func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			cmd := fmt.Sprintf("%s", ggufGuardBin)
-			out, err := runGGUFGuardVerify(cmd, modelPath, manifestFile)
+			out, err := runGGUFGuardVerify(modelPath, manifestFile)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
@@ -821,8 +828,8 @@ func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 // runGGUFGuardVerify runs gguf-guard verify-manifest and returns output and error.
-func runGGUFGuardVerify(bin, modelPath, manifestFile string) (string, error) {
-	out, err := exec.Command(bin, "verify-manifest", modelPath, manifestFile).CombinedOutput()
+func runGGUFGuardVerify(modelPath, manifestFile string) (string, error) {
+	out, err := exec.Command(ggufGuardBin, "verify-manifest", modelPath, manifestFile).CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if err != nil {
 		return result, err

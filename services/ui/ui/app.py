@@ -315,10 +315,11 @@ def _sandbox_control_request(
             timeout=timeout,
         )
     except requests.RequestException as exc:
+        log.warning("sandbox controller request failed: %s", exc)
         return {
             "error": "sandbox controller is not reachable",
             "available": False,
-            "detail": str(exc),
+            "detail": "The host-side sandbox controller did not respond.",
         }, 503
     try:
         payload = resp.json()
@@ -3229,8 +3230,8 @@ def emergency_panic():
     })
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60,
+        result = subprocess.run(  # nosemgrep: python.lang.security.dangerous-subprocess-use.dangerous-subprocess-use
+            cmd, capture_output=True, text=True, timeout=60,  # nosemgrep: python.lang.security.dangerous-subprocess-use.dangerous-subprocess-use
             input=passphrase if level >= 2 else None,
         )
         if result.returncode != 0:

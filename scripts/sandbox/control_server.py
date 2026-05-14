@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -18,8 +19,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -362,16 +361,19 @@ def _stop_existing(runtime_dir: Path, token_path: Path, host: str, port: int) ->
     except OSError:
         token = ""
     if token:
-        req = urllib.request.Request(
-            f"http://{host}:{port}/v1/shutdown",
-            method="POST",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        conn = http.client.HTTPConnection(host, port, timeout=2)
         try:
-            with urllib.request.urlopen(req, timeout=2):
-                pass
-        except (urllib.error.URLError, TimeoutError):
+            conn.request(
+                "POST",
+                "/v1/shutdown",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response = conn.getresponse()
+            response.read()
+        except (OSError, TimeoutError, http.client.HTTPException):
             pass
+        finally:
+            conn.close()
     pid_path = runtime_dir / "control-server.pid"
     with contextlib.suppress(OSError):
         pid_path.unlink()

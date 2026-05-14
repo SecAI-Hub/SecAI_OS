@@ -5,7 +5,7 @@ COPY requirements.txt .
 COPY setup.py .
 COPY agent/ agent/
 
-RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
+RUN python -m pip install --no-cache-dir --upgrade pip==26.1.1 && \
     python -m pip install --no-cache-dir -r requirements.txt && \
     python -m pip install --no-cache-dir .
 

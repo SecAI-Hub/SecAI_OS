@@ -438,6 +438,23 @@ func TestActionExecutor_ReloadNoURL(t *testing.T) {
 	}
 }
 
+func TestExecuteCommandRejectsRelativeExecutable(t *testing.T) {
+	t.Setenv("GPU_WATCH_ALLOW_ACTION_COMMANDS", "true")
+
+	result := executeCommand(ActionConfig{
+		Name:    "relative-command",
+		Type:    ActionAlert,
+		Command: "echo unsafe",
+	})
+
+	if result.Success {
+		t.Fatal("relative command should be rejected")
+	}
+	if !strings.Contains(result.Message, "absolute executable") {
+		t.Fatalf("expected absolute executable error, got %q", result.Message)
+	}
+}
+
 // ---------- RunAll integration ----------
 
 func TestRunAll_Integration(t *testing.T) {

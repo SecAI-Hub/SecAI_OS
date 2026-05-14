@@ -11,11 +11,11 @@ Last updated: 2026-04-29
 
 | Language | Test Count | Runner |
 |----------|-----------|--------|
-| Go | 428 | `go test -race ./...` |
-| Python | 1136 | `pytest` |
+| Go | 429 | `go test -race ./...` |
+| Python | 1154 | `pytest` |
 | Shell | CI-scoped scripts plus Makefile target for all repo shell scripts | `shellcheck` |
 
-## Go Tests (428 total)
+## Go Tests (429 total)
 
 | Service | Location | Tests | Description |
 |---------|----------|-------|-------------|
@@ -29,7 +29,7 @@ Last updated: 2026-04-29
 | Integrity Monitor | services/integrity-monitor/ | 50 | Baseline computation, continuous scanning, violation detection, state machine, HMAC baselines, incident-recorder integration |
 | Incident Recorder | services/incident-recorder/ | 97 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43), persistence durability (fsync) |
 
-## Python Tests (1136 total)
+## Python Tests (1154 total)
 
 | Test File | Location | Tests | Description |
 |-----------|----------|-------|-------------|

@@ -128,8 +128,8 @@ class AuthManager:
             self._write_creds(creds)
             log.info("passphrase configured successfully")
             return True
-        except OSError as e:
-            log.error("failed to save credentials: %s", e)
+        except OSError:
+            log.error("failed to save credentials")
             return False
 
     def change_passphrase(self, current: str, new_passphrase: str) -> dict:
@@ -261,6 +261,6 @@ class AuthManager:
             with open(self._creds_path) as f:
                 stored = json.load(f)
             return verify_passphrase(passphrase, stored)
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            log.error("failed to read credentials: %s", e)
+        except (OSError, json.JSONDecodeError, KeyError):
+            log.error("failed to read credentials")
             return False

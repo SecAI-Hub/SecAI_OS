@@ -279,7 +279,21 @@ func executeCommand(ac ActionConfig) ActionResult {
 		return ar
 	}
 
-	cmd := exec.Command("sh", "-c", ac.Command)
+	parts := strings.Fields(ac.Command)
+	if len(parts) == 0 {
+		ar.Success = false
+		ar.Message = "command action configured without an executable"
+		return ar
+	}
+
+	executable := filepath.Clean(parts[0])
+	if !filepath.IsAbs(executable) {
+		ar.Success = false
+		ar.Message = "command actions require an absolute executable path"
+		return ar
+	}
+
+	cmd := exec.Command(executable, parts[1:]...) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		ar.Success = false

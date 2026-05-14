@@ -1694,7 +1694,7 @@ class TestUnixSocketServer:
         server = agent_app_module._make_unix_server(str(sock_path))
         try:
             assert sock_path.exists()
-            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o660
+            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o600
             assert server.server_address == str(sock_path)
         finally:
             server.server_close()

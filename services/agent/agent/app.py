@@ -653,7 +653,7 @@ def _make_unix_server(sock_path: str):
 
     srv = _UnixWSGIServer(str(sock_file), WSGIRequestHandler)
     srv.set_app(app)
-    os.chmod(sock_file, 0o660)
+    os.chmod(sock_file, 0o600)
     return srv
 
 def main():

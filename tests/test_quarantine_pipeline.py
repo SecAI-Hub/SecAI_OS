@@ -1,5 +1,6 @@
 """Tests for quarantine pipeline helpers."""
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,73 @@ def test_fickling_scan_skips_non_pickle_formats(tmp_path):
 
     assert result["passed"] is True
     assert result["note"] == "not a pickle-based format, skipped"
+
+
+def test_modelscan_cli_fallback_uses_current_json_flags(tmp_path, monkeypatch):
+    payload = tmp_path / "payload.pkl"
+    payload.write_bytes(b"\x80\x04safe")
+    calls = []
+
+    monkeypatch.setitem(sys.modules, "modelscan", SimpleNamespace())
+    monkeypatch.delitem(sys.modules, "modelscan.modelscan", raising=False)
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args == ["modelscan", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="modelscan, version 0.8.8", stderr="")
+        assert args == ["modelscan", "-p", str(payload), "-r", "json"]
+        report = {
+            "summary": {
+                "modelscan_version": "0.8.8",
+                "scanned": {"total_scanned": 1, "scanned_files": [payload.name]},
+            },
+            "issues": [],
+            "errors": [],
+        }
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"No settings file detected. Using defaults.\n{json.dumps(report)}",
+            stderr="",
+        )
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    result = pipeline._run_modelscan(payload)
+
+    assert result == {
+        "passed": True,
+        "scanner": "modelscan-cli",
+        "scanner_version": "0.8.8",
+    }
+    assert ["modelscan", "-p", str(payload), "-r", "json"] in calls
+
+
+def test_modelscan_cli_fallback_fails_when_no_file_is_scanned(tmp_path, monkeypatch):
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"not a supported model")
+
+    monkeypatch.setitem(sys.modules, "modelscan", SimpleNamespace())
+    monkeypatch.delitem(sys.modules, "modelscan.modelscan", raising=False)
+
+    def fake_run(args, **kwargs):
+        if args == ["modelscan", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="modelscan, version 0.8.8", stderr="")
+        report = {
+            "summary": {
+                "modelscan_version": "0.8.8",
+                "scanned": {"total_scanned": 0},
+            },
+            "issues": [],
+            "errors": [],
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(report), stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    result = pipeline._run_modelscan(payload)
+
+    assert result["passed"] is False
+    assert result["reason"] == "modelscan did not scan any files"
 
 
 class _FakeYaraRules:

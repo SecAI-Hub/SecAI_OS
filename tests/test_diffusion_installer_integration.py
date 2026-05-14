@@ -317,3 +317,9 @@ class TestInstallerScriptIntegrity:
         assert "FAILED_MARKER" in self.script
         assert "READY_MARKER" in self.script
         assert "REQUEST_MARKER" in self.script
+
+    def test_pypi_wheels_resolve_exact_artifact_urls(self):
+        """PyPI wheels must use metadata URLs, not guessed package paths."""
+        assert "resolve_pypi_wheel_url(pkg_name, pkg_version, filename)" in self.script
+        assert "/pypi/{urllib.parse.quote(normalized)}/{urllib.parse.quote(pkg_version)}/json" in self.script
+        assert "/packages/py3/{pkg_name[0]}/{pkg_name}/{filename}" not in self.script

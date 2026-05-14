@@ -20,11 +20,11 @@ COPY services/common/ /app/services/common/
 COPY services/agent/agent/ /app/agent/
 
 RUN pip install --no-cache-dir --upgrade \
-        pip==26.0.1 \
+        pip==26.1.1 \
         setuptools==82.0.1 \
         wheel==0.46.2 && \
     pip install --no-cache-dir -r /app/requirements.txt && \
-    BASE_SITE_PACKAGES="$(python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
+    BASE_SITE_PACKAGES="$("${PREFIX}/bin/python3" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
     VENV_SITE_PACKAGES="$("${VIRTUAL_ENV}/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
     rm -rf \
         "${PREFIX}/bin/pip"* \

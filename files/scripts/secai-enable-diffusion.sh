@@ -367,6 +367,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 import zipfile
 from fnmatch import fnmatch
@@ -434,6 +435,28 @@ def url_matches_allowlist(url, sources):
         if fnmatch(url, pattern):
             return True
     return False
+
+
+_pypi_url_cache = {}
+
+
+def resolve_pypi_wheel_url(pkg_name, pkg_version, filename):
+    """Resolve a PyPI artifact filename to its exact files.pythonhosted.org URL."""
+    normalized = pkg_name.replace("_", "-")
+    cache_key = f"{normalized}=={pkg_version}"
+    if cache_key not in _pypi_url_cache:
+        metadata_url = f"https://pypi.org/pypi/{urllib.parse.quote(normalized)}/{urllib.parse.quote(pkg_version)}/json"
+        with urllib.request.urlopen(metadata_url, timeout=60) as response:
+            if response.url != metadata_url:
+                raise RuntimeError(f"unexpected PyPI metadata redirect: {response.url}")
+            _pypi_url_cache[cache_key] = json.load(response).get("urls", [])
+    for artifact in _pypi_url_cache[cache_key]:
+        if artifact.get("filename") == filename:
+            url = artifact.get("url", "")
+            if not url:
+                raise RuntimeError(f"PyPI metadata missing URL for {filename}")
+            return url
+    raise RuntimeError(f"PyPI metadata does not list {filename}")
 
 
 def verify_wheel_tags(filename):
@@ -554,9 +577,7 @@ for i, entry in enumerate(wheels):
     if "pytorch.org" in source_pattern:
         download_url = f"{torch_index}/{filename}"
     else:
-        # PyPI: use simple index to find the actual URL
-        # For now, construct the expected URL pattern
-        download_url = f"https://files.pythonhosted.org/packages/py3/{pkg_name[0]}/{pkg_name}/{filename}"
+        download_url = resolve_pypi_wheel_url(pkg_name, pkg_version, filename)
 
     # Source policy: initial URL
     if not download_url.startswith("https://"):

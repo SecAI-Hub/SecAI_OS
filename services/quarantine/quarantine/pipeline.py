@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -47,7 +48,7 @@ def _http_urlopen(target, timeout: int = 30):
     scheme = urlparse(raw_url).scheme.lower()
     if scheme not in {"http", "https"}:
         raise URLError(f"unsupported URL scheme: {scheme or 'none'}")
-    return urlopen(target, timeout=timeout)  # nosec B310
+    return urlopen(target, timeout=timeout)  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
 
 
 def _source_registry_host(source_url: str) -> str:
@@ -1271,7 +1272,7 @@ def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
 
     try:
         result = subprocess.run(
-            ["modelscan", "--path", str(artifact_path), "--output", "json"],
+            ["modelscan", "-p", str(artifact_path), "-r", "json"],
             capture_output=True, text=True, timeout=300,
         )
         # Try to extract CLI version
@@ -1285,24 +1286,57 @@ def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
         except Exception:
             pass
 
-        if result.returncode == 0:
+        scan_data: dict[str, Any] | None = None
+        stdout = result.stdout.strip()
+        start = stdout.find("{")
+        end = stdout.rfind("}")
+        if start != -1 and end > start:
             try:
-                scan_data = json.loads(result.stdout)
-                issues = scan_data.get("issues", [])
-                if issues:
-                    return {
-                        "passed": False,
-                        "reason": f"modelscan found {len(issues)} issue(s)",
-                        "details": issues,
-                        "scanner": "modelscan-cli",
-                        "scanner_version": cli_version,
-                    }
-                return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version}
+                scan_data = json.loads(stdout[start : end + 1])
             except json.JSONDecodeError:
-                return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version, "note": "no JSON output"}
-        else:
+                scan_data = None
+
+        if scan_data is None:
+            log.warning("modelscan CLI did not emit parseable JSON: %s", result.stderr[:500])
+            return {"passed": False, "reason": "modelscan CLI did not emit parseable JSON"}
+
+        cli_version = scan_data.get("summary", {}).get("modelscan_version", cli_version)
+        issues = scan_data.get("issues", [])
+        errors = scan_data.get("errors", [])
+        scanned = scan_data.get("summary", {}).get("scanned", {})
+        scanned_total = scanned.get("total_scanned") if isinstance(scanned, dict) else None
+        if issues:
+            return {
+                "passed": False,
+                "reason": f"modelscan found {len(issues)} issue(s)",
+                "details": issues,
+                "scanner": "modelscan-cli",
+                "scanner_version": cli_version,
+            }
+        if errors:
+            return {
+                "passed": False,
+                "reason": f"modelscan reported {len(errors)} error(s)",
+                "details": errors,
+                "scanner": "modelscan-cli",
+                "scanner_version": cli_version,
+            }
+        if result.returncode != 0:
             log.warning("modelscan CLI exited %d: %s", result.returncode, result.stderr[:500])
-            return {"passed": False, "reason": f"modelscan CLI error (exit {result.returncode})"}
+            return {
+                "passed": False,
+                "reason": f"modelscan CLI error (exit {result.returncode})",
+                "scanner": "modelscan-cli",
+                "scanner_version": cli_version,
+            }
+        if scanned_total == 0:
+            return {
+                "passed": False,
+                "reason": "modelscan did not scan any files",
+                "scanner": "modelscan-cli",
+                "scanner_version": cli_version,
+            }
+        return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version}
     except FileNotFoundError:
         if require_scan:
             log.warning("modelscan not installed; scan is required by policy — failing")

@@ -5,7 +5,7 @@ COPY pyproject.toml .
 COPY requirements.lock .
 COPY ui/ ui/
 
-RUN python -m pip install --no-cache-dir --upgrade pip==26.0.1 && \
+RUN python -m pip install --no-cache-dir --upgrade pip==26.1.1 && \
     python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
     python -m pip install --no-cache-dir --no-deps .
 

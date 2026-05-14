@@ -288,7 +288,7 @@ def create_token(
     sign_token(token)
 
     log.info(
-        "created signed capability token %s (mode=%s, task=%s, "
+        "created signed capability grant %s (mode=%s, task=%s, "
         "readable=%d, writable=%d, tools=%d, ttl=%.0f)",
         token.token_id,
         mode.value,

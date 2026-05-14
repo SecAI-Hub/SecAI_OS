@@ -32,8 +32,8 @@ backends:
     - filename: click-8.3.1-py3-none-any.whl
       sha256: 981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6
       source: https://files.pythonhosted.org/packages/*
-    - filename: diffusers-0.37.1-py3-none-any.whl
-      sha256: 0537c0b28cb53cf39d6195489bcf8f833986df556c10f5e28ab7427b86fc8b90
+    - filename: diffusers-0.38.0-py3-none-any.whl
+      sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
     - filename: filelock-3.25.2-py3-none-any.whl
       sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
@@ -107,8 +107,8 @@ backends:
     - filename: rich-14.3.3-py3-none-any.whl
       sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: dac7252938f0696ddea46f5e855dd3138444e82236e3be475f54929f0c510d48
+    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
       source: https://files.pythonhosted.org/packages/*
     - filename: setuptools-81.0.0-py3-none-any.whl
       sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
@@ -137,8 +137,8 @@ backends:
     - filename: typing_extensions-4.15.0-py3-none-any.whl
       sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
       source: https://files.pythonhosted.org/packages/*
-    - filename: urllib3-2.6.3-py3-none-any.whl
-      sha256: bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4
+    - filename: urllib3-2.7.0-py3-none-any.whl
+      sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
     - filename: zipp-3.23.0-py3-none-any.whl
       sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e
@@ -175,8 +175,8 @@ backends:
     - filename: cuda_toolkit-13.0.2-py2.py3-none-any.whl
       sha256: b198824cf2f54003f50d64ada3a0f184b42ca0846c1c94192fa269ecd97a66eb
       source: https://files.pythonhosted.org/packages/*
-    - filename: diffusers-0.37.1-py3-none-any.whl
-      sha256: 0537c0b28cb53cf39d6195489bcf8f833986df556c10f5e28ab7427b86fc8b90
+    - filename: diffusers-0.38.0-py3-none-any.whl
+      sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
     - filename: filelock-3.25.2-py3-none-any.whl
       sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
@@ -295,8 +295,8 @@ backends:
     - filename: rich-14.3.3-py3-none-any.whl
       sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: dac7252938f0696ddea46f5e855dd3138444e82236e3be475f54929f0c510d48
+    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
       source: https://files.pythonhosted.org/packages/*
     - filename: setuptools-81.0.0-py3-none-any.whl
       sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
@@ -328,8 +328,8 @@ backends:
     - filename: typing_extensions-4.15.0-py3-none-any.whl
       sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
       source: https://files.pythonhosted.org/packages/*
-    - filename: urllib3-2.6.3-py3-none-any.whl
-      sha256: bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4
+    - filename: urllib3-2.7.0-py3-none-any.whl
+      sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
     - filename: zipp-3.23.0-py3-none-any.whl
       sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e
@@ -366,8 +366,8 @@ backends:
     - filename: cuda_toolkit-13.0.2-py2.py3-none-any.whl
       sha256: b198824cf2f54003f50d64ada3a0f184b42ca0846c1c94192fa269ecd97a66eb
       source: https://files.pythonhosted.org/packages/*
-    - filename: diffusers-0.37.1-py3-none-any.whl
-      sha256: 0537c0b28cb53cf39d6195489bcf8f833986df556c10f5e28ab7427b86fc8b90
+    - filename: diffusers-0.38.0-py3-none-any.whl
+      sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
     - filename: filelock-3.25.2-py3-none-any.whl
       sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
@@ -486,8 +486,8 @@ backends:
     - filename: rich-14.3.3-py3-none-any.whl
       sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.7.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: dac7252938f0696ddea46f5e855dd3138444e82236e3be475f54929f0c510d48
+    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
       source: https://files.pythonhosted.org/packages/*
     - filename: setuptools-81.0.0-py3-none-any.whl
       sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
@@ -519,8 +519,8 @@ backends:
     - filename: typing_extensions-4.15.0-py3-none-any.whl
       sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
       source: https://files.pythonhosted.org/packages/*
-    - filename: urllib3-2.6.3-py3-none-any.whl
-      sha256: bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4
+    - filename: urllib3-2.7.0-py3-none-any.whl
+      sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
     - filename: zipp-3.23.0-py3-none-any.whl
       sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e

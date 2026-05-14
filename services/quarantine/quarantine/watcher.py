@@ -226,7 +226,7 @@ def _http_urlopen(target, timeout: int = 30):
     scheme = urlparse(raw_url).scheme.lower()
     if scheme not in {"http", "https"}:
         raise URLError(f"unsupported URL scheme: {scheme or 'none'}")
-    return urlopen(target, timeout=timeout)  # nosec B310
+    return urlopen(target, timeout=timeout)  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
 
 
 def promote_to_registry(filename: str, file_hash: str, size_bytes: int,

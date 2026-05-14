@@ -351,7 +351,7 @@ for scanner in ${SCANNERS}; do
     if command -v "${scanner_python}" >/dev/null 2>&1 && \
         "${scanner_python}" -m venv "${scanner_venv}" && \
         "${scanner_venv}/bin/python" -m pip install --no-cache-dir --upgrade \
-            pip==26.0.1 setuptools==82.0.1 wheel==0.46.2 && \
+            pip==26.1.1 setuptools==82.0.1 wheel==0.46.2 && \
         "${scanner_venv}/bin/python" -m pip install --no-cache-dir "${scanner_package}" && \
         "${scanner_venv}/bin/python" -m pip check && \
         ln -sf "${scanner_venv}/bin/${scanner}" "/usr/local/bin/${scanner}"; then
