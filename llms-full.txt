@@ -12,7 +12,7 @@ SecAI OS is an immutable Linux appliance (Fedora Atomic/uBlue) designed for runn
 - Any CPU: x86_64 (AVX2/AVX-512), ARM64 (NEON)
 
 ## Architecture
-Five zones: Base OS (immutable, signed) -> Acquisition (allowlisted downloads) -> Quarantine (7-stage pipeline) -> Runtime (sealed, no internet) -> Airlock (optional sanitized egress).
+Seven zones: Base OS (immutable, signed) -> Acquisition (allowlisted downloads) -> Quarantine (7-stage pipeline) -> Runtime (sealed, no internet) -> Agent Layer (policy-bound local workflows) -> Airlock (optional sanitized egress) -> Verification & Enforcement (policy, attestation, integrity, incident response).
 
 ## Services
 - Registry (:8470, Go) -- Trusted artifact manifest
@@ -21,7 +21,14 @@ Five zones: Base OS (immutable, signed) -> Acquisition (allowlisted downloads) -
 - Airlock (:8490, Go) -- Sanitized egress proxy (disabled by default)
 - Inference Worker (:8465, llama.cpp) -- LLM inference
 - Diffusion Worker (:8455, Python) -- Image and video generation
+- Agent (:8476 dev TCP or Unix socket in production, Python) -- Policy-bound local autopilot
 - Quarantine (Python) -- 7-stage scanning pipeline
+- Policy Engine (:8500, Go) -- Unified policy decision point
+- GPU Integrity Watch (:8495, Go) -- GPU runtime verification
+- MCP Firewall (:8496, Go) -- MCP tool-call policy gateway
+- Runtime Attestor (:8505, Go) -- TPM2 quote verification and startup gating
+- Integrity Monitor (:8510, Go) -- Continuous file integrity verification
+- Incident Recorder (:8515, Go) -- Security event lifecycle and auto-containment
 - Search Mediator (:8485, Python) -- Tor-routed web search with PII stripping
 - SearXNG (:8888) -- Self-hosted metasearch
 - Tor (:9050) -- Anonymous SOCKS5 proxy
@@ -72,7 +79,7 @@ Hash-pins every artifact against values in /etc/secure-ai/policy/models.lock.yam
 Verifies cryptographic signatures using cosign. Checks for SLSA provenance attestations where available. Confirms the artifact was built by the expected publisher and has not been altered since signing.
 
 ### Stage 5: Static Scan
-Runs modelscan to detect suspicious constructs (embedded code, unusual ops). Performs entropy analysis across weight tensors to detect steganographic payloads. Runs gguf-guard for GGUF models: layered anomaly scoring (per-tensor, cross-layer, model-global, reference), quant-format-aware block analysis, per-tensor SHA-256 integrity manifests with Merkle tree, and structural policy validation.
+Runs ModelScan to detect suspicious constructs (embedded code, unusual ops), YARA for repo-owned malware signatures, fickling for pickle-capable artifacts without execution, and modelaudit as a second structural/metadata scanner. Performs entropy analysis across weight tensors to detect steganographic payloads. Runs gguf-guard for GGUF models: layered anomaly scoring (per-tensor, cross-layer, model-global, reference), quant-format-aware block analysis, per-tensor SHA-256 integrity manifests with Merkle tree, and structural policy validation.
 
 ### Stage 6: Behavioral Smoke Test (LLM only)
 Loads the model in a CPU-only, network-blocked sandbox. Runs a comprehensive adversarial prompt suite including: canary string detection (checks if the model leaks planted markers), credential exfiltration probes, jailbreak resistance tests, and unsafe tool-call detection. Fails if >30% of prompts are flagged or >1 critical flag is raised.

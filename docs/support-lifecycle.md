@@ -2,7 +2,7 @@
 
 Defines the hardware support matrix, software compatibility, support windows, and deprecation policy for SecAI OS.
 
-Last updated: 2026-04-22
+Last updated: 2026-05-14
 
 ---
 
@@ -104,8 +104,8 @@ Sandbox deployments are supported for **evaluation only**. Known limitations:
 
 | Component | Version | Pinned | Notes |
 |-----------|---------|--------|-------|
-| Go (services) | 1.25 | Yes (go.mod) | 9 Go services |
-| Python | 3.12 | Yes (Fedora 42 default) | 6 Python services |
+| Go (services) | 1.26.3 toolchain | Yes (CI and container builders) | 9 Go services |
+| Python | 3.12/3.14 | Yes (service locks and images) | Quarantine stays on Python 3.12 while scanner metadata requires it; sandbox UI, agent, search, and diffusion images use patched Python 3.14.5 runtimes where compatible. |
 | llama.cpp | Latest stable | Via build | LLM inference engine |
 | Flask | 3.x | Via pip | Web UI framework |
 | cosign | 2.4.x | Via release workflow | Image/artifact signing |

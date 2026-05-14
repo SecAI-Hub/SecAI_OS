@@ -69,7 +69,12 @@
         "require_scan": {
           "type": "boolean",
           "default": true,
-          "description": "Require static scanning (modelscan, gguf-guard) before promotion."
+          "description": "Require Stage 5 static scanning before promotion. This includes ModelScan, YARA, fickling, modelaudit, entropy analysis, and gguf-guard where applicable."
+        },
+        "require_yara": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require the YARA scanner and at least one configured rule when static scanning is required."
         },
         "require_behavior_tests": {
           "type": "boolean",
@@ -126,7 +131,7 @@
             "static_scan": {
               "type": "boolean",
               "default": true,
-              "description": "Stage 5: modelscan + entropy analysis + gguf-guard."
+              "description": "Stage 5: ModelScan + YARA + fickling + modelaudit + entropy analysis + gguf-guard."
             },
             "behavioral_test": {
               "type": "boolean",
@@ -352,7 +357,7 @@
     },
     "airlock": {
       "type": "object",
-      "description": "Controlled egress proxy configuration.",
+      "description": "Controlled egress decision-gate configuration.",
       "additionalProperties": false,
       "properties": {
         "enabled": {

@@ -2,7 +2,7 @@
 
 This document describes the hardware, software, and platform compatibility for SecAI_OS.
 
-Last updated: 2026-03-08
+Last updated: 2026-05-14
 
 ## Base Operating System
 

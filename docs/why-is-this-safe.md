@@ -14,7 +14,7 @@ SecAI OS has three operating profiles:
 |---------|---------|---------------|
 | **Maximum Privacy** (default) | Blocked | Nothing leaves your device. Not even DNS. |
 | **Web-Assisted Research** | Tor only | Search queries are anonymized through Tor with PII stripping. |
-| **Full Lab** | Filtered | Outbound traffic goes through the airlock proxy with logging. |
+| **Full Lab** | Filtered | Outbound traffic is checked by Airlock policy decisions with local logging. |
 
 You choose your profile at first boot. You can change it later from Settings. The active profile is always visible in the UI header.
 

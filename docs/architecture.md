@@ -12,11 +12,11 @@ The immutable Fedora Silverblue foundation. The root filesystem is read-only and
 
 ### 2. Acquisition
 
-Handles model intake from external sources. The Airlock (disabled by default) provides a sanitized egress proxy for downloading models from allowlisted destinations. All acquired artifacts land in quarantine before they can be used.
+Handles model intake from external sources. The Airlock (disabled by default) provides a sanitized egress decision gate for downloading models from allowlisted destinations. All acquired artifacts land in quarantine before they can be used.
 
 ### 3. Quarantine
 
-A 7-stage verification pipeline that every model must pass before promotion. Checks include source policy, format validation, integrity hashing, signature verification, static scanning (including gguf-guard for GGUF files), behavioral smoke testing, and diffusion-specific deep scans. Models that fail any stage are rejected.
+A 7-stage verification pipeline that every model must pass before promotion. Checks include source policy, format validation, integrity hashing, signature verification, static scanning (ModelScan, YARA, fickling, modelaudit, entropy analysis, and gguf-guard for GGUF files), behavioral smoke testing, and diffusion-specific deep scans. Models that fail any stage are rejected.
 
 ### 4. Runtime
 
@@ -154,7 +154,7 @@ UI (:8480)
   |-- Registry (:8470)                  [model listing, management]
   |-- Quarantine Pipeline               [model verification]
   |     +-- Registry (:8470)            [promotion target]
-  +-- Airlock (:8490)                   [egress proxy, disabled by default]
+  +-- Airlock (:8490)                   [egress decision gate, disabled by default]
 
 Enforcement Layer (continuous, independent of user requests):
   Runtime Attestor (:8505)
@@ -181,7 +181,7 @@ The Registry, Tool Firewall, Airlock, GPU Integrity Watch, MCP Firewall, Policy 
 
 ### Python for Scanning and UI
 
-The Quarantine Pipeline and UI are written in Python. The pipeline leverages Python-native security scanning libraries (modelscan, entropy analysis). The UI uses Flask for rapid prototyping. Neither is latency-critical.
+The Quarantine Pipeline and UI are written in Python. The pipeline leverages Python-native security scanning libraries and tools including ModelScan, YARA, fickling, modelaudit, entropy analysis, and optional Garak behavioral scanning. The UI uses Flask for rapid prototyping. Neither is latency-critical.
 
 ### llama.cpp Over Ollama
 

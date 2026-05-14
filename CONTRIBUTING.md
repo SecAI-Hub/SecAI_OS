@@ -7,8 +7,8 @@ how to set up your development environment, run tests, and submit changes.
 
 | Tool | Minimum Version | Purpose |
 |---|---|---|
-| Go | 1.25+ | Build Go services (9 services, see below) |
-| Python | 3.11+ | Build Python services (quarantine, UI, search mediator) |
+| Go | 1.26.3+ | Build Go services (9 services, see below) |
+| Python | 3.12+ recommended | Build Python services. Quarantine package metadata still allows 3.11 for scanner compatibility. |
 | shellcheck | Latest | Lint shell scripts |
 | git | 2.x | Version control |
 
@@ -55,7 +55,7 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh
 
 ## Running Tests
 
-### Go Tests (427 tests across 9 services)
+### Go Tests (429 tests across 9 services)
 
 ```bash
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
@@ -64,7 +64,7 @@ for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
 done
 ```
 
-### Python Tests (1112 collected tests)
+### Python Tests (1154 collected tests)
 
 ```bash
 pip install -r requirements-ci.txt
@@ -89,13 +89,13 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 ### Run Everything
 
 ```bash
-# Go (9 services, 427 tests)
+# Go (9 services, 429 tests)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd "services/$svc" && go test -v -race ./...)
 done
 
-# Python (1112 collected tests)
+# Python (1154 collected tests)
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Type check

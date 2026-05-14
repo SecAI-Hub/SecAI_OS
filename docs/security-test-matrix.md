@@ -2,13 +2,13 @@
 
 This document maps each security feature to its corresponding test files, test counts, and coverage areas.
 
-Last updated: 2026-04-29
+Last updated: 2026-05-14
 
 ## Security Feature to Test Mapping
 
 | Security Feature | Test File | Language | Tests / Scope | Key Areas Covered |
 |-----------------|-----------|----------|---------------|-------------------|
-| Quarantine pipeline | tests/test_quarantine_pipeline.py | Python | 13 | 7-stage scanning, pass/fail logic, malformed input handling, YARA rule behavior |
+| Quarantine pipeline | tests/test_quarantine_pipeline.py | Python | 15 | 7-stage scanning, pass/fail logic, malformed input handling, YARA rule behavior |
 | PII stripping | tests/test_search.py | Python | 36 file total | Email, phone, SSN, address redaction from search queries |
 | Injection detection | tests/test_search.py | Python | 36 file total | Prompt injection, command injection, query sanitization |
 | Memory protection | tests/test_memory_protection.py | Python | 37 | Swap encryption, zswap disabling, core dump prevention, mlock enforcement, TEE detection |
@@ -23,7 +23,7 @@ Last updated: 2026-04-29
 | Tool firewall | services/tool-firewall/*_test.go | Go | 15 | Default-deny policy, rule evaluation, egress filtering |
 | Airlock | services/airlock/*_test.go | Go | 11 | Request sanitization, policy enforcement, disabled-by-default |
 | Trusted registry | services/registry/*_test.go | Go | 22 | Hash pinning, cosign verification, model fetch authorization |
-| GPU integrity watch | services/gpu-integrity-watch/*_test.go | Go | 62 | GPU probe scoring, baseline verification, degradation actions, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
+| GPU integrity watch | services/gpu-integrity-watch/*_test.go | Go | 63 | GPU probe scoring, baseline verification, degradation actions, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
 | MCP firewall | services/mcp-firewall/*_test.go | Go | 71 | MCP tool call policy, default-deny, input redaction, taint tracking, adversarial coverage |
 | Policy engine | services/policy-engine/*_test.go | Go | 45 | Unified decisions across 6 domains, evidence provenance, auth |
 | Runtime attestor | services/runtime-attestor/*_test.go | Go | 55 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digest verification |
@@ -56,11 +56,11 @@ Last updated: 2026-04-29
 
 | Area | Tests | Notes |
 |------|-------|-------|
-| Quarantine pipeline | 13 pipeline tests plus scanner-specific release/config checks | 7-stage model scanning before trust |
+| Quarantine pipeline | 15 pipeline tests plus scanner-specific release/config checks | 7-stage model scanning before trust |
 | Trusted registry | 22 | Hash pinning and signature verification |
 | Canary/tripwire system | 49 | Tamper detection across filesystem |
 | Update verification | 74 | Signed updates with automatic rollback |
-| GPU integrity | 62 | GPU probe scoring, baseline, degradation, driver fingerprint, device allowlist, attestor/incident integration |
+| GPU integrity | 63 | GPU probe scoring, baseline, degradation, driver fingerprint, device allowlist, attestor/incident integration |
 | Runtime attestation | 55 | TPM2 quotes, HMAC bundles, state machine, startup gating |
 | Continuous integrity | 50 | Baseline scanning, violation detection, model/binary/policy watching |
 | Incident recorder | 97 | Incident creation, auto-containment, lifecycle, severity ranking |

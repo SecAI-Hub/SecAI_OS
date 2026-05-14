@@ -50,9 +50,13 @@ models:
   # unsafe serialization that can execute arbitrary code on deserialization.
   deny_formats: ["pickle", "pt", "bin"]
 
-  # Require static scanning (modelscan, gguf-guard, entropy analysis)
+  # Require static scanning (ModelScan, YARA, fickling, modelaudit,
+  # entropy analysis, and gguf-guard where applicable)
   # before a model can be promoted to the trusted registry.
   require_scan: true
+
+  # Require YARA rules to compile and run during static scanning.
+  require_yara: true
 
   # Require behavioral testing (adversarial prompt suite) before promotion.
   # Only applies to LLM models, not diffusion models.
@@ -94,9 +98,10 @@ quarantine:
     # Provides cryptographic proof of origin.
     provenance_check: true
 
-    # Stage 5: Static analysis with modelscan + entropy analysis +
-    # gguf-guard (if installed). Catches known malicious patterns,
-    # anomalous weight distributions, and structural policy violations.
+    # Stage 5: Static analysis with ModelScan, YARA, fickling,
+    # modelaudit, entropy analysis, and gguf-guard (if installed).
+    # Catches known malicious patterns, anomalous weight distributions,
+    # and structural policy violations.
     static_scan: true
 
     # Stage 6: Adversarial prompt suite for LLM models.
@@ -268,7 +273,7 @@ search:
     batch_window: 5.0
 
 # ---------------------------------------------------------------------------
-# airlock — Controlled egress proxy
+# airlock — Controlled egress decision gate
 # ---------------------------------------------------------------------------
 # The airlock is the only way data leaves the appliance (aside from
 # Tor-routed search). It validates every outbound request against policy.

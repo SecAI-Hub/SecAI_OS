@@ -125,7 +125,7 @@ The gguf-guard fingerprint and manifest are stored in the registry alongside the
 
 | Result | Action |
 |---|---|
-| All stages pass | Model is automatically promoted to the registry via POST /v1/promote |
+| All stages pass | Model is automatically promoted to the registry via POST /v1/model/promote |
 | Any stage fails | Model remains in quarantine, failure reason is logged to the audit log |
 | Scoring threshold exceeded | Model remains in quarantine with a detailed score breakdown |
 

@@ -2,13 +2,13 @@
 
 ## Overview
 
-- **Purpose:** Sanitized egress proxy
+- **Purpose:** Sanitized egress decision gate
 - **Port:** 8490
 - **Language:** Go
 - **Systemd unit:** secure-ai-airlock.service
 - **Default state:** Disabled
 
-The Airlock is the only authorized path for outbound network traffic from the appliance. It is disabled by default because it represents the largest privacy risk surface. When enabled, it enforces strict controls on what data can leave the system and where it can go.
+The Airlock is the policy decision point for outbound network traffic from the appliance. It is disabled by default because it represents the largest privacy risk surface. When enabled, it decides whether a requested destination/method/body is allowed. The UI then performs approved model downloads into quarantine and re-checks redirects through the Airlock.
 
 ---
 
@@ -72,41 +72,46 @@ The lower rate limit (compared to the Tool Firewall) reflects the higher risk of
 
 | Parameter | Value |
 |---|---|
-| Maximum request body | 10 MB |
-| Maximum response body | Unlimited (for model downloads) |
+| Maximum body inspected in an egress decision | 10 MB |
 
 ---
 
 ## HTTPS Only
 
-The Airlock only proxies HTTPS connections. HTTP (plaintext) requests are rejected. This prevents accidental exposure of data in transit.
+The Airlock only approves HTTPS destinations. HTTP (plaintext) destinations are rejected. This prevents accidental exposure of data in transit.
 
 ---
 
 ## API
 
-### POST /v1/proxy
+### POST /v1/egress/check
 
-Proxy a request through the Airlock.
+Decide whether an outbound request is allowed.
 
 **Request body:**
 
 ```json
 {
-  "url": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
+  "destination": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
   "method": "GET",
-  "headers": {},
-  "body": null
+  "body": ""
 }
 ```
 
-**Response (allowed):** `200 OK` with proxied response.
+**Response (allowed):** `200 OK`
+
+```json
+{
+  "allowed": true
+}
+```
 
 **Response (blocked destination):** `403 Forbidden`
 
 ```json
 {
-  "error": "destination not in allowlist: example.com"
+  "allowed": false,
+  "reason": "destination not in allowlist: example.com"
 }
 ```
 
@@ -114,8 +119,17 @@ Proxy a request through the Airlock.
 
 ```json
 {
-  "error": "request blocked: PII detected in request body"
+  "allowed": false,
+  "reason": "request blocked: PII detected in request body"
 }
 ```
 
 **Response (rate limited):** `429 Too Many Requests`
+
+### GET /v1/stats
+
+Return request counters and allowlist summary.
+
+### POST /v1/reload
+
+Reload policy and source allowlist. Requires the service bearer token when token auth is enabled.

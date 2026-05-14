@@ -20,7 +20,7 @@ policy. The system does **not** claim "impossible to leak" guarantees, especiall
 | B) Acquisition | Download models/containers from allowlisted sources | Internet (restricted) | Untrusted input |
 | C) Quarantine | Verify, scan, smoke-test artifacts before promotion | None | Untrusted until promoted |
 | D) Runtime | Sealed inference with tool firewall | None (default) | Trusted code, untrusted prompts |
-| E) Airlock | Optional sanitized egress proxy | Internet (restricted) | Mediated |
+| E) Airlock | Optional sanitized egress decision gate | Internet (restricted) | Mediated |
 
 ## Threat Classes
 

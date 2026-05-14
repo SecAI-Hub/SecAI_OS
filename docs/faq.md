@@ -29,7 +29,7 @@ The only operations that require network access are:
 
 - **NVIDIA GPUs:** Supported via CUDA. RTX 3000 series and newer are recommended. The RTX 5080 is the primary target hardware.
 - **Apple Silicon (M1-M4):** Supported via Metal through llama.cpp. Available when running natively on macOS or in a compatible VM.
-- **AMD GPUs:** Not officially supported. ROCm support may work but is not tested.
+- **AMD GPUs:** Supported through ROCm/HIP for RDNA/CDNA hardware listed in the compatibility matrix.
 - **CPU-only:** Inference works without a GPU but will be significantly slower.
 
 ---
@@ -120,14 +120,14 @@ Important limits:
 
 SecAI OS uses rpm-ostree for atomic updates:
 
-1. **Check for updates:** `curl http://localhost:8480/api/updates/check` or use the UI.
-2. **Stage the update:** `curl -X POST http://localhost:8480/api/updates/stage`
-3. **Apply and reboot:** `curl -X POST http://localhost:8480/api/updates/apply`
+1. **Check for updates:** `curl -X POST http://localhost:8480/api/update/check` or use the UI.
+2. **Stage the update:** `curl -X POST http://localhost:8480/api/update/stage`
+3. **Apply and reboot:** `curl -X POST http://localhost:8480/api/update/apply`
 
 Updates are atomic -- the entire OS image is replaced. If an update causes problems, roll back:
 
 ```bash
-curl -X POST http://localhost:8480/api/updates/rollback
+curl -X POST http://localhost:8480/api/update/rollback
 # or from the command line:
 rpm-ostree rollback
 systemctl reboot
@@ -155,7 +155,7 @@ Every model passes through 7 sequential stages before it can be used:
 2. **Format Gate** -- reject unsafe formats (pickle, .pt, .bin)
 3. **Integrity Check** -- SHA-256 hash verification
 4. **Provenance** -- cosign signature verification
-5. **Static Scan** -- modelscan, entropy analysis, gguf-guard
+5. **Static Scan** -- ModelScan, YARA, fickling, modelaudit, entropy analysis, gguf-guard
 6. **Behavioral Smoke Test** -- 22 adversarial prompts (LLM only)
 7. **Diffusion Deep Scan** -- config integrity, symlink detection (diffusion only)
 

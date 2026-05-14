@@ -64,7 +64,8 @@ graph TD
 1. The **Quarantine** pipeline (file watcher) picks up new model files from
    `quarantine/incoming/`.
 2. It runs a multi-stage scanning pipeline: source verification, format gate,
-   hash pinning, signature check, static scan (modelscan + gguf-guard),
+   hash pinning, signature check, static scan (ModelScan + YARA +
+   fickling + modelaudit + entropy + gguf-guard),
    and behavioral tests.
 3. On pass, it calls the **Registry** promote endpoint to register the model.
 4. On fail, the model stays in quarantine with a rejection report.
@@ -95,5 +96,11 @@ graph TD
 | Web UI           | 8480  | Python   | User-facing web interface        |
 | Search Mediator  | 8485  | Python   | Tor-routed web search sanitizer  |
 | SearXNG          | 8888  | Python   | Privacy-respecting meta-search   |
-| Airlock          | 8490  | Go       | Controlled egress proxy          |
+| Airlock          | 8490  | Go       | Controlled egress decision gate  |
+| Policy Engine    | 8500  | Go       | Unified policy decisions         |
+| GPU Integrity    | 8495  | Go       | GPU runtime verification         |
+| MCP Firewall     | 8496  | Go       | MCP tool-call policy gateway     |
+| Runtime Attestor | 8505  | Go       | Runtime attestation              |
+| Integrity Monitor| 8510  | Go       | Continuous file integrity        |
+| Incident Recorder| 8515  | Go       | Incident response and containment|
 | Tor              | 9050  | C        | SOCKS proxy for anonymized egress|

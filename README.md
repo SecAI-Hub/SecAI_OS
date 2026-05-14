@@ -93,7 +93,7 @@ Open `http://127.0.0.1:8480`, go to **Models**, and click **Download** on any mo
 | Registry | 8470 | Go | Trusted artifact manifest, read-only model store |
 | Tool Firewall | 8475 | Go | Policy-gated tool invocation gateway |
 | Web UI | 8480 | Python | Chat, image/video generation, model management |
-| Airlock | 8490 | Go | Sanitized egress proxy (disabled by default) |
+| Airlock | 8490 | Go | Sanitized egress decision gate (disabled by default) |
 | Inference Worker | 8465 | llama.cpp | LLM inference (CUDA / ROCm / Vulkan / Metal / CPU) |
 | Diffusion Worker | 8455 | Python | Image and video generation |
 | Agent | 8476 | Python | Policy-bound local autopilot (deny-by-default, capability tokens) |
@@ -353,7 +353,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 |-----------|-------------|
 | [Registry](docs/components/registry.md) | Trusted artifact manifest and model store |
 | [Tool Firewall](docs/components/tool-firewall.md) | Policy-gated tool invocation |
-| [Airlock](docs/components/airlock.md) | Sanitized egress proxy |
+| [Airlock](docs/components/airlock.md) | Sanitized egress decision gate |
 | [Quarantine](docs/components/quarantine.md) | 7-stage scanning pipeline |
 | [Agent](docs/components/agent.md) | Policy-bound local autopilot with verified supervisor |
 | [Search Mediator](docs/components/search-mediator.md) | Tor-routed web search |
@@ -526,7 +526,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 44** -- Auditability and documentation hardening: test-count drift CI check, CI evidence links and badges, M4/M5 terminology disambiguation, audit quick-path doc, recovery runbook, verify-release script, security/product roadmap split
 - [x] **Milestone 45** -- Production readiness hardening: incident persistence (file-backed), graceful shutdown for all Go services, HTTP timeouts, systemd production hardening, first-boot validation, audit log rotation, CI vulnerability scanning, production operations guide
 - [x] **Milestone 46** -- Operational maturity: bootstrap trust gap fix (cosign verify before rebase), CI runs on all changes (removed paths-ignore for .md), Python quality gates (ruff + bandit + split test suites), docs-validation CI job, production-readiness checklist, SLOs, release channel policy, support lifecycle, sample verification output
-- [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.23→1.25 (12 stdlib CVE fixes), verification-first bootstrap docs
+- [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.26.3 service CI/builders, verification-first bootstrap docs
 - [x] **Milestone 48** -- Production hardening: build script fail-closed (fatal errors for 12 required services + binary verification gate), incident store fsync (crash-safe persistence), GPU backend metadata recording, llama-server watchdog (Type=notify + WatchdogSec=30), model catalog externalization (YAML with fallback), circuit breaker for inter-service HTTP calls, post-upgrade model verification in Greenboot, cosign key rotation documentation (full lifecycle)
 - [x] **Milestone 49** -- Signed-first install path: bootstrap script configures signing policy before first rebase (eliminates unverified transport), digest-pinned install flow (CI publishes digests in build summary + release assets), first-boot setup wizard (interactive integrity verification + vault + TPM2 + health check), recovery/dev path separated into dedicated doc
 - [x] **Milestone 50** -- Production operations package: backup/restore scripts (full/config/logs/keys categories, age/gpg encryption, SHA256 manifest, LUKS header backup/restore), rollback decision matrix (Greenboot auto-rollback + manual criteria), 5 break-glass recovery procedures, formal data retention policy (7 data classes, disk capacity thresholds)
@@ -551,7 +551,7 @@ files/
 services/
   registry/                 Go -- Trusted Registry (:8470)
   tool-firewall/            Go -- Policy-gated tool gateway (:8475)
-  airlock/                  Go -- Online egress proxy (:8490)
+  airlock/                  Go -- Online egress decision gate (:8490)
   gpu-integrity-watch/      Go -- GPU runtime verification (:8495)
   mcp-firewall/             Go -- MCP policy gateway (:8496)
   policy-engine/            Go -- Unified policy decisions (:8500)

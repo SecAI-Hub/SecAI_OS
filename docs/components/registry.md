@@ -23,7 +23,7 @@ List all registered artifacts.
 [
   {
     "name": "mistral-7b-instruct-v0.3.Q4_K_M",
-    "path": "/var/lib/secure-ai/models/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
+    "path": "/var/lib/secure-ai/registry/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
     "sha256": "abc123...",
     "format": "gguf",
     "source": "huggingface",
@@ -35,13 +35,17 @@ List all registered artifacts.
 ]
 ```
 
-### GET /v1/model/{name}
+### GET /v1/model?name=<name>
 
 Get a single artifact by name.
 
 **Response:** `200 OK` with artifact JSON, or `404 Not Found`.
 
-### POST /v1/promote
+### GET /v1/model/path?name=<name>
+
+Return the resolved filesystem path for a registered model.
+
+### POST /v1/model/promote
 
 Promote a quarantined artifact to the registry. Called by the quarantine pipeline after all stages pass.
 
@@ -50,24 +54,35 @@ Promote a quarantined artifact to the registry. Called by the quarantine pipelin
 ```json
 {
   "name": "mistral-7b-instruct-v0.3.Q4_K_M",
-  "path": "/var/lib/secure-ai/quarantine/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
+  "filename": "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
   "sha256": "abc123...",
-  "format": "gguf",
-  "source": "huggingface"
+  "size_bytes": 4567890123,
+  "source": "huggingface",
+  "scanner_versions": {
+    "modelscan": "0.8.8"
+  }
 }
 ```
 
-**Response:** `200 OK` on success, `400 Bad Request` if validation fails.
+**Auth:** service bearer token. **Response:** `201 Created` on success, `400 Bad Request` if validation fails.
 
-### DELETE /v1/model/{name}
+### DELETE /v1/model/delete?name=<name>
 
 Remove an artifact from the registry.
 
-**Response:** `200 OK` on success, `404 Not Found` if not registered.
+**Auth:** service bearer token. **Response:** `200 OK` on success, `404 Not Found` if not registered.
 
-### POST /v1/model/verify-manifest
+### POST /v1/model/verify?name=<name>
 
-Verify the integrity of all registered artifacts against their stored SHA-256 hashes.
+Recompute one model's SHA-256 hash and compare it with the manifest.
+
+### POST /v1/models/verify-all
+
+Verify SHA-256 integrity for all registered artifacts.
+
+### POST /v1/model/verify-manifest?name=<name>
+
+Verify the gguf-guard per-tensor manifest for one GGUF artifact.
 
 **Response:** `200 OK` with verification results.
 
@@ -93,10 +108,10 @@ The `Artifact` struct represents a registered model:
 
 ## Manifest Storage
 
-The registry persists its state to a YAML manifest file:
+The registry persists its state to a JSON manifest file:
 
 ```
-/var/lib/secure-ai/registry/manifest.yaml
+/var/lib/secure-ai/registry/manifest.json
 ```
 
 This file is read on startup and written on every promote/delete operation. It is the authoritative record of all trusted models.

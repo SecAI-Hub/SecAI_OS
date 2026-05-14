@@ -20,7 +20,7 @@ Network access is controlled by the active [profile](../files/system/etc/secure-
 
 - **offline_private** (default): All egress blocked. No exceptions.
 - **research**: Tor-routed web search only, through the search mediator with PII stripping and differential privacy (decoy queries).
-- **full_lab**: Filtered outbound through the airlock proxy. All connections logged to the local audit chain.
+- **full_lab**: Filtered outbound through Airlock decisions. All connections logged to the local audit chain.
 
 Switching profiles requires explicit user confirmation. The UI shows the privacy implications before applying.
 

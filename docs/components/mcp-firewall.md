@@ -79,9 +79,16 @@ Every MCP tool call produces a structured audit record:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Liveness check |
-| POST | `/api/v1/invoke` | Proxy an MCP tool call through policy |
-| GET | `/api/v1/policy` | Current loaded policy summary |
-| GET | `/api/v1/stats` | Call counts, deny rates, latency |
+| POST | `/v1/evaluate` | Evaluate one MCP tool call through policy |
+| POST | `/v1/evaluate/batch` | Evaluate multiple MCP tool calls |
+| GET | `/v1/servers` | Configured MCP servers and exposed tools |
+| GET | `/v1/policy` | Current loaded policy summary |
+| GET | `/v1/taint/<session_id>` | Current taint labels for a session |
+| DELETE | `/v1/taint/<session_id>` | Clear taint labels for a session |
+| GET | `/v1/audit` | Recent audit entries |
+| GET | `/v1/audit/verify` | Hash-chain verification result |
+| GET | `/v1/metrics` | Call counts, deny rates, redaction counts |
+| POST | `/v1/reload` | Reload policy; requires service token |
 
 ## Related
 

@@ -51,7 +51,7 @@ places:
 ## General Terms
 
 **Airlock**
-The sanitized egress proxy service. Controls all outbound network traffic from the appliance. Disabled by default. Enforces destination allowlists, PII scanning, and credential scanning.
+The sanitized egress decision service. Controls outbound network requests from the appliance. Disabled by default. Enforces destination allowlists, PII scanning, and credential scanning.
 
 **Artifact**
 A model file registered in the trusted registry. Each artifact has a name, file path, SHA-256 hash, format, source, and status.

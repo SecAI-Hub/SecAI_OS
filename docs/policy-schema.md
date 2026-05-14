@@ -1,403 +1,256 @@
 # Policy YAML Schema Reference
 
-Policy files at `/etc/secure-ai/policy/` control the behavior of all SecAI OS services. The main file is `policy.yaml`; the agent has a separate `agent.yaml`.
+Policy files under `/etc/secure-ai/policy/` control SecAI OS runtime behavior. The main appliance policy is `policy.yaml`; the agent has a separate `agent.yaml`.
+
+The machine-readable schema for `policy.yaml` lives at [`../schemas/policy.schema.json`](../schemas/policy.schema.json). The packaged defaults live at [`../files/system/etc/secure-ai/policy/policy.yaml`](../files/system/etc/secure-ai/policy/policy.yaml), and the sandbox overlay uses [`../deploy/sandbox/runtime/policy/policy.yaml`](../deploy/sandbox/runtime/policy/policy.yaml).
 
 ---
 
-## Top-Level Structure
+## policy.yaml
 
-### policy.yaml
-
-```yaml
-defaults:
-  ...
-models:
-  ...
-quarantine:
-  ...
-gguf_guard:
-  ...
-tools:
-  ...
-search:
-  ...
-airlock:
-  ...
-```
-
-### agent.yaml (separate file)
+Top-level structure:
 
 ```yaml
 version: 1
-default_mode: ...
-budgets:
+defaults:
   ...
-workspace:
+models:
   ...
-allowed_tools:
+quarantine:
   ...
-configurable_defaults:
+gguf_guard:
   ...
-always_deny:
+tools:
   ...
-hard_approval:
+search:
   ...
-worker:
-  ...
-logging:
+airlock:
   ...
 ```
 
----
-
-## defaults
-
-Global defaults applied when service-specific settings are not provided.
+### defaults
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `log_level` | string | `"info"` | Logging verbosity: debug, info, warn, error |
-| `audit_log` | string | `"/var/log/secure-ai/audit.log"` | Path to the audit log file |
-| `panic_action` | string | `"lock_vault"` | Action on emergency panic: lock_vault, shutdown, both |
+| `network.runtime_egress` | string | `"deny"` | Default runtime egress policy. Production policy should keep this at `deny`. |
+| `logging.store_raw_prompts` | boolean | `false` | Store raw prompts in audit logs. Privacy-sensitive; keep disabled unless explicitly needed. |
+| `logging.store_raw_responses` | boolean | `false` | Store raw model responses in audit logs. Privacy-sensitive; keep disabled unless explicitly needed. |
 
-**Example:**
+Example:
 
 ```yaml
 defaults:
-  log_level: info
-  audit_log: /var/log/secure-ai/audit.log
-  panic_action: lock_vault
+  network:
+    runtime_egress: "deny"
+  logging:
+    store_raw_prompts: false
+    store_raw_responses: false
 ```
 
----
-
-## models
-
-Settings for model management and the inference worker.
+### models
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `storage_path` | string | `"/var/lib/secure-ai/models"` | Directory for promoted model files |
-| `quarantine_path` | string | `"/var/lib/secure-ai/quarantine"` | Directory for models awaiting verification |
-| `max_model_size_gb` | integer | `50` | Maximum allowed model file size in gigabytes |
-| `allowed_formats` | list | `["gguf", "safetensors"]` | Accepted model file formats |
-| `auto_promote` | boolean | `true` | Automatically promote models that pass quarantine |
+| `allowed_formats` | list | `["gguf", "safetensors"]` | Model formats accepted by quarantine. |
+| `deny_formats` | list | `["pickle", "pt", "bin"]` | Unsafe serialization formats rejected before scanning. |
+| `require_scan` | boolean | `true` | Require Stage 5 static scanning before promotion. |
+| `require_yara` | boolean | `true` | Require YARA and configured rules when static scanning is required. |
+| `require_behavior_tests` | boolean | `true` | Require adversarial behavioral testing for LLM artifacts. |
+| `require_source_verification` | boolean | `true` | Require model origin to match `sources.allowlist.yaml`. |
+| `require_entropy_analysis` | boolean | `true` | Require entropy checks for anomalous payload regions. |
+| `allow_diffusion_directories` | boolean | `true` | Allow multi-file diffusion directories with `model_index.json` and safetensors components. |
 
-**Example:**
+Stage 5 currently runs ModelScan, YARA, fickling, modelaudit, entropy analysis, and gguf-guard where applicable. Garak is available as an optional second-opinion behavioral scanner when installed/enabled.
+
+Example:
 
 ```yaml
 models:
-  storage_path: /var/lib/secure-ai/models
-  quarantine_path: /var/lib/secure-ai/quarantine
-  max_model_size_gb: 50
-  allowed_formats:
-    - gguf
-    - safetensors
-  auto_promote: true
+  allowed_formats: ["gguf", "safetensors"]
+  deny_formats: ["pickle", "pt", "bin"]
+  require_scan: true
+  require_yara: true
+  require_behavior_tests: true
+  require_source_verification: true
+  require_entropy_analysis: true
+  allow_diffusion_directories: true
 ```
 
----
-
-## quarantine
-
-Settings for the quarantine pipeline stages.
+### quarantine
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `source_allowlist` | list | `["huggingface"]` | Allowed model sources |
-| `require_signature` | boolean | `true` | Require cosign signature verification |
-| `max_flag_rate` | float | `0.3` | Maximum proportion of flagged checks before rejection (0.0-1.0) |
-| `max_critical_flags` | integer | `1` | Maximum number of critical-severity flags before rejection |
-| `smoke_test_prompts` | integer | `22` | Number of adversarial prompts in smoke test |
-| `smoke_test_categories` | integer | `10` | Number of categories for adversarial prompts |
-| `entropy_threshold` | float | `7.5` | Entropy threshold for anomaly detection (bits per byte) |
-| `timeout_minutes` | integer | `30` | Maximum time for the full pipeline to complete |
+| `stages.source_policy` | boolean | `true` | Stage 1: verify origin against the source allowlist. |
+| `stages.format_gate` | boolean | `true` | Stage 2: validate headers and reject unsafe formats. |
+| `stages.integrity_check` | boolean | `true` | Stage 3: SHA-256 hash pinning. |
+| `stages.provenance_check` | boolean | `true` | Stage 4: cosign/GPG provenance checks when available. |
+| `stages.static_scan` | boolean | `true` | Stage 5: ModelScan, YARA, fickling, modelaudit, entropy, and gguf-guard. |
+| `stages.behavioral_test` | boolean | `true` | Stage 6: adversarial prompt suite for LLMs. |
+| `stages.diffusion_deep_scan` | boolean | `true` | Stage 7: diffusion config/component integrity. |
+| `smoke_test_max_score` | number | `0.3` | Fail if more than this fraction of behavioral prompts are flagged. |
+| `smoke_test_max_critical` | integer | `1` | Fail if more than this many critical behavioral flags are raised. |
 
-**Example:**
+Example:
 
 ```yaml
 quarantine:
-  source_allowlist:
-    - huggingface
-  require_signature: true
-  max_flag_rate: 0.3
-  max_critical_flags: 1
-  smoke_test_prompts: 22
-  smoke_test_categories: 10
-  entropy_threshold: 7.5
-  timeout_minutes: 30
+  stages:
+    source_policy: true
+    format_gate: true
+    integrity_check: true
+    provenance_check: true
+    static_scan: true
+    behavioral_test: true
+    diffusion_deep_scan: true
+  smoke_test_max_score: 0.3
+  smoke_test_max_critical: 1
 ```
 
----
-
-## gguf_guard
-
-Settings for gguf-guard integration in the quarantine pipeline.
+### gguf_guard
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Enable gguf-guard scanning for GGUF files |
-| `binary_path` | string | `"/usr/local/bin/gguf-guard"` | Path to the gguf-guard binary |
-| `generate_manifest` | boolean | `true` | Generate per-tensor hash manifests |
-| `generate_fingerprint` | boolean | `true` | Generate structural fingerprints |
-| `anomaly_detection` | boolean | `true` | Enable tensor metadata anomaly detection |
-| `max_scan_time_minutes` | integer | `15` | Maximum scan time per model |
+| `required` | boolean | `false` | Fail closed when gguf-guard is unavailable. |
+| `generate_manifest` | boolean | `true` | Generate a per-tensor SHA-256 manifest on promotion. |
+| `generate_fingerprint` | boolean | `true` | Generate a structural fingerprint on promotion. |
+| `verify_on_integrity_check` | boolean | `true` | Verify gguf-guard manifests during periodic integrity checks. |
 
-**Example:**
-
-```yaml
-gguf_guard:
-  enabled: true
-  binary_path: /usr/local/bin/gguf-guard
-  generate_manifest: true
-  generate_fingerprint: true
-  anomaly_detection: true
-  max_scan_time_minutes: 15
-```
-
----
-
-## tools
-
-Settings for the Tool Firewall.
+### tools
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `default_policy` | string | `"deny"` | Default action for unlisted tools: deny or allow |
-| `allow` | list | `[]` | List of allowed tool names |
-| `deny` | list | `[]` | List of explicitly denied tool names (overrides allow) |
-| `path_allowlist` | list | `[]` | Directories that tools may access |
-| `args_blocklist` | list | `["../", "/etc/", "/usr/"]` | Patterns blocked in tool arguments |
-| `max_arg_length` | integer | `4096` | Maximum length of any single argument (bytes) |
-| `rate_limit` | integer | `120` | Maximum requests per minute |
-| `rate_burst` | integer | `20` | Burst allowance above rate limit |
+| `default` | string | `"deny"` | Default decision for unlisted tools. |
+| `rate_limit.requests_per_minute` | integer | `120` | Global tool evaluation rate. |
+| `rate_limit.burst_size` | integer | `20` | Burst allowance. |
+| `allow` | list | `[]` | Allowed tool rules with optional path and argument constraints. |
+| `deny` | list | `[]` | Explicitly denied tool names. Deny wins over allow. |
 
-**Example:**
+Allowed tool rules can include `paths_allowlist`, `paths_denylist`, `args_blocklist`, and `max_arg_length`.
+
+Example:
 
 ```yaml
 tools:
-  default_policy: deny
+  default: "deny"
+  rate_limit:
+    requests_per_minute: 120
+    burst_size: 20
   allow:
-    - read_file
-    - write_file
-    - list_directory
+    - name: "filesystem.read"
+      paths_allowlist:
+        - "/vault/user_docs/**"
+      paths_denylist:
+        - "/etc/shadow"
+      max_arg_length: 4096
   deny:
-    - exec_shell
-    - delete_file
-  path_allowlist:
-    - /var/lib/secure-ai/data
-    - /tmp/secure-ai
-  args_blocklist:
-    - "../"
-    - "/etc/"
-    - "/usr/"
-  max_arg_length: 4096
-  rate_limit: 120
-  rate_burst: 20
+    - name: "shell.exec"
 ```
 
----
-
-## search
-
-Settings for the Search Mediator.
+### search
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `false` | Enable the Search Mediator |
-| `engines` | list | `["duckduckgo", "wikipedia", "stackoverflow", "github"]` | Allowed search engines |
-| `max_results` | integer | `5` | Maximum results returned per query |
-| `tor_required` | boolean | `true` | Require Tor routing for all queries |
-| `pii_strip` | boolean | `true` | Strip PII from queries before submission |
-| `injection_detection` | boolean | `true` | Scan results for prompt injection patterns |
-| `decoy_queries` | boolean | `true` | Issue decoy queries for differential privacy |
-| `query_padding` | boolean | `true` | Pad queries to uniform length |
-| `timing_randomization` | boolean | `true` | Add random delays between queries |
-| `k_anonymity` | integer | `5` | K-anonymity level for query generalization |
+| `enabled` | boolean | `false` | Enable Tor-routed web search. |
+| `max_query_length` | integer | `200` | Maximum sanitized query length. |
+| `max_results` | integer | `5` | Maximum returned results. |
+| `max_context_length` | integer | `4000` | Maximum result context injected into the LLM. |
+| `strip_pii` | boolean | `true` | Strip PII from outbound queries. |
+| `block_high_pii_queries` | boolean | `true` | Block queries where most content is redacted. |
+| `detect_injection` | boolean | `true` | Detect prompt-injection patterns in results. |
+| `audit` | boolean | `true` | Write hash-chained search audit events. |
+| `allowed_engines` | list | `["duckduckgo", "wikipedia", "stackoverflow", "github"]` | SearXNG engines enabled by policy. |
+| `differential_privacy.enabled` | boolean | `true` | Enable query privacy protections. |
+| `differential_privacy.decoy_count` | integer | `2` | Number of decoy searches per real search. |
+| `differential_privacy.uniqueness_mode` | string | `"warn"` | One of `auto-block`, `warn`, or `allow`. |
+| `differential_privacy.batch_window` | number | `5.0` | Query batching window in seconds. |
 
-**Example:**
-
-```yaml
-search:
-  enabled: false
-  engines:
-    - duckduckgo
-    - wikipedia
-    - stackoverflow
-    - github
-  max_results: 5
-  tor_required: true
-  pii_strip: true
-  injection_detection: true
-  decoy_queries: true
-  query_padding: true
-  timing_randomization: true
-  k_anonymity: 5
-```
-
----
-
-## airlock
-
-Settings for the Airlock egress proxy.
+### airlock
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `false` | Enable the Airlock |
-| `destination_allowlist` | list | `["huggingface.co", "registry.ollama.ai"]` | Allowed destination hosts |
-| `pii_scan` | boolean | `true` | Scan outbound data for PII |
-| `credential_scan` | boolean | `true` | Scan outbound data for credentials |
-| `rate_limit` | integer | `30` | Maximum requests per minute |
-| `max_body_size_mb` | integer | `10` | Maximum request body size in megabytes |
-| `https_only` | boolean | `true` | Reject non-HTTPS requests |
+| `enabled` | boolean | `false` | Enable controlled egress. Disabled by default because it is the largest privacy risk surface. |
+| `allowed_destinations` | list | See packaged policy | URL prefixes allowed for outbound requests. |
+| `allowed_methods` | list | `["GET", "POST"]` | HTTP methods allowed for egress decisions. |
+| `max_body_size` | integer | `10485760` | Maximum request body size in bytes. |
+| `rate_limit.requests_per_minute` | integer | `30` | Maximum egress decision requests per minute. |
+| `content_rules.block_if_contains` | list | `[]` | Substrings that block an outbound body. |
+| `content_rules.scan_for_pii` | boolean | `true` | Block outbound PII. |
+| `content_rules.scan_for_credentials` | boolean | `true` | Block outbound credentials and tokens. |
 
-**Example:**
-
-```yaml
-airlock:
-  enabled: false
-  destination_allowlist:
-    - huggingface.co
-    - registry.ollama.ai
-  pii_scan: true
-  credential_scan: true
-  rate_limit: 30
-  max_body_size_mb: 10
-  https_only: true
-```
+The Airlock service exposes a decision endpoint. The UI asks the Airlock to approve every catalog download URL and redirect before downloading the file into quarantine.
 
 ---
 
-## agent (separate file: `/etc/secure-ai/policy/agent.yaml`)
+## agent.yaml
 
-Controls the Agent Mode service. This is a separate YAML file because the agent has its own lifecycle and policy model distinct from the tool firewall and airlock.
+`agent.yaml` controls Agent Mode and is separate because the agent has its own policy lifecycle.
 
 ### Top-level fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `version` | integer | `1` | Schema version |
-| `default_mode` | string | `"standard"` | Default operating mode: offline_only, standard, online_assisted, sensitive |
+| `version` | integer | `1` | Agent policy schema version. |
+| `default_mode` | string | `"standard"` | Default mode: `offline_only`, `standard`, `online_assisted`, or `sensitive`. |
 
 ### budgets
 
-Hard budget limits per session mode. Each mode key contains the same fields.
+Hard budget limits per mode.
 
-| Field | Type | Default (standard) | Description |
-|---|---|---|---|
-| `max_steps` | integer | `30` | Maximum plan steps per task |
-| `max_tool_calls` | integer | `80` | Maximum tool firewall invocations per task |
-| `max_tokens` | integer | `32000` | Maximum LLM tokens consumed per task |
-| `max_wall_clock_seconds` | integer | `600` | Maximum wall-clock time in seconds |
-| `max_files_touched` | integer | `20` | Maximum files read or written per task |
-| `max_output_bytes` | integer | `1048576` | Maximum output size in bytes (1 MB) |
-
-**Example:**
-
-```yaml
-budgets:
-  standard:
-    max_steps: 30
-    max_tool_calls: 80
-    max_tokens: 32000
-    max_wall_clock_seconds: 600
-    max_files_touched: 20
-    max_output_bytes: 1048576
-  sensitive:
-    max_steps: 10
-    max_tool_calls: 20
-    max_tokens: 16000
-    max_wall_clock_seconds: 120
-    max_files_touched: 5
-    max_output_bytes: 524288
-```
+| Field | Description |
+|---|---|
+| `max_steps` | Maximum plan steps per task. |
+| `max_tool_calls` | Maximum tool firewall calls per task. |
+| `max_tokens` | Maximum LLM tokens consumed per task. |
+| `max_wall_clock_seconds` | Maximum wall-clock runtime. |
+| `max_files_touched` | Maximum files read or written. |
+| `max_output_bytes` | Maximum task output size. |
 
 ### workspace
 
-Registered workspace aliases that map to filesystem paths. Clients submit workspace IDs; the agent resolves them server-side.
+Registered server-side workspace aliases. Clients submit workspace IDs instead of raw paths.
 
-| Field | Type | Description |
-|---|---|---|
-| `readable` | list of strings | Glob patterns for directories the agent may read |
-| `writable` | list of strings | Glob patterns for directories the agent may write |
-
-**Example:**
-
-```yaml
-workspace:
-  readable:
-    - "/var/lib/secure-ai/vault/user_docs/**"
-  writable:
-    - "/var/lib/secure-ai/vault/outputs/**"
-```
+| Field | Description |
+|---|---|
+| `readable` | Glob patterns for paths the agent may read. |
+| `writable` | Glob patterns for paths the agent may write. |
 
 ### allowed_tools
 
-List of tool identifiers the agent may invoke through the tool firewall. These must also be permitted in the main `policy.yaml` tools section.
-
-```yaml
-allowed_tools:
-  - "filesystem.read"
-  - "filesystem.write"
-  - "filesystem.list"
-```
+Tool identifiers the agent may invoke through the Tool Firewall. They must also be permitted by the main `policy.yaml` tool section.
 
 ### configurable_defaults
 
-Default user preferences for medium-risk (configurable) actions. Values: `always` (auto-approve), `ask` (prompt user), `never` (auto-deny).
+Default preferences for medium-risk actions. Values are `always`, `ask`, or `never`.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `read_file` | string | `"ask"` | Preference for file read actions |
-| `write_file` | string | `"ask"` | Preference for file write actions |
-| `overwrite_file` | string | `"ask"` | Preference for overwriting existing files |
-| `tool_invoke` | string | `"ask"` | Preference for tool firewall invocations |
+| Field | Default |
+|---|---|
+| `read_file` | `ask` |
+| `write_file` | `ask` |
+| `overwrite_file` | `ask` |
+| `tool_invoke` | `ask` |
 
 ### always_deny
 
-List of action names that are always denied regardless of mode, approval, or user preferences. These represent hard security invariants.
-
-```yaml
-always_deny:
-  - "change_security"
-```
+Hard-denied action names, regardless of mode or user preference. `change_security` is always denied.
 
 ### hard_approval
 
-Actions that always require explicit user approval. Cannot be set to `"always"` in configurable_defaults.
-
-```yaml
-hard_approval:
-  - "outbound_request"
-  - "export_data"
-  - "trust_change"
-  - "batch_delete"
-  - "widen_scope"
-  - "enable_tool"
-```
+Actions that always require explicit approval, including outbound requests, exports, trust changes, batch deletes, scope widening, and tool enablement.
 
 ### worker
 
-Worker isolation settings for task execution.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `sensitive_mode_recycle` | boolean | `true` | Recycle worker after each task in sensitive mode |
-| `tmpfs_scratch` | boolean | `true` | Use tmpfs for scratch files (cleaned on task completion) |
-| `no_ambient_secrets` | boolean | `true` | Prevent secret leakage into worker environment |
+| Field | Default | Description |
+|---|---|---|
+| `sensitive_mode_recycle` | `true` | Recycle worker state after sensitive-mode tasks. |
+| `tmpfs_scratch` | `true` | Use tmpfs scratch space. |
+| `no_ambient_secrets` | `true` | Keep secrets out of worker environments. |
 
 ### logging
 
-Minimal-logging policy for agent audit records.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `log_policy_decisions` | boolean | `true` | Log allow/ask/deny decisions |
-| `log_step_actions` | boolean | `true` | Log which actions were executed |
-| `log_raw_prompts` | boolean | `false` | Log raw LLM prompts (privacy risk — keep false) |
-| `log_raw_content` | boolean | `false` | Log raw file content (privacy risk — keep false) |
-| `log_file_paths` | boolean | `false` | Log which files were accessed (not their content) — off by default to reduce audit sensitivity; enable explicitly if needed |
-
-### audit retention
-
-Audit log retention is not yet configurable (planned for Phase 2). Current behavior: logs accumulate at `/var/lib/secure-ai/logs/agent-audit.jsonl` with no automatic rotation. Operators should configure logrotate or a cron job for retention management.
+| Field | Default | Description |
+|---|---|---|
+| `log_policy_decisions` | `true` | Log allow/ask/deny decisions. |
+| `log_step_actions` | `true` | Log executed actions. |
+| `log_raw_prompts` | `false` | Privacy risk; keep disabled unless explicitly required. |
+| `log_raw_content` | `false` | Privacy risk; keep disabled unless explicitly required. |
+| `log_file_paths` | `false` | Disabled by default to reduce audit-log sensitivity. |

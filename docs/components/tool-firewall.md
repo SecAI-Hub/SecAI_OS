@@ -62,17 +62,17 @@ Arguments exceeding the configured maximum length are rejected. This prevents bu
 
 ## API
 
-### POST /v1/tool/invoke
+### POST /v1/evaluate
 
-Invoke a tool through the firewall.
+Evaluate a tool call through the firewall.
 
 **Request body:**
 
 ```json
 {
-  "tool": "read_file",
-  "arguments": {
-    "path": "/var/lib/secure-ai/data/example.txt"
+  "tool": "filesystem.read",
+  "params": {
+    "path": "/vault/user_docs/example.txt"
   }
 }
 ```
@@ -81,8 +81,7 @@ Invoke a tool through the firewall.
 
 ```json
 {
-  "status": "allowed",
-  "result": { ... }
+  "allowed": true
 }
 ```
 
@@ -90,7 +89,7 @@ Invoke a tool through the firewall.
 
 ```json
 {
-  "status": "denied",
+  "allowed": false,
   "reason": "tool 'exec_shell' is not in the allow list"
 }
 ```
@@ -101,7 +100,15 @@ Invoke a tool through the firewall.
 
 ```json
 {
-  "status": "denied",
+  "allowed": false,
   "reason": "argument contains blocked pattern: '../'"
 }
 ```
+
+### GET /v1/stats
+
+Return policy and request counters.
+
+### POST /v1/reload
+
+Reload policy from disk. Requires the service bearer token when token auth is enabled.

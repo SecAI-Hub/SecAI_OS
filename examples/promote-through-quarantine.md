@@ -36,7 +36,7 @@ You will see log entries for each stage:
 [quarantine] Stage 3/7: integrity_check — PASS (sha256=abc123...)
 [quarantine] Stage 4/7: provenance_check — verifying signature...
 [quarantine] Stage 4/7: provenance_check — PASS
-[quarantine] Stage 5/7: static_scan — running modelscan + gguf-guard...
+[quarantine] Stage 5/7: static_scan — running ModelScan + YARA + fickling + modelaudit + entropy + gguf-guard...
 [quarantine] Stage 5/7: static_scan — PASS (score=0.00, no anomalies)
 [quarantine] Stage 6/7: behavioral_test — running adversarial prompts...
 [quarantine] Stage 6/7: behavioral_test — PASS (0/50 flagged, 0 critical)
@@ -113,9 +113,12 @@ Stage 4/7: provenance_check — FAIL: signature verification failed
 Runs multiple scanners in sequence:
 
 1. **modelscan** -- checks for known malicious patterns.
-2. **Entropy analysis** -- detects anomalous weight distributions that may
+2. **YARA** -- applies repo-owned malware signatures to imported artifacts.
+3. **fickling** -- inspects pickle-capable artifacts without executing them.
+4. **modelaudit** -- provides a second static scanner for artifact structure and metadata.
+5. **Entropy analysis** -- detects anomalous weight distributions that may
    indicate steganographic payloads.
-3. **gguf-guard** (if installed) -- deep per-tensor analysis, anomaly scoring,
+6. **gguf-guard** (if installed) -- deep per-tensor analysis, anomaly scoring,
    quant-format-aware block analysis.
 
 **Failure example:**
@@ -201,7 +204,12 @@ Example output:
   "failed_stage": "static_scan",
   "reason": "modelscan detected suspicious pattern in tensor model.layers.0.attn.weight",
   "scan_details": {
-    "modelscan_version": "0.8.1",
+    "scanner_versions": {
+      "modelscan": "0.8.8",
+      "yara-python": "4.5.4",
+      "fickling": "0.1.10",
+      "modelaudit": "0.2.42"
+    },
     "findings": [
       {
         "tensor": "model.layers.0.attn.weight",

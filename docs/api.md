@@ -1,477 +1,296 @@
 # HTTP API Reference
 
-All services communicate over HTTP on localhost. This document covers every endpoint across all SecAI OS services.
+All production services bind to loopback or a Unix socket. The Docker sandbox binds service ports inside the compose network and only publishes the UI to the host by default.
+
+Mutating service-to-service endpoints require the shared bearer token when the token file is present. Development mode may run without that token for local tests.
 
 ---
 
 ## Registry API (port 8470)
 
-### GET /v1/models
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness and model count. |
+| GET | `/v1/models` | No | List registered model artifacts. |
+| GET | `/v1/model?name=<name>` | No | Retrieve one artifact by name. |
+| GET | `/v1/model/path?name=<name>` | No | Return the model file path for a registered artifact. |
+| POST | `/v1/model/verify?name=<name>` | No | Recompute and compare one model's SHA-256 hash. |
+| POST | `/v1/models/verify-all` | No | Verify every registered model. |
+| GET | `/v1/integrity/status` | No | Return aggregate registry integrity state. |
+| POST | `/v1/model/verify-manifest?name=<name>` | No | Verify the gguf-guard per-tensor manifest for one GGUF model. |
+| POST | `/v1/model/promote` | Token | Promote a quarantined artifact into the registry. |
+| DELETE | `/v1/model/delete?name=<name>` | Token | Remove an artifact from the registry manifest. |
 
-List all registered model artifacts.
+Promotion body:
 
-- **Response:** `200 OK` -- JSON array of artifact objects
-- **Fields per artifact:** name, path, sha256, format, source, status, promoted_at, gguf_guard_fingerprint, gguf_guard_manifest
-
-### GET /v1/model/{name}
-
-Retrieve a single artifact by name.
-
-- **Response:** `200 OK` -- JSON artifact object
-- **Error:** `404 Not Found` -- model not in registry
-
-### POST /v1/promote
-
-Promote a quarantined model to the registry.
-
-- **Request body:**
-  ```json
-  {
-    "name": "model-name",
-    "path": "/var/lib/secure-ai/quarantine/model-file",
-    "sha256": "hash",
-    "format": "gguf",
-    "source": "huggingface"
-  }
-  ```
-- **Response:** `200 OK` -- promotion successful
-- **Error:** `400 Bad Request` -- validation failed
-
-### DELETE /v1/model/{name}
-
-Remove a model from the registry.
-
-- **Response:** `200 OK` -- model removed
-- **Error:** `404 Not Found` -- model not in registry
-
-### POST /v1/model/verify-manifest
-
-Verify SHA-256 integrity of all registered models.
-
-- **Response:** `200 OK` -- JSON object with per-model verification results
+```json
+{
+  "name": "model-name",
+  "filename": "model.gguf",
+  "sha256": "sha256...",
+  "size_bytes": 123456789,
+  "source": "huggingface",
+  "scan_results": {},
+  "scanner_versions": {}
+}
+```
 
 ---
 
 ## Tool Firewall API (port 8475)
 
-### POST /v1/tool/invoke
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness plus request counters. |
+| POST | `/v1/evaluate` | No | Evaluate one tool call against policy. |
+| GET | `/v1/stats` | No | Policy and request counters. |
+| POST | `/v1/reload` | Token | Reload policy from disk. |
 
-Invoke a tool through the policy firewall.
+Evaluation body:
 
-- **Request body:**
-  ```json
-  {
-    "tool": "tool_name",
-    "arguments": { "key": "value" }
+```json
+{
+  "tool": "filesystem.read",
+  "params": {
+    "path": "/vault/user_docs/example.txt"
   }
-  ```
-- **Response:** `200 OK` -- tool invocation allowed and result returned
-  ```json
-  {
-    "status": "allowed",
-    "result": { ... }
-  }
-  ```
-- **Error:** `403 Forbidden` -- tool denied by policy
-  ```json
-  {
-    "status": "denied",
-    "reason": "description of why the tool was denied"
-  }
-  ```
-- **Error:** `400 Bad Request` -- invalid arguments (blocked pattern, length exceeded)
-- **Error:** `429 Too Many Requests` -- rate limit exceeded
+}
+```
+
+`args` is still accepted as a legacy alias for `params`. Responses use `allowed: true|false` and include `reason` when denied.
 
 ---
 
 ## Airlock API (port 8490)
 
-### POST /v1/proxy
+The Airlock is a policy decision service, not a generic open proxy. The UI checks each model download URL and redirect with the Airlock before downloading the artifact into quarantine.
 
-Proxy an outbound request through the Airlock.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness and enabled state. |
+| POST | `/v1/egress/check` | No | Decide whether an outbound request is allowed. |
+| GET | `/v1/stats` | No | Request counters and allowlist summary. |
+| POST | `/v1/reload` | Token | Reload policy and source allowlist. |
 
-- **Request body:**
-  ```json
-  {
-    "url": "https://example.com/path",
-    "method": "GET",
-    "headers": {},
-    "body": null
-  }
-  ```
-- **Response:** `200 OK` -- proxied response returned
-- **Error:** `403 Forbidden` -- destination not allowlisted, PII detected, or credentials detected
-  ```json
-  {
-    "error": "description of block reason"
-  }
-  ```
-- **Error:** `429 Too Many Requests` -- rate limit exceeded
-- **Error:** `503 Service Unavailable` -- Airlock policy is disabled in the current runtime profile
+Decision body:
+
+```json
+{
+  "destination": "https://huggingface.co/org/repo/resolve/main/model.gguf",
+  "method": "GET",
+  "body": ""
+}
+```
+
+Responses use `allowed: true|false` and include `reason` when blocked. Disabled Airlock policy returns service-unavailable semantics to callers.
 
 ---
 
-## Agent API (port 8476)
+## Policy Engine API (port 8500)
 
-### POST /v1/task
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness. |
+| POST | `/api/v1/decide` | No | Evaluate a unified policy decision. |
+| GET | `/api/v1/stats` | No | Decision counters. |
+| GET | `/api/v1/digest` | No | Current policy digest. |
+| POST | `/api/v1/reload` | Token | Reload main and agent policies. |
 
-Submit a new task for the agent to plan and execute.
+---
 
-- **Request body:**
-  ```json
-  {
-    "intent": "summarize the documents in my workspace",
-    "mode": "standard",
-    "workspace": ["user_docs"],
-    "preferences": { "read_file": "always" }
-  }
-  ```
-- **Fields:**
-  - `workspace`: array of workspace IDs (not raw paths). Available IDs: `user_docs`, `outputs`. Resolved to filesystem paths server-side.
-- **Response:** `201 Created` -- task with planned steps
-- **Error:** `400 Bad Request` -- missing intent, invalid mode, or unknown workspace ID
+## MCP Firewall API (port 8496)
 
-### GET /v1/task/{id}
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness. |
+| POST | `/v1/evaluate` | No | Evaluate one MCP tool call. |
+| POST | `/v1/evaluate/batch` | No | Evaluate a batch of MCP tool calls. |
+| GET | `/v1/servers` | No | Summarize configured MCP servers and tools. |
+| GET | `/v1/policy` | No | Summarize loaded policy. |
+| GET | `/v1/taint/<session_id>` | No | Return taint state for a session. |
+| DELETE | `/v1/taint/<session_id>` | No | Clear taint state for a session. |
+| GET | `/v1/audit` | No | Return recent audit entries. |
+| GET | `/v1/audit/verify` | No | Verify the hash-chained audit log. |
+| GET | `/v1/metrics` | No | Decision and HTTP metrics. |
+| POST | `/v1/reload` | Token | Reload MCP policy. |
 
-Get task status and step details.
+---
 
-- **Response:** `200 OK` -- task object with steps
-- **Error:** `404 Not Found` -- task not found
+## Verification Services
 
-### POST /v1/task/{id}/approve
+### Runtime Attestor (port 8505)
 
-Approve pending steps that require user confirmation.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness and attestation state. |
+| GET | `/api/v1/attest` | No | Current attestation bundle. |
+| GET | `/api/v1/verify` | No | Startup-gating verification result. |
+| GET | `/api/security/status` | No | UI-friendly security status. |
+| POST | `/api/v1/refresh` | Token | Refresh attestation state. |
 
-- **Request body:**
-  ```json
-  {
-    "step_ids": ["abc123"],
-    "approve_all": false
-  }
-  ```
-- **Response:** `200 OK` -- updated task
+### Integrity Monitor (port 8510)
 
-### POST /v1/task/{id}/deny
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness and integrity state. |
+| GET | `/api/v1/status` | No | Current monitor status. |
+| GET | `/api/v1/baseline` | No | Current baseline metadata. |
+| GET | `/api/v1/verify` | No | Verify current integrity state. |
+| POST | `/api/v1/scan` | Token | Trigger an immediate scan. |
+| POST | `/api/v1/rebaseline` | Token | Capture a new trusted baseline. |
+| POST | `/api/v1/reload` | Token | Reload monitor policy. |
 
-Deny pending steps.
+### Incident Recorder (port 8515)
 
-- **Request body:**
-  ```json
-  {
-    "step_ids": ["abc123"],
-    "deny_all": false
-  }
-  ```
-- **Response:** `200 OK` -- updated task
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness and incident counts. |
+| GET | `/api/v1/incidents` | No | List incidents, filterable by `class`, `state`, and `severity`. |
+| GET | `/api/v1/incidents/get?id=<id>` | No | Fetch one incident. |
+| GET | `/api/v1/stats` | No | Incident statistics. |
+| GET | `/api/v1/recovery/status` | No | Pending recovery ceremonies. |
+| POST | `/api/v1/incidents/report` | Token | Report a new incident. |
+| POST | `/api/v1/incidents/resolve` | Token | Mark an incident resolved. |
+| POST | `/api/v1/incidents/acknowledge` | Token | Acknowledge an incident. |
+| POST | `/api/v1/recovery/ack` | Token | Acknowledge recovery requirements. |
+| POST | `/api/v1/recovery/reattest` | Token | Submit recovery re-attestation. |
+| GET | `/api/v1/forensic/export` | Token | Export a signed forensic bundle. |
+| POST | `/api/v1/reload` | Token | Reload containment policy. |
 
-### POST /v1/task/{id}/cancel
+### GPU Integrity Watch (port 8495)
 
-Cancel a running or pending task.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/health` | No | Liveness. |
+| POST | `/v1/check` | No | Run a probe cycle. |
+| GET | `/v1/status` | No | Latest verdict and probe results. |
+| GET | `/v1/history` | No | Score history. |
+| GET | `/v1/metrics` | No | Probe and action counters. |
+| GET | `/v1/attest-state` | No | GPU state for runtime attestation. |
+| POST | `/v1/baseline` | Token | Recapture GPU/model baseline. |
+| POST | `/v1/reload` | Token | Reload profile and baseline. |
 
-- **Response:** `200 OK` -- task cancelled
-- **Error:** `409 Conflict` -- task already completed/failed/cancelled
+---
 
-### GET /v1/tasks
+## Agent API
 
-List all tasks (most recent first).
+Production UI-to-agent traffic uses `/run/secure-ai/agent.sock`. Development TCP fallback is `127.0.0.1:8476`.
 
-- **Query params:** `limit` (default 50, max 200)
-- **Response:** `200 OK` -- array of task objects
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Liveness. |
+| POST | `/v1/task` | Submit a task. |
+| GET | `/v1/task/<id>` | Get task status. |
+| POST | `/v1/task/<id>/approve` | Approve pending steps. |
+| POST | `/v1/task/<id>/deny` | Deny pending steps. |
+| POST | `/v1/task/<id>/cancel` | Cancel a task. |
+| GET | `/v1/tasks` | List recent tasks. |
+| GET | `/v1/modes` | List operating modes. |
 
-### GET /v1/modes
-
-List available operating modes with descriptions.
-
-- **Response:** `200 OK` -- array of mode objects (offline_only, standard, online_assisted, sensitive)
+The UI exposes authenticated proxy routes under `/api/agent/*` with the same task semantics.
 
 ---
 
 ## UI API (port 8480)
 
-### Model Management
-
-#### GET /api/models
-
-List all models (combines registry and quarantine data).
-
-- **Response:** `200 OK` -- JSON array of model objects with status information
-
-#### POST /api/models/download
-
-Initiate a model download through the Airlock.
-
-- **Request body:**
-  ```json
-  {
-    "url": "https://huggingface.co/...",
-    "name": "model-name"
-  }
-  ```
-- **Response:** `200 OK` -- download initiated
-- **Error:** `400 Bad Request` -- invalid URL or name
-- **Error:** `503 Service Unavailable` -- Airlock disabled
-
-#### POST /api/models/import
-
-Import a local model file into quarantine.
-
-- **Request body:** Multipart form data with model file
-- **Response:** `200 OK` -- model submitted to quarantine
-- **Error:** `400 Bad Request` -- invalid file or format
-
-#### POST /api/models/verify-manifest
-
-Trigger integrity verification of all registered models.
-
-- **Response:** `200 OK` -- verification results
-
-### Chat and Generation
-
-#### POST /api/chat
-
-Send a chat message and receive a response from the active model.
-
-- **Request body:**
-  ```json
-  {
-    "message": "user message text",
-    "model": "model-name",
-    "conversation_id": "optional-id"
-  }
-  ```
-- **Response:** `200 OK` -- streaming or complete response from the model
-
-#### POST /api/generate
-
-Generate text from a prompt (non-chat completion).
-
-- **Request body:**
-  ```json
-  {
-    "prompt": "prompt text",
-    "model": "model-name",
-    "max_tokens": 512
-  }
-  ```
-- **Response:** `200 OK` -- generated text
-
-### Diffusion Runtime (On-Demand Acquisition)
-
-The diffusion runtime (PyTorch, diffusers, etc.) is not included in the base OS image. These endpoints manage the one-click install flow.
-
-**Contract:**
-- `GET /api/diffusion/runtime/status` is the source of truth for whether the runtime is installed, failed, or available for install. Always safe to call.
-- `POST /api/diffusion/runtime/enable` requests installation by writing a marker file. A systemd path unit triggers the privileged installer.
-- `GET /api/diffusion/runtime/progress` is only meaningful after `enable` has been called. Callers should check `status` first.
-
-#### GET /api/diffusion/runtime/status
-
-Return the current diffusion runtime state.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "installed": false,
-    "detected_backend": "cuda",
-    "estimated_size_mb": 4500,
-    "cache_available": false,
-    "installing": false,
-    "manifest_populated": false,
-    "error": null
-  }
-  ```
-- **Fields:**
-  - `installed` -- true if the runtime is installed and the service is enabled
-  - `detected_backend` -- auto-detected GPU backend: `"cuda"`, `"rocm"`, `"cpu"`, or `null` if detection failed
-  - `estimated_size_mb` -- estimated download size from manifest for the detected backend; `null` if backend unknown
-  - `cache_available` -- true if verified wheel cache exists (faster re-install)
-  - `installing` -- true if an install is in progress (request marker or active progress)
-  - `manifest_populated` -- true if the runtime manifest has real package hashes. If false, enable returns 503. Run `scripts/refresh-diffusion-locks.sh` to populate.
-  - `error` -- error detail from the last failed install, or `null`
-- **Status priority:** installed > failed (suppresses installing) > in-progress > not installed
-
-#### POST /api/diffusion/runtime/enable
-
-Request diffusion runtime installation.
-
-- **Response:** `202 Accepted` -- install requested
-  ```json
-  { "status": "installing" }
-  ```
-- **Response:** `200 OK` -- already installed
-  ```json
-  { "status": "already_installed" }
-  ```
-- **Error:** `409 Conflict` -- install already in progress
-  ```json
-  { "status": "already_installing" }
-  ```
-- **Notes:** Does not directly run the installer. Atomically creates a request marker file (`O_CREAT|O_EXCL`, mode `0600`). A systemd path unit detects the marker and starts the privileged oneshot installer.
-
-#### GET /api/diffusion/runtime/progress
-
-Return current install progress from the installer's progress file.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "phase": "downloading",
-    "percent": 45,
-    "backend": "cuda",
-    "detail": "Downloading torch-2.3.1+cu121...",
-    "total_packages": 42,
-    "downloaded": 19,
-    "verified": 19,
-    "cached_hits": 5,
-    "error": null
-  }
-  ```
-- **Valid phases:** `detecting`, `downloading`, `verifying`, `installing`, `smoke_testing`, `enabling`, `complete`, `failed`, or `null`
-- **Notes:** Only meaningful after `POST /api/diffusion/runtime/enable` has been called. When no install has ever been requested, returns `phase: null`. When the install completed, returns `complete`; when it failed, returns `failed`. Invalid phases from the progress file are normalized to `failed`. All branches return the same field set.
-
-### Vault Management
-
-#### GET /api/vault/status
-
-Get the current vault lock/unlock status.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "status": "unlocked",
-    "locked_at": null,
-    "auto_lock_minutes": 15
-  }
-  ```
-
-#### POST /api/vault/lock
-
-Lock the encrypted vault immediately.
-
-- **Response:** `200 OK` -- vault locked
-
-#### POST /api/vault/unlock
-
-Unlock the encrypted vault with a passphrase.
-
-- **Request body:**
-  ```json
-  {
-    "passphrase": "user-passphrase"
-  }
-  ```
-- **Response:** `200 OK` -- vault unlocked
-- **Error:** `401 Unauthorized` -- incorrect passphrase
-- **Error:** `429 Too Many Requests` -- rate limited after failed attempts
-
-#### POST /api/vault/keepalive
-
-Reset the vault auto-lock idle timer.
-
-- **Response:** `200 OK` -- timer reset
-
-### Emergency
-
-#### POST /api/emergency/panic
-
-Trigger an emergency panic action (locks vault, optionally shuts down).
-
-- **Response:** `200 OK` -- panic action executed
-
-### Updates
-
-#### GET /api/updates/check
-
-Check for available OS updates.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "available": true,
-    "version": "42.20260308",
-    "changelog": "..."
-  }
-  ```
-
-#### POST /api/updates/stage
-
-Download and stage an update without applying it.
-
-- **Response:** `200 OK` -- update staged
-
-#### POST /api/updates/apply
-
-Apply a staged update (requires reboot).
-
-- **Response:** `200 OK` -- update applied, reboot required
-
-#### POST /api/updates/rollback
-
-Roll back to the previous OS deployment.
-
-- **Response:** `200 OK` -- rollback staged, reboot required
-
-### Hardware
-
-#### POST /api/vm/gpu
-
-Get GPU information and status.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "detected": true,
-    "type": "nvidia",
-    "name": "NVIDIA RTX 5080",
-    "vram_mb": 16384
-  }
-  ```
-
-### Security
-
-#### GET /api/security/status
-
-Get the overall security status of the appliance.
-
-- **Response:** `200 OK`
-  ```json
-  {
-    "vault_status": "unlocked",
-    "firewall_active": true,
-    "airlock_enabled": false,
-    "search_enabled": false,
-    "integrity_ok": true,
-    "last_integrity_check": "2026-03-08T12:00:00Z"
-  }
-  ```
+### Auth, Setup, And Pages
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | UI liveness. |
+| GET | `/api/auth/status` | Setup/login/session state. |
+| POST | `/api/auth/setup` | Create the local passphrase. |
+| POST | `/api/auth/login` | Start a session. |
+| POST | `/api/auth/logout` | End a session. |
+| POST | `/api/auth/change` | Change passphrase. |
+| POST | `/api/setup/complete` | Mark setup complete. |
+
+### Models And Catalog
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/catalog` | Curated model catalog. |
+| POST | `/api/catalog/download` | Start a curated model download through Airlock checks. |
+| GET | `/api/catalog/downloads` | Active/recent download status. |
+| GET | `/api/catalog/auth/status` | Credential/auth guidance for model sources. |
+| GET | `/api/models` | Registry and quarantine model summary. |
+| GET | `/api/models/quarantine` | Quarantine status. |
+| POST | `/api/models/import` | Upload/import a local model into quarantine. |
+| POST | `/api/models/verify` | Verify one registered model. |
+| POST | `/api/models/verify-manifest` | Verify gguf-guard manifest for one model. |
+| POST | `/api/models/delete` | Delete a registered model. |
+| GET | `/api/models/fsverity` | Model fs-verity/provenance summary. |
+| GET | `/api/integrity/status` | Registry integrity status. |
+| POST | `/api/integrity/verify-all` | Verify all registered models. |
+
+### Chat, Search, And Generation
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/inference/status` | Inference service status and selected model readiness. |
+| POST | `/api/chat` | Send one chat request. |
+| POST | `/api/chat/stream` | Streaming chat. |
+| POST | `/api/search` | Search mediator request. |
+| GET | `/api/search/status` | Search availability/profile state. |
+| POST | `/api/chat/search` | Chat with search context. |
+| POST | `/api/generate/image` | Generate an image. |
+| POST | `/api/generate/video` | Generate video frames/clip. |
+| POST | `/api/generate/img2img` | Image-to-image generation. |
+| GET | `/api/diffusion/models` | Diffusion model inventory. |
+
+### Profiles And Sandbox Automation
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/profile` | Current privacy profile. |
+| POST | `/api/profile/preview` | Preview a profile change. |
+| POST | `/api/profile/select` | Select a privacy profile. |
+| GET | `/api/profile/status` | Profile application status. |
+| GET | `/api/sandbox/control/status` | Sandbox host-controller state. |
+| POST | `/api/sandbox/control/apply` | Ask the host controller to restart/apply profile services. |
+
+### Diffusion Runtime Installer
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/diffusion/runtime/status` | Runtime installed/failed/installable state. |
+| POST | `/api/diffusion/runtime/enable` | Request privileged runtime installation via marker file. |
+| GET | `/api/diffusion/runtime/progress` | Installer progress after enable is requested. |
+
+### Security, Vault, Updates, And Observability
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/status` | Aggregate service health and SLO input. |
+| GET | `/api/security/stats` | Security statistics. |
+| GET | `/api/observability/appliance-state` | Appliance trust/degraded/recovery state. |
+| GET | `/api/observability/slos` | Live SLO compliance metrics. |
+| GET | `/api/forensic/export` | Download forensic bundle through the UI. |
+| GET | `/api/audit/status` | Audit-chain status. |
+| POST | `/api/audit/verify` | Verify audit-chain integrity. |
+| GET | `/api/boot/status` | Boot security summary. |
+| GET | `/api/boot/tpm2/status` | TPM2 status. |
+| GET | `/api/boot/secureboot/status` | Secure Boot status. |
+| GET | `/api/vault/status` | Vault state. |
+| POST | `/api/vault/lock` | Lock the vault. |
+| POST | `/api/vault/unlock` | Unlock the vault. |
+| POST | `/api/vault/keepalive` | Reset vault idle timer. |
+| GET | `/api/vm/status` | VM/hypervisor status. |
+| POST | `/api/vm/gpu` | GPU status. |
+| GET | `/api/emergency/status` | Emergency panic state. |
+| POST | `/api/emergency/panic` | Trigger panic action. |
+| GET | `/api/update/status` | Update state. |
+| POST | `/api/update/check` | Check for updates. |
+| POST | `/api/update/stage` | Stage an update. |
+| POST | `/api/update/apply` | Apply staged update. |
+| POST | `/api/update/rollback` | Roll back to previous deployment. |
+| GET | `/api/update/health` | Update subsystem health. |
 
 ---
 
 ## Search Mediator API (port 8485)
 
-### POST /search
-
-Submit a sanitized web search query.
-
-- **Request body:**
-  ```json
-  {
-    "query": "search terms",
-    "max_results": 5
-  }
-  ```
-- **Response:** `200 OK`
-  ```json
-  {
-    "results": [
-      {
-        "title": "Page Title",
-        "url": "https://example.com",
-        "snippet": "Relevant text excerpt..."
-      }
-    ],
-    "query_sanitized": true,
-    "results_filtered": 0
-  }
-  ```
-- **Error:** `503 Service Unavailable` -- Search Mediator is disabled
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Liveness and enabled state. |
+| POST | `/search` | Sanitize, route, and return a Tor-routed web search. |

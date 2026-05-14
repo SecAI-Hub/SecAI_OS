@@ -145,7 +145,7 @@ stages in order. If any stage fails, the model is rejected and moved to
 | 2     | Format Gate        | Validates file headers; rejects pickle, pt, bin formats |
 | 3     | Integrity Check    | Verifies SHA-256 hash against pinned values (if known)  |
 | 4     | Provenance Check   | Validates cosign/signature from the source              |
-| 5     | Static Scan        | Runs modelscan + entropy analysis + gguf-guard           |
+| 5     | Static Scan        | Runs ModelScan + YARA + fickling + modelaudit + entropy analysis + gguf-guard |
 | 6     | Behavioral Test    | Adversarial prompt suite (LLM models only)              |
 | 7     | Diffusion Deep Scan| Config integrity check (diffusion models only)          |
 

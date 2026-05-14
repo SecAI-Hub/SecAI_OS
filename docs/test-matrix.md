@@ -2,7 +2,7 @@
 
 This document summarizes the test coverage for SecAI_OS across all languages and test categories.
 
-Last updated: 2026-04-29
+Last updated: 2026-05-14
 
 > **Canonical source of truth for test counts:** [`docs/test-counts.json`](test-counts.json).
 > CI enforces that actual counts never drift below documented values.
@@ -22,7 +22,7 @@ Last updated: 2026-04-29
 | Registry | services/registry/ | 22 | Trusted model registry, hash pinning, cosign verification |
 | Tool Firewall | services/tool-firewall/ | 15 | Default-deny egress policy, rule evaluation |
 | Airlock | services/airlock/ | 11 | Online airlock, request sanitization, policy enforcement |
-| GPU Integrity Watch | services/gpu-integrity-watch/ | 62 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
+| GPU Integrity Watch | services/gpu-integrity-watch/ | 63 | GPU probe scoring, baseline comparison, action triggers, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
 | MCP Firewall | services/mcp-firewall/ | 71 | MCP tool call policy enforcement, input redaction, taint tracking, audit, adversarial tests (M43), trust tier isolation, session binding |
 | Policy Engine | services/policy-engine/ | 45 | Unified policy decisions across 6 domains, evidence generation, auth, adversarial tests (M43) |
 | Runtime Attestor | services/runtime-attestor/ | 55 | TPM2 quote verification, HMAC bundles, state machine, startup gating, service digests, incident-recorder integration |
@@ -54,7 +54,7 @@ Last updated: 2026-04-29
 | test_m5_acceptance.py | tests/ | 32 | M5 acceptance certification across attestation, integrity, policy, recovery, and workspace isolation |
 | test_memory_protection.py | tests/ | 37 | Swap encryption, zswap, core dumps, mlock, TEE detection |
 | test_profile_system.py | tests/ | 32 | Profile loading, validation, and policy behavior |
-| test_quarantine_pipeline.py | tests/ | 13 | Quarantine pipeline stages, scanning, pass/fail logic, YARA rule handling |
+| test_quarantine_pipeline.py | tests/ | 15 | Quarantine pipeline stages, scanning, pass/fail logic, YARA rule handling |
 | test_quarantine_watcher.py | tests/ | 5 | Quarantine watcher startup and filesystem behavior |
 | test_recipe_validation.py | tests/ | 26 | Recipe and packaged-file validation |
 | test_release_artifacts.py | tests/ | 52 | Release workflow, artifact manifest, and verification UX consistency |

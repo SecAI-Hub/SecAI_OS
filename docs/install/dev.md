@@ -7,7 +7,7 @@ This guide covers running SecAI OS services locally for development and testing,
 ## Prerequisites
 
 - **Go 1.26.3+** for building Go services
-- **Python 3.12 recommended** for running Python services. CI and lockfiles use Python 3.12; package metadata still allows Python 3.11 where scanner compatibility requires it.
+- **Python 3.12+ recommended** for local Python services. CI and quarantine lockfiles use Python 3.12; sandbox UI, agent, search, and diffusion images use patched Python 3.14.5 runtimes where compatible. Some package metadata remains permissive for source compatibility, but the supported locked/runtime paths are 3.12/3.14.
 - **pip** for Python dependency management
 - **git** for version control
 - **make** (optional, for convenience targets)

@@ -4,7 +4,9 @@ info:
   version: "0.1.0"
   description: |
     HTTP API specification for the Secure AI Appliance (SecAI OS).
-    All services bind to localhost and communicate over loopback only.
+    Production services bind to localhost or Unix sockets. The Docker sandbox
+    keeps peer service ports inside the private Compose network and publishes
+    only the Web UI to the host by default.
     Mutating endpoints on the Registry, Tool Firewall, and Airlock require
     a service-to-service Bearer token (loaded from /run/secure-ai/service-token).
     The Web UI enforces session-based authentication and CSRF protection.
@@ -35,7 +37,7 @@ tags:
   - name: Tool Firewall
     description: Policy-enforced tool call gateway (Go, :8475)
   - name: Airlock
-    description: Controlled egress proxy (Go, :8490)
+    description: Controlled egress decision gate (Go, :8490)
   - name: UI
     description: Web UI and orchestration layer (Python/Flask, :8480)
   - name: Agent
