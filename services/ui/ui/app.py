@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import posixpath
 import re
 import shutil
 import errno
@@ -23,7 +24,7 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 from markupsafe import escape as _html_escape
 from werkzeug.security import safe_join
@@ -251,6 +252,8 @@ def _sandbox_launch_command(*features: str) -> str:
         if "--with-search" not in args:
             args.append("--with-search")
         args.append("--with-diffusion")
+    if "gpu" in feature_set and "--with-gpu" not in args:
+        args.append("--with-gpu")
     return ".\\secai-sandbox.cmd start" + ((" " + " ".join(args)) if args else "")
 
 
@@ -263,10 +266,17 @@ def _sandbox_features_for_profile(profile: str) -> tuple[str, ...]:
     return ()
 
 
-def _sandbox_launch_command_for_profile(profile: str, *, inference: bool = False) -> str:
+def _sandbox_launch_command_for_profile(
+    profile: str,
+    *,
+    inference: bool = False,
+    gpu: bool = False,
+) -> str:
     features = list(_sandbox_features_for_profile(profile))
     if inference:
         features.append("inference")
+    if gpu:
+        features.append("gpu")
     return _sandbox_launch_command(*features)
 
 
@@ -402,91 +412,184 @@ _MODEL_CATALOG_PATH = os.getenv(
     "MODEL_CATALOG_PATH", "/etc/secure-ai/model-catalog.yaml"
 )
 
-# Hardcoded fallback catalog (used if YAML file is missing or malformed)
+# Hardcoded fallback catalog (used if YAML file is missing or malformed).
+# Keep this as an approved-only subset so a missing config cannot reintroduce
+# a model that failed quarantine.
 _FALLBACK_CATALOG: list[dict] = [
     {
-        "name": "Phi-3 Mini 3.8B (Q4_K_M)", "type": "llm",
+        "name": "Granite Guardian 3.1 2B (Q4_K_M)",
+        "type": "llm",
         "category": "llm",
-        "filename": "Phi-3-mini-4k-instruct-q4.gguf",
-        "url": "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
-        "size_gb": 2.3, "vram_gb": 4,
-        "description": "Fast, small LLM. Good for testing and low-VRAM systems.",
+        "filename": "granite-guardian-3.1-2b-q4_k_m.gguf",
+        "url": "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/main/granite-guardian-3.1-2b-q4_k_m.gguf",
+        "size_gb": 1.5,
+        "vram_gb": 3,
+        "description": "Approved guard-focused LLM.",
+        "expected_sha256": "2eaa7ed23bbd122fc654d9409f3076d35799b1cbc58f992b159d53cbaa51bed2",
+        "expected_size_bytes": 1530557952,
+        "security_status": "approved",
     },
     {
-        "name": "Mistral 7B Instruct (Q4_K_M)", "type": "llm",
+        "name": "ShieldGemma 2B (Q4_K_M)",
+        "type": "llm",
         "category": "llm",
-        "filename": "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
-        "url": "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf",
-        "size_gb": 4.4, "vram_gb": 6,
-        "description": "General-purpose LLM. Good balance of speed and quality.",
+        "filename": "shieldgemma-2b.Q4_K_M.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q4_K_M.gguf",
+        "size_gb": 1.7,
+        "vram_gb": 3,
+        "description": "Approved safety-tuned LLM.",
+        "expected_sha256": "47b0c3f4ec0bf93659ab2fc92cf2041374ef78bf1cb5b8c790421f463e7b7979",
+        "expected_size_bytes": 1708583104,
+        "security_status": "approved",
     },
     {
-        "name": "Llama 3.1 8B Instruct (Q4_K_M)", "type": "llm",
+        "name": "GA Guard Core (Q2_K)",
+        "type": "llm",
         "category": "llm",
-        "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-        "url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-        "size_gb": 4.9, "vram_gb": 7,
-        "description": "Strong reasoning and instruction following.",
+        "filename": "GA_Guard_Core.Q2_K.gguf",
+        "url": "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/main/GA_Guard_Core.Q2_K.gguf",
+        "size_gb": 1.7,
+        "vram_gb": 3,
+        "description": "Approved guard-focused LLM.",
+        "expected_sha256": "ff6087763f3886e3355058f34a8f9f6b3a8ba4a8f70a5795001bdaee1b3368b3",
+        "expected_size_bytes": 1668960032,
+        "security_status": "approved",
     },
     {
-        "name": "TinyLlama 1.1B Chat (Q4_K_M)", "type": "llm",
+        "name": "ShieldGemma 2B (Q5_K_M)",
+        "type": "llm",
         "category": "llm",
-        "filename": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-        "url": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
-        "size_gb": 0.7, "vram_gb": 2,
-        "description": "Very small chat model for smoke tests and CPU-only systems.",
+        "filename": "shieldgemma-2b.Q5_K_M.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q5_K_M.gguf",
+        "size_gb": 1.9,
+        "vram_gb": 4,
+        "description": "Approved higher-quality safety-tuned LLM.",
+        "expected_sha256": "265ec9c9c2b069aa8737fdb79bf56d561b48e165b76728d52dd82b1932069b0f",
+        "expected_size_bytes": 1923279040,
+        "security_status": "approved",
     },
     {
-        "name": "Qwen2.5 1.5B Instruct (Q4_K_M)", "type": "llm",
+        "name": "ShieldGemma 9B (Q2_K)",
+        "type": "llm",
         "category": "llm",
-        "filename": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
-        "url": "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
-        "size_gb": 1.1, "vram_gb": 3,
-        "description": "Compact multilingual instruction model.",
+        "filename": "shieldgemma-9b.Q2_K.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/main/shieldgemma-9b.Q2_K.gguf",
+        "size_gb": 3.8,
+        "vram_gb": 6,
+        "description": "Approved larger safety-tuned LLM.",
+        "expected_sha256": "3e86670d2abe5ce0be1c31582216dd6ae9731cc85cf3978e27f2d3b9238edf08",
+        "expected_size_bytes": 3805398560,
+        "security_status": "approved",
     },
     {
-        "name": "Qwen2.5 7B Instruct (Q4_K_M)", "type": "llm",
-        "category": "llm",
-        "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-        "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-        "size_gb": 4.7, "vram_gb": 7,
-        "description": "Stronger general-purpose chat and coding model.",
-    },
-    {
-        "name": "Llama 3.2 3B Instruct (Q4_K_M)", "type": "llm",
-        "category": "llm",
-        "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "size_gb": 2.0, "vram_gb": 4,
-        "description": "Small instruction model with a good quality-to-size tradeoff.",
-    },
-    {
-        "name": "Stable Diffusion XL Base", "type": "diffusion",
+        "name": "Tiny Random SDXL",
+        "type": "diffusion",
         "category": "image",
-        "filename": "stable-diffusion-xl-base-1.0",
-        "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
-        "size_gb": 6.9, "vram_gb": 8,
-        "description": "Image generation. 1024x1024 output. Requires 8GB+ VRAM.",
-        "requires_terms": True,
-        "terms_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0",
+        "filename": "image-tiny-sdxl-dg845",
+        "url": "https://huggingface.co/dg845/tiny-random-stable-diffusion-xl",
+        "size_gb": 0.01,
+        "vram_gb": 2,
+        "description": "Approved tiny SDXL image pipeline.",
+        "security_status": "approved",
     },
     {
-        "name": "Stable Diffusion 1.5", "type": "diffusion",
+        "name": "BK-SDM Tiny",
+        "type": "diffusion",
         "category": "image",
-        "filename": "stable-diffusion-v1-5",
+        "filename": "image-bk-sdm-tiny",
+        "url": "https://huggingface.co/nota-ai/bk-sdm-tiny",
+        "size_gb": 1.7,
+        "vram_gb": 4,
+        "description": "Approved compact Stable Diffusion image pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "BK-SDM Small",
+        "type": "diffusion",
+        "category": "image",
+        "filename": "image-bk-sdm-small",
+        "url": "https://huggingface.co/nota-ai/bk-sdm-small",
+        "size_gb": 2.0,
+        "vram_gb": 5,
+        "description": "Approved small Stable Diffusion image pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "BK-SDM Base",
+        "type": "diffusion",
+        "category": "image",
+        "filename": "image-bk-sdm-base",
+        "url": "https://huggingface.co/nota-ai/bk-sdm-base",
+        "size_gb": 2.2,
+        "vram_gb": 6,
+        "description": "Approved base Stable Diffusion image pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "Stable Diffusion 1.5",
+        "type": "diffusion",
+        "category": "image",
+        "filename": "image-sd15",
         "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
-        "size_gb": 4.3, "vram_gb": 4,
-        "description": "Image generation. 512x512 output. Lower VRAM requirement.",
+        "size_gb": 2.7,
+        "vram_gb": 4,
+        "description": "Approved Stable Diffusion 1.5 image pipeline.",
+        "security_status": "approved",
     },
     {
-        "name": "Stable Video Diffusion XT", "type": "diffusion",
+        "name": "Tiny Stable Video Diffusion",
+        "type": "diffusion",
         "category": "video",
-        "filename": "stable-video-diffusion-img2vid-xt",
+        "filename": "video-tiny-svd-seinpark",
+        "url": "https://huggingface.co/seinpark/tiny-stable-video-diffusion-img2vid",
+        "size_gb": 0.01,
+        "vram_gb": 2,
+        "description": "Approved tiny image-to-video pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "Tiny Random LTX Video",
+        "type": "diffusion",
+        "category": "video",
+        "filename": "video-tiny-ltx-katuni4ka",
+        "url": "https://huggingface.co/katuni4ka/tiny-random-ltx-video",
+        "size_gb": 0.01,
+        "vram_gb": 2,
+        "description": "Approved tiny LTX video pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "Stable Video Diffusion",
+        "type": "diffusion",
+        "category": "video",
+        "filename": "video-svd-img2vid",
+        "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid",
+        "size_gb": 4.5,
+        "vram_gb": 16,
+        "description": "Approved image-to-video pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "Stable Video Diffusion XT",
+        "type": "diffusion",
+        "category": "video",
+        "filename": "video-svd-img2vid-xt",
         "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
-        "size_gb": 9.6, "vram_gb": 16,
-        "description": "Video generation from image. 25 frames. Requires 16GB+ VRAM.",
-        "requires_terms": True,
-        "terms_url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
+        "size_gb": 4.5,
+        "vram_gb": 16,
+        "description": "Approved image-to-video XT pipeline.",
+        "security_status": "approved",
+    },
+    {
+        "name": "Stable Video Diffusion XT 1.1",
+        "type": "diffusion",
+        "category": "video",
+        "filename": "video-svd-xt-1-1-weights",
+        "url": "https://huggingface.co/weights/stable-video-diffusion-img2vid-xt-1-1",
+        "size_gb": 4.5,
+        "vram_gb": 16,
+        "description": "Approved public XT 1.1 image-to-video pipeline mirror.",
+        "security_status": "approved",
     },
 ]
 
@@ -538,9 +641,11 @@ def load_model_catalog(path: str = _MODEL_CATALOG_PATH) -> list[dict]:
 MODEL_CATALOG: list[dict] = load_model_catalog()
 
 # Track active downloads
-_active_downloads = {}
+_active_downloads: dict[str, dict[str, object]] = {}
 _download_lock = threading.Lock()
+_partial_cleanup_done = False
 _CATALOG_MAX_REDIRECTS = 5
+_CATALOG_PARTIAL_STALE_SECONDS = 6 * 60 * 60
 _AGENT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
@@ -570,6 +675,14 @@ def _quarantine_path(name: str) -> Path:
     return _confined_child(QUARANTINE_DIR, name, kind="quarantine")
 
 
+def _quarantine_metadata_path(name: str, suffix: str) -> Path:
+    return _quarantine_path(f".{name}{suffix}")
+
+
+def _quarantine_status_marker_path(name: str) -> Path:
+    return _quarantine_metadata_path(name, ".status.json")
+
+
 def _staged_import_path(raw_path: str) -> Path:
     """Resolve a relative import path under IMPORT_STAGING_DIR only."""
     raw_path = str(raw_path or "").strip()
@@ -594,6 +707,44 @@ def _staged_import_path(raw_path: str) -> Path:
 def _quarantine_partial_path(name: str) -> Path:
     """Return a hidden temporary path ignored by the quarantine watcher."""
     return _quarantine_path(f".{name}.{uuid.uuid4().hex}.part")
+
+
+def _cleanup_orphaned_catalog_partials() -> None:
+    """Remove hidden catalog partials left behind by an interrupted UI process."""
+    if not QUARANTINE_DIR.exists():
+        return
+    with _download_lock:
+        active_names = {
+            name for name, state in _active_downloads.items()
+            if state.get("status") == "downloading"
+        }
+    for entry in QUARANTINE_DIR.iterdir():
+        if not (entry.name.startswith(".") and entry.name.endswith(".part")):
+            continue
+        if any(entry.name.startswith(f".{name}.") for name in active_names):
+            continue
+        try:
+            age = time.time() - entry.stat().st_mtime
+        except OSError:
+            continue
+        if age < _CATALOG_PARTIAL_STALE_SECONDS:
+            continue
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            log.info("removed orphaned catalog partial: %s", entry.name)
+        except OSError:
+            log.warning("failed to remove orphaned catalog partial: %s", entry, exc_info=True)
+
+
+def _cleanup_orphaned_catalog_partials_once() -> None:
+    global _partial_cleanup_done
+    if _partial_cleanup_done:
+        return
+    _partial_cleanup_done = True
+    _cleanup_orphaned_catalog_partials()
 
 
 def _airlock_check_egress(destination: str, method: str = "GET", body: str = "") -> tuple[bool, int, str]:
@@ -650,6 +801,7 @@ def _catalog_download_response(url: str):
     """Fetch a catalog artifact while validating every redirect hop via the airlock."""
     current = url
     seen = set()
+    auth_headers = _huggingface_headers()
 
     for _ in range(_CATALOG_MAX_REDIRECTS + 1):
         if current in seen:
@@ -660,7 +812,11 @@ def _catalog_download_response(url: str):
         if not allowed:
             raise ValueError(reason or "airlock blocked download")
 
-        resp = requests.get(current, stream=True, timeout=30, allow_redirects=False)
+        headers = auth_headers if _is_huggingface_url(current) else None
+        resp = requests.get(
+            current, stream=True, timeout=30, allow_redirects=False,
+            headers=headers,
+        )
         if resp.status_code in (301, 302, 303, 307, 308):
             location = resp.headers.get("location")
             close = getattr(resp, "close", None)
@@ -673,12 +829,235 @@ def _catalog_download_response(url: str):
                 raise ValueError("download redirected to non-HTTPS URL")
             continue
 
+        if resp.status_code in (401, 403):
+            raise ValueError(_huggingface_auth_error())
         resp.raise_for_status()
         if not resp.url.startswith("https://"):
             raise ValueError("download redirected to non-HTTPS URL")
         return resp
 
     raise ValueError("download exceeded redirect limit")
+
+
+def _huggingface_token() -> str:
+    """Return an operator-supplied Hugging Face token, if configured."""
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN"):
+        token = os.getenv(name, "").strip()
+        if token:
+            return token
+    return ""
+
+
+def _huggingface_headers() -> dict:
+    token = _huggingface_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _huggingface_auth_error() -> str:
+    return (
+        "Hugging Face rejected the request. Accept the provider terms for this "
+        "model and, if required, configure an operator-supplied HF_TOKEN for "
+        "the sandbox."
+    )
+
+
+def _is_huggingface_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.netloc == "huggingface.co"
+
+
+def _huggingface_repo_id_from_url(url: str) -> str:
+    if not _is_huggingface_url(url):
+        raise ValueError("source must be a Hugging Face HTTPS repository URL")
+    parts = [p for p in urlparse(url).path.split("/") if p]
+    if len(parts) < 2:
+        raise ValueError("source must include Hugging Face namespace and repository")
+    return "/".join(parts[:2])
+
+
+_DIFFUSION_REPO_EXTENSIONS = {
+    ".json", ".safetensors", ".txt", ".md", ".model", ".vocab", ".merges",
+}
+_DIFFUSION_COMPONENT_WEIGHT_RE = re.compile(
+    r"^(?P<prefix>.+/)(?P<stem>.+?)(?:\.fp16)?\.safetensors$"
+)
+
+
+def _safe_hf_repo_file_path(raw_path: str) -> str | None:
+    """Return a safe repo-relative file path or None when it should be skipped."""
+    if not raw_path or "\x00" in raw_path or "\\" in raw_path:
+        return None
+    normalized = posixpath.normpath(raw_path)
+    if normalized in (".", "") or normalized.startswith("../") or normalized.startswith("/"):
+        return None
+    if normalized != raw_path:
+        return None
+    if any(part in ("", ".", "..") for part in normalized.split("/")):
+        return None
+    suffix = Path(normalized).suffix.lower()
+    if suffix not in _DIFFUSION_REPO_EXTENSIONS:
+        return None
+    return normalized
+
+
+def _huggingface_repo_revision(repo_id: str) -> str:
+    """Resolve a Hugging Face repository to an immutable commit SHA."""
+    api_url = "https://huggingface.co/api/models/" + quote(repo_id, safe="/")
+    allowed, _, reason = _airlock_check_egress(api_url, method="GET")
+    if not allowed:
+        raise ValueError(reason or "airlock blocked Hugging Face metadata request")
+
+    resp = requests.get(
+        api_url, timeout=30, allow_redirects=False,
+        headers=_huggingface_headers(),
+    )
+    if resp.status_code in (401, 403):
+        raise ValueError(_huggingface_auth_error())
+    resp.raise_for_status()
+    payload = resp.json()
+    revision = str(payload.get("sha", "") if isinstance(payload, dict) else "").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Hugging Face metadata did not include an immutable revision")
+    return revision
+
+
+def _huggingface_tree(repo_id: str, revision: str = "main") -> list[dict]:
+    """List safe downloadable files in a Hugging Face repo via HTTPS API."""
+    api_url = (
+        "https://huggingface.co/api/models/"
+        f"{quote(repo_id, safe='/')}/tree/{quote(revision, safe='')}?recursive=1"
+    )
+    allowed, _, reason = _airlock_check_egress(api_url, method="GET")
+    if not allowed:
+        raise ValueError(reason or "airlock blocked Hugging Face metadata request")
+
+    resp = requests.get(
+        api_url, timeout=30, allow_redirects=False,
+        headers=_huggingface_headers(),
+    )
+    if resp.status_code in (401, 403):
+        raise ValueError(_huggingface_auth_error())
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, list):
+        raise ValueError("Hugging Face metadata response was not a file tree")
+
+    files: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict) or item.get("type") != "file":
+            continue
+        safe_path = _safe_hf_repo_file_path(str(item.get("path", "")))
+        if not safe_path:
+            continue
+        raw_lfs = item.get("lfs")
+        lfs = raw_lfs if isinstance(raw_lfs, dict) else {}
+        lfs_oid = str(lfs.get("oid") or "")
+        files.append({
+            "path": safe_path,
+            "size": int(item.get("size") or 0),
+            "oid": lfs_oid or str(item.get("oid") or ""),
+            "oid_type": "sha256" if lfs_oid else "git-sha1",
+            "revision": revision,
+        })
+
+    if not files:
+        raise ValueError("Hugging Face repo did not expose any safe diffusion files")
+    return files
+
+
+def _diffusion_component_key(path: str) -> str | None:
+    match = _DIFFUSION_COMPONENT_WEIGHT_RE.match(path)
+    if not match:
+        return None
+    return f"{match.group('prefix')}{match.group('stem')}.safetensors"
+
+
+def _select_diffusion_repo_files(repo_files: list[dict]) -> tuple[list[dict], str | None]:
+    """Keep a diffusers-ready subset and prefer fp16 component weights."""
+    selected: list[dict] = []
+    component_weights: dict[str, dict] = {}
+    component_variant: str | None = None
+
+    for item in repo_files:
+        path = str(item.get("path", ""))
+        suffix = Path(path).suffix.lower()
+        if suffix != ".safetensors":
+            selected.append(item)
+            continue
+
+        # Root safetensors files are standalone checkpoints or examples. The
+        # directory loader uses component weights under subdirectories instead.
+        if "/" not in path:
+            continue
+        if "non_ema" in path or "lora" in path.lower():
+            continue
+
+        component_key = _diffusion_component_key(path)
+        if not component_key:
+            selected.append(item)
+            continue
+        existing = component_weights.get(component_key)
+        is_fp16 = path.endswith(".fp16.safetensors")
+        if existing is None or is_fp16:
+            component_weights[component_key] = item
+        if is_fp16:
+            component_variant = "fp16"
+
+    selected.extend(component_weights.values())
+    selected.sort(key=lambda item: str(item.get("path", "")))
+    if not any(str(item.get("path", "")).endswith(".safetensors") for item in selected):
+        raise ValueError("Hugging Face repo did not expose diffusers component weights")
+    return selected, component_variant
+
+
+def _write_huggingface_manifest(
+    path: Path,
+    *,
+    source_url: str,
+    repo_id: str,
+    revision: str,
+    variant: str | None,
+    files: list[dict],
+) -> None:
+    """Write immutable Hugging Face file metadata for quarantine verification."""
+    payload = {
+        "version": 1,
+        "source": source_url,
+        "repo_id": repo_id,
+        "revision": revision,
+        "variant": variant,
+        "files": [
+            {
+                "path": item["path"],
+                "size": item.get("size", 0),
+                "oid": item.get("oid", ""),
+                "oid_type": item.get("oid_type", ""),
+            }
+            for item in files
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _download_progress_update(
+    filename: str,
+    *,
+    downloaded: int,
+    total: int,
+    message: str | None = None,
+) -> None:
+    progress = round(downloaded / total * 100, 1) if total else 0
+    payload: dict[str, object] = {
+        "status": "downloading",
+        "progress": progress,
+        "downloaded_mb": round(downloaded / (1 << 20), 1),
+        "total_mb": round(total / (1 << 20), 1) if total else None,
+        "updated_at": time.time(),
+    }
+    if message:
+        payload["message"] = message
+    with _download_lock:
+        _active_downloads[filename] = payload
 
 
 def _get_session_token():
@@ -722,6 +1101,8 @@ def _read_vault_state() -> dict:
 @app.before_request
 def require_auth():
     """Enforce authentication on all endpoints except public ones."""
+    _cleanup_orphaned_catalog_partials_once()
+
     # Skip auth for public endpoints
     if request.path in _PUBLIC_ENDPOINTS or request.path.startswith("/static/"):
         return None
@@ -1049,6 +1430,19 @@ def catalog_download():
         return jsonify({
             "error": "downloads must match a curated catalog entry",
         }), 403
+    if (
+        catalog_entry.get("blocked")
+        or str(catalog_entry.get("security_status", "")).lower() == "blocked"
+    ):
+        reason = str(
+            catalog_entry.get("blocked_reason")
+            or "this catalog model is blocked by the security policy"
+        )
+        return jsonify({
+            "error": "model is blocked by security policy",
+            "message": reason,
+            "filename": filename,
+        }), 409
     if not url.startswith("https://"):
         return jsonify({"error": "only HTTPS downloads allowed"}), 400
     allowed, status, reason = _airlock_check_egress(url, method="GET")
@@ -1058,8 +1452,11 @@ def catalog_download():
     model_type = catalog_entry.get("type", "llm")
 
     with _download_lock:
-        if filename in _active_downloads:
+        existing = _active_downloads.get(filename)
+        if existing and existing.get("status") == "downloading":
             return jsonify({"error": "download already in progress", "filename": filename}), 409
+        if existing and existing.get("status") in {"failed", "quarantined"}:
+            _active_downloads.pop(filename, None)
     try:
         quarantine_target = _quarantine_path(filename)
     except ValueError:
@@ -1069,6 +1466,8 @@ def catalog_download():
             "error": "artifact already exists in quarantine",
             "filename": filename,
         }), 409
+    for metadata_suffix in (".status.json", ".source", ".hf-manifest.json"):
+        _quarantine_metadata_path(filename, metadata_suffix).unlink(missing_ok=True)
 
     thread = threading.Thread(
         target=_background_download,
@@ -1076,7 +1475,11 @@ def catalog_download():
         daemon=True,
     )
     with _download_lock:
-        _active_downloads[filename] = {"status": "downloading", "progress": 0}
+        _active_downloads[filename] = {
+            "status": "downloading",
+            "progress": 0,
+            "updated_at": time.time(),
+        }
     thread.start()
 
     return jsonify({
@@ -1089,8 +1492,143 @@ def catalog_download():
 @app.route("/api/catalog/downloads")
 def download_status():
     """Return the status of all active and recent downloads."""
+    _refresh_download_statuses()
     with _download_lock:
         return jsonify(_active_downloads)
+
+
+def _catalog_registry_filenames() -> set[str]:
+    try:
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(),
+            timeout=2,
+        )
+        payload = resp.json()
+    except Exception:
+        return set()
+    if not isinstance(payload, list):
+        return set()
+    names = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get("filename", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if filename:
+            names.add(filename)
+        if name:
+            names.add(name)
+    return names
+
+
+def _refresh_download_statuses() -> None:
+    """Reconcile recent downloads with quarantine and registry state."""
+    trusted = _catalog_registry_filenames()
+    now = time.time()
+    with _download_lock:
+        items = list(_active_downloads.items())
+    for filename, state in items:
+        status = state.get("status")
+        if status == "downloading":
+            continue
+        if filename in trusted:
+            with _download_lock:
+                _active_downloads[filename] = {
+                    **state,
+                    "status": "trusted",
+                    "message": "Model has been scanned and promoted.",
+                }
+            continue
+        if status != "quarantined":
+            continue
+        try:
+            in_quarantine = _quarantine_path(filename).exists()
+            source_exists = _quarantine_metadata_path(filename, ".source").exists()
+        except ValueError:
+            in_quarantine = False
+            source_exists = False
+        raw_updated_at = state.get("updated_at")
+        if isinstance(raw_updated_at, (int, float, str)):
+            updated_at = float(raw_updated_at or 0)
+        else:
+            updated_at = 0
+        if not in_quarantine and not source_exists and (updated_at == 0 or now - updated_at > 10):
+            detail = _latest_quarantine_rejection_detail(filename) or (
+                "The download finished, but quarantine did not promote it. "
+                "Check the quarantine audit for the exact rejection reason."
+            )
+            with _download_lock:
+                _active_downloads[filename] = {
+                    **state,
+                    "status": "failed",
+                    "error": "scan did not promote the model",
+                    "detail": detail,
+                }
+
+
+def _sanitize_quarantine_audit_text(value: object, *, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3].rstrip()}..."
+
+
+def _extract_quarantine_stage_reason(reason: str, details: object) -> str:
+    if not isinstance(details, dict):
+        return ""
+    stage_detail = details.get(reason)
+    if stage_detail is None:
+        return ""
+    if isinstance(stage_detail, dict):
+        nested_reason = stage_detail.get("reason")
+        scanner = stage_detail.get("scanner")
+        if nested_reason and scanner:
+            return f"{scanner}: {nested_reason}"
+        if nested_reason:
+            return str(nested_reason)
+    stage_text = str(stage_detail)
+    match = re.search(r"""['"]reason['"]:\s*['"]([^'"]+)""", stage_text)
+    if match:
+        return match.group(1)
+    return stage_text
+
+
+def _latest_quarantine_rejection_detail(filename: str) -> str | None:
+    """Return a sanitized, user-facing explanation from the quarantine audit log."""
+    if not _is_safe_catalog_name(filename):
+        return None
+    audit_path = SECURE_AI_ROOT / "logs" / "quarantine-audit.jsonl"
+    if not audit_path.exists():
+        return None
+    try:
+        with audit_path.open("rb") as handle:
+            size = audit_path.stat().st_size
+            if size > 1_048_576:
+                handle.seek(size - 1_048_576)
+                handle.readline()
+            lines = handle.readlines()
+    except OSError:
+        return None
+
+    for raw_line in reversed(lines):
+        try:
+            entry = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if entry.get("event") != "rejected":
+            continue
+        data = entry.get("data")
+        if not isinstance(data, dict) or data.get("filename") != filename:
+            continue
+        reason = _sanitize_quarantine_audit_text(data.get("reason", "quarantine"))
+        stage_reason = _sanitize_quarantine_audit_text(
+            _extract_quarantine_stage_reason(str(data.get("reason", "")), data.get("details"))
+        )
+        if stage_reason:
+            return f"Quarantine rejected the model at {reason}: {stage_reason}"
+        return f"Quarantine rejected the model at {reason}."
+    return None
 
 
 def _background_download(url: str, filename: str, model_type: str,
@@ -1108,6 +1646,7 @@ def _background_download(url: str, filename: str, model_type: str,
             _active_downloads[filename] = {
                 "status": "quarantined",
                 "message": "Download complete. Scanning in progress...",
+                "updated_at": time.time(),
             }
         log.info("download complete, in quarantine: %s", filename)
 
@@ -1148,15 +1687,7 @@ def _download_single_file(url: str, filename: str, catalog_entry: dict | None = 
                     continue
                 f.write(chunk)
                 downloaded += len(chunk)
-                if total > 0:
-                    pct = round(downloaded / total * 100, 1)
-                    with _download_lock:
-                        _active_downloads[filename] = {
-                            "status": "downloading",
-                            "progress": pct,
-                            "downloaded_mb": round(downloaded / (1 << 20), 1),
-                            "total_mb": round(total / (1 << 20), 1),
-                        }
+                _download_progress_update(filename, downloaded=downloaded, total=total)
 
         # Post-download verification
         if catalog_entry:
@@ -1184,25 +1715,32 @@ def _download_single_file(url: str, filename: str, catalog_entry: dict | None = 
                         f"got {actual_hash[:16]}..."
                     )
 
-        os.replace(tmp_dest, dest)
         source_meta.write_text(resp.url)
+        os.replace(tmp_dest, dest)
     except Exception:
         tmp_dest.unlink(missing_ok=True)
+        source_meta.unlink(missing_ok=True)
         raise
 
 
 def _download_diffusion_model(url: str, dirname: str):
-    """Download a diffusion model (HuggingFace repo) into quarantine."""
+    """Download a diffusion model repo into quarantine using HTTPS only."""
     if not _is_safe_catalog_name(dirname):
         raise ValueError("invalid catalog directory name")
 
     allowed, _, reason = _airlock_check_egress(url, method="GET")
     if not allowed:
         raise ValueError(reason or "airlock blocked download")
+    repo_id = _huggingface_repo_id_from_url(url)
+    revision = _huggingface_repo_revision(repo_id)
+    repo_files, variant = _select_diffusion_repo_files(
+        _huggingface_tree(repo_id, revision=revision)
+    )
 
     dest = _quarantine_path(dirname)
     tmp_dest = _quarantine_partial_path(dirname)
     source_meta = _quarantine_path(f".{dirname}.source")
+    manifest_meta = _quarantine_metadata_path(dirname, ".hf-manifest.json")
     if dest.exists():
         raise ValueError("artifact already exists in quarantine")
 
@@ -1210,28 +1748,67 @@ def _download_diffusion_model(url: str, dirname: str):
         shutil.rmtree(tmp_dest, ignore_errors=True)
 
     with _download_lock:
-        _active_downloads[dirname] = {"status": "downloading", "progress": 0, "message": "Cloning repository..."}
+        _active_downloads[dirname] = {
+            "status": "downloading",
+            "progress": 0,
+            "message": "Preparing Hugging Face repository download...",
+            "updated_at": time.time(),
+        }
 
     try:
-        try:
-            subprocess.run(
-                ["huggingface-cli", "download", url.replace("https://huggingface.co/", ""),
-                 "--local-dir", str(tmp_dest), "--local-dir-use-symlinks", "False"],
-                check=True, capture_output=True, text=True, timeout=3600,
+        tmp_dest.mkdir(parents=True, exist_ok=False)
+        total_bytes = sum(item["size"] for item in repo_files)
+        downloaded = 0
+
+        for index, item in enumerate(repo_files, start=1):
+            rel_path = item["path"]
+            target_path = tmp_dest / Path(*rel_path.split("/"))
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            file_url = (
+                "https://huggingface.co/"
+                f"{quote(repo_id, safe='/')}/resolve/{revision}/{quote(rel_path, safe='/')}"
             )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            if not url.startswith("https://huggingface.co/"):
-                raise ValueError("source not in allowlist for git clone")
-            subprocess.run(
-                ["git", "clone", "--depth", "1", url, str(tmp_dest)],
-                check=True, capture_output=True, text=True, timeout=3600,
+            message = f"Downloading {index}/{len(repo_files)}: {rel_path}"
+            _download_progress_update(
+                dirname,
+                downloaded=downloaded,
+                total=total_bytes,
+                message=message,
             )
 
-        os.replace(tmp_dest, dest)
+            resp = _catalog_download_response(file_url)
+            with open(target_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1 << 20):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    _download_progress_update(
+                        dirname,
+                        downloaded=downloaded,
+                        total=total_bytes,
+                        message=message,
+                    )
+
+            if item["size"] and target_path.stat().st_size != item["size"]:
+                raise ValueError(f"downloaded file size mismatch for {rel_path}")
+
         source_meta.write_text(url)
+        _write_huggingface_manifest(
+            manifest_meta,
+            source_url=url,
+            repo_id=repo_id,
+            revision=revision,
+            variant=variant,
+            files=repo_files,
+        )
+        os.replace(tmp_dest, dest)
     except Exception:
         if tmp_dest.exists():
             shutil.rmtree(tmp_dest, ignore_errors=True)
+        source_meta.unlink(missing_ok=True)
+        manifest_meta.unlink(missing_ok=True)
         raise
 
 
@@ -1554,6 +2131,8 @@ def quarantine_status():
     for f in sorted(QUARANTINE_DIR.iterdir()):
         if f.name.startswith("."):
             continue
+        if _quarantine_status_marker_path(f.name).exists():
+            continue
         if f.is_file():
             files.append({"filename": f.name, "size_bytes": f.stat().st_size, "type": "file"})
         elif f.is_dir():
@@ -1691,6 +2270,13 @@ def _integrity_block_response(check: dict):
     """Return a generic integrity failure while keeping details in logs."""
     detail = str(check.get("detail") or "model integrity verification failed")
     log.warning("inference blocked by integrity check: %s", detail)
+    if "does not match loaded inference model" in detail:
+        return jsonify({
+            "error": "selected model is not currently loaded",
+            "detail": "Switch inference to the selected model before chatting.",
+            "requires_model_switch": True,
+            "integrity_failed": False,
+        }), 409
     return jsonify({
         "error": "inference blocked: model integrity check failed",
         "detail": "model integrity verification failed",
@@ -1880,13 +2466,27 @@ def chat_with_search():
 
 # --- API: Image/Video Generation (proxy to diffusion worker) ---
 
+def _generation_body_with_required_model() -> tuple[dict | None, tuple | None]:
+    body = request.get_json() or {}
+    if not isinstance(body, dict):
+        return None, (jsonify({"error": "JSON object required"}), 400)
+    model = str(body.get("model", "")).strip()
+    if not model:
+        return None, (jsonify({"error": "select a model before generating"}), 400)
+    body["model"] = model
+    return body, None
+
+
 @app.route("/api/generate/image", methods=["POST"])
 def generate_image():
     """Proxy image generation request to the diffusion worker."""
+    body, error = _generation_body_with_required_model()
+    if error:
+        return error
     try:
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/image",
-            json=request.get_json(),
+            json=body,
             timeout=600,
         )
         return jsonify(resp.json()), resp.status_code
@@ -1897,10 +2497,13 @@ def generate_image():
 @app.route("/api/generate/video", methods=["POST"])
 def generate_video():
     """Proxy video generation request to the diffusion worker."""
+    body, error = _generation_body_with_required_model()
+    if error:
+        return error
     try:
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/video",
-            json=request.get_json(),
+            json=body,
             timeout=1800,
         )
         return jsonify(resp.json()), resp.status_code
@@ -1911,10 +2514,13 @@ def generate_video():
 @app.route("/api/generate/img2img", methods=["POST"])
 def generate_img2img():
     """Proxy img2img request to the diffusion worker."""
+    body, error = _generation_body_with_required_model()
+    if error:
+        return error
     try:
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/img2img",
-            json=request.get_json(),
+            json=body,
             timeout=600,
         )
         return jsonify(resp.json()), resp.status_code
@@ -1927,9 +2533,42 @@ def diffusion_models():
     """List available diffusion models from the diffusion worker."""
     try:
         resp = requests.get(f"{DIFFUSION_URL}/v1/models", timeout=5)
-        return jsonify(resp.json())
+        return jsonify(resp.json()), resp.status_code
+    except requests.ConnectionError:
+        return jsonify({
+            "available": False,
+            "models": [],
+            "error": "diffusion worker not available",
+            "deployment_mode": _deployment_mode(),
+            "automation_available": _is_sandbox_deployment() and _sandbox_control_configured(),
+        }), 503
+
+
+@app.route("/api/generate/outputs")
+def generation_outputs():
+    """List recent generated outputs from the diffusion worker."""
+    try:
+        resp = requests.get(f"{DIFFUSION_URL}/v1/outputs", timeout=5)
+        return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify([])
+
+
+@app.route("/api/generate/outputs/<path:filename>")
+def generation_output_file(filename: str):
+    """Proxy one generated output file from the diffusion worker."""
+    if Path(filename).name != filename:
+        return jsonify({"error": "invalid output filename"}), 400
+    try:
+        resp = requests.get(
+            f"{DIFFUSION_URL}/v1/outputs/{quote(filename)}",
+            stream=True,
+            timeout=30,
+        )
+    except requests.ConnectionError:
+        return jsonify({"error": "diffusion worker not available"}), 503
+    content_type = resp.headers.get("Content-Type", "application/octet-stream")
+    return Response(resp.iter_content(chunk_size=8192), status=resp.status_code, content_type=content_type)
 
 
 # --- API: Diffusion Runtime On-Demand Acquisition ---
@@ -2251,6 +2890,16 @@ def sandbox_control_apply():
         return jsonify({"error": f"invalid profile: {profile}"}), 400
 
     inference = bool(data.get("inference", False))
+    gpu_raw = data.get("gpu", False)
+    if isinstance(gpu_raw, str):
+        gpu = gpu_raw.strip().lower()
+        if gpu not in {"auto", "true", "false", "1", "0", "yes", "no", "cuda", "rocm"}:
+            return jsonify({"error": "gpu must be true, false, auto, cuda, or rocm"}), 400
+        gpu_requested = gpu not in {"false", "0", "no"}
+        gpu_payload: bool | str = gpu
+    else:
+        gpu_requested = bool(gpu_raw)
+        gpu_payload = gpu_requested
     model_filename = str(data.get("model_filename") or "").strip()
     if model_filename:
         if not _is_safe_catalog_name(model_filename) or not model_filename.lower().endswith(".gguf"):
@@ -2260,6 +2909,8 @@ def sandbox_control_apply():
         "profile": profile,
         "inference": inference,
     }
+    if "gpu" in data:
+        body["gpu"] = gpu_payload
     if model_filename:
         body["model_filename"] = model_filename
 
@@ -2269,13 +2920,23 @@ def sandbox_control_apply():
         body=body,
         timeout=5.0,
     )
-    payload.setdefault("command", _sandbox_launch_command_for_profile(profile, inference=inference))
+    payload.setdefault(
+        "command",
+        _sandbox_launch_command_for_profile(
+            profile,
+            inference=inference,
+            gpu=gpu_requested,
+        ),
+    )
     payload.setdefault("profile", profile)
     payload.setdefault("inference", inference)
+    if "gpu" in data:
+        payload.setdefault("gpu", gpu_payload)
     if status_code in (200, 202):
         _ui_audit.append("sandbox_control_apply", {
             "profile": profile,
             "inference": inference,
+            "gpu": gpu_payload,
             "model_filename": model_filename,
             "status_code": status_code,
         })
@@ -3258,21 +3919,48 @@ UPDATE_STATE_FILE = Path(os.getenv("UPDATE_STATE_FILE", "/run/secure-ai/update-s
 HEALTH_LOG_FILE = Path(os.getenv("HEALTH_LOG_FILE", "/var/lib/secure-ai/logs/health-check.json"))
 
 
+def _update_unsupported_payload() -> dict | None:
+    if _is_sandbox_deployment():
+        return {
+            "status": "not_available",
+            "feature": "updates",
+            "detail": "The Docker sandbox does not provide the appliance rpm-ostree update pipeline.",
+            "deployment_mode": _deployment_mode(),
+            "deployment_provider": _deployment_provider(),
+            "assurance_tier": _assurance_tier(),
+            "supported": False,
+        }
+    if not Path(UPDATE_VERIFY).exists():
+        return {
+            "status": "not_available",
+            "feature": "updates",
+            "detail": UPDATE_VERIFY,
+            "deployment_mode": _deployment_mode(),
+            "deployment_provider": _deployment_provider(),
+            "assurance_tier": _assurance_tier(),
+            "supported": False,
+        }
+    return None
+
+
 def _ensure_update_supported():
     """Return an unsupported response when update tooling is absent."""
-    if _is_sandbox_deployment():
-        return _unsupported_feature(
-            "updates",
-            "The sandbox does not provide the appliance rpm-ostree update pipeline.",
-        )
-    if not Path(UPDATE_VERIFY).exists():
-        return _missing_runtime_dependency("updates", UPDATE_VERIFY)
+    unsupported = _update_unsupported_payload()
+    if unsupported:
+        return jsonify({
+            **unsupported,
+            "error": "updates are not available in this deployment",
+        }), 501
     return None
 
 
 @app.route("/api/update/status")
 def update_status():
     """Return current update state and deployment info."""
+    unsupported = _update_unsupported_payload()
+    if unsupported:
+        return jsonify(unsupported)
+
     result = {}
     if UPDATE_STATE_FILE.exists():
         try:
@@ -3405,6 +4093,12 @@ def update_rollback():
 @app.route("/api/update/health")
 def update_health():
     """Return last health check result."""
+    unsupported = _update_unsupported_payload()
+    if unsupported:
+        return jsonify({
+            **unsupported,
+            "detail": "Post-update health checks are only available for appliance updates.",
+        })
     if HEALTH_LOG_FILE.exists():
         try:
             return jsonify(json.loads(HEALTH_LOG_FILE.read_text()))

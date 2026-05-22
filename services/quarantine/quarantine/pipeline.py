@@ -8,7 +8,8 @@ model) must clear every stage before it can run on the appliance.
 Pipeline stages (all automatic, zero user intervention):
   1. Source policy gate: verify origin URL/registry is allowlisted
   2. Format gate: reject unsafe formats + validate file headers (magic bytes)
-  3. Integrity gate: hash verification against pinned values in models.lock.yaml
+  3. Integrity gate: hash verification against pinned values in models.lock.yaml,
+     or immutable Hugging Face per-file manifests for curated repo downloads
   4. Provenance gate: cosign signature verification (containers), optional SLSA
   5. Static scan: modelscan for suspicious constructs + entropy analysis
   6. Behavioral smoke test: load model in CPU-only net-blocked sandbox, run
@@ -456,14 +457,26 @@ def _check_json_for_code(json_path: Path, issues: list, base_dir: Path):
 # Stage 3: Integrity gate (hash pinning)
 # ---------------------------------------------------------------------------
 
-def _load_pinned_hashes() -> dict:
-    """Load filename -> sha256 mapping from models.lock.yaml."""
+def _load_model_lock_entries() -> list[dict[str, Any]]:
+    """Load model lock entries from models.lock.yaml."""
     if not MODELS_LOCK_PATH.exists():
-        return {}
+        return []
     try:
         data = yaml.safe_load(MODELS_LOCK_PATH.read_text()) or {}
+        entries = data.get("models", [])
+        return entries if isinstance(entries, list) else []
+    except Exception as e:
+        log.warning("failed to load models.lock.yaml: %s", e)
+        return []
+
+
+def _load_pinned_hashes() -> dict:
+    """Load filename -> sha256 mapping from models.lock.yaml."""
+    try:
         pins = {}
-        for entry in data.get("models", []):
+        for entry in _load_model_lock_entries():
+            if not isinstance(entry, dict):
+                continue
             fname = entry.get("filename", "")
             sha = entry.get("sha256", "")
             if fname and sha:
@@ -472,6 +485,22 @@ def _load_pinned_hashes() -> dict:
     except Exception as e:
         log.warning("failed to load models.lock.yaml: %s", e)
         return {}
+
+
+def _load_blocked_model_hashes() -> dict[str, dict[str, str]]:
+    """Load filename -> blocked hash metadata for known unsafe catalog artifacts."""
+    blocked = {}
+    for entry in _load_model_lock_entries():
+        if not isinstance(entry, dict) or not entry.get("blocked"):
+            continue
+        fname = str(entry.get("filename", ""))
+        sha = str(entry.get("sha256", ""))
+        if fname and sha:
+            blocked[fname] = {
+                "sha256": sha,
+                "reason": str(entry.get("blocked_reason", "model is blocked by policy")),
+            }
+    return blocked
 
 
 def check_hash_pin(filename: str, file_hash: str, source_url: str = "") -> dict:
@@ -486,6 +515,15 @@ def check_hash_pin(filename: str, file_hash: str, source_url: str = "") -> dict:
     if filename in pins:
         expected = pins[filename]
         if file_hash == expected:
+            blocked = _load_blocked_model_hashes().get(filename)
+            if blocked and blocked.get("sha256") == file_hash:
+                return {
+                    "passed": False,
+                    "reason": f"model blocked by policy: {blocked.get('reason')}",
+                    "pinned": True,
+                    "match": True,
+                    "blocked": True,
+                }
             return {"passed": True, "pinned": True, "match": True}
         return {
             "passed": False,
@@ -503,6 +541,104 @@ def check_hash_pin(filename: str, file_hash: str, source_url: str = "") -> dict:
         "passed": True,
         "pinned": False,
         "note": "first-install trust: hash recorded, must be pinned before next promotion",
+    }
+
+
+def _git_blob_sha1(path: Path, size: int) -> str:
+    h = hashlib.sha1()  # nosec B324 - verifying Git blob IDs from Hugging Face metadata.
+    h.update(f"blob {size}\0".encode())
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _directory_manifest_path(dir_path: Path) -> Path:
+    return dir_path.parent / f".{dir_path.name}.hf-manifest.json"
+
+
+def check_huggingface_directory_manifest(dir_path: Path, source_url: str) -> dict:
+    """Verify a Hugging Face directory against immutable per-file metadata."""
+    manifest_path = _directory_manifest_path(dir_path)
+    if not manifest_path.exists():
+        return {"passed": False, "available": False, "reason": "missing manifest"}
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"passed": False, "available": True, "reason": f"invalid manifest: {exc}"}
+
+    if manifest.get("version") != 1:
+        return {"passed": False, "available": True, "reason": "unsupported manifest version"}
+    if str(manifest.get("source", "")).rstrip("/") != str(source_url or "").rstrip("/"):
+        return {"passed": False, "available": True, "reason": "manifest source mismatch"}
+    revision = str(manifest.get("revision", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return {"passed": False, "available": True, "reason": "manifest revision is not immutable"}
+
+    files = manifest.get("files", [])
+    if not isinstance(files, list) or not files:
+        return {"passed": False, "available": True, "reason": "manifest has no files"}
+
+    expected: dict[str, dict] = {}
+    for item in files:
+        if not isinstance(item, dict):
+            return {"passed": False, "available": True, "reason": "manifest file entry is invalid"}
+        rel = str(item.get("path", ""))
+        if not rel or "\\" in rel or rel.startswith("/") or ".." in Path(rel).parts:
+            return {"passed": False, "available": True, "reason": f"unsafe manifest path: {rel}"}
+        expected[rel] = item
+
+    actual = {
+        str(path.relative_to(dir_path)).replace("\\", "/")
+        for path in dir_path.rglob("*")
+        if path.is_file()
+    }
+    expected_paths = set(expected)
+    missing = sorted(expected_paths - actual)
+    extra = sorted(actual - expected_paths)
+    if missing:
+        return {"passed": False, "available": True, "reason": f"missing files: {missing[:3]}"}
+    if extra:
+        return {"passed": False, "available": True, "reason": f"unexpected files: {extra[:3]}"}
+
+    verified_sha256 = 0
+    verified_git = 0
+    for rel, item in expected.items():
+        file_path = dir_path / Path(*rel.split("/"))
+        size = int(item.get("size") or 0)
+        if size and file_path.stat().st_size != size:
+            return {"passed": False, "available": True, "reason": f"size mismatch: {rel}"}
+        oid = str(item.get("oid", ""))
+        oid_type = str(item.get("oid_type", ""))
+        if oid_type == "sha256":
+            actual_hash = sha256_file(file_path)
+            verified_sha256 += 1
+        elif oid_type == "git-sha1":
+            actual_hash = _git_blob_sha1(file_path, file_path.stat().st_size)
+            verified_git += 1
+        else:
+            return {"passed": False, "available": True, "reason": f"unsupported oid type: {rel}"}
+        if actual_hash != oid:
+            return {"passed": False, "available": True, "reason": f"hash mismatch: {rel}"}
+
+    return {
+        "passed": True,
+        "available": True,
+        "revision": revision,
+        "repo_id": manifest.get("repo_id", ""),
+        "variant": manifest.get("variant"),
+        "files_checked": len(expected),
+        "sha256_files_checked": verified_sha256,
+        "git_blob_files_checked": verified_git,
     }
 
 
@@ -1271,15 +1407,25 @@ def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
         log.warning("modelscan API error: %s", e)
 
     try:
+        scan_env = os.environ.copy()
+        scan_env.update({
+            "COLUMNS": "4096",
+            "NO_COLOR": "1",
+            "TERM": "dumb",
+        })
         result = subprocess.run(
             ["modelscan", "-p", str(artifact_path), "-r", "json"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=300, env=scan_env,
         )
         # Try to extract CLI version
         cli_version = "unknown"
         try:
             ver_result = subprocess.run(
-                ["modelscan", "--version"], capture_output=True, text=True, timeout=10,
+                ["modelscan", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=scan_env,
             )
             if ver_result.returncode == 0:
                 cli_version = ver_result.stdout.strip()
@@ -1320,6 +1466,26 @@ def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
                 "details": errors,
                 "scanner": "modelscan-cli",
                 "scanner_version": cli_version,
+            }
+        unsupported_scan_formats = {".gguf", ".safetensors"}
+        ext = artifact_path.suffix.lower()
+        if ext in unsupported_scan_formats and (result.returncode == 3 or scanned_total == 0):
+            log.info(
+                "modelscan CLI did not scan %s artifact %s; relying on format-specific gates",
+                ext.lstrip(".").upper(),
+                artifact_path.name,
+            )
+            format_note = (
+                "GGUF-specific static and behavioral gates still apply"
+                if ext == ".gguf"
+                else "safetensors header, YARA, entropy, modelaudit, and tensor gates still apply"
+            )
+            return {
+                "passed": True,
+                "scanner": "modelscan-cli",
+                "scanner_version": cli_version,
+                "note": f"modelscan does not scan {ext.lstrip('.')} artifacts; {format_note}",
+                "unsupported_format": ext.lstrip("."),
             }
         if result.returncode != 0:
             log.warning("modelscan CLI exited %d: %s", result.returncode, result.stderr[:500])
@@ -2173,7 +2339,10 @@ def run_pipeline_directory(artifact_dir: Path, dir_hash: str, policy: dict,
     details["hash_pin"] = pin
     details["hash"] = {"sha256": dir_hash}
     if not pin["passed"]:
-        return {"passed": False, "reason": "hash_mismatch", "details": details}
+        hf_manifest = check_huggingface_directory_manifest(artifact_dir, source_url)
+        details["huggingface_manifest"] = hf_manifest
+        if not (source_url and hf_manifest.get("passed")):
+            return {"passed": False, "reason": "hash_mismatch", "details": details}
 
     # Stage 4: Provenance
     prov = check_provenance(artifact_dir, source_url)

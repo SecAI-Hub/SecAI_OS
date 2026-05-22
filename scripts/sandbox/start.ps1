@@ -2,7 +2,8 @@ param(
     [switch]$WithInference,
     [switch]$WithDiffusion,
     [switch]$WithSearch,
-    [switch]$WithAirlock
+    [switch]$WithAirlock,
+    [switch]$WithGpu
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,6 +15,8 @@ $envFile = Join-Path $sandboxDir ".env"
 $tokenFile = Join-Path $runtimeDir "service-token"
 $controlTokenFile = Join-Path $runtimeDir "control-token"
 $composeFile = Join-Path $sandboxDir "compose.yaml"
+$nvidiaGpuComposeFile = Join-Path $sandboxDir "compose.gpu.nvidia.yaml"
+$rocmGpuComposeFile = Join-Path $sandboxDir "compose.gpu.rocm.yaml"
 $stateVolume = "secai-sandbox_secai-state"
 $runVolume = "secai-sandbox_secai-run"
 $alpineHelperImage = "docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"
@@ -66,6 +69,20 @@ function Get-SandboxEnvValue {
     return $DefaultValue
 }
 
+function Resolve-SandboxGpuBackend {
+    $configured = Get-SandboxEnvValue "SECAI_DIFFUSION_COMPUTE" ""
+    if ($configured -in @("cuda", "rocm")) {
+        return $configured
+    }
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        return "cuda"
+    }
+    if (Test-Path "/dev/kfd") {
+        return "rocm"
+    }
+    return "cuda"
+}
+
 $controlPort = Get-SandboxEnvValue "SECAI_CONTROL_PORT" "8498"
 
 function Test-SandboxControlServer {
@@ -107,6 +124,10 @@ if ($WithSearch -and -not $WithAirlock) {
     $WithAirlock = $true
     Write-Host "Search mode implies the airlock policy in sandbox mode; enabling airlock."
 }
+if ($WithGpu -and -not $WithDiffusion) {
+    $WithDiffusion = $true
+    Write-Host "GPU acceleration implies the diffusion profile; enabling diffusion."
+}
 if ($WithSearch) {
     $renderArgs += "--enable-search"
 }
@@ -124,14 +145,33 @@ if ($LASTEXITCODE -ne 0) {
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     $runtimeCmd = "docker"
     $composeCmd = "docker"
-    $composeArgs = @("compose", "-f", $composeFile)
 } elseif (Get-Command podman -ErrorAction SilentlyContinue) {
     $runtimeCmd = "podman"
     $composeCmd = "podman"
-    $composeArgs = @("compose", "-f", $composeFile)
 } else {
     throw "Neither docker nor podman was found in PATH."
 }
+
+$composeFileArgs = @("-f", $composeFile)
+if ($WithGpu) {
+    $gpuBackend = Resolve-SandboxGpuBackend
+    if ($gpuBackend -eq "rocm") {
+        $gpuComposeFile = $rocmGpuComposeFile
+    } else {
+        $gpuBackend = "cuda"
+        $gpuComposeFile = $nvidiaGpuComposeFile
+    }
+    $env:SECAI_DIFFUSION_COMPUTE = $gpuBackend
+    if (-not $env:SECAI_DIFFUSION_DEVICE_PREFERENCE) {
+        $env:SECAI_DIFFUSION_DEVICE_PREFERENCE = "auto"
+    }
+    if (-not $env:SECAI_DIFFUSION_CPU_OFFLOAD) {
+        $env:SECAI_DIFFUSION_CPU_OFFLOAD = "0"
+    }
+    $composeFileArgs += @("-f", $gpuComposeFile)
+    Write-Host "GPU acceleration requested for diffusion ($gpuBackend)."
+}
+$composeArgs = @("compose") + $composeFileArgs
 
 & $runtimeCmd volume create $stateVolume | Out-Null
 & $runtimeCmd volume create $runVolume | Out-Null
@@ -152,7 +192,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $allProfileComposeArgs = @(
-    "compose", "-f", $composeFile,
+    "compose"
+) + $composeFileArgs + @(
     "--profile", "search",
     "--profile", "llm",
     "--profile", "diffusion"
@@ -188,6 +229,7 @@ if ($WithSearch) {
 $composeArgs += @("up", "-d", "--build", "--remove-orphans")
 if ($runtimeCmd -eq "docker") {
     $composeArgs += "--wait"
+    $composeArgs += @("--wait-timeout", "900")
 }
 & $composeCmd @composeArgs
 if ($LASTEXITCODE -ne 0) {

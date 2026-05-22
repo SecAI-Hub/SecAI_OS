@@ -1,0 +1,14 @@
+services:
+  diffusion:
+    build:
+      args:
+        COMPUTE: rocm
+    environment:
+      DIFFUSION_DEVICE_PREFERENCE: ${SECAI_DIFFUSION_DEVICE_PREFERENCE:-auto}
+      DIFFUSION_CPU_OFFLOAD: ${SECAI_DIFFUSION_CPU_OFFLOAD:-0}
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render

@@ -349,6 +349,35 @@
         }
     }
 
+    function catalogCategory(model) {
+        return String(model.category || model.type || 'model').toLowerCase();
+    }
+
+    function catalogImageConditionedVideo(model) {
+        var marker = [
+            model.filename || '',
+            model.name || '',
+            model.url || ''
+        ].join(' ').toLowerCase();
+        return marker.indexOf('img2vid') !== -1 ||
+            marker.indexOf('stable-video-diffusion') !== -1 ||
+            marker.indexOf('video-svd') !== -1;
+    }
+
+    function generateHrefForModel(catalogModel, trustedModel) {
+        var category = catalogCategory(catalogModel);
+        var tab = 'image';
+        if (category === 'video') {
+            tab = catalogImageConditionedVideo(catalogModel) ? 'image-video' : 'video';
+        }
+        var modelName = (trustedModel && (trustedModel.name || trustedModel.filename)) ||
+            catalogModel.filename ||
+            catalogModel.name ||
+            '';
+        return '/generate?tab=' + encodeURIComponent(tab) +
+            '&model=' + encodeURIComponent(modelName);
+    }
+
     async function loadCatalog() {
         try {
             var resp = await fetch('/api/catalog');
@@ -370,7 +399,7 @@
             }
 
             var visible = catalog.filter(function(m) {
-                var category = m.category || m.type || 'other';
+                var category = catalogCategory(m);
                 return activeFilter === 'all' || category === activeFilter;
             });
             if (!visible.length) {
@@ -382,18 +411,26 @@
                 var dl = downloads[m.filename];
                 var trusted = trustedByFilename[m.filename];
                 var btnHtml;
-                if (trusted) {
+                var blocked = !!m.blocked || String(m.security_status || '').toLowerCase() === 'blocked';
+                if (blocked && !trusted) {
+                    btnHtml = '<span class="badge badge-danger">Blocked by policy</span>';
+                } else if (trusted) {
                     if ((m.type || '').toLowerCase() === 'llm') {
                         btnHtml = '<a class="btn btn-sm btn-primary" href="/chat?model=' + encodeURIComponent(trusted.name || trusted.filename) + '">Use in Chat</a>' +
                             '<span class="badge badge-success">trusted</span>';
                     } else {
-                        btnHtml = '<span class="badge badge-success">trusted</span>';
+                        btnHtml = '<a class="btn btn-sm btn-primary" href="' + esc(generateHrefForModel(m, trusted)) + '">Use in Generate</a>' +
+                            '<span class="badge badge-success">trusted</span>';
                     }
                 } else if (dl && dl.status === 'downloading') {
                     var pct = dl.progress || 0;
+                    var dlText = pct + '% downloading...';
+                    if (dl.downloaded_mb && dl.total_mb) {
+                        dlText = pct + '% (' + dl.downloaded_mb + ' / ' + dl.total_mb + ' MB)';
+                    }
                     btnHtml = '<div style="flex:1;max-width:200px">' +
                         '<div class="progress-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
-                        '<span style="font-size:0.75rem;color:var(--text-muted)">' + pct + '% downloading...</span>' +
+                        '<span style="font-size:0.75rem;color:var(--text-muted)">' + esc(dlText) + '</span>' +
                         '</div>';
                 } else if (dl && dl.status === 'quarantined') {
                     btnHtml = '<span class="badge badge-warning">Scanning...</span>';
@@ -403,12 +440,15 @@
                 } else {
                     btnHtml = '<button class="btn btn-sm btn-primary" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Download</button>';
                 }
-                var category = m.category || m.type || 'model';
+                var category = catalogCategory(m);
                 var terms = m.requires_terms && m.terms_url
                     ? '<a class="btn btn-sm" href="' + esc(m.terms_url) + '" target="_blank" rel="noopener noreferrer">Provider Terms</a>'
                     : '';
                 var failedDetail = dl && dl.status === 'failed' && dl.detail
                     ? '<p class="meta mt-sm">' + esc(dl.detail) + '</p>'
+                    : '';
+                var blockedDetail = blocked && m.blocked_reason
+                    ? '<p class="meta mt-sm">' + esc(m.blocked_reason) + '</p>'
                     : '';
 
                 return '<div class="card">' +
@@ -421,6 +461,7 @@
                         '<span>' + m.size_gb + ' GB</span>' +
                         '<span>VRAM: ~' + m.vram_gb + ' GB</span>' +
                     '</div>' +
+                    blockedDetail +
                     failedDetail +
                     '<div class="btn-group mt-md" style="align-items:center">' + btnHtml + terms + '</div>' +
                 '</div>';

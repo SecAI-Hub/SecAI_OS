@@ -40,6 +40,16 @@ def _get_disabled(systemd_module):
     return systemd_module.get("system", {}).get("disabled", [])
 
 
+class TestBuildPreflight:
+    """Build preflight scripts must run before package metadata refresh."""
+
+    def test_stale_repo_preflight_runs_before_rpm_ostree(self, recipe):
+        modules = recipe.get("modules", [])
+        assert modules[0]["type"] == "script"
+        assert "disable-stale-fedora-repos.sh" in modules[0]["scripts"]
+        assert modules[1]["type"] == "rpm-ostree"
+
+
 class TestDiffusionDisabledByDefault:
     """Diffusion service must be disabled in the base image."""
 

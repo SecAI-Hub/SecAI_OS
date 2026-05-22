@@ -15,6 +15,8 @@ import http.client
 import json
 import os
 import re
+import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,9 +37,12 @@ PS_SWITCHES = {
     "--with-airlock": "-WithAirlock",
     "--with-inference": "-WithInference",
     "--with-diffusion": "-WithDiffusion",
+    "--with-gpu": "-WithGpu",
 }
 SAFE_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+=:-]{0,254}\.gguf$", re.IGNORECASE)
 MAX_BODY_BYTES = 8192
+APPLY_TIMEOUT_SECONDS = int(os.getenv("SECAI_CONTROL_APPLY_TIMEOUT", "1800"))
+PROCESS_KILL_TIMEOUT_SECONDS = 30
 
 _state_lock = threading.Lock()
 _active_thread: threading.Thread | None = None
@@ -97,33 +102,93 @@ def _current_profile() -> str:
     return profile if profile in VALID_PROFILES else "offline_private"
 
 
+def _host_gpu_backend() -> str:
+    configured = os.getenv("SECAI_DIFFUSION_COMPUTE", "").strip().lower()
+    if configured in {"cuda", "rocm"}:
+        return configured
+    if shutil.which("nvidia-smi"):
+        try:
+            probe = subprocess.run(
+                ["nvidia-smi", "-L"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if probe.returncode == 0:
+                return "cuda"
+        except Exception:
+            return "cuda"
+    if Path("/dev/kfd").exists():
+        return "rocm"
+    return ""
+
+
+def _gpu_requested(payload: dict[str, Any], profile: str) -> tuple[bool, str]:
+    if profile != "full_lab":
+        return False, ""
+    raw = payload.get("gpu", "auto")
+    if isinstance(raw, bool):
+        enabled = raw
+    else:
+        value = str(raw).strip().lower()
+        if value in {"false", "0", "no", "off", "none"}:
+            return False, ""
+        enabled = value in {"true", "1", "yes", "on", "auto", "cuda", "rocm"}
+        if value in {"cuda", "rocm"}:
+            return enabled, value
+    if not enabled:
+        return False, ""
+    backend = _host_gpu_backend()
+    if backend:
+        return True, backend
+    return False, ""
+
+
 def _status(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     if CONFIG is None:
         return {"status": "unconfigured", "profile": "offline_private"}
     data = _read_json(CONFIG.status_path)
     if not data:
         data = {"status": "idle"}
+    if data.get("status") == "running" and (
+        _active_thread is None or not _active_thread.is_alive()
+    ):
+        data.update({
+            "status": "failed",
+            "error": "previous sandbox automation was interrupted",
+            "detail": (
+                "The controller restarted before the previous sandbox change "
+                "reported completion. You can retry the request."
+            ),
+            "updated_at": _now(),
+        })
+        _write_json_atomic(CONFIG.status_path, data)
     data.update({
         "profile": _current_profile(),
         "valid_profiles": sorted(VALID_PROFILES),
         "controller": "secai-sandbox-control",
+        "gpu_backend": _host_gpu_backend() or None,
     })
     if extra:
         data.update(extra)
     return data
 
 
-def _display_command(profile: str, *, inference: bool) -> str:
+def _display_command(profile: str, *, inference: bool, gpu: bool) -> str:
     args = list(PROFILE_ARGS[profile])
     if inference:
         args.append("--with-inference")
+    if gpu and "--with-gpu" not in args:
+        args.append("--with-gpu")
     return ".\\secai-sandbox.cmd start" + ((" " + " ".join(args)) if args else "")
 
 
-def _command_args(profile: str, *, inference: bool) -> list[str]:
+def _command_args(profile: str, *, inference: bool, gpu: bool) -> list[str]:
     args = list(PROFILE_ARGS[profile])
     if inference and "--with-inference" not in args:
         args.append("--with-inference")
+    if gpu and "--with-gpu" not in args:
+        args.append("--with-gpu")
     if os.name == "nt":
         if CONFIG is None:
             raise RuntimeError("controller is not configured")
@@ -175,22 +240,87 @@ def _tail(text: str, limit: int = 6000) -> str:
     return text[-limit:]
 
 
+def _popen_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        }
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=PROCESS_KILL_TIMEOUT_SECONDS,
+        )
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def _run_start_command(command: list[str]) -> tuple[int, str, bool]:
+    proc = subprocess.Popen(
+        command,
+        cwd=str(CONFIG.repo_root) if CONFIG is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **_popen_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=APPLY_TIMEOUT_SECONDS)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=PROCESS_KILL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", "sandbox start command did not exit after timeout"
+        timed_out = True
+    output = "\n".join(
+        part for part in ((stdout or "").strip(), (stderr or "").strip()) if part
+    )
+    return proc.returncode if proc.returncode is not None else -1, output, timed_out
+
+
 def _run_apply(
     *,
     profile: str,
     inference: bool,
+    gpu: bool,
+    gpu_backend: str,
     model_filename: str,
     requested_by: str,
 ) -> None:
     if CONFIG is None:
         return
-    command = _command_args(profile, inference=inference)
-    display = _display_command(profile, inference=inference)
+    if gpu and gpu_backend:
+        os.environ["SECAI_DIFFUSION_COMPUTE"] = gpu_backend
+        os.environ.setdefault("SECAI_DIFFUSION_DEVICE_PREFERENCE", "auto")
+    command = _command_args(profile, inference=inference, gpu=gpu)
+    display = _display_command(profile, inference=inference, gpu=gpu)
     started = _now()
     _write_json_atomic(CONFIG.status_path, {
         "status": "running",
         "profile": profile,
         "inference": inference,
+        "gpu": gpu,
+        "gpu_backend": gpu_backend,
         "model_filename": model_filename,
         "requested_by": requested_by,
         "command": display,
@@ -204,27 +334,24 @@ def _run_apply(
             f"/var/lib/secure-ai/registry/{model_filename}",
         )
     try:
-        proc = subprocess.run(
-            command,
-            cwd=str(CONFIG.repo_root),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
+        returncode, output, timed_out = _run_start_command(command)
         finished = _now()
-        output = "\n".join(
-            part for part in (proc.stdout.strip(), proc.stderr.strip()) if part
-        )
         _write_json_atomic(CONFIG.status_path, {
-            "status": "complete" if proc.returncode == 0 else "failed",
+            "status": "complete" if returncode == 0 and not timed_out else "failed",
             "profile": profile,
             "inference": inference,
+            "gpu": gpu,
+            "gpu_backend": gpu_backend,
             "model_filename": model_filename,
             "requested_by": requested_by,
             "command": display,
-            "exit_code": proc.returncode,
+            "exit_code": returncode,
+            "timed_out": timed_out,
             "output_tail": _tail(output),
+            "error": (
+                f"sandbox start command timed out after {APPLY_TIMEOUT_SECONDS}s"
+                if timed_out else ""
+            ),
             "started_at": started,
             "finished_at": finished,
             "updated_at": finished,
@@ -235,6 +362,8 @@ def _run_apply(
             "status": "failed",
             "profile": profile,
             "inference": inference,
+            "gpu": gpu,
+            "gpu_backend": gpu_backend,
             "model_filename": model_filename,
             "requested_by": requested_by,
             "command": display,
@@ -251,6 +380,7 @@ def _start_apply(payload: dict[str, Any], requested_by: str) -> tuple[dict[str, 
     if profile not in VALID_PROFILES:
         return {"error": f"invalid profile: {profile}"}, 400
     inference = bool(payload.get("inference", False))
+    gpu, gpu_backend = _gpu_requested(payload, profile)
     try:
         model_filename = _validate_model_filename(payload.get("model_filename"))
     except ValueError as exc:
@@ -258,12 +388,21 @@ def _start_apply(payload: dict[str, Any], requested_by: str) -> tuple[dict[str, 
 
     with _state_lock:
         if _active_thread is not None and _active_thread.is_alive():
-            return {"status": "already_in_progress", **_status()}, 409
+            return {
+                "status": "already_in_progress",
+                "detail": (
+                    "A sandbox profile change is already running. "
+                    "Wait for it to finish, then retry if the UI does not reconnect."
+                ),
+                **_status(),
+            }, 409
         _active_thread = threading.Thread(
             target=_run_apply,
             kwargs={
                 "profile": profile,
                 "inference": inference,
+                "gpu": gpu,
+                "gpu_backend": gpu_backend,
                 "model_filename": model_filename,
                 "requested_by": requested_by,
             },
@@ -275,8 +414,10 @@ def _start_apply(payload: dict[str, Any], requested_by: str) -> tuple[dict[str, 
         "status": "accepted",
         "profile": profile,
         "inference": inference,
+        "gpu": gpu,
+        "gpu_backend": gpu_backend or None,
         "model_filename": model_filename,
-        "command": _display_command(profile, inference=inference),
+        "command": _display_command(profile, inference=inference, gpu=gpu),
     }, 202
 
 

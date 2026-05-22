@@ -60,6 +60,31 @@ def test_fickling_scan_skips_non_pickle_formats(tmp_path):
     assert result["note"] == "not a pickle-based format, skipped"
 
 
+def test_hash_pin_rejects_policy_blocked_model(tmp_path, monkeypatch):
+    lock = tmp_path / "models.lock.yaml"
+    lock.write_text(
+        """
+models:
+  - filename: blocked.gguf
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    blocked: true
+    blocked_reason: failed behavioral smoke test
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "MODELS_LOCK_PATH", lock)
+
+    result = pipeline.check_hash_pin(
+        "blocked.gguf",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_url="https://example.com/blocked.gguf",
+    )
+
+    assert result["passed"] is False
+    assert result["blocked"] is True
+    assert "failed behavioral smoke test" in result["reason"]
+
+
 def test_modelscan_cli_fallback_uses_current_json_flags(tmp_path, monkeypatch):
     payload = tmp_path / "payload.pkl"
     payload.write_bytes(b"\x80\x04safe")
@@ -99,6 +124,37 @@ def test_modelscan_cli_fallback_uses_current_json_flags(tmp_path, monkeypatch):
     assert ["modelscan", "-p", str(payload), "-r", "json"] in calls
 
 
+def test_modelscan_cli_fallback_uses_wide_plain_output(tmp_path, monkeypatch):
+    payload = tmp_path / "payload.safetensors"
+    payload.write_bytes(b"safe")
+
+    monkeypatch.setitem(sys.modules, "modelscan", SimpleNamespace())
+    monkeypatch.delitem(sys.modules, "modelscan.modelscan", raising=False)
+
+    def fake_run(args, **kwargs):
+        env = kwargs.get("env") or {}
+        assert env["COLUMNS"] == "4096"
+        assert env["NO_COLOR"] == "1"
+        assert env["TERM"] == "dumb"
+        if args == ["modelscan", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="modelscan, version 0.8.8", stderr="")
+        report = {
+            "summary": {
+                "modelscan_version": "0.8.8",
+                "scanned": {"total_scanned": 1, "scanned_files": [payload.name]},
+            },
+            "issues": [],
+            "errors": [],
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(report), stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    result = pipeline._run_modelscan(payload)
+
+    assert result["passed"] is True
+
+
 def test_modelscan_cli_fallback_fails_when_no_file_is_scanned(tmp_path, monkeypatch):
     payload = tmp_path / "payload.bin"
     payload.write_bytes(b"not a supported model")
@@ -125,6 +181,66 @@ def test_modelscan_cli_fallback_fails_when_no_file_is_scanned(tmp_path, monkeypa
 
     assert result["passed"] is False
     assert result["reason"] == "modelscan did not scan any files"
+
+
+def test_modelscan_cli_fallback_allows_unsupported_gguf(tmp_path, monkeypatch):
+    payload = tmp_path / "payload.gguf"
+    payload.write_bytes(b"GGUF\x03\x00\x00\x00")
+
+    monkeypatch.setitem(sys.modules, "modelscan", SimpleNamespace())
+    monkeypatch.delitem(sys.modules, "modelscan.modelscan", raising=False)
+
+    def fake_run(args, **kwargs):
+        if args == ["modelscan", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="modelscan, version 0.8.8", stderr="")
+        report = {
+            "summary": {
+                "modelscan_version": "0.8.8",
+                "scanned": {"total_scanned": 0},
+            },
+            "issues": [],
+            "errors": [],
+        }
+        return SimpleNamespace(returncode=3, stdout=json.dumps(report), stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    result = pipeline._run_modelscan(payload)
+
+    assert result["passed"] is True
+    assert result["scanner"] == "modelscan-cli"
+    assert result["unsupported_format"] == "gguf"
+    assert "GGUF-specific" in result["note"]
+
+
+def test_modelscan_cli_fallback_allows_unsupported_safetensors(tmp_path, monkeypatch):
+    payload = tmp_path / "payload.safetensors"
+    payload.write_bytes(b"safe")
+
+    monkeypatch.setitem(sys.modules, "modelscan", SimpleNamespace())
+    monkeypatch.delitem(sys.modules, "modelscan.modelscan", raising=False)
+
+    def fake_run(args, **kwargs):
+        if args == ["modelscan", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="modelscan, version 0.8.8", stderr="")
+        report = {
+            "summary": {
+                "modelscan_version": "0.8.8",
+                "scanned": {"total_scanned": 0},
+            },
+            "issues": [],
+            "errors": [],
+        }
+        return SimpleNamespace(returncode=3, stdout=json.dumps(report), stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+
+    result = pipeline._run_modelscan(payload)
+
+    assert result["passed"] is True
+    assert result["scanner"] == "modelscan-cli"
+    assert result["unsupported_format"] == "safetensors"
+    assert "safetensors header" in result["note"]
 
 
 class _FakeYaraRules:
@@ -185,6 +301,74 @@ def test_cosign_source_registry_matching_requires_registry_host():
     assert pipeline._supports_cosign_provenance("https://docker.io/library/model:latest") is True
     assert pipeline._supports_cosign_provenance("https://evil.example/ghcr.io/model") is False
     assert pipeline._supports_cosign_provenance("https://docker.io.evil.example/model") is False
+
+
+def test_huggingface_directory_manifest_verifies_selected_files(tmp_path):
+    artifact = tmp_path / "tiny-diffusion"
+    (artifact / "unet").mkdir(parents=True)
+    (artifact / "model_index.json").write_text("{}", encoding="utf-8")
+    (artifact / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"abc")
+
+    manifest = {
+        "version": 1,
+        "source": "https://huggingface.co/example/tiny",
+        "repo_id": "example/tiny",
+        "revision": "a" * 40,
+        "variant": None,
+        "files": [
+            {
+                "path": "model_index.json",
+                "size": 2,
+                "oid_type": "git-sha1",
+                "oid": pipeline._git_blob_sha1(artifact / "model_index.json", 2),
+            },
+            {
+                "path": "unet/diffusion_pytorch_model.safetensors",
+                "size": 3,
+                "oid_type": "sha256",
+                "oid": pipeline.sha256_file(artifact / "unet" / "diffusion_pytorch_model.safetensors"),
+            },
+        ],
+    }
+    (tmp_path / ".tiny-diffusion.hf-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = pipeline.check_huggingface_directory_manifest(
+        artifact,
+        "https://huggingface.co/example/tiny",
+    )
+
+    assert result["passed"] is True
+    assert result["files_checked"] == 2
+    assert result["sha256_files_checked"] == 1
+
+
+def test_huggingface_directory_manifest_rejects_extra_files(tmp_path):
+    artifact = tmp_path / "tiny-diffusion"
+    artifact.mkdir()
+    (artifact / "model_index.json").write_text("{}", encoding="utf-8")
+    (artifact / "surprise.json").write_text("{}", encoding="utf-8")
+    manifest = {
+        "version": 1,
+        "source": "https://huggingface.co/example/tiny",
+        "revision": "a" * 40,
+        "files": [
+            {
+                "path": "model_index.json",
+                "size": 2,
+                "oid_type": "git-sha1",
+                "oid": pipeline._git_blob_sha1(artifact / "model_index.json", 2),
+            },
+        ],
+    }
+    (tmp_path / ".tiny-diffusion.hf-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = pipeline.check_huggingface_directory_manifest(
+        artifact,
+        "https://huggingface.co/example/tiny",
+    )
+
+    assert result["passed"] is False
+    assert "unexpected files" in result["reason"]
 
 
 def test_refusal_without_guidance_is_treated_as_safe_behavior():

@@ -81,6 +81,16 @@ if /I "%~1"=="-WithAirlock" (
     shift
     goto parse_start_args
 )
+if /I "%~1"=="--with-gpu" (
+    set "PS_ARGS=!PS_ARGS! -WithGpu"
+    shift
+    goto parse_start_args
+)
+if /I "%~1"=="-WithGpu" (
+    set "PS_ARGS=!PS_ARGS! -WithGpu"
+    shift
+    goto parse_start_args
+)
 echo Unknown start option: %~1
 exit /b 2
 
@@ -142,6 +152,7 @@ echo   --with-search       Enable Tor and SearXNG search sidecars
 echo   --with-airlock      Enable airlock policy in sandbox mode
 echo   --with-inference    Enable local LLM inference profile
 echo   --with-diffusion    Enable diffusion worker profile
+echo   --with-gpu          Enable GPU acceleration for diffusion when available
 echo.
 echo UI:
 echo   http://127.0.0.1:8480

@@ -13,9 +13,10 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 log = logging.getLogger("diffusion-worker")
 
@@ -26,13 +27,29 @@ REGISTRY_DIR = Path(os.getenv("REGISTRY_DIR", "/var/lib/secure-ai/registry"))
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 BIND_ADDR = os.getenv("BIND_ADDR", "0.0.0.0:8455")
 OUTPUTS_DIR = Path(os.getenv("OUTPUTS_DIR", "/var/lib/secure-ai/vault/outputs"))
+OUTPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm"}
 MAX_RESOLUTION = int(os.getenv("MAX_RESOLUTION", "2048"))
 MAX_STEPS = int(os.getenv("MAX_STEPS", "100"))
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "120"))
 VIDEO_DIMENSION_MULTIPLE = int(os.getenv("VIDEO_DIMENSION_MULTIPLE", "16"))
+DEVICE_PREFERENCE = os.getenv("DIFFUSION_DEVICE_PREFERENCE", "auto").strip().lower()
+CPU_OFFLOAD = os.getenv("DIFFUSION_CPU_OFFLOAD", "0").strip().lower()
 
 # Loaded pipeline instances (lazy init)
-_pipelines = {}
+_pipelines: dict[str, Any] = {}
+
+
+def _env_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cpu_offload_enabled() -> bool:
+    return _env_truthy(os.getenv("DIFFUSION_CPU_OFFLOAD", CPU_OFFLOAD))
+
+
+def _device_preference() -> str:
+    preference = os.getenv("DIFFUSION_DEVICE_PREFERENCE", DEVICE_PREFERENCE).strip().lower()
+    return preference if preference in {"auto", "cuda", "rocm", "mps", "xpu", "cpu"} else "auto"
 
 
 def load_config() -> dict:
@@ -43,7 +60,7 @@ def load_config() -> dict:
         return {}
 
 
-def _get_device():
+def _legacy_get_device():
     """Detect best available compute device.
 
     Priority: CUDA (NVIDIA) > ROCm (AMD) > MPS (Apple) > XPU (Intel) > CPU
@@ -61,6 +78,49 @@ def _get_device():
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         # Intel XPU (Arc / Data Center) via Intel Extension for PyTorch
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _torch_backend_available(torch, backend: str) -> bool:
+    if backend == "cpu":
+        return True
+    if backend in {"cuda", "rocm"}:
+        if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+            return False
+        hip_runtime = bool(getattr(getattr(torch, "version", object()), "hip", None))
+        return hip_runtime if backend == "rocm" else not hip_runtime
+    if backend == "mps":
+        return bool(
+            hasattr(torch, "backends")
+            and hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        )
+    if backend == "xpu":
+        return bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+    return False
+
+
+def _get_device():
+    """Detect best available local compute device."""
+    try:
+        import torch
+
+        preference = _device_preference()
+        if preference == "cpu":
+            return "cpu"
+        if preference in {"cuda", "rocm", "mps", "xpu"}:
+            if _torch_backend_available(torch, preference):
+                return "cuda" if preference in {"cuda", "rocm"} else preference
+            log.warning("requested diffusion device %s is unavailable; falling back to auto", preference)
+
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             return "xpu"
     except ImportError:
@@ -108,41 +168,101 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
         raise FileNotFoundError(f"model not found: {model_path}")
 
     log.info("loading diffusion pipeline from %s (device=%s, dtype=%s)", model_path, device, dtype)
+    load_kwargs = {
+        "torch_dtype": dtype,
+        "local_files_only": True,
+    }
+    if any(model_dir.rglob("*.fp16.safetensors")):
+        load_kwargs["variant"] = "fp16"
 
     if pipeline_type == "img2img":
         pipe = AutoPipelineForImage2Image.from_pretrained(
-            str(model_dir), torch_dtype=dtype, local_files_only=True
+            str(model_dir), **load_kwargs
         )
     elif pipeline_type == "video":
         pipe = DiffusionPipeline.from_pretrained(
-            str(model_dir), torch_dtype=dtype, local_files_only=True
+            str(model_dir), **load_kwargs
         )
     else:
         pipe = AutoPipelineForText2Image.from_pretrained(
-            str(model_dir), torch_dtype=dtype, local_files_only=True
+            str(model_dir), **load_kwargs
         )
 
     pipe = pipe.to(device)
 
     # Memory optimizations for GPU backends
     if device in ("cuda", "xpu"):
-        try:
-            pipe.enable_model_cpu_offload()
-        except Exception:
-            pass
+        if device == "cuda":
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+            except Exception:
+                pass
         try:
             pipe.enable_xformers_memory_efficient_attention()
         except Exception:
             pass
+        try:
+            pipe.enable_attention_slicing()
+        except Exception:
+            pass
+        if _cpu_offload_enabled():
+            try:
+                pipe.enable_model_cpu_offload()
+            except Exception:
+                pass
 
     _pipelines[cache_key] = pipe
     log.info("pipeline loaded: %s", cache_key)
     return pipe
 
 
-def _find_diffusion_models() -> list:
+def _image_conditioned_video_markers(class_name: str, entry_name: str = "") -> bool:
+    marker = f"{class_name} {entry_name}".lower()
+    return any(token in marker for token in (
+        "stablevideodiffusion",
+        "img2vid",
+        "image2video",
+        "image-to-video",
+        "imagetovideo",
+        "i2v",
+        "svd",
+    ))
+
+
+def _supports_image_to_image(class_name: str, entry_name: str = "") -> bool:
+    marker = f"{class_name} {entry_name}".lower()
+    return any(token in marker for token in (
+        "img2img",
+        "image2image",
+        "image-to-image",
+        "stablediffusion",
+        "stable-diffusion",
+        "stable_diffusion",
+        "sdxl",
+        "flux",
+        "kandinsky",
+        "kolors",
+    ))
+
+
+def _model_capabilities(entry: Path, model_type: str, class_name: str) -> list[str]:
+    """Return generation capabilities advertised by a local diffusers model."""
+    if model_type == "video":
+        if _image_conditioned_video_markers(class_name, entry.name):
+            return ["img2vid"]
+        return ["txt2vid"]
+    if model_type == "img2img":
+        return ["img2img"]
+
+    capabilities = ["txt2img"]
+    if _supports_image_to_image(class_name, entry.name):
+        capabilities.append("img2img")
+    return capabilities
+
+
+def _find_diffusion_models() -> list[dict[str, Any]]:
     """Find diffusion model directories in the registry."""
-    models = []
+    models: list[dict[str, Any]] = []
     if not REGISTRY_DIR.exists():
         return models
     for entry in sorted(REGISTRY_DIR.iterdir()):
@@ -153,16 +273,25 @@ def _find_diffusion_models() -> list:
                     with open(entry / "model_index.json") as f:
                         index = json.load(f)
                     model_type = "image"
-                    class_name = index.get("_class_name", "")
-                    if "Video" in class_name or "video" in class_name:
+                    class_name = str(index.get("_class_name", "") or "")
+                    class_marker = class_name.lower()
+                    entry_marker = entry.name.lower()
+                    if (
+                        "video" in class_marker
+                        or "ltx" in class_marker
+                        or entry_marker.startswith("video-")
+                        or "-video" in entry_marker
+                    ):
                         model_type = "video"
-                    elif "Img2Img" in class_name or "Image2Image" in class_name:
+                    elif "img2img" in class_marker or "image2image" in class_marker:
                         model_type = "img2img"
+                    capabilities = _model_capabilities(entry, model_type, class_name)
                     models.append({
                         "name": entry.name,
                         "path": str(entry),
                         "type": model_type,
                         "class": class_name,
+                        "capabilities": capabilities,
                     })
                 except (json.JSONDecodeError, OSError):
                     models.append({
@@ -170,18 +299,18 @@ def _find_diffusion_models() -> list:
                         "path": str(entry),
                         "type": "image",
                         "class": "unknown",
+                        "capabilities": ["txt2img"],
                     })
     return models
 
 
 def _is_image_conditioned_video_model(model_info: dict) -> bool:
     """Return True when a video pipeline expects an input image."""
+    capabilities = model_info.get("capabilities")
+    if isinstance(capabilities, list) and "img2vid" in capabilities:
+        return True
     class_name = str(model_info.get("class", "") or "")
-    return (
-        "StableVideoDiffusion" in class_name
-        or "Img2Vid" in class_name
-        or "ImageToVideo" in class_name
-    )
+    return _image_conditioned_video_markers(class_name, str(model_info.get("name", "") or ""))
 
 
 def _video_encoder_image_size(pipe) -> int | None:
@@ -189,6 +318,8 @@ def _video_encoder_image_size(pipe) -> int | None:
     image_encoder = getattr(pipe, "image_encoder", None)
     config = getattr(image_encoder, "config", None)
     size = getattr(config, "image_size", None)
+    if size is None:
+        return None
     try:
         size = int(size)
     except (TypeError, ValueError):
@@ -277,7 +408,13 @@ def health():
 
 def _get_gpu_info() -> dict:
     """Return GPU name and backend for diagnostics."""
-    info = {"backend": "cpu", "name": "CPU"}
+    info = {
+        "backend": "cpu",
+        "name": "CPU",
+        "selected_device": _get_device(),
+        "device_preference": _device_preference(),
+        "cpu_offload": _cpu_offload_enabled(),
+    }
     try:
         import torch
 
@@ -301,6 +438,43 @@ def _get_gpu_info() -> dict:
 @app.route("/v1/models")
 def list_models():
     return jsonify(_find_diffusion_models())
+
+
+@app.route("/v1/outputs")
+def list_outputs():
+    """List recently generated image/video outputs saved by the worker."""
+    if not OUTPUTS_DIR.exists():
+        return jsonify([])
+
+    outputs = []
+    for path in OUTPUTS_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in OUTPUT_EXTENSIONS:
+            continue
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        kind = "video" if path.suffix.lower() in {".mp4", ".webm"} else "image"
+        outputs.append({
+            "filename": path.name,
+            "kind": kind,
+            "size_bytes": stat_result.st_size,
+            "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat_result.st_mtime)),
+            "url": f"/v1/outputs/{path.name}",
+        })
+    outputs.sort(key=lambda item: item["modified_at"], reverse=True)
+    return jsonify(outputs[:50])
+
+
+@app.route("/v1/outputs/<path:filename>")
+def get_output(filename: str):
+    """Serve a generated output file by basename only."""
+    if Path(filename).name != filename:
+        return jsonify({"error": "invalid output filename"}), 400
+    path = OUTPUTS_DIR / filename
+    if not path.is_file() or path.suffix.lower() not in OUTPUT_EXTENSIONS:
+        return jsonify({"error": "output not found"}), 404
+    return send_from_directory(OUTPUTS_DIR, filename)
 
 
 # --- Image Generation ---
@@ -338,6 +512,9 @@ def generate_image():
         model_info = matches[0]
     else:
         model_info = models[0]
+
+    if "txt2img" not in model_info.get("capabilities", ["txt2img"]):
+        return jsonify({"error": f"model does not support text-to-image: {model_info['name']}"}), 400
 
     try:
         import torch
@@ -446,6 +623,10 @@ def generate_video():
     else:
         if not prompt:
             return jsonify({"error": "prompt is required"}), 400
+    required_capability = "img2vid" if image_b64 else "txt2vid"
+    if required_capability not in model_info.get("capabilities", []):
+        label = "image-to-video" if required_capability == "img2vid" else "text-to-video"
+        return jsonify({"error": f"model does not support {label}: {model_info['name']}"}), 400
 
     try:
         import torch
@@ -569,6 +750,9 @@ def generate_img2img():
         model_info = models[0]
     else:
         return jsonify({"error": "no diffusion models available"}), 503
+
+    if "img2img" not in model_info.get("capabilities", []):
+        return jsonify({"error": f"model does not support image-to-image: {model_info['name']}"}), 400
 
     try:
         import torch

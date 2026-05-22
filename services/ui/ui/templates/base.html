@@ -700,6 +700,10 @@
                     waitForSandboxRestart(successMessage);
                     return { ok: true, data: data };
                 }
+                if (resp.status === 409 && data.status === 'already_in_progress') {
+                    waitForSandboxRestart(data.detail || 'Sandbox profile change is already running. This page will reconnect automatically.');
+                    return { ok: false, data: data };
+                }
                 var msg = data.detail || data.error || 'Sandbox automation is unavailable.';
                 if (data.command) msg += ' Fallback: ' + data.command;
                 toast(msg, 'warning', 9000);

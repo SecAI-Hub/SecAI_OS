@@ -103,7 +103,13 @@
             var availableCard = document.getElementById('update-available-card');
             var stagedCard = document.getElementById('update-staged-card');
 
-            if (data.state === 'staged' || data.staged) {
+            if (data.supported === false || data.status === 'not_available') {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                detail.textContent = data.detail || 'Updates are not available in this deployment.';
+                availableCard.classList.add('hidden');
+                stagedCard.classList.add('hidden');
+            } else if (data.state === 'staged' || data.staged) {
                 badge.className = 'badge badge-success';
                 badge.textContent = 'staged';
                 detail.textContent = 'An update is staged and ready to apply.';
@@ -141,7 +147,11 @@
             var badge = document.getElementById('health-badge');
             var detail = document.getElementById('health-detail');
 
-            if (data.status === 'ok' || data.healthy === true) {
+            if (data.supported === false || data.status === 'not_available') {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                detail.textContent = data.detail || 'Post-update health checks are not available in this deployment.';
+            } else if (data.status === 'ok' || data.healthy === true) {
                 badge.className = 'badge badge-success';
                 badge.textContent = 'healthy';
                 detail.textContent = 'All health checks passed.' + (data.boot_id ? ' Boot: ' + data.boot_id.substring(0, 8) : '');
@@ -167,7 +177,9 @@
         try {
             var resp = await fetch('/api/update/check', { method: 'POST' });
             var data = await resp.json();
-            if (data.update_available) {
+            if (!resp.ok || data.supported === false) {
+                toast(data.detail || data.error || 'Update checks are not available in this deployment.', 'warning');
+            } else if (data.update_available) {
                 toast('Update available!', 'info');
             } else {
                 toast('System is up to date.', 'success');

@@ -44,5 +44,5 @@ ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server
 
 USER 65534:65534
 EXPOSE 8465
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD port="${BIND_ADDR##*:}"; wget -q -T 3 -O - "http://127.0.0.1:${port}/health" >/dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD port_hex="$(printf '%04X' "${BIND_ADDR##*:}")"; grep -qi "00000000:${port_hex} .* 0A " /proc/net/tcp || grep -qi "0100007F:${port_hex} .* 0A " /proc/net/tcp || exit 1
 ENTRYPOINT ["/entrypoint.sh"]

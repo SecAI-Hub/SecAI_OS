@@ -1,10 +1,13 @@
 ARG COMPUTE=cpu
-ARG TORCH_CUDA_VERSION=2.6.0+cu124
-ARG TORCH_ROCM_VERSION=2.5.1+rocm6.1
-ARG TORCH_CPU_VERSION=2.11.0+cpu
-ARG TORCHVISION_CUDA_VERSION=0.21.0+cu124
-ARG TORCHVISION_ROCM_VERSION=0.20.1+rocm6.1
-ARG TORCHVISION_CPU_VERSION=0.26.0+cpu
+ARG TORCH_CUDA_VERSION=2.12.0+cu132
+ARG TORCH_ROCM_VERSION=2.9.1+rocm6.4
+ARG TORCH_CPU_VERSION=2.12.0+cpu
+ARG TORCHVISION_CUDA_VERSION=0.27.0+cu132
+ARG TORCHVISION_ROCM_VERSION=0.24.1+rocm6.4
+ARG TORCHVISION_CPU_VERSION=0.27.0+cpu
+ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu132
+ARG TORCH_ROCM_INDEX_URL=https://download.pytorch.org/whl/rocm6.4
+ARG TORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG IPEX_CPU_VERSION=2.11.0
 
 FROM cgr.dev/chainguard/python:latest-dev@sha256:2c0fbbac86b72ebb4bfee15b64d8cd5fd6b49dfe7bb279b5c9f193198a84c1c9 AS build
@@ -16,6 +19,9 @@ ARG TORCH_CPU_VERSION
 ARG TORCHVISION_CUDA_VERSION
 ARG TORCHVISION_ROCM_VERSION
 ARG TORCHVISION_CPU_VERSION
+ARG TORCH_CUDA_INDEX_URL
+ARG TORCH_ROCM_INDEX_URL
+ARG TORCH_CPU_INDEX_URL
 ARG IPEX_CPU_VERSION
 
 # hadolint ignore=DL3002
@@ -45,11 +51,11 @@ RUN pip install --no-cache-dir --upgrade \
 
 # Install PyTorch with the appropriate compute backend for the sandbox profile.
 RUN if [ "$COMPUTE" = "cuda" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url https://download.pytorch.org/whl/cu124; \
+        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url "${TORCH_CUDA_INDEX_URL}"; \
     elif [ "$COMPUTE" = "rocm" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url https://download.pytorch.org/whl/rocm6.1; \
+        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url "${TORCH_ROCM_INDEX_URL}"; \
     else \
-        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url "${TORCH_CPU_INDEX_URL}" && \
         (pip install --no-cache-dir "intel-extension-for-pytorch==${IPEX_CPU_VERSION}" 2>/dev/null || true); \
     fi
 

@@ -1,13 +1,16 @@
 """Tests for the Secure AI web UI Flask app."""
 
 import errno
+import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "ui"))
 
@@ -200,6 +203,27 @@ class TestCatalogDownloads:
         assert resp.status_code == 403
         assert "curated catalog" in resp.get_json()["error"]
 
+    def test_catalog_download_rejects_policy_blocked_entry(self, client):
+        blocked = {
+            "name": "Blocked Test Model",
+            "type": "llm",
+            "filename": "blocked.gguf",
+            "url": "https://example.com/blocked.gguf",
+            "blocked": True,
+            "blocked_reason": "failed behavioral smoke test",
+        }
+
+        with patch("ui.app.MODEL_CATALOG", [blocked]):
+            resp = client.post("/api/catalog/download", json={
+                "url": blocked["url"],
+                "filename": blocked["filename"],
+            })
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert "blocked" in data["error"]
+        assert "behavioral smoke test" in data["message"]
+
     def test_catalog_download_rejects_invalid_filename(self, client):
         catalog = load_model_catalog()
         resp = client.post("/api/catalog/download", json={
@@ -247,6 +271,66 @@ class TestCatalogDownloads:
         assert data["requires_mode"] == "research"
         assert "--with-search" in data["command"]
 
+    def test_catalog_download_allows_retry_after_failure(self, client, tmp_path):
+        import ui.app as ui_app
+
+        class DummyThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        catalog = load_model_catalog()
+        with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
+             patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch("ui.app.threading.Thread", DummyThread), \
+             patch.dict("ui.app._active_downloads", {
+                 catalog[0]["filename"]: {"status": "failed", "detail": "previous failure"},
+             }, clear=True):
+            resp = client.post("/api/catalog/download", json={
+                "url": catalog[0]["url"],
+                "filename": catalog[0]["filename"],
+            })
+
+            assert resp.status_code == 202
+            assert ui_app._active_downloads[catalog[0]["filename"]]["status"] == "downloading"
+
+    def test_download_status_surfaces_quarantine_rejection_reason(self, tmp_path):
+        import ui.app as ui_app
+
+        filename = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "quarantine-audit.jsonl").write_text(
+            json.dumps({
+                "event": "rejected",
+                "data": {
+                    "filename": filename,
+                    "reason": "static_scan",
+                    "details": {
+                        "static_scan": (
+                            "{'passed': False, 'reason': "
+                            "'modelscan: modelscan CLI error (exit 3)'}"
+                        )
+                    },
+                },
+            }) + "\n"
+        )
+
+        with patch("ui.app.SECURE_AI_ROOT", tmp_path), \
+             patch("ui.app.QUARANTINE_DIR", tmp_path / "quarantine"), \
+             patch("ui.app._catalog_registry_filenames", return_value=set()), \
+             patch.dict("ui.app._active_downloads", {
+                 filename: {"status": "quarantined", "updated_at": time.time() - 20},
+             }, clear=True):
+            ui_app._refresh_download_statuses()
+
+            state = ui_app._active_downloads[filename]
+            assert state["status"] == "failed"
+            assert "static_scan" in state["detail"]
+            assert "modelscan CLI error (exit 3)" in state["detail"]
+
     def test_single_file_download_hides_partial_until_complete(self, tmp_path):
         import ui.app as ui_app
 
@@ -270,6 +354,18 @@ class TestCatalogDownloads:
 
         assert (tmp_path / "model.gguf").read_bytes() == b"abcdef"
         assert not any(p.name.endswith(".part") for p in tmp_path.iterdir())
+
+    def test_partial_cleanup_keeps_fresh_cross_process_download(self, tmp_path):
+        import ui.app as ui_app
+
+        partial = tmp_path / ".model.gguf.other-process.part"
+        partial.write_bytes(b"partial")
+
+        with patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch.dict("ui.app._active_downloads", {}, clear=True):
+            ui_app._cleanup_orphaned_catalog_partials()
+
+        assert partial.exists()
 
     def test_single_file_download_blocks_disallowed_redirect(self, tmp_path):
         import ui.app as ui_app
@@ -296,6 +392,109 @@ class TestCatalogDownloads:
                 ui_app._download_single_file("https://example.com/model.gguf", "model.gguf")
 
         assert not (tmp_path / "model.gguf").exists()
+
+    def test_diffusion_download_uses_huggingface_https_tree(self, tmp_path):
+        import ui.app as ui_app
+
+        class MetaResp:
+            status_code = 200
+
+            def json(self):
+                return {"sha": "a" * 40}
+
+            def raise_for_status(self):
+                return None
+
+        class TreeResp:
+            status_code = 200
+
+            def json(self):
+                return [
+                    {"type": "file", "path": "model_index.json", "size": 2, "oid": "418c9b7a22a3c0ebd446fedb702a434b0dd3da99"},
+                    {"type": "file", "path": "unet/diffusion_pytorch_model.safetensors", "size": 3, "lfs": {"oid": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}},
+                    {"type": "file", "path": "unsafe/pytorch_model.bin", "size": 999},
+                    {"type": "file", "path": "../escape.safetensors", "size": 5},
+                    {"type": "directory", "path": "vae"},
+                ]
+
+            def raise_for_status(self):
+                return None
+
+        class FileResp:
+            status_code = 200
+
+            def __init__(self, url, payload):
+                self.url = url
+                self.payload = payload
+                self.headers = {"content-length": str(len(payload))}
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=0):
+                yield self.payload
+
+        def fake_get(url, *args, **kwargs):
+            if "/api/models/example/diffusion/tree/" in url:
+                return TreeResp()
+            if url.endswith("/api/models/example/diffusion"):
+                return MetaResp()
+            if url.endswith("model_index.json"):
+                return FileResp(url, b"{}")
+            if url.endswith("unet/diffusion_pytorch_model.safetensors"):
+                return FileResp(url, b"abc")
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
+             patch("ui.app.requests.get", side_effect=fake_get), \
+             patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch.dict("ui.app._active_downloads", {}, clear=True), \
+             patch("ui.app.subprocess.run") as mock_run:
+            ui_app._download_diffusion_model("https://huggingface.co/example/diffusion", "diffusion")
+
+        assert (tmp_path / "diffusion" / "model_index.json").read_bytes() == b"{}"
+        assert (tmp_path / "diffusion" / "unet" / "diffusion_pytorch_model.safetensors").read_bytes() == b"abc"
+        assert not (tmp_path / "diffusion" / "unsafe" / "pytorch_model.bin").exists()
+        assert (tmp_path / ".diffusion.source").read_text() == "https://huggingface.co/example/diffusion"
+        manifest = yaml.safe_load((tmp_path / ".diffusion.hf-manifest.json").read_text())
+        assert manifest["revision"] == "a" * 40
+        assert [item["path"] for item in manifest["files"]] == [
+            "model_index.json",
+            "unet/diffusion_pytorch_model.safetensors",
+        ]
+        mock_run.assert_not_called()
+
+    def test_diffusion_repo_selection_prefers_fp16_components(self):
+        import ui.app as ui_app
+
+        selected, variant = ui_app._select_diffusion_repo_files([
+            {"path": "model_index.json", "size": 2},
+            {"path": "sd_xl_base_1.0.safetensors", "size": 1000},
+            {"path": "unet/diffusion_pytorch_model.safetensors", "size": 900},
+            {"path": "unet/diffusion_pytorch_model.fp16.safetensors", "size": 450},
+            {"path": "text_encoder/model.safetensors", "size": 200},
+        ])
+
+        paths = [item["path"] for item in selected]
+        assert "sd_xl_base_1.0.safetensors" not in paths
+        assert "unet/diffusion_pytorch_model.safetensors" not in paths
+        assert "unet/diffusion_pytorch_model.fp16.safetensors" in paths
+        assert "text_encoder/model.safetensors" in paths
+        assert variant == "fp16"
+
+    def test_quarantine_status_hides_handled_leftovers(self, client, tmp_path):
+        stale = tmp_path / "old-diffusion"
+        stale.mkdir()
+        (stale / "model_index.json").write_text("{}")
+        (tmp_path / ".old-diffusion.status.json").write_text("{}")
+        active = tmp_path / "active.gguf"
+        active.write_bytes(b"data")
+
+        with patch("ui.app.QUARANTINE_DIR", tmp_path):
+            resp = client.get("/api/models/quarantine")
+
+        assert resp.status_code == 200
+        assert [item["filename"] for item in resp.get_json()] == ["active.gguf"]
 
     def test_delete_model_includes_service_token_header(self, client):
         mock_resp = type("Resp", (), {
@@ -436,6 +635,38 @@ class TestPages:
     def test_models_page_returns_html(self, client):
         resp = client.get("/models")
         assert resp.status_code == 200
+
+    def test_models_page_links_generation_models_with_tab_and_model(self, client):
+        resp = client.get("/models")
+        html = resp.get_data(as_text=True)
+
+        assert "function generateHrefForModel" in html
+        assert "'/generate?tab='" in html
+        assert "'&model='" in html
+
+    def test_generate_page_honors_model_query_selection(self, client):
+        resp = client.get("/generate?tab=video&model=video-svd-img2vid")
+        html = resp.get_data(as_text=True)
+
+        assert "new URLSearchParams(window.location.search)" in html
+        assert "requestedModelName = queryParams.get('model')" in html
+        assert "setActiveTab(tabForModel(requestedModel), false)" in html
+        assert "data-tab=\"image-video\"" in html
+        assert "function loadOutputHistory" in html
+        assert "function hasCapability" in html
+        assert "i2v-source-output" in html
+        assert "i2i-source-output" in html
+        assert "readSelectedSourceImage" in html
+        assert "gpu: 'auto'" in html
+
+    def test_chat_page_guides_unloaded_model_switches(self, client):
+        with patch("ui.app.load_appliance_config", return_value={}):
+            resp = client.get("/chat?model=shieldgemma-2b")
+        html = resp.get_data(as_text=True)
+
+        assert "Switch Model" in html
+        assert "selectedModelUsable" in html
+        assert "Switch inference to the selected model before chatting." in html
 
 
 class TestSecurityStats:
@@ -595,6 +826,36 @@ class TestIntegrityMonitoring:
         assert result["safe"] is False
         assert "does not match loaded inference model" in result["detail"]
 
+    def test_chat_requested_model_mismatch_reports_switch_required(self, client):
+        mock_models_resp = type("Resp", (), {
+            "json": lambda self: [{"name": "test-model", "filename": "test-model.gguf"}],
+            "status_code": 200,
+        })()
+        mock_inference_models_resp = type("Resp", (), {
+            "json": lambda self: {
+                "models": [{"name": "test-model.gguf", "model": "test-model.gguf"}],
+            },
+            "status_code": 200,
+        })()
+
+        def mock_get(url, **kwargs):
+            if url.startswith("http://127.0.0.1:8470/"):
+                return mock_models_resp
+            if url.startswith("http://127.0.0.1:8465/"):
+                return mock_inference_models_resp
+            raise AssertionError(f"unexpected GET {url}")
+
+        with patch("ui.app.requests.get", side_effect=mock_get):
+            resp = client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "other-model.gguf",
+            })
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["requires_model_switch"] is True
+        assert data["integrity_failed"] is False
+
     def test_stream_blocked_on_integrity_failure(self, client):
         """Stream chat should return 403 when model integrity check fails."""
         mock_models_resp = type("Resp", (), {"json": lambda self: [], "status_code": 200})()
@@ -695,6 +956,14 @@ class TestSandboxUnsupportedFeatures:
         assert resp.status_code == 501
         assert resp.get_json()["feature"] == "updates"
 
+    def test_update_status_reports_not_available_in_sandbox(self, client, monkeypatch):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        resp = client.get("/api/update/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "not_available"
+        assert data["supported"] is False
+
     def test_update_check_logs_unavailable_in_sandbox(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
         with patch("ui.app._ui_audit.append") as mock_append:
@@ -758,8 +1027,60 @@ class TestSandboxUnsupportedFeatures:
         )
 
 
+class TestGenerationProxy:
+    def test_generation_requires_selected_model(self, client):
+        resp = client.post("/api/generate/image", json={"prompt": "test"})
+        assert resp.status_code == 400
+        assert "select a model" in resp.get_json()["error"]
+
+    def test_generation_proxy_forwards_selected_model(self, client):
+        mock_resp = type("Resp", (), {
+            "json": lambda self: {"images": []},
+            "status_code": 200,
+        })()
+
+        with patch("ui.app.requests.post", return_value=mock_resp) as mock_post:
+            resp = client.post("/api/generate/image", json={
+                "prompt": "test",
+                "model": "tiny-diffusion",
+            })
+
+        assert resp.status_code == 200
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["model"] == "tiny-diffusion"
+
+
 class TestModelCatalog:
     """Tests for the externalized model catalog loading."""
+
+    def test_llm_catalog_entries_are_pinned_in_models_lock(self):
+        catalog_path = Path(__file__).parent.parent / "files" / "system" / "etc" / "secure-ai" / "model-catalog.yaml"
+        lock_path = Path(__file__).parent.parent / "files" / "system" / "etc" / "secure-ai" / "policy" / "models.lock.yaml"
+        catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))["models"]
+        lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))["models"]
+        lock_hashes = {entry["filename"]: entry["sha256"] for entry in lock}
+
+        for entry in catalog:
+            if entry["type"] != "llm":
+                continue
+            assert entry["expected_sha256"] == lock_hashes[entry["filename"]]
+            assert len(entry["expected_sha256"]) == 64
+
+    def test_catalog_ships_only_approved_entries(self):
+        catalog_path = Path(__file__).parent.parent / "files" / "system" / "etc" / "secure-ai" / "model-catalog.yaml"
+        catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))["models"]
+        counts = {"llm": 0, "image": 0, "video": 0}
+
+        for entry in catalog:
+            assert entry.get("security_status") == "approved"
+            assert not entry.get("blocked")
+            category = entry.get("category")
+            if category in counts:
+                counts[category] += 1
+
+        assert counts == {"llm": 5, "image": 5, "video": 5}
+        fallback_names = {entry["filename"] for entry in _FALLBACK_CATALOG}
+        assert fallback_names == {entry["filename"] for entry in catalog}
 
     def test_load_from_yaml_file(self):
         """Loading a valid YAML catalog returns its entries."""

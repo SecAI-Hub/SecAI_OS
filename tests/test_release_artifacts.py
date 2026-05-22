@@ -190,8 +190,8 @@ class TestCiWorkflowStructure:
 
     def test_quarantine_container_scanners_are_pinned(self):
         for rel_path in (
-            "services/quarantine/Containerfile",
-            "services/quarantine/Containerfile.sandbox",
+            "services/quarantine/Dockerfile",
+            "services/quarantine/Dockerfile.sandbox",
         ):
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             assert "ARG ENABLE_GARAK_SCANNER=false" in content

@@ -23,6 +23,158 @@ def test_max_content_length_applies_in_wsgi_mode():
     assert module.app.config["MAX_CONTENT_LENGTH"] == 100 * 1024 * 1024
 
 
+def test_load_pipeline_uses_fp16_variant_when_present(monkeypatch, tmp_path):
+    module = _load_module()
+    model_dir = tmp_path / "model"
+    (model_dir / "unet").mkdir(parents=True)
+    (model_dir / "unet" / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"fake")
+    calls = {}
+
+    class FakePipeline:
+        def to(self, _device):
+            return self
+
+    class FakeAutoPipeline:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            calls["path"] = path
+            calls["kwargs"] = kwargs
+            return FakePipeline()
+
+    fake_torch = types.SimpleNamespace(
+        float16="float16",
+        float32="float32",
+        version=types.SimpleNamespace(hip=None),
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
+        xpu=types.SimpleNamespace(is_available=lambda: False),
+    )
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_diffusers.AutoPipelineForText2Image = FakeAutoPipeline
+    fake_diffusers.AutoPipelineForImage2Image = FakeAutoPipeline
+    fake_diffusers.DiffusionPipeline = FakeAutoPipeline
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+
+    module._load_pipeline(str(model_dir), "image")
+
+    assert calls["path"] == str(model_dir)
+    assert calls["kwargs"]["variant"] == "fp16"
+    assert calls["kwargs"]["local_files_only"] is True
+
+
+def test_find_diffusion_models_classifies_ltx_video_pipeline(monkeypatch, tmp_path):
+    module = _load_module()
+    registry_dir = tmp_path / "registry"
+    model_dir = registry_dir / "video-tiny-ltx-katuni4ka"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model_index.json").write_text('{"_class_name": "LTXPipeline"}')
+    monkeypatch.setattr(module, "REGISTRY_DIR", registry_dir)
+
+    models = module._find_diffusion_models()
+
+    assert models == [{
+        "name": "video-tiny-ltx-katuni4ka",
+        "path": str(model_dir),
+        "type": "video",
+        "class": "LTXPipeline",
+        "capabilities": ["txt2vid"],
+    }]
+
+
+def test_find_diffusion_models_advertises_generation_capabilities(monkeypatch, tmp_path):
+    module = _load_module()
+    registry_dir = tmp_path / "registry"
+    image_dir = registry_dir / "stable-image"
+    svd_dir = registry_dir / "video-svd-img2vid"
+    image_dir.mkdir(parents=True)
+    svd_dir.mkdir(parents=True)
+    (image_dir / "model_index.json").write_text('{"_class_name": "StableDiffusionPipeline"}')
+    (svd_dir / "model_index.json").write_text('{"_class_name": "StableVideoDiffusionPipeline"}')
+    monkeypatch.setattr(module, "REGISTRY_DIR", registry_dir)
+
+    models = {model["name"]: model for model in module._find_diffusion_models()}
+
+    assert models["stable-image"]["capabilities"] == ["txt2img", "img2img"]
+    assert models["video-svd-img2vid"]["capabilities"] == ["img2vid"]
+
+
+def test_load_pipeline_keeps_cuda_pipeline_on_gpu_by_default(monkeypatch, tmp_path):
+    module = _load_module()
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    calls = {"to": [], "offload": 0, "attention": 0}
+
+    class FakePipeline:
+        def to(self, device):
+            calls["to"].append(device)
+            return self
+
+        def enable_model_cpu_offload(self):
+            calls["offload"] += 1
+
+        def enable_xformers_memory_efficient_attention(self):
+            calls["attention"] += 1
+
+        def enable_attention_slicing(self):
+            calls["attention"] += 1
+
+    class FakeAutoPipeline:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            calls["path"] = path
+            calls["kwargs"] = kwargs
+            return FakePipeline()
+
+    fake_torch = types.SimpleNamespace(
+        float16="float16",
+        float32="float32",
+        version=types.SimpleNamespace(hip=None),
+        cuda=types.SimpleNamespace(is_available=lambda: True),
+        backends=types.SimpleNamespace(
+            mps=types.SimpleNamespace(is_available=lambda: False),
+            cuda=types.SimpleNamespace(matmul=types.SimpleNamespace(allow_tf32=False)),
+        ),
+        xpu=types.SimpleNamespace(is_available=lambda: False),
+    )
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_diffusers.AutoPipelineForText2Image = FakeAutoPipeline
+    fake_diffusers.AutoPipelineForImage2Image = FakeAutoPipeline
+    fake_diffusers.DiffusionPipeline = FakeAutoPipeline
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+    monkeypatch.delenv("DIFFUSION_CPU_OFFLOAD", raising=False)
+    monkeypatch.delenv("DIFFUSION_DEVICE_PREFERENCE", raising=False)
+
+    module._load_pipeline(str(model_dir), "image")
+
+    assert calls["to"] == ["cuda"]
+    assert calls["kwargs"]["torch_dtype"] == "float16"
+    assert calls["offload"] == 0
+    assert calls["attention"] == 2
+
+
+def test_outputs_list_serves_recent_generated_files(monkeypatch, tmp_path):
+    module = _load_module()
+    monkeypatch.setattr(module, "OUTPUTS_DIR", tmp_path)
+    (tmp_path / "gen_1.png").write_bytes(b"png")
+    (tmp_path / "gen_2.mp4").write_bytes(b"mp4")
+    (tmp_path / "notes.txt").write_text("ignore")
+
+    with module.app.test_client() as client:
+        list_resp = client.get("/v1/outputs")
+        file_resp = client.get("/v1/outputs/gen_1.png")
+        traversal_resp = client.get("/v1/outputs/../secret.png")
+
+    assert list_resp.status_code == 200
+    payload = list_resp.get_json()
+    assert {item["filename"] for item in payload} == {"gen_1.png", "gen_2.mp4"}
+    assert {item["kind"] for item in payload} == {"image", "video"}
+    assert file_resp.status_code == 200
+    assert file_resp.data == b"png"
+    assert traversal_resp.status_code == 400
+
+
 def test_img2img_rejects_zero_effective_steps_before_pipeline_load():
     module = _load_module()
     module.app.config["TESTING"] = True
@@ -73,6 +225,7 @@ def test_img2img_upscales_tiny_images_before_pipeline_call(monkeypatch, tmp_path
         "name": "tiny",
         "path": "/tmp/tiny",
         "type": "image",
+        "capabilities": ["img2img"],
     }]
 
     calls = {}
@@ -144,6 +297,7 @@ def test_generate_video_requires_image_for_image_conditioned_models():
         "path": "/tmp/tiny-video",
         "type": "video",
         "class": "StableVideoDiffusionPipeline",
+        "capabilities": ["img2vid"],
     }]
 
     def _unexpected_load(*args, **kwargs):
@@ -174,6 +328,7 @@ def test_generate_video_requires_prompt_for_text_conditioned_models():
         "path": "/tmp/txt2vid",
         "type": "video",
         "class": "TextToVideoPipeline",
+        "capabilities": ["txt2vid"],
     }]
 
     def _unexpected_load(*args, **kwargs):
@@ -262,6 +417,7 @@ def test_generate_video_passes_image_for_image_conditioned_models(monkeypatch, t
         "path": "/tmp/tiny-video",
         "type": "video",
         "class": "StableVideoDiffusionPipeline",
+        "capabilities": ["img2vid"],
     }]
 
     calls = {}
@@ -343,6 +499,7 @@ def test_generate_video_honors_requested_dimensions_for_image_conditioned_models
         "path": "/tmp/tiny-video",
         "type": "video",
         "class": "StableVideoDiffusionPipeline",
+        "capabilities": ["img2vid"],
     }]
 
     calls = {}

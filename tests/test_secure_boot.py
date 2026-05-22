@@ -176,19 +176,21 @@ class TestFirstbootIntegration:
 
 
 class TestRecipeIncludes:
-    def test_recipe_includes_mokutil(self):
+    def _rpm_ostree_packages(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
-        packages = recipe["modules"][0]["install"]
+        rpm_module = next(m for m in recipe["modules"] if m.get("type") == "rpm-ostree")
+        return rpm_module["install"]
+
+    def test_recipe_includes_mokutil(self):
+        packages = self._rpm_ostree_packages()
         assert "mokutil" in packages
 
     def test_recipe_includes_sbsigntools(self):
-        recipe = yaml.safe_load(RECIPE_PATH.read_text())
-        packages = recipe["modules"][0]["install"]
+        packages = self._rpm_ostree_packages()
         assert "sbsigntools" in packages
 
     def test_recipe_includes_tpm2_tools(self):
-        recipe = yaml.safe_load(RECIPE_PATH.read_text())
-        packages = recipe["modules"][0]["install"]
+        packages = self._rpm_ostree_packages()
         assert "tpm2-tools" in packages
 
     def test_recipe_enables_boot_verify(self):

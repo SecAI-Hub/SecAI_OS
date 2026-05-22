@@ -5,6 +5,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.yaml"
+NVIDIA_GPU_COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.gpu.nvidia.yaml"
+ROCM_GPU_COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.gpu.rocm.yaml"
 DOC_PATH = REPO_ROOT / "docs" / "install" / "sandbox.md"
 PINNED_ALPINE_HELPER = "docker.io/library/alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11"
 
@@ -67,10 +69,12 @@ def test_sandbox_bundle_has_docs_and_helpers():
     assert DOC_PATH.exists()
     for rel_path in [
         "deploy/sandbox/.env.example",
+        "deploy/sandbox/compose.gpu.nvidia.yaml",
+        "deploy/sandbox/compose.gpu.rocm.yaml",
         "deploy/sandbox/search/torrc",
-        "deploy/sandbox/searxng/Containerfile",
-        "deploy/sandbox/tor/Containerfile",
-        "services/diffusion-worker/Containerfile.sandbox",
+        "deploy/sandbox/searxng/Dockerfile",
+        "deploy/sandbox/tor/Dockerfile",
+        "services/diffusion-worker/Dockerfile.sandbox",
         "services/ui/entrypoint.py",
         "services/search-mediator/entrypoint.py",
         "scripts/sandbox/ui-entrypoint.sh",
@@ -99,6 +103,30 @@ def test_sandbox_start_helpers_use_digest_pinned_alpine():
     assert "docker.io/library/alpine:3.20" not in powershell_helper
 
 
+def test_sandbox_start_helpers_bound_docker_wait_time():
+    shell_helper = (REPO_ROOT / "scripts" / "sandbox" / "start.sh").read_text(
+        encoding="utf-8"
+    )
+    powershell_helper = (REPO_ROOT / "scripts" / "sandbox" / "start.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--wait-timeout 900" in shell_helper
+    assert '"--wait-timeout", "900"' in powershell_helper
+
+
+def test_sandbox_control_server_kills_stale_start_tree():
+    control_server = (REPO_ROOT / "scripts" / "sandbox" / "control_server.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SECAI_CONTROL_APPLY_TIMEOUT" in control_server
+    assert "taskkill" in control_server
+    assert 'encoding="utf-8"' in control_server
+    assert 'errors="replace"' in control_server
+    assert "previous sandbox automation was interrupted" in control_server
+
+
 def test_windows_sandbox_launcher_delegates_to_hardened_helpers():
     launcher = (REPO_ROOT / "secai-sandbox.cmd").read_text(encoding="utf-8")
 
@@ -110,6 +138,7 @@ def test_windows_sandbox_launcher_delegates_to_hardened_helpers():
         "--with-airlock": "-WithAirlock",
         "--with-inference": "-WithInference",
         "--with-diffusion": "-WithDiffusion",
+        "--with-gpu": "-WithGpu",
     }.items():
         assert option in launcher
         assert ps_switch in launcher
@@ -139,19 +168,53 @@ def test_optional_profiles_are_hardened_and_use_production_entrypoints():
     assert inference["user"] == "65534:65534"
     assert "secai-state:/var/lib/secure-ai:ro" in inference["volumes"]
     assert inference["environment"]["REGISTRY_DIR"] == "/var/lib/secure-ai/registry"
+    inference_containerfile = (REPO_ROOT / "services" / "inference-worker" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "/proc/net/tcp" in inference_containerfile
+    assert "wget -q" not in inference_containerfile
 
     diffusion = services["diffusion"]
     assert diffusion["read_only"] is True
     assert diffusion["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in diffusion["security_opt"]
     assert diffusion["build"]["context"] == "../.."
-    assert diffusion["build"]["dockerfile"] == "services/diffusion-worker/Containerfile.sandbox"
+    assert diffusion["build"]["dockerfile"] == "services/diffusion-worker/Dockerfile.sandbox"
     assert diffusion["environment"]["LANG"] == "C.UTF-8"
     assert diffusion["environment"]["LC_ALL"] == "C.UTF-8"
     assert diffusion["environment"]["GUNICORN_WORKERS"] == 1
     assert diffusion["environment"]["GUNICORN_THREADS"] == 2
     assert diffusion["environment"]["GUNICORN_TIMEOUT"] == 1800
+    assert diffusion["environment"]["DIFFUSION_DEVICE_PREFERENCE"] == "${SECAI_DIFFUSION_DEVICE_PREFERENCE:-auto}"
+    assert diffusion["environment"]["DIFFUSION_CPU_OFFLOAD"] == "${SECAI_DIFFUSION_CPU_OFFLOAD:-0}"
     assert "/tmp:rw,noexec,nosuid,nodev,size=256m" in diffusion["tmpfs"]
+
+    diffusion_containerfile = (REPO_ROOT / "services" / "diffusion-worker" / "Dockerfile.sandbox").read_text(
+        encoding="utf-8"
+    )
+    assert "2.12.0+cu132" in diffusion_containerfile
+    assert "2.12.0+cpu" in diffusion_containerfile
+    assert "cu124" not in diffusion_containerfile
+    assert "rocm6.1" not in diffusion_containerfile
+
+
+def test_gpu_compose_overrides_are_explicit_and_scoped_to_diffusion():
+    nvidia = yaml.safe_load(NVIDIA_GPU_COMPOSE_PATH.read_text())
+    rocm = yaml.safe_load(ROCM_GPU_COMPOSE_PATH.read_text())
+
+    assert set(nvidia["services"]) == {"diffusion"}
+    nvidia_diffusion = nvidia["services"]["diffusion"]
+    assert nvidia_diffusion["build"]["args"]["COMPUTE"] == "cuda"
+    assert nvidia_diffusion["environment"]["DIFFUSION_CPU_OFFLOAD"] == "${SECAI_DIFFUSION_CPU_OFFLOAD:-0}"
+    assert nvidia_diffusion["environment"]["NVIDIA_DRIVER_CAPABILITIES"] == "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    devices = nvidia_diffusion["deploy"]["resources"]["reservations"]["devices"]
+    assert devices == [{"driver": "nvidia", "count": "all", "capabilities": ["gpu"]}]
+
+    assert set(rocm["services"]) == {"diffusion"}
+    rocm_diffusion = rocm["services"]["diffusion"]
+    assert rocm_diffusion["build"]["args"]["COMPUTE"] == "rocm"
+    assert "/dev/kfd:/dev/kfd" in rocm_diffusion["devices"]
+    assert "/dev/dri:/dev/dri" in rocm_diffusion["devices"]
 
 
 def test_runtime_renderer_can_toggle_search_and_airlock(tmp_path):

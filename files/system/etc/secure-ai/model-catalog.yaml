@@ -1,101 +1,184 @@
-# Pre-curated model catalog — users can download these with one click.
-# All URLs point to Hugging Face (allowlisted source).
+# Pre-curated model catalog - users can download these with one click.
+# All entries below were promoted by the SecAI_OS quarantine pipeline on
+# 2026-05-15. Failed or untested models are intentionally excluded.
 #
-# To add a model: append an entry following the same structure.
-# To remove a model: delete or comment out its entry.
+# To add a model: download it through the catalog/quarantine path, confirm a
+# promoted audit event, add the immutable pins for GGUF artifacts to
+# policy/models.lock.yaml, then append an entry here.
 # Changes take effect on next UI restart (or reload via /api/admin/reload).
 
 models:
-  - name: "Phi-3 Mini 3.8B (Q4_K_M)"
+  - name: "Granite Guardian 3.1 2B (Q4_K_M)"
     type: llm
     category: llm
-    filename: "Phi-3-mini-4k-instruct-q4.gguf"
-    url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
-    size_gb: 2.3
-    vram_gb: 4
-    description: "Fast, small LLM. Good for testing and low-VRAM systems."
-
-  - name: "Mistral 7B Instruct (Q4_K_M)"
-    type: llm
-    category: llm
-    filename: "mistral-7b-instruct-v0.3.Q4_K_M.gguf"
-    url: "https://huggingface.co/MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"
-    size_gb: 4.4
-    vram_gb: 6
-    description: "General-purpose LLM. Good balance of speed and quality."
-
-  - name: "Llama 3.1 8B Instruct (Q4_K_M)"
-    type: llm
-    category: llm
-    filename: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-    url: "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-    size_gb: 4.9
-    vram_gb: 7
-    description: "Strong reasoning and instruction following."
-
-  - name: "TinyLlama 1.1B Chat (Q4_K_M)"
-    type: llm
-    category: llm
-    filename: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-    url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-    size_gb: 0.7
-    vram_gb: 2
-    description: "Very small chat model for smoke tests and CPU-only systems."
-
-  - name: "Qwen2.5 1.5B Instruct (Q4_K_M)"
-    type: llm
-    category: llm
-    filename: "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
-    url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
-    size_gb: 1.1
+    filename: "granite-guardian-3.1-2b-q4_k_m.gguf"
+    url: "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/main/granite-guardian-3.1-2b-q4_k_m.gguf"
+    size_gb: 1.5
     vram_gb: 3
-    description: "Compact multilingual instruction model."
+    description: "Approved guard-focused LLM. Promoted after static, integrity, and behavioral smoke tests."
+    expected_sha256: "2eaa7ed23bbd122fc654d9409f3076d35799b1cbc58f992b159d53cbaa51bed2"
+    expected_size_bytes: 1530557952
+    security_status: approved
+    tested_on: "2026-05-15"
 
-  - name: "Qwen2.5 7B Instruct (Q4_K_M)"
+  - name: "ShieldGemma 2B (Q4_K_M)"
     type: llm
     category: llm
-    filename: "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    size_gb: 4.7
-    vram_gb: 7
-    description: "Stronger general-purpose chat and coding model."
+    filename: "shieldgemma-2b.Q4_K_M.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q4_K_M.gguf"
+    size_gb: 1.7
+    vram_gb: 3
+    description: "Approved safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    expected_sha256: "47b0c3f4ec0bf93659ab2fc92cf2041374ef78bf1cb5b8c790421f463e7b7979"
+    expected_size_bytes: 1708583104
+    security_status: approved
+    tested_on: "2026-05-15"
 
-  - name: "Llama 3.2 3B Instruct (Q4_K_M)"
+  - name: "GA Guard Core (Q2_K)"
     type: llm
     category: llm
-    filename: "Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-    url: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-    size_gb: 2.0
+    filename: "GA_Guard_Core.Q2_K.gguf"
+    url: "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/main/GA_Guard_Core.Q2_K.gguf"
+    size_gb: 1.7
+    vram_gb: 3
+    description: "Approved guard-focused LLM. Promoted after static, integrity, and behavioral smoke tests."
+    expected_sha256: "ff6087763f3886e3355058f34a8f9f6b3a8ba4a8f70a5795001bdaee1b3368b3"
+    expected_size_bytes: 1668960032
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "ShieldGemma 2B (Q5_K_M)"
+    type: llm
+    category: llm
+    filename: "shieldgemma-2b.Q5_K_M.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q5_K_M.gguf"
+    size_gb: 1.9
     vram_gb: 4
-    description: "Small instruction model with a good quality-to-size tradeoff."
+    description: "Approved higher-quality safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    expected_sha256: "265ec9c9c2b069aa8737fdb79bf56d561b48e165b76728d52dd82b1932069b0f"
+    expected_size_bytes: 1923279040
+    security_status: approved
+    tested_on: "2026-05-15"
 
-  - name: "Stable Diffusion XL Base"
+  - name: "ShieldGemma 9B (Q2_K)"
+    type: llm
+    category: llm
+    filename: "shieldgemma-9b.Q2_K.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/main/shieldgemma-9b.Q2_K.gguf"
+    size_gb: 3.8
+    vram_gb: 6
+    description: "Approved larger safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    expected_sha256: "3e86670d2abe5ce0be1c31582216dd6ae9731cc85cf3978e27f2d3b9238edf08"
+    expected_size_bytes: 3805398560
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "Tiny Random SDXL"
     type: diffusion
     category: image
-    filename: "stable-diffusion-xl-base-1.0"
-    url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
-    size_gb: 6.9
-    vram_gb: 8
-    description: "Image generation. 1024x1024 output. Requires 8GB+ VRAM."
-    requires_terms: true
-    terms_url: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
+    filename: "image-tiny-sdxl-dg845"
+    url: "https://huggingface.co/dg845/tiny-random-stable-diffusion-xl"
+    size_gb: 0.01
+    vram_gb: 2
+    description: "Approved tiny SDXL image pipeline for low-resource smoke testing."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "BK-SDM Tiny"
+    type: diffusion
+    category: image
+    filename: "image-bk-sdm-tiny"
+    url: "https://huggingface.co/nota-ai/bk-sdm-tiny"
+    size_gb: 1.7
+    vram_gb: 4
+    description: "Approved compact Stable Diffusion image pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "BK-SDM Small"
+    type: diffusion
+    category: image
+    filename: "image-bk-sdm-small"
+    url: "https://huggingface.co/nota-ai/bk-sdm-small"
+    size_gb: 2.0
+    vram_gb: 5
+    description: "Approved small Stable Diffusion image pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "BK-SDM Base"
+    type: diffusion
+    category: image
+    filename: "image-bk-sdm-base"
+    url: "https://huggingface.co/nota-ai/bk-sdm-base"
+    size_gb: 2.2
+    vram_gb: 6
+    description: "Approved base Stable Diffusion image pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
 
   - name: "Stable Diffusion 1.5"
     type: diffusion
     category: image
-    filename: "stable-diffusion-v1-5"
+    filename: "image-sd15"
     url: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
-    size_gb: 4.3
+    size_gb: 2.7
     vram_gb: 4
-    description: "Image generation. 512x512 output. Lower VRAM requirement."
+    description: "Approved Stable Diffusion 1.5 image pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "Tiny Stable Video Diffusion"
+    type: diffusion
+    category: video
+    filename: "video-tiny-svd-seinpark"
+    url: "https://huggingface.co/seinpark/tiny-stable-video-diffusion-img2vid"
+    size_gb: 0.01
+    vram_gb: 2
+    description: "Approved tiny image-to-video pipeline for low-resource smoke testing."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "Tiny Random LTX Video"
+    type: diffusion
+    category: video
+    filename: "video-tiny-ltx-katuni4ka"
+    url: "https://huggingface.co/katuni4ka/tiny-random-ltx-video"
+    size_gb: 0.01
+    vram_gb: 2
+    description: "Approved tiny LTX video pipeline for low-resource smoke testing."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "Stable Video Diffusion"
+    type: diffusion
+    category: video
+    filename: "video-svd-img2vid"
+    url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid"
+    size_gb: 4.5
+    vram_gb: 16
+    description: "Approved image-to-video Stable Video Diffusion pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
 
   - name: "Stable Video Diffusion XT"
     type: diffusion
     category: video
-    filename: "stable-video-diffusion-img2vid-xt"
+    filename: "video-svd-img2vid-xt"
     url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
-    size_gb: 9.6
+    size_gb: 4.5
     vram_gb: 16
-    description: "Video generation from image. 25 frames. Requires 16GB+ VRAM."
-    requires_terms: true
-    terms_url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
+    description: "Approved image-to-video Stable Video Diffusion XT pipeline."
+    security_status: approved
+    tested_on: "2026-05-15"
+
+  - name: "Stable Video Diffusion XT 1.1"
+    type: diffusion
+    category: video
+    filename: "video-svd-xt-1-1-weights"
+    url: "https://huggingface.co/weights/stable-video-diffusion-img2vid-xt-1-1"
+    size_gb: 4.5
+    vram_gb: 16
+    description: "Approved public XT 1.1 image-to-video pipeline mirror."
+    security_status: approved
+    tested_on: "2026-05-15"

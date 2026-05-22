@@ -130,7 +130,7 @@ airlock:
   allowed_methods: ["GET", "POST"]
   max_body_size: 10485760  # 10 MB
   rate_limit:
-    requests_per_minute: 30
+    requests_per_minute: 120
   content_rules:
     block_if_contains: []
     scan_for_pii: true

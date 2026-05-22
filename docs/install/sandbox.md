@@ -103,6 +103,24 @@ bash scripts/sandbox/start.sh --with-diffusion
 powershell -ExecutionPolicy Bypass -File scripts/sandbox/start.ps1 -WithDiffusion
 ```
 
+For capable NVIDIA or ROCm hosts, add GPU acceleration:
+
+```bash
+bash scripts/sandbox/start.sh --with-diffusion --with-gpu
+```
+
+```powershell
+.\secai-sandbox.cmd start --with-diffusion --with-gpu
+```
+
+`--with-gpu` builds the diffusion worker with a GPU PyTorch backend and adds a
+GPU-specific compose override. By default it keeps diffusion pipelines resident
+on the GPU and leaves CPU offload disabled (`SECAI_DIFFUSION_CPU_OFFLOAD=0`).
+Set `SECAI_DIFFUSION_COMPUTE=rocm` for AMD ROCm, or leave it unset for NVIDIA
+CUDA auto-detection. GPU passthrough gives the diffusion container access to the
+host GPU device, so keep it disabled for sessions that do not need generation
+acceleration.
+
 **Enable Tor-routed web search**
 
 This starts the Tor and SearXNG sidecars and flips the sandbox runtime policy

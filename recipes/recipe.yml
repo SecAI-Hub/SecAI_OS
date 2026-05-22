@@ -10,6 +10,13 @@ base-image: ghcr.io/ublue-os/silverblue-main
 image-version: 42
 
 modules:
+  # Preflight: uBlue base images can carry the Negativo17 multimedia repo before
+  # Fedora publishes the matching rpm-md metadata. Disable only that nonessential
+  # repo so the first rpm-ostree module can refresh metadata reliably.
+  - type: script
+    scripts:
+      - disable-stale-fedora-repos.sh
+
   # 1) Install required packages (includes GPU compute libraries).
   - type: rpm-ostree
     install:

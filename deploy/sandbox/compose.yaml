@@ -15,14 +15,14 @@ x-secai-runtime-defaults: &secai_runtime_defaults
       max-size: "10m"
       max-file: "3"
   tmpfs:
-    - /tmp:rw,noexec,nosuid,nodev,size=64m
+    - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
 
 services:
   registry:
     <<: *secai_runtime_defaults
     build:
       context: ../../services/registry
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8470
       REGISTRY_DIR: /var/lib/secure-ai/registry
@@ -45,7 +45,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../../services/policy-engine
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8500
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
@@ -69,7 +69,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../../services/tool-firewall
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8475
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
@@ -92,7 +92,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../../services/airlock
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8490
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
@@ -115,7 +115,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../..
-      dockerfile: services/quarantine/Containerfile.sandbox
+      dockerfile: services/quarantine/Dockerfile.sandbox
     depends_on:
       registry:
         condition: service_healthy
@@ -144,7 +144,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../..
-      dockerfile: services/search-mediator/Containerfile
+      dockerfile: services/search-mediator/Dockerfile
     environment:
       BIND_ADDR: 0.0.0.0:8485
       SEARXNG_URL: http://searxng:8888
@@ -185,7 +185,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ./tor
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     volumes:
       - ./search/torrc:/etc/tor/torrc:ro
     networks:
@@ -209,7 +209,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ./searxng
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     depends_on:
       tor:
         condition: service_healthy
@@ -238,7 +238,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../..
-      dockerfile: services/agent/Containerfile.sandbox
+      dockerfile: services/agent/Dockerfile.sandbox
     depends_on:
       registry:
         condition: service_healthy
@@ -279,7 +279,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../..
-      dockerfile: services/ui/Containerfile.sandbox
+      dockerfile: services/ui/Dockerfile.sandbox
     depends_on:
       registry:
         condition: service_healthy
@@ -347,7 +347,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../../services/inference-worker
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
       args:
         IMAGE_TAG: ${SECAI_INFERENCE_IMAGE_TAG:-server}
     user: "65534:65534"
@@ -367,7 +367,7 @@ services:
     <<: *secai_runtime_defaults
     build:
       context: ../..
-      dockerfile: services/diffusion-worker/Containerfile.sandbox
+      dockerfile: services/diffusion-worker/Dockerfile.sandbox
       args:
         COMPUTE: ${SECAI_DIFFUSION_COMPUTE:-cpu}
     environment:
@@ -381,6 +381,8 @@ services:
       GUNICORN_THREADS: 2
       GUNICORN_TIMEOUT: 1800
       GUNICORN_GRACEFUL_TIMEOUT: 30
+      DIFFUSION_DEVICE_PREFERENCE: ${SECAI_DIFFUSION_DEVICE_PREFERENCE:-auto}
+      DIFFUSION_CPU_OFFLOAD: ${SECAI_DIFFUSION_CPU_OFFLOAD:-0}
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m
     volumes:

@@ -1,15 +1,18 @@
 # Diffusion worker: image and video generation via diffusers library.
 # Build arg COMPUTE selects the GPU backend:
-#   cuda  - NVIDIA GPUs (CUDA 12.4)
-#   rocm  - AMD GPUs (ROCm 6.1)
+#   cuda  - NVIDIA GPUs (CUDA 13.2)
+#   rocm  - AMD GPUs (ROCm 6.4)
 #   cpu   - CPU only (AVX2/AVX-512 optimized, works everywhere)
 ARG COMPUTE=cuda
-ARG TORCH_CUDA_VERSION=2.6.0+cu124
-ARG TORCH_ROCM_VERSION=2.5.1+rocm6.1
-ARG TORCH_CPU_VERSION=2.6.0+cpu
-ARG TORCHVISION_CUDA_VERSION=0.21.0+cu124
-ARG TORCHVISION_ROCM_VERSION=0.20.1+rocm6.1
-ARG TORCHVISION_CPU_VERSION=0.21.0+cpu
+ARG TORCH_CUDA_VERSION=2.12.0+cu132
+ARG TORCH_ROCM_VERSION=2.9.1+rocm6.4
+ARG TORCH_CPU_VERSION=2.12.0+cpu
+ARG TORCHVISION_CUDA_VERSION=0.27.0+cu132
+ARG TORCHVISION_ROCM_VERSION=0.24.1+rocm6.4
+ARG TORCHVISION_CPU_VERSION=0.27.0+cpu
+ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu132
+ARG TORCH_ROCM_INDEX_URL=https://download.pytorch.org/whl/rocm6.4
+ARG TORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG IPEX_CPU_VERSION=2.6.0
 
 FROM docker.io/library/python:3.12-slim@sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461 AS base
@@ -21,17 +24,20 @@ ARG TORCH_CPU_VERSION
 ARG TORCHVISION_CUDA_VERSION
 ARG TORCHVISION_ROCM_VERSION
 ARG TORCHVISION_CPU_VERSION
+ARG TORCH_CUDA_INDEX_URL
+ARG TORCH_ROCM_INDEX_URL
+ARG TORCH_CPU_INDEX_URL
 ARG IPEX_CPU_VERSION
 
 RUN python -m pip install --no-cache-dir --upgrade pip==26.1.1 setuptools==82.0.1
 
 # Install PyTorch with the appropriate compute backend
 RUN if [ "$COMPUTE" = "cuda" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url https://download.pytorch.org/whl/cu124; \
+        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url "${TORCH_CUDA_INDEX_URL}"; \
     elif [ "$COMPUTE" = "rocm" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url https://download.pytorch.org/whl/rocm6.1; \
+        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url "${TORCH_ROCM_INDEX_URL}"; \
     else \
-        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url https://download.pytorch.org/whl/cpu; \
+        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url "${TORCH_CPU_INDEX_URL}"; \
     fi
 
 RUN pip install --no-cache-dir \

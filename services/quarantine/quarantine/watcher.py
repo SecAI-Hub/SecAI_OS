@@ -103,6 +103,14 @@ def _read_source_metadata(artifact_path: Path) -> str:
     return ""
 
 
+def _cleanup_artifact_metadata(artifact_path: Path) -> None:
+    """Remove hidden metadata files associated with a quarantined artifact."""
+    for suffix in (".source", ".hf-manifest.json"):
+        metadata_file = artifact_path.parent / f".{artifact_path.name}{suffix}"
+        if metadata_file.exists():
+            metadata_file.unlink()
+
+
 def _quarantine_status_marker(artifact_path: Path) -> Path:
     """Return the hidden status marker path for a quarantined artifact."""
     return artifact_path.parent / f".{artifact_path.name}.status.json"
@@ -325,10 +333,7 @@ def process_artifact(artifact_path: Path) -> bool:
             details={k: str(v) for k, v in result.get("details", {}).items()},
         )
         artifact_path.unlink()
-        # Clean up source metadata file
-        source_meta = artifact_path.parent / f".{artifact_path.name}.source"
-        if source_meta.exists():
-            source_meta.unlink()
+        _cleanup_artifact_metadata(artifact_path)
         return False
 
     # Move file to registry directory
@@ -339,10 +344,7 @@ def process_artifact(artifact_path: Path) -> bool:
     # Enable fs-verity on the promoted file (before provenance manifest)
     fsverity_ok = _enable_fsverity(dest)
 
-    # Clean up source metadata
-    source_meta = artifact_path.parent / f".{artifact_path.name}.source"
-    if source_meta.exists():
-        source_meta.unlink()
+    _cleanup_artifact_metadata(artifact_path)
 
     # Collect scan result summary
     details = result.get("details", {})
@@ -413,9 +415,7 @@ def process_directory(artifact_dir: Path) -> bool:
             state="rejected",
             artifact_hash=dir_hash,
         )
-        source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
-        if source_meta.exists():
-            source_meta.unlink()
+        _cleanup_artifact_metadata(artifact_dir)
         return False
 
     # Copy the directory into the registry first so ownership differences in the
@@ -443,9 +443,7 @@ def process_directory(artifact_dir: Path) -> bool:
             if not _enable_fsverity(f):
                 fsverity_ok = False
 
-    source_meta = artifact_dir.parent / f".{artifact_dir.name}.source"
-    if source_meta.exists():
-        source_meta.unlink()
+    _cleanup_artifact_metadata(artifact_dir)
     _cleanup_quarantine_directory(
         artifact_dir,
         state="promoted",

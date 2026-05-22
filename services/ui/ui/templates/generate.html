@@ -18,13 +18,62 @@
         border-radius: var(--radius-lg);
         object-fit: contain;
     }
+    .model-picker {
+        margin-bottom: 1rem;
+    }
+    .output-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 0.75rem;
+        margin-top: 1rem;
+    }
+    .output-card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: 0.5rem;
+    }
+    .output-card img,
+    .output-card video {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        max-height: 180px;
+        object-fit: contain;
+        border-radius: var(--radius);
+        background: var(--bg);
+    }
+    .output-meta {
+        margin-top: 0.4rem;
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        word-break: break-word;
+    }
 </style>
 {% endblock %}
 
 {% block content %}
+<div class="card model-picker">
+    <div class="card-header">
+        <span class="card-title">Generation Model</span>
+        <span class="badge" id="model-badge">checking</span>
+    </div>
+    <div class="form-row" style="align-items:flex-end">
+        <div class="form-group" style="flex:1 1 260px;margin-bottom:0">
+            <label class="form-label" for="model-select">Model</label>
+            <select class="form-input" id="model-select" disabled>
+                <option value="">Loading models...</option>
+            </select>
+        </div>
+        <a class="btn btn-sm" href="/models">Open Models</a>
+        <button class="btn btn-sm btn-primary hidden" id="btn-start-diffusion" type="button">Start Worker</button>
+    </div>
+    <p class="form-hint mt-sm" id="model-status">Checking generation worker...</p>
+</div>
+
 <div class="tabs">
     <button class="tab active" type="button" data-tab="image">Text to Image</button>
     <button class="tab" type="button" data-tab="video">Text to Video</button>
+    <button class="tab" type="button" data-tab="image-video">Image to Video</button>
     <button class="tab" type="button" data-tab="img2img">Image to Image</button>
 </div>
 
@@ -43,7 +92,7 @@
         <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="img-steps" type="number" value="30"></div>
         <div class="form-group"><label class="form-label">Seed</label><input class="form-input" id="img-seed" type="number" placeholder="Random"></div>
     </div>
-    <button class="btn btn-primary btn-lg" id="btn-image" type="button">Generate Image</button>
+    <button class="btn btn-primary btn-lg" id="btn-image" type="button" disabled>Generate Image</button>
 </div>
 
 <div id="panel-video" class="hidden">
@@ -57,7 +106,31 @@
         <div class="form-group"><label class="form-label">Frames</label><input class="form-input" id="vid-frames" type="number" value="25"></div>
         <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="vid-steps" type="number" value="25"></div>
     </div>
-    <button class="btn btn-primary btn-lg" id="btn-video" type="button">Generate Video</button>
+    <button class="btn btn-primary btn-lg" id="btn-video" type="button" disabled>Generate Video</button>
+</div>
+
+<div id="panel-image-video" class="hidden">
+    <div class="form-group">
+        <label class="form-label" for="i2v-source-output">Source Image</label>
+        <select class="form-input" id="i2v-source-output">
+            <option value="">Upload from device</option>
+        </select>
+        <div id="i2v-upload-group" style="margin-top:0.5rem">
+            <input class="form-input" id="i2v-file" type="file" accept="image/*" style="padding:0.35rem">
+        </div>
+        <p class="form-hint">Image-to-video models use this image as the starting frame.</p>
+    </div>
+    <div class="form-group">
+        <label class="form-label">Prompt (optional)</label>
+        <textarea class="form-input" id="i2v-prompt" rows="3" placeholder="Optional motion or style guidance..."></textarea>
+    </div>
+    <div class="form-row">
+        <div class="form-group"><label class="form-label">Width</label><input class="form-input" id="i2v-w" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Height</label><input class="form-input" id="i2v-h" type="number" value="512"></div>
+        <div class="form-group"><label class="form-label">Frames</label><input class="form-input" id="i2v-frames" type="number" value="25"></div>
+        <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="i2v-steps" type="number" value="25"></div>
+    </div>
+    <button class="btn btn-primary btn-lg" id="btn-image-video" type="button" disabled>Generate Video</button>
 </div>
 
 <div id="panel-img2img" class="hidden">
@@ -66,33 +139,224 @@
         <textarea class="form-input" id="i2i-prompt" rows="3" placeholder="Describe the transformation..."></textarea>
     </div>
     <div class="form-group">
-        <label class="form-label">Source Image</label>
-        <input class="form-input" id="i2i-file" type="file" accept="image/*" style="padding:0.35rem">
+        <label class="form-label" for="i2i-source-output">Source Image</label>
+        <select class="form-input" id="i2i-source-output">
+            <option value="">Upload from device</option>
+        </select>
+        <div id="i2i-upload-group" style="margin-top:0.5rem">
+            <input class="form-input" id="i2i-file" type="file" accept="image/*" style="padding:0.35rem">
+        </div>
     </div>
     <div class="form-row">
         <div class="form-group"><label class="form-label">Strength</label><input class="form-input" id="i2i-strength" type="number" value="0.75" step="0.05" min="0" max="1"></div>
         <div class="form-group"><label class="form-label">Steps</label><input class="form-input" id="i2i-steps" type="number" value="30"></div>
     </div>
-    <button class="btn btn-primary btn-lg" id="btn-img2img" type="button">Generate</button>
+    <button class="btn btn-primary btn-lg" id="btn-img2img" type="button" disabled>Generate</button>
 </div>
 
 <div id="result" class="generation-result"></div>
 <div id="gen-status" class="hidden" style="margin-top:1rem;padding:1rem;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:0.85rem;color:var(--text-muted)"></div>
+
+<section class="mt-xl">
+    <div class="card-header">
+        <span class="card-title">Recent Outputs</span>
+        <button class="btn btn-sm" id="btn-refresh-outputs" type="button">Refresh</button>
+    </div>
+    <div id="output-list" class="output-grid">
+        <div class="empty-state"><p>No generated outputs yet.</p></div>
+    </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
-    function switchTab(tab, el) {
+    var diffusionModels = [];
+    var recentOutputs = [];
+    var queryParams = new URLSearchParams(window.location.search);
+    var requestedModelName = queryParams.get('model') || '';
+    var requestedTab = queryParams.get('tab') || '';
+    var validTabs = ['image', 'video', 'image-video', 'img2img'];
+    var activeTab = validTabs.indexOf(requestedTab) !== -1 ? requestedTab : 'image';
+
+    function setActiveTab(tab, render) {
+        if (validTabs.indexOf(tab) === -1) return;
+        var button = document.querySelector('.tab[data-tab="' + tab + '"]');
+        var panel = document.getElementById('panel-' + tab);
+        if (!button || !panel) return;
+        activeTab = tab;
         document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
         document.querySelectorAll('[id^="panel-"]').forEach(function(p) { p.classList.add('hidden'); });
-        el.classList.add('active');
-        document.getElementById('panel-' + tab).classList.remove('hidden');
+        button.classList.add('active');
+        panel.classList.remove('hidden');
+        if (render) renderModelOptions();
+    }
+
+    function switchTab(tab) {
+        setActiveTab(tab, true);
     }
 
     function showGenStatus(msg) {
         var el = document.getElementById('gen-status');
         el.textContent = msg;
         el.classList.remove('hidden');
+    }
+
+    function normalizedModelType(model) {
+        var type = String(model.type || '').toLowerCase();
+        var cls = String(model.class || '').toLowerCase();
+        var name = String(model.name || '').toLowerCase();
+        if (type === 'video' || cls.indexOf('video') !== -1 || cls.indexOf('ltx') !== -1 ||
+                name.indexOf('video-') === 0 || name.indexOf('-video') !== -1) {
+            return 'video';
+        }
+        return type || 'image';
+    }
+
+    function hasCapability(model, capability) {
+        var caps = Array.isArray(model.capabilities) ? model.capabilities : [];
+        if (caps.indexOf(capability) !== -1) return true;
+        if (capability === 'txt2img' && normalizedModelType(model) === 'image') return true;
+        return false;
+    }
+
+    function isDiagnosticModel(model) {
+        var name = String(model.name || '').toLowerCase();
+        return name.indexOf('tiny-random') !== -1 || name.indexOf('tiny-ltx') !== -1;
+    }
+
+    function modelMatchesTab(model, tab) {
+        var type = normalizedModelType(model);
+        if (tab === 'video') return type === 'video' && hasCapability(model, 'txt2vid');
+        if (tab === 'image-video') return type === 'video' && hasCapability(model, 'img2vid');
+        if (tab === 'img2img') return type !== 'video' && hasCapability(model, 'img2img');
+        return type !== 'video' && hasCapability(model, 'txt2img');
+    }
+
+    function findModelByName(name) {
+        if (!name) return null;
+        return diffusionModels.find(function(model) {
+            return model.name === name || model.filename === name;
+        }) || null;
+    }
+
+    function tabForModel(model) {
+        if (normalizedModelType(model) !== 'video') {
+            return hasCapability(model, 'txt2img') ? 'image' : 'img2img';
+        }
+        return hasCapability(model, 'img2vid') ? 'image-video' : 'video';
+    }
+
+    function isImageConditionedVideoModel(model) {
+        if (hasCapability(model, 'img2vid')) return true;
+        var cls = String(model.class || '').toLowerCase();
+        var name = String(model.name || '').toLowerCase();
+        return cls.indexOf('stablevideo') !== -1 ||
+            cls.indexOf('img2vid') !== -1 ||
+            cls.indexOf('imagetovideo') !== -1 ||
+            name.indexOf('img2vid') !== -1 ||
+            name.indexOf('video-svd') === 0;
+    }
+
+    function selectedModel() {
+        var name = document.getElementById('model-select').value;
+        if (!name) return null;
+        return diffusionModels.find(function(model) { return model.name === name; }) || null;
+    }
+
+    function selectedModelNameOrWarn() {
+        var model = selectedModel();
+        if (!model) {
+            toast('Choose a trusted generation model first.', 'warning');
+            return '';
+        }
+        return model.name;
+    }
+
+    function generationLabelForTab(tab) {
+        if (tab === 'video') return 'text-to-video';
+        if (tab === 'image-video') return 'image-to-video';
+        if (tab === 'img2img') return 'image-to-image';
+        return 'image';
+    }
+
+    function setGenerationEnabled(enabled) {
+        document.getElementById('btn-image').disabled = !enabled;
+        document.getElementById('btn-video').disabled = !enabled;
+        document.getElementById('btn-image-video').disabled = !enabled;
+        document.getElementById('btn-img2img').disabled = !enabled;
+    }
+
+    function renderModelOptions() {
+        var select = document.getElementById('model-select');
+        var badge = document.getElementById('model-badge');
+        var status = document.getElementById('model-status');
+        var previousSelection = select.value;
+        var preferredSelection = requestedModelName || previousSelection;
+        var matching = diffusionModels.filter(function(model) { return modelMatchesTab(model, activeTab); });
+        select.innerHTML = '';
+        if (!matching.length) {
+            select.disabled = true;
+            select.innerHTML = '<option value="">No trusted model available</option>';
+            badge.className = 'badge badge-warning';
+            badge.textContent = 'missing';
+            status.textContent = 'No trusted ' + generationLabelForTab(activeTab) + ' model is available yet.';
+            setGenerationEnabled(false);
+            return;
+        }
+        matching.forEach(function(model) {
+            var option = document.createElement('option');
+            option.value = model.name;
+            option.textContent = model.name;
+            select.appendChild(option);
+        });
+        if (preferredSelection && matching.some(function(model) { return model.name === preferredSelection; })) {
+            select.value = preferredSelection;
+        }
+        select.disabled = false;
+        badge.className = 'badge badge-success';
+        badge.textContent = matching.length + ' ready';
+        status.textContent = 'Using trusted registry models only.';
+        var chosen = selectedModel();
+        if (activeTab === 'video' && chosen && isDiagnosticModel(chosen)) {
+            status.textContent = 'This is a diagnostic text-to-video model; motion quality may be minimal. Use a full text-to-video model for real motion.';
+        }
+        setGenerationEnabled(true);
+    }
+
+    async function loadDiffusionModels() {
+        var badge = document.getElementById('model-badge');
+        var status = document.getElementById('model-status');
+        var startBtn = document.getElementById('btn-start-diffusion');
+        try {
+            var resp = await fetch('/api/diffusion/models');
+            var data = await resp.json();
+            if (!resp.ok || data.error) {
+                diffusionModels = [];
+                document.getElementById('model-select').innerHTML = '<option value="">Worker not available</option>';
+                document.getElementById('model-select').disabled = true;
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'not available';
+                status.textContent = data.error || 'Generation worker is not available.';
+                startBtn.classList.toggle('hidden', !data.automation_available);
+                setGenerationEnabled(false);
+                return;
+            }
+            diffusionModels = Array.isArray(data) ? data : (data.models || []);
+            var requestedModel = findModelByName(requestedModelName);
+            if (requestedModel) {
+                requestedModelName = requestedModel.name;
+                setActiveTab(tabForModel(requestedModel), false);
+            }
+            startBtn.classList.add('hidden');
+            renderModelOptions();
+            requestedModelName = '';
+        } catch(e) {
+            diffusionModels = [];
+            badge.className = 'badge badge-muted';
+            badge.textContent = 'unknown';
+            status.textContent = 'Could not reach the generation worker.';
+            setGenerationEnabled(false);
+        }
     }
 
     async function maybeStartDiffusion(data) {
@@ -105,7 +369,7 @@
         );
         if (confirmed) {
             await applySandboxControl(
-                {profile: 'full_lab'},
+                {profile: 'full_lab', gpu: 'auto'},
                 'Sandbox restart started for image and video generation.'
             );
         }
@@ -113,6 +377,8 @@
     }
 
     async function generateImage() {
+        var modelName = selectedModelNameOrWarn();
+        if (!modelName) return;
         var btn = document.getElementById('btn-image');
         btn.disabled = true;
         showGenStatus('Generating image...');
@@ -124,6 +390,7 @@
                 width: parseInt(document.getElementById('img-w').value),
                 height: parseInt(document.getElementById('img-h').value),
                 steps: parseInt(document.getElementById('img-steps').value),
+                model: modelName,
             };
             var seed = document.getElementById('img-seed').value;
             if (seed) body.seed = parseInt(seed);
@@ -139,25 +406,36 @@
             });
             document.getElementById('result').innerHTML = html;
             showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+            loadOutputHistory();
         } catch(e) { showGenStatus('Error: ' + e.message); }
         finally { btn.disabled = false; }
     }
 
     async function generateVideo() {
+        var model = selectedModel();
+        var modelName = selectedModelNameOrWarn();
+        if (!modelName) return;
+        if (model && isImageConditionedVideoModel(model)) {
+            toast('Use the Image to Video tab for this model.', 'warning');
+            setActiveTab('image-video', true);
+            return;
+        }
         var btn = document.getElementById('btn-video');
         btn.disabled = true;
         showGenStatus('Generating video (this may take a while)...');
         document.getElementById('result').innerHTML = '';
         try {
+            var body = {
+                prompt: document.getElementById('vid-prompt').value,
+                width: parseInt(document.getElementById('vid-w').value),
+                height: parseInt(document.getElementById('vid-h').value),
+                num_frames: parseInt(document.getElementById('vid-frames').value),
+                steps: parseInt(document.getElementById('vid-steps').value),
+                model: modelName,
+            };
             var resp = await fetch('/api/generate/video', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    prompt: document.getElementById('vid-prompt').value,
-                    width: parseInt(document.getElementById('vid-w').value),
-                    height: parseInt(document.getElementById('vid-h').value),
-                    num_frames: parseInt(document.getElementById('vid-frames').value),
-                    steps: parseInt(document.getElementById('vid-steps').value),
-                })
+                body: JSON.stringify(body)
             });
             var data = await resp.json();
             if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
@@ -165,49 +443,215 @@
             document.getElementById('result').innerHTML =
                 '<video class="generated-media" controls autoplay><source src="data:video/mp4;base64,' + data.video + '" type="video/mp4"></video>';
             showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+            loadOutputHistory();
+        } catch(e) { showGenStatus('Error: ' + e.message); }
+        finally { btn.disabled = false; }
+    }
+
+    async function generateImageVideo() {
+        var model = selectedModel();
+        var modelName = selectedModelNameOrWarn();
+        if (!modelName) return;
+        if (model && !isImageConditionedVideoModel(model)) {
+            toast('Use the Text to Video tab for this model.', 'warning');
+            setActiveTab('video', true);
+            return;
+        }
+        var btn = document.getElementById('btn-image-video');
+        var sourceImage = '';
+        try {
+            sourceImage = await readSelectedSourceImage('i2v-source-output', 'i2v-file');
+        } catch(e) {
+            toast(e.message, 'error');
+            showGenStatus('Could not load the selected source image.');
+            return;
+        }
+        if (!sourceImage) {
+            toast('Please select a source image.', 'warning');
+            showGenStatus('Choose a source image before generating video.');
+            return;
+        }
+        btn.disabled = true;
+        showGenStatus('Generating image-to-video (this may take a while)...');
+        document.getElementById('result').innerHTML = '';
+        try {
+            var body = {
+                prompt: document.getElementById('i2v-prompt').value,
+                width: parseInt(document.getElementById('i2v-w').value),
+                height: parseInt(document.getElementById('i2v-h').value),
+                num_frames: parseInt(document.getElementById('i2v-frames').value),
+                steps: parseInt(document.getElementById('i2v-steps').value),
+                model: modelName,
+                image: sourceImage,
+            };
+            var resp = await fetch('/api/generate/video', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+            var data = await resp.json();
+            if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
+            if (data.error) { showGenStatus('Error: ' + data.error); return; }
+            document.getElementById('result').innerHTML =
+                '<video class="generated-media" controls autoplay><source src="data:video/mp4;base64,' + data.video + '" type="video/mp4"></video>';
+            showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+            loadOutputHistory();
         } catch(e) { showGenStatus('Error: ' + e.message); }
         finally { btn.disabled = false; }
     }
 
     async function generateImg2Img() {
+        var modelName = selectedModelNameOrWarn();
+        if (!modelName) return;
         var btn = document.getElementById('btn-img2img');
-        var file = document.getElementById('i2i-file').files[0];
-        if (!file) { toast('Please select a source image.', 'warning'); return; }
+        var sourceImage = '';
+        try {
+            sourceImage = await readSelectedSourceImage('i2i-source-output', 'i2i-file');
+        } catch(e) {
+            toast(e.message, 'error');
+            showGenStatus('Could not load the selected source image.');
+            return;
+        }
+        if (!sourceImage) { toast('Please select a source image.', 'warning'); return; }
         btn.disabled = true;
         showGenStatus('Processing...');
         document.getElementById('result').innerHTML = '';
-        var reader = new FileReader();
-        reader.onload = async function() {
-            try {
-                var b64 = reader.result.split(',')[1];
-                var resp = await fetch('/api/generate/img2img', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        prompt: document.getElementById('i2i-prompt').value,
-                        image: b64,
-                        strength: parseFloat(document.getElementById('i2i-strength').value),
-                        steps: parseInt(document.getElementById('i2i-steps').value),
-                    })
-                });
-                var data = await resp.json();
-                if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
-                if (data.error) { showGenStatus('Error: ' + data.error); return; }
-                document.getElementById('result').innerHTML =
-                    '<img class="generated-media" src="data:image/png;base64,' + data.image + '" alt="Generated image">';
-                showGenStatus('Generated in ' + data.elapsed_seconds + 's');
-            } catch(e) { showGenStatus('Error: ' + e.message); }
-            finally { btn.disabled = false; }
-        };
-        reader.readAsDataURL(file);
+        try {
+            var resp = await fetch('/api/generate/img2img', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    prompt: document.getElementById('i2i-prompt').value,
+                    image: sourceImage,
+                    strength: parseFloat(document.getElementById('i2i-strength').value),
+                    steps: parseInt(document.getElementById('i2i-steps').value),
+                    model: modelName,
+                })
+            });
+            var data = await resp.json();
+            if (await maybeStartDiffusion(data)) { showGenStatus('Starting generation worker...'); return; }
+            if (data.error) { showGenStatus('Error: ' + data.error); return; }
+            document.getElementById('result').innerHTML =
+                '<img class="generated-media" src="data:image/png;base64,' + data.image + '" alt="Generated image">';
+            showGenStatus('Generated in ' + data.elapsed_seconds + 's');
+            loadOutputHistory();
+        } catch(e) { showGenStatus('Error: ' + e.message); }
+        finally { btn.disabled = false; }
+    }
+
+    function readFileBase64(file) {
+        return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function() { resolve(reader.result.split(',')[1]); };
+            reader.onerror = function() { reject(new Error('Could not read file.')); };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function fetchOutputBase64(filename) {
+        var resp = await fetch('/api/generate/outputs/' + encodeURIComponent(filename));
+        if (!resp.ok) throw new Error('Could not load recent output.');
+        var blob = await resp.blob();
+        return readFileBase64(blob);
+    }
+
+    function toggleSourceUpload(selectId, uploadGroupId) {
+        var select = document.getElementById(selectId);
+        var group = document.getElementById(uploadGroupId);
+        if (!select || !group) return;
+        group.classList.toggle('hidden', !!select.value);
+    }
+
+    function renderSourceOutputOptions() {
+        var images = recentOutputs.filter(function(item) { return item.kind === 'image'; });
+        [
+            ['i2v-source-output', 'i2v-upload-group'],
+            ['i2i-source-output', 'i2i-upload-group'],
+        ].forEach(function(pair) {
+            var select = document.getElementById(pair[0]);
+            if (!select) return;
+            var previous = select.value;
+            select.innerHTML = '<option value="">Upload from device</option>';
+            images.forEach(function(item, index) {
+                var option = document.createElement('option');
+                option.value = item.filename;
+                option.textContent = (index === 0 ? 'Latest output - ' : '') + item.filename;
+                select.appendChild(option);
+            });
+            if (previous && images.some(function(item) { return item.filename === previous; })) {
+                select.value = previous;
+            } else if (images.length) {
+                select.value = images[0].filename;
+            }
+            toggleSourceUpload(pair[0], pair[1]);
+        });
+    }
+
+    async function readSelectedSourceImage(selectId, fileId) {
+        var selected = document.getElementById(selectId).value;
+        if (selected) return fetchOutputBase64(selected);
+        var file = document.getElementById(fileId).files[0];
+        if (!file) return '';
+        return readFileBase64(file);
+    }
+
+    function renderOutputHistory(outputs) {
+        var list = document.getElementById('output-list');
+        if (!outputs || !outputs.length) {
+            list.innerHTML = '<div class="empty-state"><p>No generated outputs yet.</p></div>';
+            renderSourceOutputOptions();
+            return;
+        }
+        list.innerHTML = outputs.map(function(item) {
+            var url = '/api/generate/outputs/' + encodeURIComponent(item.filename);
+            var media = item.kind === 'video'
+                ? '<video controls preload="metadata"><source src="' + esc(url) + '" type="video/mp4"></video>'
+                : '<img src="' + esc(url) + '" alt="Generated output">';
+            return '<a class="output-card" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+                media +
+                '<div class="output-meta">' + esc(item.filename) + '<br>' + esc(item.modified_at || '') + '</div>' +
+            '</a>';
+        }).join('');
+    }
+
+    async function loadOutputHistory() {
+        try {
+            var resp = await fetch('/api/generate/outputs');
+            var data = await resp.json();
+            recentOutputs = Array.isArray(data) ? data : [];
+            renderOutputHistory(data);
+            renderSourceOutputOptions();
+        } catch(e) {
+            recentOutputs = [];
+            document.getElementById('output-list').innerHTML =
+                '<div class="empty-state"><p>Could not load generated outputs.</p></div>';
+            renderSourceOutputOptions();
+        }
     }
 
     document.querySelectorAll('.tab[data-tab]').forEach(function(button) {
         button.addEventListener('click', function() {
-            switchTab(button.getAttribute('data-tab'), button);
+            switchTab(button.getAttribute('data-tab'));
         });
     });
+    setActiveTab(activeTab, false);
     document.getElementById('btn-image').addEventListener('click', generateImage);
     document.getElementById('btn-video').addEventListener('click', generateVideo);
+    document.getElementById('btn-image-video').addEventListener('click', generateImageVideo);
     document.getElementById('btn-img2img').addEventListener('click', generateImg2Img);
+    document.getElementById('model-select').addEventListener('change', function() {
+        requestedModelName = '';
+        renderModelOptions();
+    });
+    document.getElementById('btn-start-diffusion').addEventListener('click', async function() {
+        await applySandboxControl({profile: 'full_lab', gpu: 'auto'}, 'Sandbox restart started for image and video generation.');
+    });
+    document.getElementById('btn-refresh-outputs').addEventListener('click', loadOutputHistory);
+    document.getElementById('i2v-source-output').addEventListener('change', function() {
+        toggleSourceUpload('i2v-source-output', 'i2v-upload-group');
+    });
+    document.getElementById('i2i-source-output').addEventListener('change', function() {
+        toggleSourceUpload('i2i-source-output', 'i2i-upload-group');
+    });
+    loadDiffusionModels();
+    loadOutputHistory();
 </script>
 {% endblock %}

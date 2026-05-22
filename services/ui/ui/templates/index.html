@@ -215,7 +215,11 @@
     var searchAvailable = false;
     var searchAutomationAvailable = false;
     var selectedModel = '';
+    var selectedModelUsable = false;
     var inferenceAvailable = false;
+    var inferenceAutomationAvailable = false;
+    var inferenceDeploymentMode = '';
+    var chatModelMeta = {};
     var startInferenceBtn = document.getElementById('start-inference-btn');
 
     /* Check if search mediator is reachable */
@@ -249,6 +253,9 @@
             var models = data.chat_models || [];
             var requested = new URLSearchParams(window.location.search).get('model') || '';
             inferenceAvailable = data.available === true;
+            inferenceAutomationAvailable = data.automation_available === true;
+            inferenceDeploymentMode = data.deployment_mode || '';
+            chatModelMeta = {};
             if (!models.length) {
                 modelSelect.innerHTML = '<option value="">No trusted GGUF models</option>';
                 modelSelect.disabled = true;
@@ -260,26 +267,52 @@
                 var label = m.name || m.filename;
                 if (m.loaded) label += ' (loaded)';
                 else if (!data.available) label += ' (start inference to use)';
-                else label += ' (not loaded)';
-                var value = m.name || m.filename;
-                return '<option value="' + esc(value) + '" data-filename="' + esc(m.filename || '') + '">' + esc(label) + '</option>';
+                else label += ' (switch inference to use)';
+                var value = m.filename || m.name;
+                chatModelMeta[value] = m;
+                return '<option value="' + esc(value) + '" data-filename="' + esc(m.filename || '') + '" data-usable="' + (m.usable ? 'true' : 'false') + '">' + esc(label) + '</option>';
             }).join('');
             if (requested) {
-                modelSelect.value = requested;
+                var requestedModel = models.find(function(m) {
+                    return requested === m.name || requested === m.filename;
+                });
+                if (requestedModel) {
+                    modelSelect.value = requestedModel.filename || requestedModel.name;
+                }
+            } else {
+                var usable = models.find(function(m) { return m.usable; });
+                if (usable) modelSelect.value = usable.filename || usable.name;
             }
             selectedModel = modelSelect.value || '';
+            refreshChatModelControls(data);
             if (data.guidance && !data.available) {
                 modelSelect.title = data.command ? (data.guidance + ' Command: ' + data.command) : data.guidance;
             }
-            startInferenceBtn.classList.toggle('hidden', data.available === true || data.deployment_mode !== 'sandbox');
-            startInferenceBtn.disabled = data.automation_available !== true;
-            startInferenceBtn.title = data.automation_available === true
-                ? 'Start the inference worker with the selected model'
-                : (data.command ? ('Fallback: ' + data.command) : 'Sandbox automation unavailable');
         } catch(e) {
             modelSelect.innerHTML = '<option value="">Could not load models</option>';
             modelSelect.disabled = true;
             startInferenceBtn.classList.add('hidden');
+        }
+    }
+
+    function currentModelMeta() {
+        return chatModelMeta[selectedModel] || {};
+    }
+
+    function refreshChatModelControls(data) {
+        var meta = currentModelMeta();
+        selectedModelUsable = meta.usable === true;
+        var shouldOfferStart = selectedModel && !selectedModelUsable && inferenceDeploymentMode === 'sandbox';
+        startInferenceBtn.classList.toggle('hidden', !shouldOfferStart);
+        startInferenceBtn.disabled = inferenceAutomationAvailable !== true;
+        startInferenceBtn.textContent = inferenceAvailable ? 'Switch Model' : 'Start Inference';
+        startInferenceBtn.title = inferenceAutomationAvailable === true
+            ? 'Start the inference worker with the selected model'
+            : ((data && data.command) ? ('Fallback: ' + data.command) : 'Sandbox automation unavailable');
+        if (selectedModel && !selectedModelUsable) {
+            modelSelect.title = 'This trusted model is not currently loaded. Switch inference to use it.';
+        } else {
+            modelSelect.title = '';
         }
     }
 
@@ -300,6 +333,10 @@
     async function startInference() {
         var option = modelSelect.options[modelSelect.selectedIndex];
         var filename = option ? (option.getAttribute('data-filename') || '') : '';
+        if (!filename) {
+            toast('Choose a trusted GGUF model first.', 'warning');
+            return;
+        }
         var profile = 'offline_private';
         try {
             var profileResp = await fetch('/api/profile');
@@ -347,13 +384,23 @@
     });
     modeLocal.addEventListener('click', function() { setMode('local'); });
     modeWeb.addEventListener('click', function() { setMode('web'); });
-    modelSelect.addEventListener('change', function() { selectedModel = modelSelect.value || ''; });
+    modelSelect.addEventListener('change', function() {
+        selectedModel = modelSelect.value || '';
+        refreshChatModelControls({});
+    });
     startInferenceBtn.addEventListener('click', startInference);
     sendBtn.addEventListener('click', sendMessage);
 
     async function sendMessage() {
         var text = userInput.value.trim();
         if (!text) return;
+        if (selectedModel && !selectedModelUsable) {
+            toast('Switch inference to the selected model before chatting.', 'warning');
+            if (inferenceAutomationAvailable) {
+                await startInference();
+            }
+            return;
+        }
 
         if (emptyState) { emptyState.remove(); emptyState = null; }
 

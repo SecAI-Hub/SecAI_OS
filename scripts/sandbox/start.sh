@@ -17,6 +17,7 @@ WITH_INFERENCE=0
 WITH_DIFFUSION=0
 WITH_SEARCH=0
 WITH_AIRLOCK=0
+WITH_GPU=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -24,9 +25,10 @@ while [ "$#" -gt 0 ]; do
         --with-diffusion) WITH_DIFFUSION=1 ;;
         --with-search) WITH_SEARCH=1 ;;
         --with-airlock) WITH_AIRLOCK=1 ;;
+        --with-gpu) WITH_GPU=1 ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 [--with-inference] [--with-diffusion] [--with-search] [--with-airlock]" >&2
+            echo "Usage: $0 [--with-inference] [--with-diffusion] [--with-search] [--with-airlock] [--with-gpu]" >&2
             exit 1
             ;;
     esac
@@ -80,6 +82,22 @@ read_env_value() {
     return 0
 }
 
+resolve_gpu_backend() {
+    configured="${SECAI_DIFFUSION_COMPUTE:-$(read_env_value SECAI_DIFFUSION_COMPUTE)}"
+    case "$configured" in
+        cuda|rocm) printf '%s\n' "$configured"; return 0 ;;
+    esac
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        printf '%s\n' cuda
+        return 0
+    fi
+    if [ -e /dev/kfd ]; then
+        printf '%s\n' rocm
+        return 0
+    fi
+    printf '%s\n' cuda
+}
+
 CONTROL_PORT=${SECAI_CONTROL_PORT:-$(read_env_value SECAI_CONTROL_PORT)}
 CONTROL_PORT=${CONTROL_PORT:-8498}
 if ! "$PYTHON_BIN" - "$CONTROL_PORT" <<'PY' >/dev/null 2>&1; then
@@ -107,6 +125,10 @@ if [ "$WITH_SEARCH" -eq 1 ] && [ "$WITH_AIRLOCK" -eq 0 ]; then
     WITH_AIRLOCK=1
     echo "Search mode implies the airlock policy in sandbox mode; enabling airlock."
 fi
+if [ "$WITH_GPU" -eq 1 ] && [ "$WITH_DIFFUSION" -eq 0 ]; then
+    WITH_DIFFUSION=1
+    echo "GPU acceleration implies the diffusion profile; enabling diffusion."
+fi
 if [ "$WITH_SEARCH" -eq 1 ]; then
     set -- "$@" --enable-search
 fi
@@ -127,6 +149,24 @@ elif command -v podman >/dev/null 2>&1; then
 else
     echo "Neither docker nor podman was found in PATH." >&2
     exit 1
+fi
+
+GPU_COMPOSE_FILE=""
+if [ "$WITH_GPU" -eq 1 ]; then
+    GPU_BACKEND="$(resolve_gpu_backend)"
+    case "$GPU_BACKEND" in
+        rocm)
+            GPU_COMPOSE_FILE="$SANDBOX_DIR/compose.gpu.rocm.yaml"
+            ;;
+        *)
+            GPU_BACKEND="cuda"
+            GPU_COMPOSE_FILE="$SANDBOX_DIR/compose.gpu.nvidia.yaml"
+            ;;
+    esac
+    export SECAI_DIFFUSION_COMPUTE="$GPU_BACKEND"
+    export SECAI_DIFFUSION_DEVICE_PREFERENCE="${SECAI_DIFFUSION_DEVICE_PREFERENCE:-auto}"
+    export SECAI_DIFFUSION_CPU_OFFLOAD="${SECAI_DIFFUSION_CPU_OFFLOAD:-0}"
+    echo "GPU acceleration requested for diffusion ($GPU_BACKEND)."
 fi
 
 "$RUNTIME_CMD" volume create "$STATE_VOLUME" >/dev/null
@@ -152,13 +192,19 @@ if [ "$WITH_DIFFUSION" -eq 0 ]; then
     DISABLED_SERVICES="$DISABLED_SERVICES diffusion"
 fi
 if [ -n "$DISABLED_SERVICES" ]; then
+    set -- "$COMPOSE_RUNTIME" compose -f "$SANDBOX_DIR/compose.yaml"
+    if [ -n "$GPU_COMPOSE_FILE" ]; then
+        set -- "$@" -f "$GPU_COMPOSE_FILE"
+    fi
+    set -- "$@" --profile search --profile llm --profile diffusion rm -sf
     # shellcheck disable=SC2086
-    "$COMPOSE_RUNTIME" compose -f "$SANDBOX_DIR/compose.yaml" \
-        --profile search --profile llm --profile diffusion \
-        rm -sf $DISABLED_SERVICES >/dev/null
+    "$@" $DISABLED_SERVICES >/dev/null
 fi
 
 set -- "$COMPOSE_RUNTIME" compose -f "$SANDBOX_DIR/compose.yaml"
+if [ -n "$GPU_COMPOSE_FILE" ]; then
+    set -- "$@" -f "$GPU_COMPOSE_FILE"
+fi
 if [ "$WITH_INFERENCE" -eq 1 ]; then
     set -- "$@" --profile llm
 fi
@@ -171,6 +217,7 @@ fi
 set -- "$@" up -d --build --remove-orphans
 if [ "$RUNTIME_CMD" = "docker" ]; then
     set -- "$@" --wait
+    set -- "$@" --wait-timeout 900
 fi
 
 "$@"
