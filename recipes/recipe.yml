@@ -77,11 +77,22 @@ modules:
       - build-services.sh
 
   # 4) NVIDIA kernel modules (nvidia-open for RTX 5080+).
+  #    Disable 32-bit NVIDIA/Mesa userspace during the akmods install. SecAI OS
+  #    uses 64-bit CUDA/Vulkan inference only, and skipping multilib avoids Mesa
+  #    i686/x86_64 version skew in Fedora 42 image builds.
+  - type: containerfile
+    snippets:
+      - ENV MULTILIB=0
+
   #    AMD and Intel use in-kernel drivers (amdgpu, i915/xe) — no akmods needed.
   - type: akmods
     base: main
     install: []
     nvidia-driver: nvidia-open
+
+  - type: containerfile
+    snippets:
+      - ENV MULTILIB=
 
   # 5) Kernel args: generic security hardening.
   - type: kargs

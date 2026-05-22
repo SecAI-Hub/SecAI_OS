@@ -58,6 +58,16 @@ class TestBuildPreflight:
         assert ".disabled-by-secai" in content
         assert "rpm-ostree still refreshes repositories" in content
 
+    def test_nvidia_akmods_runs_without_multilib(self, recipe):
+        modules = recipe.get("modules", [])
+        akmods_index = next(i for i, module in enumerate(modules) if module.get("type") == "akmods")
+        before = modules[akmods_index - 1]
+        after = modules[akmods_index + 1]
+        assert before["type"] == "containerfile"
+        assert "ENV MULTILIB=0" in before["snippets"]
+        assert after["type"] == "containerfile"
+        assert "ENV MULTILIB=" in after["snippets"]
+
 
 class TestDiffusionDisabledByDefault:
     """Diffusion service must be disabled in the base image."""
