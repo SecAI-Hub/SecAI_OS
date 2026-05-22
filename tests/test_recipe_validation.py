@@ -15,6 +15,9 @@ import pytest
 import yaml
 
 RECIPE_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipe.yml"
+STALE_REPO_PREFLIGHT_PATH = (
+    Path(__file__).resolve().parent.parent / "files" / "scripts" / "disable-stale-fedora-repos.sh"
+)
 
 
 @pytest.fixture
@@ -48,6 +51,12 @@ class TestBuildPreflight:
         assert modules[0]["type"] == "script"
         assert "disable-stale-fedora-repos.sh" in modules[0]["scripts"]
         assert modules[1]["type"] == "rpm-ostree"
+
+    def test_stale_repo_preflight_disables_metadata_refresh(self):
+        content = STALE_REPO_PREFLIGHT_PATH.read_text(encoding="utf-8")
+        assert "enabled_metadata" in content
+        assert ".disabled-by-secai" in content
+        assert "rpm-ostree still refreshes repositories" in content
 
 
 class TestDiffusionDisabledByDefault:

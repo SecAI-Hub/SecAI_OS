@@ -2,7 +2,7 @@
 
 Policy files under `/etc/secure-ai/policy/` control SecAI OS runtime behavior. The main appliance policy is `policy.yaml`; the agent has a separate `agent.yaml`.
 
-The machine-readable schema for `policy.yaml` lives at [`../schemas/policy.schema.json`](../schemas/policy.schema.json). The packaged defaults live at [`../files/system/etc/secure-ai/policy/policy.yaml`](../files/system/etc/secure-ai/policy/policy.yaml), and the sandbox overlay uses [`../deploy/sandbox/runtime/policy/policy.yaml`](../deploy/sandbox/runtime/policy/policy.yaml).
+The machine-readable schema for `policy.yaml` lives at [`../schemas/policy.schema.json`](../schemas/policy.schema.json). The packaged defaults live at [`../files/system/etc/secure-ai/policy/policy.yaml`](../files/system/etc/secure-ai/policy/policy.yaml). The Docker sandbox copies those defaults into `deploy/sandbox/runtime/policy/policy.yaml` when it runs; that runtime overlay is intentionally git-ignored.
 
 ---
 
