@@ -688,6 +688,18 @@ def health():
     })
 
 
+@app.route("/live")
+def live():
+    """Fast liveness probe that does not depend on optional upstream services."""
+    return jsonify({
+        "status": "ok",
+        "search_enabled": _is_search_enabled(),
+        "session_mode": _get_session_mode(),
+        "searxng_reachable": None,
+        "tor_routed": True,
+    })
+
+
 @app.route("/v1/search", methods=["POST"])
 def search():
     """Perform a sanitized, Tor-routed web search."""

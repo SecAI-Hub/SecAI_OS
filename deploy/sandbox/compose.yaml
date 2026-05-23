@@ -172,7 +172,7 @@ services:
           "CMD",
           "/opt/venv/bin/python",
           "-c",
-          "from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8485/health', timeout=3).status == 200 else 1)",
+          "from urllib.request import urlopen; import sys; sys.exit(0 if urlopen('http://127.0.0.1:8485/live', timeout=3).status == 200 else 1)",
         ]
       interval: 15s
       timeout: 5s

@@ -227,7 +227,9 @@
         try {
             var resp = await fetch('/api/search/status');
             var data = await resp.json();
-            searchAvailable = data.search_enabled !== false;
+            searchAvailable = data.search_available !== undefined
+                ? data.search_available === true
+                : data.search_enabled !== false && data.searxng_reachable !== false;
             searchAutomationAvailable = data.automation_available === true;
             if (searchAvailable) {
                 modeWeb.disabled = false;

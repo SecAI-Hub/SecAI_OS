@@ -103,5 +103,5 @@ COPY --from=build /app /app
 
 USER 65534:65534
 EXPOSE 8485
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 CMD ["/opt/venv/bin/python", "-c", "from urllib.request import urlopen; import os, sys; port=os.getenv('BIND_ADDR','127.0.0.1:8485').rsplit(':',1)[-1]; sys.exit(0 if urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status == 200 else 1)"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 CMD ["/opt/venv/bin/python", "-c", "from urllib.request import urlopen; import os, sys; port=os.getenv('BIND_ADDR','127.0.0.1:8485').rsplit(':',1)[-1]; sys.exit(0 if urlopen(f'http://127.0.0.1:{port}/live', timeout=3).status == 200 else 1)"]
 ENTRYPOINT ["/opt/venv/bin/python", "/app/entrypoint.py"]

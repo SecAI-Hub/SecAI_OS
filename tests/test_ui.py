@@ -57,6 +57,25 @@ class TestHealthAndStatus:
             assert resp.status_code == 200
             assert resp.get_json() == []
 
+    def test_search_status_requires_reachable_search_backend(self, client):
+        class SearchResp:
+            def json(self):
+                return {
+                    "status": "ok",
+                    "search_enabled": True,
+                    "searxng_reachable": False,
+                }
+
+        with patch("ui.app.requests.get", return_value=SearchResp()), \
+             patch("ui.app._is_sandbox_deployment", return_value=True), \
+             patch("ui.app._sandbox_control_configured", return_value=False):
+            resp = client.get("/api/search/status")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["search_available"] is False
+        assert "start --with-search" in data["command"]
+
     def test_profile_status_infers_full_lab_in_sandbox_when_diffusion_is_live(self, client):
         class HealthyResp:
             status_code = 200

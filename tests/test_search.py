@@ -280,6 +280,26 @@ class TestHealthEndpoint:
 
         assert resp.status_code == 200
 
+    def test_live_never_probes_optional_upstream(self, monkeypatch):
+        import app as sm
+
+        with monkeypatch.context() as m:
+            m.setattr(sm, "_is_search_enabled", lambda: True)
+            m.setattr(sm, "_get_session_mode", lambda: "normal")
+
+            def fail_get(*args, **kwargs):
+                raise AssertionError("liveness probe must not depend on SearXNG")
+
+            m.setattr(sm.requests, "get", fail_get)
+
+            with search_app.test_client() as client:
+                resp = client.get("/live")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["searxng_reachable"] is None
+
     def test_search_forwards_policy_allowed_engines(self, monkeypatch):
         import app as sm
 

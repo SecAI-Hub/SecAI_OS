@@ -2371,7 +2371,9 @@ def search_status():
     try:
         resp = requests.get(f"{SEARCH_MEDIATOR_URL}/health", timeout=5)
         data = resp.json()
-        if data.get("search_enabled") is False and _is_sandbox_deployment():
+        available = data.get("search_enabled") is not False and data.get("searxng_reachable") is not False
+        data["search_available"] = available
+        if not available and _is_sandbox_deployment():
             data.setdefault("message", "Web search is available after starting the sandbox with the search profile.")
             data.setdefault("command", _sandbox_launch_command("search"))
             data.setdefault("automation_available", _sandbox_control_configured())
