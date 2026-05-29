@@ -10,7 +10,7 @@ ARG TORCH_ROCM_INDEX_URL=https://download.pytorch.org/whl/rocm6.4
 ARG TORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG IPEX_CPU_VERSION=2.11.0
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:2c0fbbac86b72ebb4bfee15b64d8cd5fd6b49dfe7bb279b5c9f193198a84c1c9 AS build
+FROM cgr.dev/chainguard/python:latest-dev@sha256:ddd3811dcbef56aa9f3882ae16fdc2920174ac6028c12e76cfb64c1d37b7abe2 AS build
 
 ARG COMPUTE
 ARG TORCH_CUDA_VERSION
