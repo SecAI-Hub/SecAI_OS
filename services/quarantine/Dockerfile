@@ -5,7 +5,7 @@ ARG FICKLING_PACKAGE=
 ARG MODELAUDIT_PACKAGE=
 ARG GARAK_PACKAGE=
 
-FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:6b2480f5e6ff49cdfb0360d8187524ddb14ed6511fc94c976312be8afadc26ef AS llama_server
 
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0cff4df29a6597173dc8b813787318150141eb96ac783dc3ff4f5ff52c49a1e2 AS build
 
