@@ -20,7 +20,7 @@ ARG IMAGE_TAG=server
 # `ggml-org/llama.cpp`; the old CPU tag no longer resolves.
 FROM ghcr.io/ggml-org/llama.cpp:${IMAGE_TAG} AS llama_server
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0cff4df29a6597173dc8b813787318150141eb96ac783dc3ff4f5ff52c49a1e2 AS runtime
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:441d6709305552a3411e585ad98aacb9dadda00c80f3267483c38ac6f86f49d4 AS runtime
 
 RUN apk upgrade --no-cache && \
     apk add --no-cache \
