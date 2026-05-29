@@ -99,7 +99,7 @@ COPY services/diffusion-worker/entrypoint.py /app/entrypoint.py
 RUN chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app /opt/python /opt/venv
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:af366da38c839436746f79c3e52bba671a756d43e2980ecbf37ecf35348faba9
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:441d6709305552a3411e585ad98aacb9dadda00c80f3267483c38ac6f86f49d4
 
 USER root
 WORKDIR /app
