@@ -1,4 +1,4 @@
-FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS build
+FROM alpine:3.24@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4 AS build
 
 # hadolint ignore=DL3002
 USER root
@@ -49,7 +49,7 @@ RUN pip install --no-cache-dir --upgrade \
     chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app "${VIRTUAL_ENV}" "${PREFIX}"
 
-FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS runtime-base
+FROM alpine:3.24@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4 AS runtime-base
 
 RUN apk add --no-cache \
         bzip2 \
