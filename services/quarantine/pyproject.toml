@@ -12,7 +12,7 @@ dependencies = [
 [project.optional-dependencies]
 scan = [
     "modelscan==0.8.8",
-    "fickling==0.1.10",
+    "fickling==0.1.12",
     "modelaudit==0.2.42",
 ]
 garak = [
