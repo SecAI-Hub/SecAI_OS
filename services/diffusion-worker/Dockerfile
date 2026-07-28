@@ -9,7 +9,7 @@
 ARG COMPUTE=cuda
 ARG TARGETARCH
 
-FROM docker.io/library/python:3.12-slim@sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461 AS base
+FROM docker.io/library/python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS base
 
 ARG COMPUTE
 ARG TARGETARCH
