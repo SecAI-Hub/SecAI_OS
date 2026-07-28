@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 
 # Add services to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "search-mediator"))
@@ -16,6 +17,21 @@ from app import (
     sanitize_results,
     sanitize_snippet,
 )
+
+_SEARCH_TEST_TOKEN = "search-unit-test-service-credential"
+
+
+@pytest.fixture(autouse=True)
+def provision_search_test_credentials(tmp_path, monkeypatch):
+    import app as sm
+
+    token_path = tmp_path / "search-service.token"
+    token_path.write_text(_SEARCH_TEST_TOKEN, encoding="utf-8")
+    token_path.chmod(0o600)
+    monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+    sm._audit_chain = sm.AuditChain(tmp_path / "search-audit.jsonl")
+    yield
+    sm._audit_chain = None
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +73,7 @@ class TestQuerySanitization:
         assert "192.168.1.100" not in result["query"]
 
     def test_api_key_stripped(self):
-        result = sanitize_query("use api_key: sk-abc123def456ghi789jkl012mno345pqr")
+        result = sanitize_query("use api_key: sk-abc123def456ghi789jkl012mno345pqr")  # gitleaks:allow
         assert "[API_KEY]" in result["query"]
 
     def test_bank_and_passport_identifiers_blocked(self):
@@ -276,7 +292,10 @@ class TestHealthEndpoint:
             m.setattr(sm.requests, "get", fail_get)
 
             with search_app.test_client() as client:
-                resp = client.get("/health")
+                resp = client.get(
+                    "/health",
+                    headers={"Authorization": f"Bearer {_SEARCH_TEST_TOKEN}"},
+                )
 
         assert resp.status_code == 200
 
@@ -337,7 +356,11 @@ class TestHealthEndpoint:
             m.setattr(sm.requests, "get", fake_get)
 
             with search_app.test_client() as client:
-                resp = client.post("/v1/search", json={"query": "test search"})
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "test search"},
+                    headers={"Authorization": f"Bearer {_SEARCH_TEST_TOKEN}"},
+                )
 
         assert resp.status_code == 200
         assert captured["url"].endswith("/search")
@@ -378,7 +401,11 @@ class TestHealthEndpoint:
             m.setattr(sm.requests, "get", fake_get)
 
             with search_app.test_client() as client:
-                resp = client.post("/v1/search", json={"query": "test search"})
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "test search"},
+                    headers={"Authorization": f"Bearer {_SEARCH_TEST_TOKEN}"},
+                )
 
         assert resp.status_code == 200
         assert captured["url"].endswith("/search")
@@ -408,7 +435,10 @@ class TestHealthEndpoint:
             m.setattr(sm.requests, "get", fake_get)
 
             with search_app.test_client() as client:
-                resp = client.get("/health")
+                resp = client.get(
+                    "/health",
+                    headers={"Authorization": f"Bearer {_SEARCH_TEST_TOKEN}"},
+                )
 
         assert resp.status_code == 200
         data = resp.get_json()

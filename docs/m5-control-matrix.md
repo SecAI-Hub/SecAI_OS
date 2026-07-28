@@ -8,7 +8,7 @@ Last updated: 2026-03-14
 
 | # | Control | Enforcing Component | Failure Mode | Test Covering It | Audit Evidence | Operator Verification |
 |---|---------|-------------------|--------------|-----------------|----------------|----------------------|
-| 1 | Startup gating via TPM2 attestation | Runtime Attestor (:8505) | Service refuses to start; reports `attestation_failure` to Incident Recorder | `TestPerformAttestation_RequireTPM_FailsInCI`, `TestChain_AttestationFailure_ContainmentDispatched` | `incident-recorder-audit.jsonl` entry class=attestation_failure | `curl http://localhost:8505/health` + `curl http://localhost:8505/api/v1/state` |
+| 1 | Startup gating via TPM2 attestation | Runtime Attestor (:8505) | Service refuses to start; reports `attestation_failure` to Incident Recorder | Runtime quote/nonce/golden-HMAC tests + `TestChain_AttestationFailure_ContainmentDispatched` | `incident-recorder-audit.jsonl` entry class=attestation_failure | `sudo /usr/libexec/secure-ai/first-boot-check.sh` |
 | 2 | Continuous file integrity monitoring | Integrity Monitor (:8510) | State transitions to `degraded`; reports violations to Incident Recorder | `TestVerifyBaselineHMAC_Tampered`, `TestChain_IntegrityViolation_FreezeAndDisable` | Baseline scan results + incident report with file paths/hashes | `curl http://localhost:8510/health` + `curl http://localhost:8510/api/v1/state` |
 | 3 | Auto-containment on integrity violation | Incident Recorder (:8515) | freeze_agent + disable_airlock + force_vault_relock dispatched | `TestChain_IntegrityViolation_FreezeAndDisable`, `TestExecuteContainment_FreezeAgent` | Containment dispatch logs + target service acknowledgment | `curl http://localhost:8515/api/v1/incidents?class=integrity_violation&state=contained` |
 | 4 | Auto-containment on attestation failure | Incident Recorder (:8515) | freeze_agent + disable_airlock + force_vault_relock dispatched | `TestChain_AttestationFailure_ContainmentDispatched` | Incident record with state=contained | `curl http://localhost:8515/api/v1/incidents?class=attestation_failure&state=contained` |
@@ -27,7 +27,7 @@ Last updated: 2026-03-14
 | 17 | Recovery ceremony after containment | Incident Recorder recovery.go | Require ack + re-attestation before returning to trusted mode | `TestRecovery_CriticalRequiresReattestation` | Recovery requirement record with ack/reattest timestamps | `curl http://localhost:8515/api/v1/recovery/status` |
 | 18 | Latched degraded states | Incident Recorder recovery.go | attestation_failure, integrity_violation, unauthorized_access, manifest_mismatch remain latched | `TestLatchedClasses` | Incident state remains until manual review | `go test -run TestLatchedClasses ./services/incident-recorder/...` |
 | 19 | Severity escalation | Incident Recorder recovery.go | Repeated medium-severity events escalate per rules | `TestEscalation_RepeatedPromptInjection` | Escalated severity in incident record | `go test -run TestEscalation ./services/incident-recorder/...` |
-| 20 | Forensic bundle export | Incident Recorder recovery.go | Signed export of incidents, audit, state, policy digest | `TestForensicBundle_ExportAndVerify`, `TestForensicBundle_TamperDetection` | Forensic bundle JSON with HMAC signature | `curl http://localhost:8515/api/v1/forensic/export -o forensic-bundle.json` |
+| 20 | Forensic bundle export | Incident Recorder recovery.go | Signed export of incidents, audit, state, policy digest | `TestForensicBundle_ExportAndVerify`, `TestForensicBundle_TamperDetection` | Forensic bundle JSON with HMAC signature | `sudo secai-forensic export --output forensic-bundle.json` |
 | 21 | Service token propagation | Incident Recorder containment.go | Bearer token included in all containment HTTP calls | `TestChain_BearerToken_PropagatedToContainment` | Authorization header in containment requests | `go test -run TestChain_BearerToken ./services/incident-recorder/...` |
 | 22 | HSM/TPM2 key management | Agent keystore.py | Software/TPM2/PKCS#11 backends with auto-detection | `TestKeystore_*` (31 tests) | Keystore provider name in agent startup log | `journalctl -u secure-ai-agent --grep "keystore provider"` |
 | 23 | Prompt injection detection | MCP Firewall global rules | Shell metacharacters and prompt patterns detected and denied | `TestAdversarial_MalformedMCPPayload` | Global rule match in audit log | `go test -run TestAdversarial_MalformedMCPPayload ./services/mcp-firewall/...` |
@@ -84,8 +84,8 @@ MCP Firewall receives request from tainted session
 An operator can verify the enforcement chain is active by:
 
 1. **Check service health:** `curl http://localhost:8515/health` — incident recorder reports open incident count
-2. **Check recovery status:** `curl http://localhost:8515/api/v1/recovery/status` — pending recovery ceremonies
-3. **Export forensic bundle:** `curl http://localhost:8515/api/v1/forensic/export` — signed evidence package
-4. **Check attestation state:** `curl http://localhost:8505/api/v1/state` — current attestation status
+2. **Check recovery status:** use the root-only recovery-administrator credential — pending recovery ceremonies
+3. **Export forensic bundle:** `sudo secai-forensic export --output forensic-bundle.json` — signed evidence package
+4. **Check attestation state:** `sudo /usr/libexec/secure-ai/first-boot-check.sh` — authenticated hardware evidence and startup policy
 5. **Check integrity state:** `curl http://localhost:8510/api/v1/state` — current integrity baseline status
 6. **Verify audit chain:** `curl http://localhost:8496/v1/audit/verify` — MCP firewall audit chain integrity

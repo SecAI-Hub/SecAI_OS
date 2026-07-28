@@ -81,6 +81,11 @@ updates:
     schedule:
       interval: "weekly"
 
+  - package-ecosystem: "gomod"
+    directory: "/services/ui-ingress"
+    schedule:
+      interval: "weekly"
+
   - package-ecosystem: "docker"
     directory: "/services/agent"
     schedule:
@@ -138,6 +143,11 @@ updates:
 
   - package-ecosystem: "docker"
     directory: "/services/ui"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/services/ui-ingress"
     schedule:
       interval: "weekly"
 

@@ -47,7 +47,7 @@ class TestAuthManagerSetup:
     def test_setup_passphrase(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            assert auth.setup_passphrase("validpass123") is True
+            assert auth.setup_passphrase("valid-passphrase-123") is True
             assert auth.is_configured() is True
 
     def test_setup_rejects_short_passphrase(self):
@@ -59,8 +59,8 @@ class TestAuthManagerSetup:
     def test_setup_only_works_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            assert auth.setup_passphrase("firstpass123") is True
-            assert auth.setup_passphrase("secondpass123") is False
+            assert auth.setup_passphrase("first-passphrase-123") is True
+            assert auth.setup_passphrase("second-passphrase-123") is False
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows does not enforce POSIX file modes")
     def test_credentials_file_permissions(self):
@@ -68,18 +68,18 @@ class TestAuthManagerSetup:
         import stat
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
             creds_path = Path(tmp) / "auth.json"
             mode = os.stat(creds_path).st_mode
-            assert stat.S_IMODE(mode) == 0o600
+            assert stat.S_IMODE(mode) == 0o660
 
 
 class TestAuthManagerLogin:
     def test_login_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             assert result["success"] is True
             assert "token" in result
             assert len(result["token"]) == 64  # 32 bytes hex
@@ -87,7 +87,7 @@ class TestAuthManagerLogin:
     def test_login_wrong_password(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
             result = auth.login("wrongpass")
             assert result["success"] is False
 
@@ -100,12 +100,12 @@ class TestAuthManagerLogin:
     def test_lockout_after_max_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp, max_attempts=3, lockout_duration=10)
-            auth.setup_passphrase("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
 
             for _ in range(3):
                 auth.login("wrong")
 
-            result = auth.login("testpass123")  # correct but locked
+            result = auth.login("test-passphrase-123")  # correct but locked
             assert result["success"] is False
             assert result.get("locked") is True
 
@@ -114,8 +114,8 @@ class TestAuthManagerSessions:
     def test_validate_valid_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             token = result["token"]
             assert auth.validate_session(token) is True
 
@@ -133,8 +133,8 @@ class TestAuthManagerSessions:
     def test_session_expires(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp, session_timeout=1)  # 1 second timeout
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             token = result["token"]
 
             time.sleep(1.5)
@@ -143,8 +143,8 @@ class TestAuthManagerSessions:
     def test_logout_invalidates_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             token = result["token"]
 
             auth.logout(token)
@@ -153,8 +153,8 @@ class TestAuthManagerSessions:
     def test_validate_without_refresh_preserves_idle_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             token = result["token"]
 
             before = auth._sessions[token]["last_active"]
@@ -166,8 +166,8 @@ class TestAuthManagerSessions:
     def test_session_info(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("testpass123")
-            result = auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            result = auth.login("test-passphrase-123")
             token = result["token"]
 
             info = auth.get_session_info(token)
@@ -178,8 +178,8 @@ class TestAuthManagerSessions:
     def test_cleanup_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp, session_timeout=1)
-            auth.setup_passphrase("testpass123")
-            auth.login("testpass123")
+            auth.setup_passphrase("test-passphrase-123")
+            auth.login("test-passphrase-123")
 
             time.sleep(1.5)
             auth.cleanup_expired()
@@ -190,35 +190,35 @@ class TestAuthManagerChangePassphrase:
     def test_change_passphrase_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("oldpass123")
-            result = auth.change_passphrase("oldpass123", "newpass456")
+            auth.setup_passphrase("old-passphrase-123")
+            result = auth.change_passphrase("old-passphrase-123", "new-passphrase-456")
             assert result["success"] is True
 
             # Old passphrase should not work
-            assert auth.login("oldpass123")["success"] is False
+            assert auth.login("old-passphrase-123")["success"] is False
             # New one should
-            assert auth.login("newpass456")["success"] is True
+            assert auth.login("new-passphrase-456")["success"] is True
 
     def test_change_rejects_wrong_current(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("oldpass123")
-            result = auth.change_passphrase("wrongcurrent", "newpass456")
+            auth.setup_passphrase("old-passphrase-123")
+            result = auth.change_passphrase("wrongcurrent", "new-passphrase-456")
             assert result["success"] is False
 
     def test_change_rejects_short_new(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("oldpass123")
-            result = auth.change_passphrase("oldpass123", "short")
+            auth.setup_passphrase("old-passphrase-123")
+            result = auth.change_passphrase("old-passphrase-123", "short")
             assert result["success"] is False
 
     def test_change_invalidates_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = AuthManager(tmp)
-            auth.setup_passphrase("oldpass123")
-            login_result = auth.login("oldpass123")
+            auth.setup_passphrase("old-passphrase-123")
+            login_result = auth.login("old-passphrase-123")
             token = login_result["token"]
 
-            auth.change_passphrase("oldpass123", "newpass456")
+            auth.change_passphrase("old-passphrase-123", "new-passphrase-456")
             assert auth.validate_session(token) is False

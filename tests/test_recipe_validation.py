@@ -120,6 +120,30 @@ class TestCoreServicesEnabled:
         enabled = _get_enabled(systemd)
         assert service in enabled, f"{service} must be in the enabled list"
 
+    def test_legacy_periodic_integrity_timer_is_not_enabled(self, recipe):
+        systemd = _get_systemd_module(recipe)
+        assert "secure-ai-integrity.timer" not in _get_enabled(systemd)
+
+
+class TestRuntimeImageTooling:
+    def test_build_only_packages_are_removed_after_build(self, recipe):
+        cleanup_modules = [
+            module
+            for module in recipe.get("modules", [])
+            if module.get("type") == "rpm-ostree" and module.get("remove")
+        ]
+        assert len(cleanup_modules) == 1
+        removed = set(cleanup_modules[0]["remove"])
+        assert {
+            "golang",
+            "cmake",
+            "gcc-c++",
+            "gcc",
+            "git",
+            "git-core",
+            "python3-pip",
+        } <= removed
+
 
 class TestDisabledByDefaultServices:
     """Services that should be disabled by default (user opts in)."""

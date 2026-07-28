@@ -1,16 +1,41 @@
 [Unit]
 Description=Secure AI Post-Update Health Check
-After=secure-ai-firstboot.service multi-user.target
-Wants=network-online.target
+Requires=secure-ai-firstboot.service secure-ai-credentials.service
+After=secure-ai-firstboot.service secure-ai-credentials.service multi-user.target
 
 [Service]
 Type=oneshot
 ExecStart=/etc/greenboot/check/required.d/01-secure-ai-health.sh
 TimeoutStartSec=300
+User=root
+Group=root
+UMask=0077
+Environment=SERVICE_PROFILE=/etc/secure-ai/config/service-profile.json
+Environment=REGISTRY_TOKEN_PATH=%d/registry-verify-token
+Environment=INTEGRITY_MONITOR_TOKEN_PATH=%d/integrity-monitor-token
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-read-token
+LoadCredential=registry-verify-token:/var/lib/secure-ai/credentials/registry-verify.token
+LoadCredential=integrity-monitor-token:/var/lib/secure-ai/credentials/integrity-monitor.token
+LoadCredential=incident-read-token:/var/lib/secure-ai/credentials/incident-read.token
 
-DynamicUser=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/credentials
+ReadWritePaths=/var/lib/secure-ai/logs /var/lib/secure-ai/state
 ProtectHome=yes
 PrivateTmp=yes
+# The setup-state verifier must be able to establish whether the fixed mapper
+# node exists. Keep the host device namespace visible for metadata inspection,
+# but deny opening every device through the cgroup device policy.
+PrivateDevices=no
+DevicePolicy=closed
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
 
 # Kernel protection
 ProtectKernelTunables=yes
@@ -20,18 +45,29 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 
-# Capability bounding — non-root
-CapabilityBoundingSet=
+# Capability bounding — root checker needs only ruleset inspection
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+
+# Only localhost health APIs are reachable. AF_NETLINK is required to inspect
+# the nftables ruleset without granting any mutation beyond CAP_NET_ADMIN.
+PrivateNetwork=no
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
 
 # Syscall filtering
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
+MemoryMax=256M
+CPUQuota=20%
+TasksMax=64
+LimitNOFILE=512
 LimitCORE=0
-
-ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
 
 [Install]
 WantedBy=multi-user.target

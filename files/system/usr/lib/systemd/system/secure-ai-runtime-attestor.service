@@ -4,26 +4,46 @@ Description=Secure AI Runtime Attestor (TPM2 quote verification, startup gating)
 # This creates the startup gating chain:
 #   runtime-attestor → policy-engine → registry/tool-firewall/agent/airlock/mcp-firewall
 Before=secure-ai-policy-engine.service secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-airlock.service secure-ai-mcp-firewall.service secure-ai-inference.service
-After=network.target
+Requires=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service secure-ai-tpm-attestation-setup.service
+After=network.target secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service secure-ai-tpm-attestation-setup.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
-Type=simple
-ExecStart=/usr/libexec/secure-ai/runtime-attestor
+Type=exec
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require runtime_attestor -- /usr/libexec/secure-ai/runtime-attestor
+ExecStartPost=/usr/libexec/secure-ai/attestation-gate.sh %d/service-token
 Environment=BIND_ADDR=127.0.0.1:8505
 Environment=ATTESTATION_POLICY_PATH=/etc/secure-ai/policy/attestation.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/runtime-attestor-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+Environment=HMAC_KEY_PATH=%d/attestation-hmac-key
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
+Environment=ATTESTATION_PROFILE_PATH=%d/tpm-attestation-profile
+Environment=TPM_AK_PUBLIC_KEY_PATH=%d/tpm-ak-public
+Environment=EXPECTED_BASELINE_PATH=/usr/share/secure-ai/integrity/release-baseline.json
+Environment=BOOT_VERIFICATION_PATH=/var/lib/secure-ai/logs/boot-verify-last.json
+LoadCredential=service-token:/var/lib/secure-ai/credentials/runtime-attestor.token
+LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-runtime-attestor.token
+LoadCredential=attestation-hmac-key:/var/lib/secure-ai/credentials/attestation-hmac.key
+LoadCredential=tpm-attestation-profile:/var/lib/secure-ai/tpm-attestation/profile.json
+LoadCredential=tpm-ak-public:/var/lib/secure-ai/tpm-attestation/ak-public.pem
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs tss
+UMask=0077
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadOnlyPaths=/sys/firmware/efi
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateTmp=yes
-PrivateDevices=yes
+# PrivateDevices would hide the host TPM namespace.  Keep the device namespace
+# visible, then enforce an explicit device allow-list instead.
+PrivateDevices=no
+DevicePolicy=closed
 DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
 ProtectSystem=strict
 ProtectHome=yes
 ProtectProc=invisible
@@ -52,9 +72,6 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Private users (M21 clipboard isolation pattern)
-PrivateUsers=yes
-
 # PrivateNetwork=no — attestor needs localhost HTTP for /api/v1/verify startup gate,
 # and needs to exec tpm2_pcrread and rpm-ostree (external commands)
 PrivateNetwork=no
@@ -77,11 +94,8 @@ LimitNOFILE=512
 LimitCORE=0
 
 # Production timeouts and restart limits
-TimeoutStartSec=30
+TimeoutStartSec=120
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

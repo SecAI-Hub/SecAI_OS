@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "services"))
 
@@ -222,3 +223,105 @@ class TestAuditChainRotation:
             # Archives should be read-only
             for a in archives:
                 assert not os.access(str(a), os.W_OK)
+
+
+class TestKeyedAuditChain:
+    def test_configured_missing_key_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                AuditChain(
+                    str(Path(tmp) / "keyed.jsonl"),
+                    key_path=str(Path(tmp) / "missing.key"),
+                )
+            except RuntimeError as exc:
+                assert "HMAC key" in str(exc)
+            else:
+                raise AssertionError("configured missing audit key must fail closed")
+
+    def test_hmac_chain_and_checkpoint_survive_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "audit.key"
+            key_path.write_bytes(os.urandom(32))
+            path = str(Path(tmp) / "keyed.jsonl")
+
+            AuditChain(path, key_path=str(key_path)).append("one", {"ok": True})
+            AuditChain(path, key_path=str(key_path)).append("two", {"ok": True})
+
+            result = AuditChain.verify(path, key_path=str(key_path))
+            assert result["valid"] is True
+            assert result["entries"] == 2
+
+    def test_keyed_chain_requires_verification_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "audit.key"
+            key_path.write_bytes(os.urandom(32))
+            path = str(Path(tmp) / "keyed.jsonl")
+            AuditChain(path, key_path=str(key_path)).append("one")
+
+            result = AuditChain.verify(path)
+            assert result["valid"] is False
+            assert "key unavailable" in result["detail"]
+
+    def test_checkpoint_detects_tail_truncation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "audit.key"
+            key_path.write_bytes(os.urandom(32))
+            log_path = Path(tmp) / "keyed.jsonl"
+            chain = AuditChain(str(log_path), key_path=str(key_path))
+            chain.append("one")
+            chain.append("two")
+            log_path.write_text(log_path.read_text().splitlines()[0] + "\n")
+
+            result = AuditChain.verify(
+                str(log_path),
+                key_path=str(key_path),
+            )
+            assert result["valid"] is False
+            assert "checkpoint" in result["detail"]
+
+    def test_keyed_rotation_verifies_archives_and_current_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "audit.key"
+            key_path.write_bytes(os.urandom(32))
+            path = str(Path(tmp) / "keyed.jsonl")
+            chain = AuditChain(path, max_size_mb=0, key_path=str(key_path))
+            chain.append("one")
+            chain.append("two")
+            chain.append("three")
+
+            result = AuditChain.verify(path, key_path=str(key_path))
+            assert result["valid"] is True
+            assert result["entries"] == 3
+
+    def test_binary_hmac_key_preserves_boundary_whitespace_octets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = Path(tmp) / "audit.key"
+            key_path.write_bytes(b"\x20" + b"\x00" * 30 + b"\x0a")
+            log_path = Path(tmp) / "keyed.jsonl"
+
+            AuditChain(str(log_path), key_path=str(key_path)).append("one")
+
+            assert AuditChain.verify(
+                str(log_path),
+                key_path=str(key_path),
+            )["valid"] is True
+
+    def test_hmac_key_rejects_symlink_and_group_writable_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.key"
+            target.write_bytes(b"k" * 32)
+            link = Path(tmp) / "linked.key"
+            link.symlink_to(target)
+
+            with pytest.raises(RuntimeError, match="HMAC key"):
+                AuditChain(
+                    str(Path(tmp) / "linked.jsonl"),
+                    key_path=str(link),
+                )
+
+            target.chmod(0o620)
+            with pytest.raises(RuntimeError, match="HMAC key"):
+                AuditChain(
+                    str(Path(tmp) / "writable.jsonl"),
+                    key_path=str(target),
+                )

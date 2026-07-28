@@ -148,14 +148,23 @@
                 <div class="form-group">
                     <label class="form-label" for="passphrase">Passphrase</label>
                     <input class="form-input" type="password" id="passphrase" name="passphrase"
-                           placeholder="Enter passphrase" autofocus required minlength="8" maxlength="256">
+                           placeholder="Enter passphrase" autofocus required minlength="15" maxlength="256">
                 </div>
 
                 <div class="confirm-group" id="confirm-group">
                     <div class="form-group">
                         <label class="form-label" for="confirm">Confirm Passphrase</label>
                         <input class="form-input" type="password" id="confirm" name="confirm"
-                               placeholder="Confirm passphrase" minlength="8" maxlength="256">
+                               placeholder="Confirm passphrase" minlength="15" maxlength="256">
+                    </div>
+                </div>
+
+                <div class="confirm-group" id="setup-token-group">
+                    <div class="form-group">
+                        <label class="form-label" for="setup-token">First-boot setup credential</label>
+                        <input class="form-input" type="password" id="setup-token" name="setup-token"
+                               placeholder="Paste the one-time setup credential" maxlength="256"
+                               autocomplete="one-time-code">
                     </div>
                 </div>
 
@@ -163,7 +172,7 @@
             </form>
 
             <div class="setup-note" id="setup-note" style="display: none;">
-                Choose a passphrase (minimum 8 characters) to protect this appliance.
+                Choose a passphrase of at least 15 characters that is not commonly compromised.
             </div>
         </div>
 
@@ -185,6 +194,7 @@
                     document.getElementById('title').textContent = 'Set Up Passphrase';
                     document.getElementById('subtitle').textContent = 'Protect your Secure AI Appliance with a strong passphrase.';
                     document.getElementById('confirm-group').classList.add('visible');
+                    document.getElementById('setup-token-group').classList.add('visible');
                     document.getElementById('submit-btn').textContent = 'Set Passphrase';
                     document.getElementById('setup-note').style.display = 'block';
                 }
@@ -213,8 +223,13 @@
                     showError('Passphrases do not match.');
                     return;
                 }
-                if (passphrase.length < 8) {
-                    showError('Passphrase must be at least 8 characters.');
+                if (passphrase.length < 15) {
+                    showError('Passphrase must be at least 15 characters.');
+                    return;
+                }
+                var setupToken = document.getElementById('setup-token').value;
+                if (!setupToken) {
+                    showError('Enter the first-boot setup credential from the local console.');
                     return;
                 }
 
@@ -225,7 +240,10 @@
                     var resp = await fetch('/api/auth/setup', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({passphrase: passphrase}),
+                        body: JSON.stringify({
+                            passphrase: passphrase,
+                            setup_token: setupToken,
+                        }),
                     });
                     var data = await resp.json();
                     if (data.success) {

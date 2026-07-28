@@ -128,6 +128,18 @@ The incident record now has `acked_at` and `acked_by` populated. If the incident
 
 For critical incidents and latched classes (`attestation_failure`, `integrity_violation`), acknowledgment alone is not sufficient. The operator must also trigger a re-attestation to re-establish the trust root.
 
+The re-attestation response is accepted only when it is bound to the
+incident-recorder's fresh 256-bit nonce, carries a valid canonical bundle
+HMAC, verifies a nonce-bound AK signature with `tpm2_checkquote`, matches the
+locally enrolled PCR 0/2/4/7 baseline and AK digest, and verifies both the
+signed deployment and release baseline. A 64-character string that merely
+looks like an HMAC is not evidence.
+
+An appliance running the explicit VM `evaluation` profile cannot complete this
+step. After a latched critical incident, do not clear or bypass the recovery
+gate: preserve forensic evidence and reprovision onto qualified bare metal (or
+replace the evaluation VM from a known-good signed image).
+
 ### When Re-Attestation Is Required
 
 Re-attestation is required when:
@@ -140,6 +152,19 @@ Re-attestation is required when:
 Before re-attesting, address the underlying issue:
 - **attestation_failure**: Verify TPM2 state, check for firmware updates, ensure PCR values match expected configuration.
 - **integrity_violation**: Identify changed files, verify they are legitimate updates or restore from known-good state. Re-run integrity baseline if the change is authorized.
+
+After a legitimate signed firmware, Secure Boot database, bootloader, or OS
+change, review the change from a physical Linux virtual console
+(`/dev/ttyN`; SSH, pseudo-terminals, and noninteractive execution are rejected)
+before enrolling the new PCR baseline:
+
+```bash
+sudo /usr/libexec/secure-ai/secure-tpm-attestation.py \
+  reenroll --confirm ENROLL-ATTESTATION
+sudo systemctl restart secure-ai-runtime-attestor.service
+```
+
+Never re-enroll unexplained PCR drift simply to make recovery pass.
 
 ### Step 2: Trigger Re-Attestation
 
@@ -264,25 +289,21 @@ curl -s -X POST http://localhost:8515/api/v1/incidents/resolve \
 curl -s http://localhost:8515/health | jq .
 # Expected: {"status":"ok","open_incidents":0,...}
 
-# Attestation state
-curl -s http://localhost:8505/api/v1/state | jq .
-# Expected: state="trusted"
-
-# Integrity state
-curl -s http://localhost:8510/api/v1/state | jq .
-# Expected: state="trusted"
+# Authenticated attestation/integrity/vault/service checks
+sudo /usr/libexec/secure-ai/first-boot-check.sh
+# Expected: hardware attestation VERIFIED, integrity TRUSTED, zero failures
 ```
 
 ---
 
 ## Forensic Export
 
-The forensic bundle is a signed evidence package containing all incidents, audit log entries, system state, and a policy digest. It is HMAC-signed using the service token to ensure tamper detection.
+The forensic bundle is a signed evidence package containing all incidents, audit log entries, system state, and a policy digest. A dedicated root-only forensic HMAC key signs it; a separate root-only forensic bearer credential authorizes export.
 
 ### Export a Forensic Bundle
 
 ```bash
-curl -s http://localhost:8515/api/v1/forensic/export -o forensic-bundle.json
+sudo secai-forensic export --output forensic-bundle.json
 ```
 
 ### Inspect the Bundle
@@ -306,12 +327,18 @@ jq '.audit_entries' forensic-bundle.json
 
 ### Verify Bundle Integrity
 
-The bundle includes a SHA-256 hash over its contents and an HMAC signature using the service token. To verify programmatically:
+The bundle includes a SHA-256 hash over its canonical payload and an HMAC signature using the dedicated forensic HMAC key. The supported verifier is:
+
+```bash
+sudo secai-forensic verify forensic-bundle.json
+```
+
+The verification contract is:
 
 1. Extract `bundle_hash` and `signature` from the bundle JSON.
 2. Recompute SHA-256 over the serialized `{exported_at, incidents, audit_entries, system_state, policy_digest}` fields.
 3. Compare the computed hash to `bundle_hash`.
-4. If you have the service signing key, verify the HMAC-SHA256 signature of the `bundle_hash`.
+4. Verify HMAC-SHA256 over the raw SHA-256 digest with the forensic HMAC key.
 
 The Go test `TestForensicBundle_ExportAndVerify` demonstrates this verification flow. The test `TestForensicBundle_TamperDetection` confirms that any modification to the bundle (e.g., changing an incident ID) causes verification to fail.
 
@@ -325,7 +352,7 @@ cd services/incident-recorder && go test -v -race -run TestForensicBundle ./...
 ```bash
 # Save with timestamp in filename
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-curl -s http://localhost:8515/api/v1/forensic/export -o "forensic-bundle-${TIMESTAMP}.json"
+sudo secai-forensic export --output "forensic-bundle-${TIMESTAMP}.json"
 
 # Compute an independent checksum
 sha256sum "forensic-bundle-${TIMESTAMP}.json" > "forensic-bundle-${TIMESTAMP}.sha256"

@@ -68,7 +68,8 @@ Usage:
 
 Environment:
   MCP_FIREWALL_POLICY    Path to policy YAML (default: policies/default-policy.yaml)
-  SERVICE_TOKEN          Bearer token for protected endpoints
+  SERVICE_TOKEN_PATH     Path to Bearer token credential
+  BIND_ADDR              Loopback listen address (default: policy daemon.bind_addr)
   AUDIT_LOG              Path to JSONL audit log
   SIGNING_KEY            Base64-encoded Ed25519 private key
 `)
@@ -105,6 +106,29 @@ func loadSigningKey() ed25519.PrivateKey {
 	return ed25519.PrivateKey(data)
 }
 
+func loadServiceToken() (string, error) {
+	path := envOr("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read service token %s: %w", path, err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("service token %s is empty", path)
+	}
+	return token, nil
+}
+
+func authenticatedServiceHandler(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && !checkToken(r, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ---------- CLI commands ----------
 
 func cmdServe() {
@@ -116,7 +140,10 @@ func cmdServe() {
 	engine := NewPolicyEngine(policy)
 	taintState := NewTaintState()
 	privKey := loadSigningKey()
-	token := os.Getenv("SERVICE_TOKEN")
+	token, err := loadServiceToken()
+	if err != nil {
+		log.Fatalf("service authentication unavailable: %v", err)
+	}
 
 	auditPath := envOr("AUDIT_LOG", policy.Audit.LogPath)
 	auditLog, err := NewAuditLog(auditPath, privKey, 1000)
@@ -309,7 +336,10 @@ func cmdServe() {
 		})
 	})
 
-	addr := policy.Daemon.BindAddr
+	addr := os.Getenv("BIND_ADDR")
+	if addr == "" {
+		addr = policy.Daemon.BindAddr
+	}
 	if addr == "" {
 		addr = "127.0.0.1:8510"
 	}
@@ -319,7 +349,7 @@ func cmdServe() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           authenticatedServiceHandler(mux, token),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -404,31 +434,12 @@ func cmdAudit() {
 		log.Fatal("audit log path required (use -log or AUDIT_LOG env)")
 	}
 
-	data, err := os.ReadFile(logPath)
+	_, count, _, err := loadAuditEntries(logPath, 1)
 	if err != nil {
-		log.Fatalf("cannot read audit log: %v", err)
-	}
-
-	var entries []AuditEntry
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry AuditEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			log.Printf("warning: skipping malformed entry: %v", err)
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	valid, failIdx := VerifyChain(entries)
-	if valid {
-		fmt.Printf("Audit chain valid: %d entries\n", len(entries))
-	} else {
-		fmt.Printf("CHAIN BROKEN at entry %d of %d\n", failIdx, len(entries))
+		fmt.Printf("CHAIN BROKEN: %v\n", err)
 		os.Exit(2)
 	}
+	fmt.Printf("Audit chain valid: %d entries\n", count)
 }
 
 func cmdKeygen() {
@@ -458,9 +469,12 @@ func cmdKeygen() {
 
 func checkToken(r *http.Request, expected string) bool {
 	if expected == "" {
-		return true
+		return false
 	}
 	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
 	provided := strings.TrimPrefix(auth, "Bearer ")
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }

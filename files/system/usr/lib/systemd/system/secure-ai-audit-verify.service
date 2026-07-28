@@ -1,15 +1,25 @@
 [Unit]
 Description=Secure AI Audit Log Chain Verification
-After=local-fs.target
+Requires=secure-ai-credentials.service
+After=local-fs.target secure-ai-credentials.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/verify-audit-chains.py
 Environment=AUDIT_LOGS_DIR=/var/lib/secure-ai/logs
 Environment=SERVICES_DIR=/usr/libexec/secure-ai/services
+Environment=AUDIT_FORMAT_MANIFEST=/etc/secure-ai/config/audit-log-formats.json
+Environment=AUDIT_HMAC_KEY_DIR=%d
+LoadCredential=agent-audit-hmac-key:/var/lib/secure-ai/credentials/agent-audit-hmac.key
+LoadCredential=quarantine-audit-hmac-key:/var/lib/secure-ai/credentials/quarantine-audit-hmac.key
+LoadCredential=search-audit-hmac-key:/var/lib/secure-ai/credentials/search-audit-hmac.key
+LoadCredential=ui-audit-hmac-key:/var/lib/secure-ai/credentials/ui-audit-hmac.key
+LoadCredential=panic-audit-hmac-key:/var/lib/secure-ai/credentials/panic-audit-hmac.key
 
 # Filesystem access
 DynamicUser=yes
+SupplementaryGroups=secure-ai-logs
+ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/usr/libexec/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateTmp=yes

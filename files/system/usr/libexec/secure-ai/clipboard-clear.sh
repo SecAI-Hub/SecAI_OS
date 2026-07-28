@@ -1,45 +1,38 @@
 #!/usr/bin/env bash
-#
-# Secure AI Appliance — Clipboard Auto-Clear (M21)
-#
-# Clears the system clipboard after a configurable timeout.
-# Prevents sensitive data (model outputs, search results) from persisting
-# on the clipboard indefinitely.
-#
-# Supports: wl-copy/wl-paste (Wayland), xclip/xsel (X11)
-#
+# Clear clipboard and primary selections from the current graphical session.
 set -euo pipefail
+umask 077
 
 log() {
-    logger -t clipboard-clear "$*" 2>/dev/null || true
+    echo "[clipboard-clear] $*" >&2
 }
 
-# Detect display server and clear clipboard
-clear_clipboard() {
-    local cleared="false"
-
-    # Wayland
-    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-        if command -v wl-copy &>/dev/null; then
-            echo -n "" | wl-copy 2>/dev/null && cleared="true"
-            echo -n "" | wl-copy --primary 2>/dev/null || true
-        fi
+clear_wayland() {
+    if ! command -v wl-copy >/dev/null 2>&1; then
+        log "Wayland session detected but wl-copy is unavailable"
+        return 1
     fi
-
-    # X11 fallback
-    if [ -n "${DISPLAY:-}" ]; then
-        if command -v xclip &>/dev/null; then
-            echo -n "" | xclip -selection clipboard 2>/dev/null && cleared="true"
-            echo -n "" | xclip -selection primary 2>/dev/null || true
-        elif command -v xsel &>/dev/null; then
-            xsel --clipboard --clear 2>/dev/null && cleared="true"
-            xsel --primary --clear 2>/dev/null || true
-        fi
-    fi
-
-    if [ "$cleared" = "true" ]; then
-        log "Clipboard cleared"
-    fi
+    wl-copy --clear
+    wl-copy --primary --clear
 }
 
-clear_clipboard
+clear_x11() {
+    if command -v xsel >/dev/null 2>&1; then
+        xsel --clipboard --clear
+        xsel --primary --clear
+        return
+    fi
+    log "X11 session detected but xsel is unavailable"
+    return 1
+}
+
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    clear_wayland
+elif [ -n "${DISPLAY:-}" ]; then
+    clear_x11
+else
+    log "no graphical clipboard session is available"
+    exit 2
+fi
+
+log "clipboard and primary selection cleared"

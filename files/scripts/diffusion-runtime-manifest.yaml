@@ -1,5 +1,5 @@
-schema_version: 1
-description: "Diffusion runtime trust anchor \u2014 per-backend wheel manifests and lockfiles"
+schema_version: 4
+description: "Diffusion runtime trust anchor \u2014 CPython 3.12 Linux/x86_64 backend locks and exact wheel hashes"
 populated: true
 python_version: '3.12'
 supported_architectures:
@@ -20,32 +20,41 @@ backends:
     - filename: annotated_doc-0.0.4-py3-none-any.whl
       sha256: 571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320
       source: https://files.pythonhosted.org/packages/*
-    - filename: anyio-4.13.0-py3-none-any.whl
-      sha256: 08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708
+    - filename: anyio-4.14.2-py3-none-any.whl
+      sha256: 9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
       source: https://files.pythonhosted.org/packages/*
-    - filename: certifi-2026.2.25-py3-none-any.whl
-      sha256: 027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa
+    - filename: blinker-1.9.0-py3-none-any.whl
+      sha256: ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
       source: https://files.pythonhosted.org/packages/*
-    - filename: charset_normalizer-3.4.6-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 0e28d62a8fc7a1fa411c43bd65e346f3bce9716dc51b897fbe930c5987b402d5
+    - filename: certifi-2026.7.22-py3-none-any.whl
+      sha256: 62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
       source: https://files.pythonhosted.org/packages/*
-    - filename: click-8.3.1-py3-none-any.whl
-      sha256: 981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6
+    - filename: charset_normalizer-3.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 5e226f6218febc71f6c1fc2fafb91c226f75bdc1d8fb12d66823716e891608fd
+      source: https://files.pythonhosted.org/packages/*
+    - filename: click-8.3.3-py3-none-any.whl
+      sha256: a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613
       source: https://files.pythonhosted.org/packages/*
     - filename: diffusers-0.38.0-py3-none-any.whl
       sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
-    - filename: filelock-3.25.2-py3-none-any.whl
-      sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
+    - filename: filelock-3.32.0-py3-none-any.whl
+      sha256: d396bea984af47333ef05e50eae7eff88c84256de6112aea0ec48a233c064fe3
       source: https://files.pythonhosted.org/packages/*
-    - filename: fsspec-2026.3.0-py3-none-any.whl
-      sha256: d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4
+    - filename: flask-3.1.3-py3-none-any.whl
+      sha256: f4bcbefc124291925f1a26446da31a5178f9483862233b23c0c96a20701f670c
+      source: https://files.pythonhosted.org/packages/*
+    - filename: fsspec-2026.6.0-py3-none-any.whl
+      sha256: 02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1
+      source: https://files.pythonhosted.org/packages/*
+    - filename: gunicorn-25.3.0-py3-none-any.whl
+      sha256: cacea387dab08cd6776501621c295a904fe8e3b7aae9a1a3cbb26f4e7ed54660
       source: https://files.pythonhosted.org/packages/*
     - filename: h11-0.16.0-py3-none-any.whl
       sha256: 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
       source: https://files.pythonhosted.org/packages/*
-    - filename: hf_xet-1.4.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 77e8c180b7ef12d8a96739a4e1e558847002afe9ea63b6f6358b2271a8bdda1c
+    - filename: hf_xet-1.5.2-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: db78c39c83d6279daddc98e2238f373ab8980685556d42472b4ec51abcf03e8c
       source: https://files.pythonhosted.org/packages/*
     - filename: httpcore-1.0.9-py3-none-any.whl
       sha256: 2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
@@ -53,20 +62,29 @@ backends:
     - filename: httpx-0.28.1-py3-none-any.whl
       sha256: d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
       source: https://files.pythonhosted.org/packages/*
-    - filename: huggingface_hub-1.8.0-py3-none-any.whl
-      sha256: d3eb5047bd4e33c987429de6020d4810d38a5bef95b3b40df9b17346b7f353f2
+    - filename: huggingface_hub-1.16.1-py3-none-any.whl
+      sha256: 64340de934b9ce37857ef85a82de72f5629e8a270f9119eabb12bf495eb53c22
       source: https://files.pythonhosted.org/packages/*
-    - filename: idna-3.11-py3-none-any.whl
-      sha256: 771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea
+    - filename: idna-3.18-py3-none-any.whl
+      sha256: 7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio-2.37.3-py3-none-any.whl
+      sha256: 46f5bb8522cd421c0f5ae104d8268f569d856b29eb1a13b92829d1970f32c9f0
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl
+      sha256: c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282
       source: https://files.pythonhosted.org/packages/*
     - filename: importlib_metadata-9.0.0-py3-none-any.whl
       sha256: 2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7
       source: https://files.pythonhosted.org/packages/*
+    - filename: itsdangerous-2.2.0-py3-none-any.whl
+      sha256: c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef
+      source: https://files.pythonhosted.org/packages/*
     - filename: jinja2-3.1.6-py3-none-any.whl
       sha256: 85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
       source: https://files.pythonhosted.org/packages/*
-    - filename: markdown_it_py-4.0.0-py3-none-any.whl
-      sha256: 87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147
+    - filename: markdown_it_py-4.2.0-py3-none-any.whl
+      sha256: 9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
       source: https://files.pythonhosted.org/packages/*
     - filename: markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d
@@ -80,14 +98,17 @@ backends:
     - filename: networkx-3.6.1-py3-none-any.whl
       sha256: d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
       source: https://files.pythonhosted.org/packages/*
-    - filename: numpy-2.4.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: e7dd01a46700b1967487141a66ac1a3cf0dd8ebf1f08db37d46389401512ca97
+    - filename: numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca
       source: https://files.pythonhosted.org/packages/*
-    - filename: packaging-26.0-py3-none-any.whl
-      sha256: b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529
+    - filename: packaging-26.2-py3-none-any.whl
+      sha256: 5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
       source: https://files.pythonhosted.org/packages/*
-    - filename: pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 62f5409336adb0663b7caa0da5c7d9e7bdbaae9ce761d34669420c2a801b2780
+    - filename: pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+      source: https://files.pythonhosted.org/packages/*
+    - filename: pip-26.1.2-py3-none-any.whl
+      sha256: 382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab
       source: https://files.pythonhosted.org/packages/*
     - filename: psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
       sha256: 076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9
@@ -98,20 +119,20 @@ backends:
     - filename: pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
       source: https://files.pythonhosted.org/packages/*
-    - filename: regex-2026.2.28-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: d6b08a06976ff4fb0d83077022fde3eca06c55432bb997d8c0495b9a4e9872f4
+    - filename: regex-2026.7.19-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 9dce8ec9695f531a1b8a6f314fd4b393adcccf2ea861db480cdf97a301d01a68
       source: https://files.pythonhosted.org/packages/*
-    - filename: requests-2.33.0-py3-none-any.whl
-      sha256: 3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b
+    - filename: requests-2.34.2-py3-none-any.whl
+      sha256: 2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
       source: https://files.pythonhosted.org/packages/*
-    - filename: rich-14.3.3-py3-none-any.whl
-      sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
+    - filename: rich-15.0.0-py3-none-any.whl
+      sha256: 33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
+    - filename: safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774
       source: https://files.pythonhosted.org/packages/*
-    - filename: setuptools-81.0.0-py3-none-any.whl
-      sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
+    - filename: setuptools-83.0.0-py3-none-any.whl
+      sha256: 29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
       source: https://files.pythonhosted.org/packages/*
     - filename: shellingham-1.5.4-py2.py3-none-any.whl
       sha256: 7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686
@@ -122,30 +143,42 @@ backends:
     - filename: tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       sha256: 369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67
       source: https://files.pythonhosted.org/packages/*
-    - filename: torch-2.11.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl
-      sha256: f82e2ae20c1545bb03997d1cc3143d94e14b800038669ee1aca45808a9acc338
+    - filename: torch-2.13.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: 4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2
       source: https://download.pytorch.org/whl/cpu/*
-    - filename: tqdm-4.67.3-py3-none-any.whl
-      sha256: ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf
+    - filename: torchvision-0.28.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: b545d46f4d2f9d30381281cf22874bfe1d32a8a7b0ee8396fccde89f30c6a9d9
+      source: https://download.pytorch.org/whl/cpu/*
+    - filename: tqdm-4.70.0-py3-none-any.whl
+      sha256: 7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
       source: https://files.pythonhosted.org/packages/*
-    - filename: transformers-5.4.0-py3-none-any.whl
-      sha256: 9fbe50602d2a4e6d0aa8a35a605433dfac72d595ee2192eae192590a6cc2df86
+    - filename: transformers-5.14.1-py3-none-any.whl
+      sha256: 9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725
       source: https://files.pythonhosted.org/packages/*
-    - filename: typer-0.24.1-py3-none-any.whl
-      sha256: 112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e
+    - filename: typer-0.27.0-py3-none-any.whl
+      sha256: 6f4b27631e47f077871b7dc30e933ec0131c1390fbe0e387ea5574b5bac9ccf1
       source: https://files.pythonhosted.org/packages/*
-    - filename: typing_extensions-4.15.0-py3-none-any.whl
-      sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
+    - filename: typing_extensions-4.16.0-py3-none-any.whl
+      sha256: 481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
       source: https://files.pythonhosted.org/packages/*
     - filename: urllib3-2.7.0-py3-none-any.whl
       sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
-    - filename: zipp-3.23.0-py3-none-any.whl
-      sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e
+    - filename: werkzeug-3.1.8-py3-none-any.whl
+      sha256: 63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50
       source: https://files.pythonhosted.org/packages/*
+    - filename: wheel-0.46.2-py3-none-any.whl
+      sha256: 33ae60725d69eaa249bc1982e739943c23b34b58d51f1cb6253453773aca6e65
+      source: https://files.pythonhosted.org/packages/*
+    - filename: zipp-4.1.0-py3-none-any.whl
+      sha256: 25ad4e16390cd314347dd8f1de67a2ac538ae658ed4ab9db16029c07c188e97f
+      source: https://files.pythonhosted.org/packages/*
+    lock_sha256: 2d242cb29fbd5110203fbf891ccc73a329238e5cc469ad76f9ff8f2fadbe07c8
+    inputfile: diffusion-cpu.in
+    input_sha256: e0f3664b1bde7de081447c2c1402fd0bc6847d277f9f837557b1f45541c45409
   cuda:
     lockfile: diffusion-cuda.lock
-    torch_index: https://download.pytorch.org/whl/cu121
+    torch_index: https://download.pytorch.org/whl/cu129
     estimated_size_mb: 4500
     wheels:
     - filename: accelerate-1.13.0-py3-none-any.whl
@@ -154,41 +187,50 @@ backends:
     - filename: annotated_doc-0.0.4-py3-none-any.whl
       sha256: 571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320
       source: https://files.pythonhosted.org/packages/*
-    - filename: anyio-4.13.0-py3-none-any.whl
-      sha256: 08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708
+    - filename: anyio-4.14.2-py3-none-any.whl
+      sha256: 9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
       source: https://files.pythonhosted.org/packages/*
-    - filename: certifi-2026.2.25-py3-none-any.whl
-      sha256: 027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa
+    - filename: blinker-1.9.0-py3-none-any.whl
+      sha256: ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
       source: https://files.pythonhosted.org/packages/*
-    - filename: charset_normalizer-3.4.6-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 0e28d62a8fc7a1fa411c43bd65e346f3bce9716dc51b897fbe930c5987b402d5
+    - filename: certifi-2026.7.22-py3-none-any.whl
+      sha256: 62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
       source: https://files.pythonhosted.org/packages/*
-    - filename: click-8.3.1-py3-none-any.whl
-      sha256: 981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6
+    - filename: charset_normalizer-3.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 5e226f6218febc71f6c1fc2fafb91c226f75bdc1d8fb12d66823716e891608fd
       source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_bindings-13.2.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 46d8776a55d6d5da9dd6e9858fba2efcda2abe6743871dee47dd06eb8cb6d955
+    - filename: click-8.3.3-py3-none-any.whl
+      sha256: a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613
       source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_pathfinder-1.5.0-py3-none-any.whl
-      sha256: 498f90a9e9de36044a7924742aecce11c50c49f735f1bc53e05aa46de9ea4110
+    - filename: cuda_bindings-12.9.7-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 4c7ef48c5e13ae90f3b2ecfb72f8e99ac43c8f4c43e67e1325b8aae331453687
       source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_toolkit-13.0.2-py2.py3-none-any.whl
-      sha256: b198824cf2f54003f50d64ada3a0f184b42ca0846c1c94192fa269ecd97a66eb
+    - filename: cuda_pathfinder-1.6.0-py3-none-any.whl
+      sha256: 1503af579d8379c24bdd65528379bc57039b0455be9f5f9686cf8e473a1fce51
+      source: https://files.pythonhosted.org/packages/*
+    - filename: cuda_toolkit-12.9.1-py2.py3-none-any.whl
+      sha256: 0c8636dfacbecfe9867a949a211864f080a805bc54023ce4a361aa4e1fd8738b
       source: https://files.pythonhosted.org/packages/*
     - filename: diffusers-0.38.0-py3-none-any.whl
       sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
-    - filename: filelock-3.25.2-py3-none-any.whl
-      sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
+    - filename: filelock-3.32.0-py3-none-any.whl
+      sha256: d396bea984af47333ef05e50eae7eff88c84256de6112aea0ec48a233c064fe3
       source: https://files.pythonhosted.org/packages/*
-    - filename: fsspec-2026.3.0-py3-none-any.whl
-      sha256: d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4
+    - filename: flask-3.1.3-py3-none-any.whl
+      sha256: f4bcbefc124291925f1a26446da31a5178f9483862233b23c0c96a20701f670c
+      source: https://files.pythonhosted.org/packages/*
+    - filename: fsspec-2026.6.0-py3-none-any.whl
+      sha256: 02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1
+      source: https://files.pythonhosted.org/packages/*
+    - filename: gunicorn-25.3.0-py3-none-any.whl
+      sha256: cacea387dab08cd6776501621c295a904fe8e3b7aae9a1a3cbb26f4e7ed54660
       source: https://files.pythonhosted.org/packages/*
     - filename: h11-0.16.0-py3-none-any.whl
       sha256: 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
       source: https://files.pythonhosted.org/packages/*
-    - filename: hf_xet-1.4.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 77e8c180b7ef12d8a96739a4e1e558847002afe9ea63b6f6358b2271a8bdda1c
+    - filename: hf_xet-1.5.2-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: db78c39c83d6279daddc98e2238f373ab8980685556d42472b4ec51abcf03e8c
       source: https://files.pythonhosted.org/packages/*
     - filename: httpcore-1.0.9-py3-none-any.whl
       sha256: 2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
@@ -196,20 +238,29 @@ backends:
     - filename: httpx-0.28.1-py3-none-any.whl
       sha256: d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
       source: https://files.pythonhosted.org/packages/*
-    - filename: huggingface_hub-1.8.0-py3-none-any.whl
-      sha256: d3eb5047bd4e33c987429de6020d4810d38a5bef95b3b40df9b17346b7f353f2
+    - filename: huggingface_hub-1.16.1-py3-none-any.whl
+      sha256: 64340de934b9ce37857ef85a82de72f5629e8a270f9119eabb12bf495eb53c22
       source: https://files.pythonhosted.org/packages/*
-    - filename: idna-3.11-py3-none-any.whl
-      sha256: 771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea
+    - filename: idna-3.18-py3-none-any.whl
+      sha256: 7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio-2.37.3-py3-none-any.whl
+      sha256: 46f5bb8522cd421c0f5ae104d8268f569d856b29eb1a13b92829d1970f32c9f0
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl
+      sha256: c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282
       source: https://files.pythonhosted.org/packages/*
     - filename: importlib_metadata-9.0.0-py3-none-any.whl
       sha256: 2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7
       source: https://files.pythonhosted.org/packages/*
+    - filename: itsdangerous-2.2.0-py3-none-any.whl
+      sha256: c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef
+      source: https://files.pythonhosted.org/packages/*
     - filename: jinja2-3.1.6-py3-none-any.whl
       sha256: 85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
       source: https://files.pythonhosted.org/packages/*
-    - filename: markdown_it_py-4.0.0-py3-none-any.whl
-      sha256: 87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147
+    - filename: markdown_it_py-4.2.0-py3-none-any.whl
+      sha256: 9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
       source: https://files.pythonhosted.org/packages/*
     - filename: markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d
@@ -223,59 +274,62 @@ backends:
     - filename: networkx-3.6.1-py3-none-any.whl
       sha256: d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
       source: https://files.pythonhosted.org/packages/*
-    - filename: numpy-2.4.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: e7dd01a46700b1967487141a66ac1a3cf0dd8ebf1f08db37d46389401512ca97
+    - filename: numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cublas-13.1.0.3-py3-none-manylinux_2_27_x86_64.whl
-      sha256: ee8722c1f0145ab246bccb9e452153b5e0515fd094c3678df50b2a0888b8b171
+    - filename: nvidia_cublas_cu12-12.9.1.4-py3-none-manylinux_2_27_x86_64.whl
+      sha256: 453611eb21a7c1f2c2156ed9f3a45b691deda0440ec550860290dc901af5b4c2
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl
-      sha256: 4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8
+    - filename: nvidia_cuda_cupti_cu12-12.9.79-py3-none-manylinux_2_25_x86_64.whl
+      sha256: 096bcf334f13e1984ba36685ad4c1d6347db214de03dbb6eebb237b41d9d934f
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
-      sha256: ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575
+    - filename: nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      sha256: 210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548
+    - filename: nvidia_cuda_runtime_cu12-12.9.79-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: 25bba2dfb01d48a9b59ca474a1ac43c6ebf7011f1b0b8cc44f54eb6ac48a96c3
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_x86_64.whl
-      sha256: d20e1734305e9d68889a96e3f35094d733ff1f83932ebe462753973e53a572bf
+    - filename: nvidia_cudnn_cu12-9.20.0.48-py3-none-manylinux_2_27_x86_64.whl
+      sha256: 7d7479e1321c7a039b33827f0247791ee1be091759032c1f66a287c4a643396a
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 6c44f692dce8fd5ffd3e3df134b6cdb9c2f72d99cf40b62c32dde45eea9ddad3
+    - filename: nvidia_cufft_cu12-11.4.1.4-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: c67884f2a7d276b4b80eb56a79322a95df592ae5e765cf1243693365ccab4e28
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 08a3ecefae5a01c7f5117351c64f17c7c62efa5fffdbe24fc7d298da19cd0b44
+    - filename: nvidia_cufile_cu12-1.14.1.1-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: 9552e2231792e94b1ff17bc99e958cc0e6bbbaa4a9d91fa2dbeed97716628fe6
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl
-      sha256: 1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc
+    - filename: nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl
+      sha256: 49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl
-      sha256: 0a759da5dea5c0ea10fd307de75cdeb59e7ea4fcb8add0924859b944babf1112
+    - filename: nvidia_cusolver_cu12-11.7.5.82-py3-none-manylinux_2_27_x86_64.whl
+      sha256: 15da72d1340d29b5b3cf3fd100e3cd53421dde36002eda6ed93811af63c40d88
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 2b3c89c88d01ee0e477cb7f82ef60a11a4bcd57b6b87c33f789350b59759360b
+    - filename: nvidia_cusparse_cu12-12.5.10.65-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: 73060ce019ac064a057267c585bf1fd5a353734151f87472ff02b2c5c9984e78
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusparselt_cu13-0.8.0-py3-none-manylinux2014_x86_64.whl
-      sha256: 25e30a8a7323935d4ad0340b95a0b69926eee755767e8e0b1cf8dd85b197d3fd
+    - filename: nvidia_cusparselt_cu12-0.8.1-py3-none-manylinux2014_x86_64.whl
+      sha256: cd1b1dc9e1ad31ea3353c1f985e2bd6f9e7ae0e797d7e6ce879d7b2ace5e80e8
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nccl_cu13-2.28.9-py3-none-manylinux_2_18_x86_64.whl
-      sha256: e4553a30f34195f3fa1da02a6da3d6337d28f2003943aa0a3d247bbc25fefc42
+    - filename: nvidia_nccl_cu12-2.29.7-py3-none-manylinux_2_18_x86_64.whl
+      sha256: ecd0a012051abc20c1aa87328841efa8cade3ced65803046e38c2f03c0891fea
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvjitlink-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
-      sha256: 13a74f429e23b921c1109976abefacc69835f2f433ebd323d3946e11d804e47b
+    - filename: nvidia_nvjitlink_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      sha256: e3f1171dbdc83c5932a45f0f4c99180a70de9bd2718c1ab77d14104f6d7147f9
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 290f0a2ee94c9f3687a02502f3b9299a9f9fe826e6d0287ee18482e78d495b80
+    - filename: nvidia_nvshmem_cu12-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: 042f2500f24c021db8a06c5eec2539027d57460e1c1a762055a6554f72c369bd
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl
-      sha256: 4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4
+    - filename: nvidia_nvtx_cu12-12.9.79-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl
+      sha256: fec150986817f2b4e7eed72ed059f2dcb9ba3856b9a96134e448eac946a6952f
       source: https://files.pythonhosted.org/packages/*
-    - filename: packaging-26.0-py3-none-any.whl
-      sha256: b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529
+    - filename: packaging-26.2-py3-none-any.whl
+      sha256: 5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
       source: https://files.pythonhosted.org/packages/*
-    - filename: pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 62f5409336adb0663b7caa0da5c7d9e7bdbaae9ce761d34669420c2a801b2780
+    - filename: pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
+      source: https://files.pythonhosted.org/packages/*
+    - filename: pip-26.1.2-py3-none-any.whl
+      sha256: 382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab
       source: https://files.pythonhosted.org/packages/*
     - filename: psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
       sha256: 076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9
@@ -286,20 +340,20 @@ backends:
     - filename: pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
       source: https://files.pythonhosted.org/packages/*
-    - filename: regex-2026.2.28-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: d6b08a06976ff4fb0d83077022fde3eca06c55432bb997d8c0495b9a4e9872f4
+    - filename: regex-2026.7.19-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 9dce8ec9695f531a1b8a6f314fd4b393adcccf2ea861db480cdf97a301d01a68
       source: https://files.pythonhosted.org/packages/*
-    - filename: requests-2.33.0-py3-none-any.whl
-      sha256: 3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b
+    - filename: requests-2.34.2-py3-none-any.whl
+      sha256: 2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
       source: https://files.pythonhosted.org/packages/*
-    - filename: rich-14.3.3-py3-none-any.whl
-      sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
+    - filename: rich-15.0.0-py3-none-any.whl
+      sha256: 33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
+    - filename: safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774
       source: https://files.pythonhosted.org/packages/*
-    - filename: setuptools-81.0.0-py3-none-any.whl
-      sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
+    - filename: setuptools-83.0.0-py3-none-any.whl
+      sha256: 29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
       source: https://files.pythonhosted.org/packages/*
     - filename: shellingham-1.5.4-py2.py3-none-any.whl
       sha256: 7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686
@@ -310,33 +364,45 @@ backends:
     - filename: tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       sha256: 369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67
       source: https://files.pythonhosted.org/packages/*
-    - filename: torch-2.11.0-cp312-cp312-manylinux_2_28_x86_64.whl
-      sha256: 0f68f4ac6d95d12e896c3b7a912b5871619542ec54d3649cf48cc1edd4dd2756
+    - filename: torch-2.13.0+cu129-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: df28741fcd89e3da7cce2d48cbe5299d6732d510ac20f5d422d0b85edf18c327
+      source: https://download.pytorch.org/whl/cu129/*
+    - filename: torchvision-0.28.0+cu129-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: 909365f448f66daece26fcb827bbeec1c6f9b4934a2de232d1e95244baa5335b
+      source: https://download.pytorch.org/whl/cu129/*
+    - filename: tqdm-4.70.0-py3-none-any.whl
+      sha256: 7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
       source: https://files.pythonhosted.org/packages/*
-    - filename: tqdm-4.67.3-py3-none-any.whl
-      sha256: ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf
+    - filename: transformers-5.14.1-py3-none-any.whl
+      sha256: 9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725
       source: https://files.pythonhosted.org/packages/*
-    - filename: transformers-5.4.0-py3-none-any.whl
-      sha256: 9fbe50602d2a4e6d0aa8a35a605433dfac72d595ee2192eae192590a6cc2df86
+    - filename: triton-3.7.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 225910e79149807de74a0ca63160aa285956a8d64a2951d558997c57e2584ae1
+      source: https://download.pytorch.org/whl/cu129/*
+    - filename: typer-0.27.0-py3-none-any.whl
+      sha256: 6f4b27631e47f077871b7dc30e933ec0131c1390fbe0e387ea5574b5bac9ccf1
       source: https://files.pythonhosted.org/packages/*
-    - filename: triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f
-      source: https://files.pythonhosted.org/packages/*
-    - filename: typer-0.24.1-py3-none-any.whl
-      sha256: 112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e
-      source: https://files.pythonhosted.org/packages/*
-    - filename: typing_extensions-4.15.0-py3-none-any.whl
-      sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
+    - filename: typing_extensions-4.16.0-py3-none-any.whl
+      sha256: 481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
       source: https://files.pythonhosted.org/packages/*
     - filename: urllib3-2.7.0-py3-none-any.whl
       sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
-    - filename: zipp-3.23.0-py3-none-any.whl
-      sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e
+    - filename: werkzeug-3.1.8-py3-none-any.whl
+      sha256: 63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50
       source: https://files.pythonhosted.org/packages/*
+    - filename: wheel-0.46.2-py3-none-any.whl
+      sha256: 33ae60725d69eaa249bc1982e739943c23b34b58d51f1cb6253453773aca6e65
+      source: https://files.pythonhosted.org/packages/*
+    - filename: zipp-4.1.0-py3-none-any.whl
+      sha256: 25ad4e16390cd314347dd8f1de67a2ac538ae658ed4ab9db16029c07c188e97f
+      source: https://files.pythonhosted.org/packages/*
+    lock_sha256: ed76b548c9a3f72994df47b08119a4ef8549942c907c9384890917e18e27c3aa
+    inputfile: diffusion-cuda.in
+    input_sha256: aad6cbb6e6085e51eba97c5af85ba32477a7f0d36b1bf99d0026073ea7e8c211
   rocm:
     lockfile: diffusion-rocm.lock
-    torch_index: https://download.pytorch.org/whl/rocm6.0
+    torch_index: https://download.pytorch.org/whl/rocm7.1
     estimated_size_mb: 4000
     wheels:
     - filename: accelerate-1.13.0-py3-none-any.whl
@@ -345,41 +411,41 @@ backends:
     - filename: annotated_doc-0.0.4-py3-none-any.whl
       sha256: 571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320
       source: https://files.pythonhosted.org/packages/*
-    - filename: anyio-4.13.0-py3-none-any.whl
-      sha256: 08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708
+    - filename: anyio-4.14.2-py3-none-any.whl
+      sha256: 9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
       source: https://files.pythonhosted.org/packages/*
-    - filename: certifi-2026.2.25-py3-none-any.whl
-      sha256: 027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa
+    - filename: blinker-1.9.0-py3-none-any.whl
+      sha256: ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc
       source: https://files.pythonhosted.org/packages/*
-    - filename: charset_normalizer-3.4.6-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 0e28d62a8fc7a1fa411c43bd65e346f3bce9716dc51b897fbe930c5987b402d5
+    - filename: certifi-2026.7.22-py3-none-any.whl
+      sha256: 62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
       source: https://files.pythonhosted.org/packages/*
-    - filename: click-8.3.1-py3-none-any.whl
-      sha256: 981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6
+    - filename: charset_normalizer-3.4.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 5e226f6218febc71f6c1fc2fafb91c226f75bdc1d8fb12d66823716e891608fd
       source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_bindings-13.2.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 46d8776a55d6d5da9dd6e9858fba2efcda2abe6743871dee47dd06eb8cb6d955
-      source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_pathfinder-1.5.0-py3-none-any.whl
-      sha256: 498f90a9e9de36044a7924742aecce11c50c49f735f1bc53e05aa46de9ea4110
-      source: https://files.pythonhosted.org/packages/*
-    - filename: cuda_toolkit-13.0.2-py2.py3-none-any.whl
-      sha256: b198824cf2f54003f50d64ada3a0f184b42ca0846c1c94192fa269ecd97a66eb
+    - filename: click-8.3.3-py3-none-any.whl
+      sha256: a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613
       source: https://files.pythonhosted.org/packages/*
     - filename: diffusers-0.38.0-py3-none-any.whl
       sha256: 18e53f9e539096320470f62c6360a6fd5727ff28cffda566265316e13fcdb612
       source: https://files.pythonhosted.org/packages/*
-    - filename: filelock-3.25.2-py3-none-any.whl
-      sha256: ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70
+    - filename: filelock-3.32.0-py3-none-any.whl
+      sha256: d396bea984af47333ef05e50eae7eff88c84256de6112aea0ec48a233c064fe3
       source: https://files.pythonhosted.org/packages/*
-    - filename: fsspec-2026.3.0-py3-none-any.whl
-      sha256: d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4
+    - filename: flask-3.1.3-py3-none-any.whl
+      sha256: f4bcbefc124291925f1a26446da31a5178f9483862233b23c0c96a20701f670c
+      source: https://files.pythonhosted.org/packages/*
+    - filename: fsspec-2026.6.0-py3-none-any.whl
+      sha256: 02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1
+      source: https://files.pythonhosted.org/packages/*
+    - filename: gunicorn-25.3.0-py3-none-any.whl
+      sha256: cacea387dab08cd6776501621c295a904fe8e3b7aae9a1a3cbb26f4e7ed54660
       source: https://files.pythonhosted.org/packages/*
     - filename: h11-0.16.0-py3-none-any.whl
       sha256: 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
       source: https://files.pythonhosted.org/packages/*
-    - filename: hf_xet-1.4.2-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 77e8c180b7ef12d8a96739a4e1e558847002afe9ea63b6f6358b2271a8bdda1c
+    - filename: hf_xet-1.5.2-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      sha256: db78c39c83d6279daddc98e2238f373ab8980685556d42472b4ec51abcf03e8c
       source: https://files.pythonhosted.org/packages/*
     - filename: httpcore-1.0.9-py3-none-any.whl
       sha256: 2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
@@ -387,20 +453,29 @@ backends:
     - filename: httpx-0.28.1-py3-none-any.whl
       sha256: d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
       source: https://files.pythonhosted.org/packages/*
-    - filename: huggingface_hub-1.8.0-py3-none-any.whl
-      sha256: d3eb5047bd4e33c987429de6020d4810d38a5bef95b3b40df9b17346b7f353f2
+    - filename: huggingface_hub-1.16.1-py3-none-any.whl
+      sha256: 64340de934b9ce37857ef85a82de72f5629e8a270f9119eabb12bf495eb53c22
       source: https://files.pythonhosted.org/packages/*
-    - filename: idna-3.11-py3-none-any.whl
-      sha256: 771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea
+    - filename: idna-3.18-py3-none-any.whl
+      sha256: 7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio-2.37.3-py3-none-any.whl
+      sha256: 46f5bb8522cd421c0f5ae104d8268f569d856b29eb1a13b92829d1970f32c9f0
+      source: https://files.pythonhosted.org/packages/*
+    - filename: imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl
+      sha256: c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282
       source: https://files.pythonhosted.org/packages/*
     - filename: importlib_metadata-9.0.0-py3-none-any.whl
       sha256: 2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7
       source: https://files.pythonhosted.org/packages/*
+    - filename: itsdangerous-2.2.0-py3-none-any.whl
+      sha256: c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef
+      source: https://files.pythonhosted.org/packages/*
     - filename: jinja2-3.1.6-py3-none-any.whl
       sha256: 85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
       source: https://files.pythonhosted.org/packages/*
-    - filename: markdown_it_py-4.0.0-py3-none-any.whl
-      sha256: 87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147
+    - filename: markdown_it_py-4.2.0-py3-none-any.whl
+      sha256: 9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
       source: https://files.pythonhosted.org/packages/*
     - filename: markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d
@@ -414,59 +489,17 @@ backends:
     - filename: networkx-3.6.1-py3-none-any.whl
       sha256: d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
       source: https://files.pythonhosted.org/packages/*
-    - filename: numpy-2.4.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: e7dd01a46700b1967487141a66ac1a3cf0dd8ebf1f08db37d46389401512ca97
+    - filename: numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cublas-13.1.0.3-py3-none-manylinux_2_27_x86_64.whl
-      sha256: ee8722c1f0145ab246bccb9e452153b5e0515fd094c3678df50b2a0888b8b171
+    - filename: packaging-26.2-py3-none-any.whl
+      sha256: 5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl
-      sha256: 4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8
+    - filename: pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91
       source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
-      sha256: ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_x86_64.whl
-      sha256: d20e1734305e9d68889a96e3f35094d733ff1f83932ebe462753973e53a572bf
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 6c44f692dce8fd5ffd3e3df134b6cdb9c2f72d99cf40b62c32dde45eea9ddad3
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 08a3ecefae5a01c7f5117351c64f17c7c62efa5fffdbe24fc7d298da19cd0b44
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl
-      sha256: 1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl
-      sha256: 0a759da5dea5c0ea10fd307de75cdeb59e7ea4fcb8add0924859b944babf1112
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 2b3c89c88d01ee0e477cb7f82ef60a11a4bcd57b6b87c33f789350b59759360b
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_cusparselt_cu13-0.8.0-py3-none-manylinux2014_x86_64.whl
-      sha256: 25e30a8a7323935d4ad0340b95a0b69926eee755767e8e0b1cf8dd85b197d3fd
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nccl_cu13-2.28.9-py3-none-manylinux_2_18_x86_64.whl
-      sha256: e4553a30f34195f3fa1da02a6da3d6337d28f2003943aa0a3d247bbc25fefc42
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvjitlink-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
-      sha256: 13a74f429e23b921c1109976abefacc69835f2f433ebd323d3946e11d804e47b
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      sha256: 290f0a2ee94c9f3687a02502f3b9299a9f9fe826e6d0287ee18482e78d495b80
-      source: https://files.pythonhosted.org/packages/*
-    - filename: nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl
-      sha256: 4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4
-      source: https://files.pythonhosted.org/packages/*
-    - filename: packaging-26.0-py3-none-any.whl
-      sha256: b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529
-      source: https://files.pythonhosted.org/packages/*
-    - filename: pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 62f5409336adb0663b7caa0da5c7d9e7bdbaae9ce761d34669420c2a801b2780
+    - filename: pip-26.1.2-py3-none-any.whl
+      sha256: 382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab
       source: https://files.pythonhosted.org/packages/*
     - filename: psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
       sha256: 076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9
@@ -477,20 +510,20 @@ backends:
     - filename: pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       sha256: ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
       source: https://files.pythonhosted.org/packages/*
-    - filename: regex-2026.2.28-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-      sha256: d6b08a06976ff4fb0d83077022fde3eca06c55432bb997d8c0495b9a4e9872f4
+    - filename: regex-2026.7.19-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      sha256: 9dce8ec9695f531a1b8a6f314fd4b393adcccf2ea861db480cdf97a301d01a68
       source: https://files.pythonhosted.org/packages/*
-    - filename: requests-2.33.0-py3-none-any.whl
-      sha256: 3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b
+    - filename: requests-2.34.2-py3-none-any.whl
+      sha256: 2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
       source: https://files.pythonhosted.org/packages/*
-    - filename: rich-14.3.3-py3-none-any.whl
-      sha256: 793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d
+    - filename: rich-15.0.0-py3-none-any.whl
+      sha256: 33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
       source: https://files.pythonhosted.org/packages/*
-    - filename: safetensors-0.8.0rc0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      sha256: bf0d366f75f63867f1ede90f87090450c7cec320da1fc2a597f9bb8cb73460db
+    - filename: safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      sha256: fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774
       source: https://files.pythonhosted.org/packages/*
-    - filename: setuptools-81.0.0-py3-none-any.whl
-      sha256: fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6
+    - filename: setuptools-83.0.0-py3-none-any.whl
+      sha256: 29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
       source: https://files.pythonhosted.org/packages/*
     - filename: shellingham-1.5.4-py2.py3-none-any.whl
       sha256: 7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686
@@ -501,27 +534,39 @@ backends:
     - filename: tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       sha256: 369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67
       source: https://files.pythonhosted.org/packages/*
-    - filename: torch-2.11.0-cp312-cp312-manylinux_2_28_x86_64.whl
-      sha256: 0f68f4ac6d95d12e896c3b7a912b5871619542ec54d3649cf48cc1edd4dd2756
+    - filename: torch-2.13.0+rocm7.1-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: fc0396b3130510c6d64bd7448284b956cdc8244b14e456275d8aebe172a3299e
+      source: https://download.pytorch.org/whl/rocm7.1/*
+    - filename: torchvision-0.28.0+rocm7.1-cp312-cp312-manylinux_2_28_x86_64.whl
+      sha256: 075af0978db6277c42c9f10b3ebbc636e1cfb9663b6396ab3b8c1473861ee6e5
+      source: https://download.pytorch.org/whl/rocm7.1/*
+    - filename: tqdm-4.70.0-py3-none-any.whl
+      sha256: 7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
       source: https://files.pythonhosted.org/packages/*
-    - filename: tqdm-4.67.3-py3-none-any.whl
-      sha256: ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf
+    - filename: transformers-5.14.1-py3-none-any.whl
+      sha256: 9db974c4079ede2d1a3ea7ca5a240df33f2cc26fc2b36ba64c5f2a4f43b6e725
       source: https://files.pythonhosted.org/packages/*
-    - filename: transformers-5.4.0-py3-none-any.whl
-      sha256: 9fbe50602d2a4e6d0aa8a35a605433dfac72d595ee2192eae192590a6cc2df86
+    - filename: triton_rocm-3.7.1-cp312-cp312-linux_x86_64.whl
+      sha256: b200ade2418b8450e4e3e69c33c804e2cc07d1e36dc9678ac8ac1dd65f9e10e1
+      source: https://download.pytorch.org/whl/rocm7.1/*
+    - filename: typer-0.27.0-py3-none-any.whl
+      sha256: 6f4b27631e47f077871b7dc30e933ec0131c1390fbe0e387ea5574b5bac9ccf1
       source: https://files.pythonhosted.org/packages/*
-    - filename: triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      sha256: 6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f
-      source: https://files.pythonhosted.org/packages/*
-    - filename: typer-0.24.1-py3-none-any.whl
-      sha256: 112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e
-      source: https://files.pythonhosted.org/packages/*
-    - filename: typing_extensions-4.15.0-py3-none-any.whl
-      sha256: f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
+    - filename: typing_extensions-4.16.0-py3-none-any.whl
+      sha256: 481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
       source: https://files.pythonhosted.org/packages/*
     - filename: urllib3-2.7.0-py3-none-any.whl
       sha256: 9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
       source: https://files.pythonhosted.org/packages/*
-    - filename: zipp-3.23.0-py3-none-any.whl
-      sha256: 071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e
+    - filename: werkzeug-3.1.8-py3-none-any.whl
+      sha256: 63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50
       source: https://files.pythonhosted.org/packages/*
+    - filename: wheel-0.46.2-py3-none-any.whl
+      sha256: 33ae60725d69eaa249bc1982e739943c23b34b58d51f1cb6253453773aca6e65
+      source: https://files.pythonhosted.org/packages/*
+    - filename: zipp-4.1.0-py3-none-any.whl
+      sha256: 25ad4e16390cd314347dd8f1de67a2ac538ae658ed4ab9db16029c07c188e97f
+      source: https://files.pythonhosted.org/packages/*
+    lock_sha256: 5459af7d3a5201f8d51baf86e76511fd3b675dc49419a3466f07f42c9ceb8306
+    inputfile: diffusion-rocm.in
+    input_sha256: 2707729b4f74add3b447d4781a0a6fad5b8c2823a9a38a1aa84e28fbc41381b3

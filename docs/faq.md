@@ -28,7 +28,10 @@ The only operations that require network access are:
 ## What GPUs does SecAI OS support?
 
 - **NVIDIA GPUs:** Supported via CUDA. RTX 3000 series and newer are recommended. The RTX 5080 is the primary target hardware.
-- **Apple Silicon (M1-M4):** Supported via Metal through llama.cpp. Available when running natively on macOS or in a compatible VM.
+- **Apple Silicon (M1-M4):** Metal/MPS code paths are available only in
+  explicitly documented sandbox or development runtimes. SecAI OS does not
+  currently ship a native macOS or ARM64 Fedora appliance, so Apple hardware is
+  not production-qualified.
 - **AMD GPUs:** Supported through ROCm/HIP for RDNA/CDNA hardware listed in the compatibility matrix.
 - **CPU-only:** Inference works without a GPU but will be significantly slower.
 
@@ -38,7 +41,8 @@ The only operations that require network access are:
 
 1. Edit `/etc/secure-ai/policy/policy.yaml` and set `search.enabled: true`.
 2. Ensure the Tor service is running: `systemctl start tor`.
-3. Ensure SearXNG is running: `systemctl start searxng`.
+3. Ensure the appliance SearXNG unit is running:
+   `sudo systemctl start secure-ai-searxng.service`.
 4. Restart the search mediator: `systemctl restart secure-ai-search-mediator`.
 
 Web search routes all queries through Tor to privacy-respecting search engines. See [Search Mediator](components/search-mediator.md) for privacy details.
@@ -48,15 +52,22 @@ Web search routes all queries through Tor to privacy-respecting search engines. 
 ## How do I lock/unlock the vault?
 
 **Lock the vault:**
-- Through the UI: Click the Lock button in the security panel.
-- Through the API: `curl -X POST http://localhost:8480/api/vault/lock`
-- Emergency: `curl -X POST http://localhost:8480/api/emergency/panic`
+
+```bash
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py \
+  --lock-once --reason operator_request
+```
 
 **Unlock the vault:**
-- Through the UI: Enter your passphrase in the unlock dialog.
-- Through the API: `curl -X POST http://localhost:8480/api/vault/unlock -d '{"passphrase":"your-passphrase"}'`
 
-The vault auto-locks after a configurable idle period (default: 15 minutes). Activity in the UI resets the idle timer.
+```bash
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py --unlock-once
+```
+
+Unlock prompts on the trusted local console. The HTTP lock/unlock routes return
+`501` by design: neither a LUKS passphrase nor root service-control authority
+is accepted by the web process. The vault auto-locks after the configured idle
+period, and authenticated UI activity resets the idle timer.
 
 ---
 
@@ -80,7 +91,10 @@ You cannot bypass quarantine. There is no override to promote a model that has n
 An emergency panic locks the vault and (optionally) shuts down the system. To recover:
 
 1. Boot the system (if it was shut down).
-2. Unlock the vault with your passphrase through the UI or API.
+2. From a trusted local root console, unlock the vault without placing the
+   passphrase in argv:
+   `sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py --unlock-once`.
+   The UI and `/api/vault/unlock` deliberately reject passphrases.
 3. Verify system integrity: `curl http://localhost:8480/api/security/status`.
 4. Review the audit log for the event that triggered the panic.
 
@@ -92,7 +106,10 @@ The panic action does not destroy data. It locks the vault encryption, making mo
 
 Yes, but with security limitations:
 
-- No hardware TPM2 support (vault passphrase cannot be sealed to TPM).
+- A hypervisor may expose a virtual TPM, but the host controls its state. SecAI
+  OS treats vTPM attestation as evaluation-only; vault sealing requires the
+  explicit degraded-lab `--allow-vtpm` acknowledgement and retains a
+  passphrase recovery keyslot.
 - The hypervisor host can inspect VM memory.
 - GPU passthrough requires IOMMU configuration.
 
@@ -127,11 +144,11 @@ SecAI OS uses rpm-ostree for atomic updates:
 Updates are atomic -- the entire OS image is replaced. If an update causes problems, roll back:
 
 ```bash
-curl -X POST http://localhost:8480/api/update/rollback
-# or from the command line:
-rpm-ostree rollback
-systemctl reboot
+sudo /usr/libexec/secure-ai/update-verify.sh rollback
 ```
+
+Rollback is intentionally unavailable through the web API and must be
+initiated from a local root console.
 
 Greenboot health checks run after each boot. If checks fail, the system automatically rolls back to the previous deployment.
 

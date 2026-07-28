@@ -3,26 +3,38 @@
 name: secai_os
 description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
 
-# SECURITY: Base image should be digest-pinned in production.
-# Run: skopeo inspect docker://ghcr.io/ublue-os/silverblue-main:42 | jq -r '.Digest'
-# Then set: image-version: "42@sha256:<digest>"
+# SECURITY: Fedora 44 is the current supported Fedora release as of 2026-07-27.
+# The uBlue base is pinned to the exact manifest resolved from the `44` tag.
+# The scheduled build fails when that tag moves so a reviewed digest refresh is
+# required instead of silently changing the base of a signed appliance.
 base-image: ghcr.io/ublue-os/silverblue-main
-image-version: 42
+image-version: "44@sha256:24d0698ea2b530c6915584473f2f52571c9db7ce3f9be02303c9fa16d9ee9f35"
+# BlueBuild installs cosign from its upstream OCI image. Keep that helper
+# immutable as well; Fedora 44 does not publish a `cosign` RPM.
+cosign-version: "3.1.1@sha256:6bbe0d281d955c79f85b325f0f7e651c1bcab5a4fa4ad4903d74955178a3b2eb"
+# The build CLI is not required at runtime. Omitting it avoids shipping another
+# privileged update/build tool and removes its mutable installer image input.
+blue-build-tag: "none"
+# BlueBuild modules use Nushell during the build and copy it into the image.
+# Pin the OCI index instead of accepting the mutable `default` tag.
+nushell-version: "default@sha256:cc8e2a552602d2ac3bc7a98e162bb68588d8e39fc50b2f5f2e0ca92db4d25cea"
 
 modules:
   # Preflight: uBlue base images can carry the Negativo17 multimedia repo before
   # Fedora publishes the matching rpm-md metadata. Disable only that nonessential
   # repo so the first rpm-ostree module can refresh metadata reliably.
   - type: script
+    source: ghcr.io/blue-build/modules/script:latest@sha256:9ece7bb6c07d20cf34476decc68f7adad56b2383ea96fdb307962a510262690a
     scripts:
       - disable-stale-fedora-repos.sh
 
   # 1) Install required packages (includes GPU compute libraries).
   - type: rpm-ostree
+    source: ghcr.io/blue-build/modules/rpm-ostree:latest@sha256:5999e871a2d8de5906cdff926fda8563446ea7f98632318bab0f0a554080997b
     install:
       - nftables
       - cryptsetup
-      - cosign
+      - age                         # Authenticated encryption for backups
       - jq
       - python3
       - python3.12                    # modelscan 0.8.x declares Python <3.13
@@ -31,6 +43,7 @@ modules:
       - python3-flask
       - python3-requests
       - python3-gunicorn       # Production WSGI server (replaces Flask dev server)
+      - bubblewrap             # Per-scan private PID/network/mount namespaces
       - golang
       - cmake                    # Required for llama.cpp build
       - gcc-c++                  # C++ compiler for llama.cpp
@@ -41,10 +54,11 @@ modules:
       - vulkan-tools              # vulkaninfo for diagnostics
       - libdrm                    # DRM library (all GPUs)
       - clinfo                    # OpenCL diagnostics
-      # Model download tools
-      - git                           # Git for HuggingFace model cloning
+      # Build-only source tooling is removed after all build modules complete.
+      - git
       # Clipboard auto-clear (M21)
       - wl-clipboard                  # wl-copy/wl-paste for Wayland clipboard clearing
+      - xsel                          # explicit X11 clipboard/primary clear primitive
       # Tor (anonymous web search — SearXNG installed via pip in build-services.sh)
       - tor                         # Tor SOCKS5 proxy
       # Model integrity (M27)
@@ -61,31 +75,40 @@ modules:
 
   # 2) Copy appliance config, systemd units, firewall rules, sysctl into image.
   - type: files
+    source: ghcr.io/blue-build/modules/files:latest@sha256:52f79527381de504dcb0f70ed604b0696d6c568ef55614176c37e63bfb8a0a2d
     files:
       - source: system
         destination: /
 
   # 3) Make service source available to build script, then compile.
-  #    BlueBuild mounts files/ at /tmp/files/ but services/ is at repo root.
-  #    The containerfile snippet copies services/ into the image for the build.
+  #    Source-prep materializes verified Go vendor trees, Python wheels,
+  #    external source, and the llama.cpp archive. Stage 2 consumes only those
+  #    staged inputs for application compilation.
   - type: containerfile
     snippets:
       - COPY services/ /tmp/services/
-
-  - type: script
-    scripts:
-      - build-services.sh
+      - COPY files/scripts/ /tmp/files/scripts/
+      - COPY upstreams/ /tmp/upstreams/
+      - COPY vendor/wheels/ /tmp/wheels/
+      - COPY vendor/application-requirements.lock /tmp/application-requirements.lock
+      - COPY .upstreams.lock.yaml /tmp/.upstreams.lock.yaml
+      - COPY .source-prep/SOURCE_PREP_MANIFEST.json /tmp/SOURCE_PREP_MANIFEST.json
+      - COPY .source-prep/llama-cpp-staged.tar.gz /tmp/llama-cpp-staged.tar.gz
+      - ENV HERMETIC_BUILD=true
+      - ENV PIP_FIND_LINKS=/tmp/wheels
+      - RUN --network=none /tmp/files/scripts/build-services.sh
 
   # 4) NVIDIA kernel modules (nvidia-open for RTX 5080+).
   #    Disable 32-bit NVIDIA/Mesa userspace during the akmods install. SecAI OS
   #    uses 64-bit CUDA/Vulkan inference only, and skipping multilib avoids Mesa
-  #    i686/x86_64 version skew in Fedora 42 image builds.
+  #    i686/x86_64 version skew in Fedora image builds.
   - type: containerfile
     snippets:
       - ENV MULTILIB=0
 
   #    AMD and Intel use in-kernel drivers (amdgpu, i915/xe) — no akmods needed.
   - type: akmods
+    source: ghcr.io/blue-build/modules/akmods:latest@sha256:577c92673de38c03ad654715caf2245b67ed67e7122023745e6aaef8d1409c04
     base: main
     install: []
     nvidia-driver: nvidia-open
@@ -96,6 +119,7 @@ modules:
 
   # 5) Kernel args: generic security hardening.
   - type: kargs
+    source: ghcr.io/blue-build/modules/kargs:latest@sha256:a2afcb05fb5a9addd394d3d5e9866feb8ced6b354b128cdb419b053c203be23a
     kargs:
       # Hardware-specific GPU boot arguments are synced post-boot.
       # Security hardening
@@ -112,8 +136,11 @@ modules:
 
   # 6) Enable/disable systemd units baked into the image.
   - type: systemd
+    source: ghcr.io/blue-build/modules/systemd:latest@sha256:91fda6888858c749b42e856c05775ca16429a0c79ebf55ce7e56faf96d28021d
     system:
       enabled:
+        - secure-ai-credentials.service
+        - secure-ai-tpm-attestation-setup.service
         - secure-ai-runtime-attestor.service
         - secure-ai-integrity-monitor.service
         - secure-ai-incident-recorder.service
@@ -124,12 +151,11 @@ modules:
         - secure-ai-ui.service
         - secure-ai-quarantine-watcher.service
         - secure-ai-inference.service
-        - secure-ai-integrity.timer
         - secure-ai-audit-verify.timer
         - secure-ai-vault-watchdog.service
+        - secure-ai-vault-relock.path
         - secure-ai-boot-verify.service
         - secure-ai-dns-leak-check.timer
-        - secure-ai-clipboard-clear.timer
         - secure-ai-canary.timer
         - secure-ai-canary-watch.service
         - secure-ai-update-check.timer
@@ -141,7 +167,7 @@ modules:
         - greenboot-task-runner.service
         - nftables.service
         - secure-ai-firstboot.service
-        - secure-ai-tmpdir.mount
+        - run-secure\x2dai-tmp.mount
         # Path unit watches for UI-triggered profile change request
         - secure-ai-apply-profile.path
       disabled:
@@ -154,6 +180,28 @@ modules:
         - secure-ai-tor.service
         - secure-ai-searxng.service
         - secure-ai-search-mediator.service
+    user:
+      enabled:
+        # Clipboard selection belongs to the logged-in graphical session, so
+        # this is enabled globally as a per-user unit, never as root.
+        - secure-ai-clipboard-clear.timer
 
-  # 7) Install signing policy for cosign-verified images.
+  # 7) Remove compilers and source/package tooling from the runtime image.
+  # They are needed only by build-services.sh and materially expand the
+  # post-install attack surface if retained.
+  - type: rpm-ostree
+    source: ghcr.io/blue-build/modules/rpm-ostree:latest@sha256:5999e871a2d8de5906cdff926fda8563446ea7f98632318bab0f0a554080997b
+    remove:
+      - golang
+      - cmake
+      - gcc-c++
+      - gcc
+      - git
+      - git-core
+      - git-core-doc
+      - perl-Git
+      - python3-pip
+
+  # 8) Install signing policy for cosign-verified images.
   - type: signing
+    source: ghcr.io/blue-build/modules/signing:latest@sha256:d534efeb9d04a50c173a35f0a2263398cbda8f7647c86a18f9e5394b35c95005

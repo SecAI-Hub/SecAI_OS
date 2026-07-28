@@ -2,7 +2,7 @@
 
 This document provides an external auditor with concrete, copy-pasteable commands to verify every M5 security control. Work through each section in order. If any command fails or returns unexpected output, the corresponding control may not be enforced.
 
-Last updated: 2026-03-14
+Last updated: 2026-07-28
 
 ---
 
@@ -29,11 +29,12 @@ PYTHONPATH=services python -m pytest tests/test_adversarial.py -v --tb=short
 
 Expected: all tests pass. Pay particular attention to `TestPolicyBypass`, `TestStepSignature`, `TestRevalidation`, and `TestBlockedPaths`.
 
-### Go Service Unit Tests (all 9 services)
+### Go Service Unit Tests (all 10 tested modules)
 
 ```bash
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+           policy-engine runtime-attestor integrity-monitor incident-recorder \
+           ui-ingress; do
   echo "=== ${svc} ==="
   (cd services/${svc} && go test -v -race -count=1 ./...)
 done
@@ -109,7 +110,10 @@ journalctl -u secure-ai-runtime-attestor --no-pager -n 100
 journalctl -u secure-ai-runtime-attestor --grep "attestation" --no-pager
 ```
 
-What to look for: attestation state transitions (`trusted`, `failed`, `degraded`). Any `attestation_failure` entry means the system entered containment.
+What to look for: `state=attested|failed|degraded`,
+`assurance=hardware`, `evidence_verified=true`, and `quote=true`. Any
+`attestation_failure` entry means the system entered containment. An
+`evaluation` assurance mode is never hardware verification.
 
 ### Integrity Monitor (file integrity)
 
@@ -194,7 +198,8 @@ Verify that Software Bill of Materials can be generated for each service:
 
 # Generate and inspect SBOMs for Go services
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+           policy-engine runtime-attestor integrity-monitor incident-recorder \
+           ui-ingress; do
   echo "=== ${svc} ==="
   syft dir:services/${svc} -o cyclonedx-json=sbom-${svc}.json
   echo "Components: $(jq '.components | length' sbom-${svc}.json)"
@@ -299,8 +304,9 @@ make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
 Export and verify a forensic bundle from a running appliance:
 
 ```bash
-# Export forensic bundle
-curl -s http://localhost:8515/api/v1/forensic/export -o forensic-bundle.json
+# Export and verify with the root-only forensic credentials
+sudo secai-forensic export --output forensic-bundle.json
+sudo secai-forensic verify forensic-bundle.json
 
 # Inspect bundle structure
 jq 'keys' forensic-bundle.json
@@ -396,11 +402,19 @@ Expected: every service reports `active`.
 ### Attestation State
 
 ```bash
-# Current attestation status
-curl -sf http://localhost:8505/api/v1/state | jq .
-# Expected: state="trusted" when healthy
+# Current attestation status without exposing the credential in argv
+sudo sh -c '
+  token=$(head -c 64 /var/lib/secure-ai/credentials/runtime-attestor.token)
+  printf "header = \"Authorization: Bearer %s\"\\n" "$token" |
+    curl --config - --proto "=http" --noproxy "*" --silent --fail \
+      http://127.0.0.1:8505/api/security/status
+' | jq .
+# Expected on qualified bare metal:
+# assurance_mode="hardware", evidence_verified=true,
+# attestation_state="attested", tpm_quote_verified=true
 
-# If state is "failed", the system is in containment
+# If state is "failed", the system is in containment. Evaluation mode cannot
+# satisfy the re-attestation step for a latched critical incident.
 ```
 
 ### Recovery and Incident Status

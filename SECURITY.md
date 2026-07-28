@@ -33,13 +33,15 @@ to remain anonymous.
 
 ## Supported Versions
 
-| Version | Supported |
-|---|---|
-| Latest `main` branch | Yes |
-| Older commits / tags | No |
+As of 2026-07-27, no published SecAI OS release has completed the
+release-specific production readiness and hardware qualification process.
+`main` is a development branch and v0.3.0 is retained for historical evaluation
+only. Neither should be used for sensitive or customer workloads.
 
-Only the latest commit on the `main` branch is actively supported. We do not
-maintain backport branches at this time.
+Future support begins only when a stable release publishes a non-placeholder
+image digest, passing release-verification report, signed provenance, complete
+SBOMs, boot/reboot evidence, update/rollback evidence, and signed production
+sign-off. Supported versions will then be listed here explicitly.
 
 ## Scope
 
@@ -47,8 +49,11 @@ maintain backport branches at this time.
 
 The following components are in scope for security reports:
 
-- **Go services** -- registry, tool-firewall, airlock
-- **Python services** -- quarantine watcher, UI (Flask), search mediator
+- **Go services** -- registry, tool-firewall, airlock, policy engine, MCP
+  firewall, runtime attestor, integrity monitor, GPU integrity watch, and
+  incident recorder
+- **Python services** -- quarantine watcher, UI, search mediator, diffusion
+  worker, and Agent
 - **Quarantine pipeline** -- model scanning, hash verification, GGUF validation
 - **Vault** -- LUKS encryption, TPM2 sealing, passphrase authentication
 - **Airlock** -- egress controls, allowlist enforcement
@@ -68,7 +73,8 @@ upstream projects:
 - **SearXNG** -- search engine vulnerabilities
 - **NVIDIA drivers / CUDA runtime**
 - **OPA / Rego** (when adopted) -- policy engine core bugs
-- **Third-party Python or Go dependencies** -- report to the upstream maintainer
+- **Third-party Python or Go dependencies** -- report upstream defects to their
+  maintainer, but report SecAI OS exposure or unsafe integration here as well
 
 If you are unsure whether an issue is in scope, feel free to report it and we
 will triage accordingly.
@@ -81,12 +87,14 @@ the trust boundaries, threat actors, and mitigations, see
 
 Key boundaries include:
 
-- **Network boundary** -- default-deny egress via nftables; only Tor and
-  explicitly allowlisted destinations are permitted.
+- **Network boundary** -- workloads are denied direct egress; approved
+  acquisition is performed by the authenticated Airlock fetch proxy and private
+  search is routed through Tor.
 - **Model trust boundary** -- all models are untrusted until they pass the
   quarantine pipeline (hash check, GGUF structure scan, tensor audit).
-- **Runtime boundary** -- inference processes run under seccomp-bpf,
-  Landlock, and systemd sandboxing with no network access.
+- **Runtime boundary** -- intended appliance controls include systemd
+  sandboxing, syscall restrictions, Landlock, and no direct inference egress.
+  Each control remains release-evidence dependent.
 - **Storage boundary** -- the vault is LUKS-encrypted and optionally
   TPM2-sealed; plaintext secrets never touch persistent storage.
 

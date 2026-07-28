@@ -1,7 +1,10 @@
 [Unit]
 Description=Secure AI Web UI (local chat and management interface)
-After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service
-Requires=secure-ai-registry.service secure-ai-tool-firewall.service
+After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-credentials.service
+Requires=secure-ai-credentials.service
+Wants=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,26 +14,57 @@ Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
 Environment=AIRLOCK_URL=http://127.0.0.1:8490
-Environment=AGENT_SOCKET=/run/secure-ai/agent.sock
+Environment=AGENT_SOCKET=/run/secure-ai/agent/agent.sock
 Environment=SEARCH_MEDIATOR_URL=http://127.0.0.1:8485
 Environment=DIFFUSION_URL=http://127.0.0.1:8455
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
-Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine
+Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine/incoming
 Environment=SECURE_AI_ROOT=/var/lib/secure-ai
 Environment=AUTH_DATA_DIR=/var/lib/secure-ai/auth
+Environment=IMPORT_STAGING_DIR=/var/lib/secure-ai/import-staging
+Environment=SETUP_STATE_PATH=/var/lib/secure-ai/ui/setup.json
+Environment=VAULT_ACTIVITY_FILE=/run/secure-ai-ui/last-activity
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/ui-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
+Environment=FLASK_SECRET_KEY_PATH=%d/flask-session-key
+Environment=AGENT_TOKEN_PATH=%d/agent-ui-token
+Environment=REGISTRY_TOKEN_PATH=%d/registry-token
+Environment=AIRLOCK_TOKEN_PATH=%d/airlock-token
+Environment=TOOL_FIREWALL_TOKEN_PATH=%d/tool-firewall-token
+Environment=SEARCH_MEDIATOR_TOKEN_PATH=%d/search-mediator-token
+Environment=DIFFUSION_TOKEN_PATH=%d/diffusion-token
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-read-token
+Environment=INCIDENT_OPERATOR_TOKEN_PATH=%d/incident-operator-token
+Environment=INTEGRITY_MONITOR_TOKEN_PATH=%d/integrity-monitor-token
+Environment=ATTESTOR_TOKEN_PATH=%d/attestor-token
+Environment=SETUP_TOKEN_PATH=%d/setup-token
+LoadCredential=registry-token:/var/lib/secure-ai/credentials/registry-admin.token
+LoadCredential=airlock-token:/var/lib/secure-ai/credentials/airlock.token
+LoadCredential=tool-firewall-token:/var/lib/secure-ai/credentials/tool-firewall.token
+LoadCredential=search-mediator-token:/var/lib/secure-ai/credentials/search-mediator.token
+LoadCredential=diffusion-token:/var/lib/secure-ai/credentials/diffusion.token
+LoadCredential=incident-read-token:/var/lib/secure-ai/credentials/incident-read.token
+LoadCredential=incident-operator-token:/var/lib/secure-ai/credentials/incident-operator.token
+LoadCredential=integrity-monitor-token:/var/lib/secure-ai/credentials/integrity-monitor.token
+LoadCredential=attestor-token:/var/lib/secure-ai/credentials/runtime-attestor.token
+LoadCredential=setup-token:/var/lib/secure-ai/credentials/ui-setup.token
+LoadCredential=audit-hmac-key:/var/lib/secure-ai/credentials/ui-audit-hmac.key
+LoadCredential=flask-session-key:/var/lib/secure-ai/credentials/ui-flask-session.key
+LoadCredential=agent-ui-token:/var/lib/secure-ai/credentials/agent-ui.token
 Environment=GUNICORN_WORKERS=1
 
 # Filesystem isolation
 DynamicUser=yes
-RuntimeDirectory=secure-ai-ui
-RuntimeDirectoryMode=0700
+SupplementaryGroups=secure-ai-services secure-ai-agent-ipc secure-ai-logs secure-ai-auth secure-ai-import secure-ai-ui-state secure-ai-ui-control
 ReadOnlyPaths=/etc/secure-ai
-ReadWritePaths=/var/lib/secure-ai/quarantine
+ReadWritePaths=/var/lib/secure-ai/quarantine/incoming
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadWritePaths=/var/lib/secure-ai/auth
-ReadWritePaths=/run/secure-ai
+ReadWritePaths=/var/lib/secure-ai/ui
+ReadOnlyPaths=/var/lib/secure-ai/import-staging
+ReadOnlyPaths=/run/secure-ai/agent
+ReadWritePaths=/run/secure-ai-ui
+InaccessiblePaths=-/var/lib/secure-ai/vault
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -81,9 +115,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=20
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

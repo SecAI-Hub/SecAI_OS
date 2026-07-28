@@ -6,7 +6,7 @@ This guide covers running SecAI OS services locally for development and testing,
 
 ## Prerequisites
 
-- **Go 1.26.3+** for building Go services
+- **Go 1.26.5+** for building Go services
 - **Python 3.12+ recommended** for local Python services. CI and quarantine lockfiles use Python 3.12; sandbox UI, agent, search, and diffusion images use patched Python 3.14.5 runtimes where compatible. Some package metadata remains permissive for source compatibility, but the supported locked/runtime paths are 3.12/3.14.
 - **pip** for Python dependency management
 - **git** for version control
@@ -39,19 +39,23 @@ go build -o registry .
 ./registry
 ```
 
-The Go service set is: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, and `incident-recorder`.
+The tested Go module set is: `airlock`, `registry`, `tool-firewall`,
+`gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`,
+`integrity-monitor`, `incident-recorder`, and the sandbox-only `ui-ingress`.
+The first nine are native release services; `ui-ingress` is built only for the
+Compose evaluation path.
 
 ---
 
 ## Install Python Dependencies
 
 ```bash
-python -m pip install -r requirements-ci.txt
-python -m pip install -r services/agent/requirements.txt
-python -m pip install -r services/search-mediator/requirements.txt
+python -m pip install --require-hashes -r requirements-ci.lock
+python -m pip install --require-hashes -r services/agent/requirements.lock
+python -m pip install --require-hashes -r services/search-mediator/requirements.lock
 python -m pip install --require-hashes -r services/ui/requirements.lock
 python -m pip install --require-hashes -r services/quarantine/requirements.lock
-python -m pip install -e services/agent -e services/ui -e services/quarantine
+python -m pip install --no-deps -e services/agent -e services/ui -e services/quarantine
 ```
 
 ---

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 import requests
 
@@ -33,6 +34,27 @@ _SEARCH_MEDIATOR_URL = os.getenv("SEARCH_MEDIATOR_URL", "http://127.0.0.1:8485")
 
 # Timeout for internal service calls
 _SERVICE_TIMEOUT = 30
+
+
+def _service_headers(
+    target: str,
+    service_name: str = "agent",
+) -> dict[str, str]:
+    """Load the inter-service token for authenticated local API calls."""
+    token_env = {
+        "airlock": "AIRLOCK_TOKEN_PATH",
+        "registry": "REGISTRY_TOKEN_PATH",
+        "tool-firewall": "TOOL_FIREWALL_TOKEN_PATH",
+    }.get(target, "SERVICE_TOKEN_PATH")
+    token_path = os.getenv(token_env, "")
+    try:
+        token = Path(token_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    headers = {"X-SecAI-Service": service_name}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 class Executor:
@@ -68,8 +90,16 @@ class Executor:
         try:
             handler = self._get_handler(step.action)
             result = handler(step, cap, budgets)
+            if not isinstance(result, dict):
+                raise RuntimeError("step handler returned an invalid result")
             step.result = result
-            step.status = StepStatus.COMPLETED
+            if result.get("ok") is True:
+                step.status = StepStatus.COMPLETED
+                step.error = None
+            else:
+                step.status = StepStatus.FAILED
+                raw_error = result.get("error", "step handler reported failure")
+                step.error = str(raw_error)[:1024]
         except Exception as exc:
             log.error("step %s failed: %s", step.step_id, exc)
             step.status = StepStatus.FAILED
@@ -107,8 +137,11 @@ class Executor:
         path = step.params.get("path", "")
         result = self._storage.read_file(path, cap)
         if result["ok"]:
+            size = int(result.get("size", 0))
+            if budgets.output_bytes_used + size > budgets.max_output_bytes:
+                return {"ok": False, "error": "output-size budget would be exceeded"}
             budgets.files_touched += 1
-            budgets.output_bytes_used += result.get("size", 0)
+            budgets.output_bytes_used += size
         return result
 
     def _handle_write_file(
@@ -117,6 +150,8 @@ class Executor:
         path = step.params.get("path", "")
         content = step.params.get("content", "")
         overwrite = step.action == StepAction.OVERWRITE_FILE
+        if budgets.files_touched >= budgets.max_files_touched:
+            return {"ok": False, "error": "files-touched budget would be exceeded"}
         result = self._storage.write_file(path, content, cap, overwrite=overwrite)
         if result["ok"]:
             budgets.files_touched += 1
@@ -135,6 +170,8 @@ class Executor:
             # If a path is given, read via storage gateway first
             path = step.params.get("path", "")
             if path:
+                if budgets.files_touched >= budgets.max_files_touched:
+                    return {"ok": False, "error": "files-touched budget would be exceeded"}
                 read_result = self._storage.read_file(path, cap)
                 if not read_result["ok"]:
                     return read_result
@@ -162,6 +199,8 @@ class Executor:
         # If an output path is specified, write the draft
         out_path = step.params.get("path", "")
         if out_path and result.get("ok"):
+            if budgets.files_touched >= budgets.max_files_touched:
+                return {"ok": False, "error": "files-touched budget would be exceeded"}
             write_result = self._storage.write_file(
                 out_path, result.get("text", ""), cap
             )
@@ -191,10 +230,16 @@ class Executor:
         """Generate a report using the local inference worker."""
         instruction = step.params.get("instruction", "")
         sources = step.params.get("sources", [])
+        if not isinstance(sources, list) or any(
+            not isinstance(source, str) for source in sources
+        ):
+            return {"ok": False, "error": "sources must be an array of paths"}
 
         # Gather source content via storage gateway
         gathered = []
         for src_path in sources[:5]:  # cap at 5 sources
+            if budgets.files_touched >= budgets.max_files_touched:
+                return {"ok": False, "error": "files-touched budget would be exceeded"}
             read_result = self._storage.read_file(src_path, cap)
             if read_result["ok"]:
                 gathered.append(f"--- {src_path} ---\n{read_result['content'][:2000]}")
@@ -209,6 +254,8 @@ class Executor:
 
         out_path = step.params.get("path", "")
         if out_path and result.get("ok"):
+            if budgets.files_touched >= budgets.max_files_touched:
+                return {"ok": False, "error": "files-touched budget would be exceeded"}
             write_result = self._storage.write_file(
                 out_path, result.get("text", ""), cap
             )
@@ -228,6 +275,8 @@ class Executor:
             scope = step.params.get("scope", "")
         if not scope:
             return {"ok": False, "error": "no search scope specified"}
+        if budgets.files_touched >= budgets.max_files_touched:
+            return {"ok": False, "error": "files-touched budget would be exceeded"}
         result = self._storage.list_files(scope, cap)
         if result["ok"]:
             budgets.files_touched += 1
@@ -259,6 +308,7 @@ class Executor:
             resp = requests.post(
                 f"{_TOOL_FIREWALL_URL}/v1/evaluate",
                 json={"tool": tool, "params": params},
+                headers=_service_headers("tool-firewall"),
                 timeout=_SERVICE_TIMEOUT,
             )
             budgets.tool_calls_used += 1
@@ -279,7 +329,13 @@ class Executor:
         except requests.RequestException as exc:
             return {"ok": False, "error": f"tool firewall unreachable: {exc}"}
 
-        return {"ok": True, "tool": tool, "firewall_decision": "allow"}
+        return {
+            "ok": False,
+            "error": (
+                "tool policy evaluation succeeded, but no production tool "
+                "execution broker is configured"
+            ),
+        }
 
     # --- airlock handler ---------------------------------------------------
 
@@ -298,20 +354,70 @@ class Executor:
         if body:
             body = self._storage.redact_for_export(body)
 
+        headers = _service_headers("airlock")
+        if "Authorization" not in headers:
+            return {"ok": False, "error": "airlock service credential unavailable"}
+        if budgets.tool_calls_used >= budgets.max_tool_calls:
+            return {"ok": False, "error": "tool-call budget would be exceeded"}
+        remaining_output = budgets.max_output_bytes - budgets.output_bytes_used
+        if remaining_output <= 0:
+            return {"ok": False, "error": "output-size budget would be exceeded"}
+
+        resp = None
         try:
             resp = requests.post(
-                f"{_AIRLOCK_URL}/v1/egress/check",
+                f"{_AIRLOCK_URL}/v1/fetch",
                 json={"destination": url, "method": method, "body": body},
-                timeout=_SERVICE_TIMEOUT,
+                headers=headers,
+                stream=True,
+                allow_redirects=False,
+                timeout=(5, _SERVICE_TIMEOUT),
             )
+            budgets.tool_calls_used += 1
 
-            if resp.status_code != 200:
-                return {"ok": False, "error": f"airlock denied: {resp.text}"}
+            if not 200 <= resp.status_code < 300:
+                return {
+                    "ok": False,
+                    "error": f"airlock fetch failed with status {resp.status_code}",
+                }
+            declared = resp.headers.get("Content-Length") if hasattr(resp, "headers") else None
+            if declared:
+                try:
+                    if int(declared) > remaining_output:
+                        return {"ok": False, "error": "airlock response exceeds output budget"}
+                except ValueError:
+                    return {"ok": False, "error": "airlock returned invalid content length"}
 
-            return {"ok": True, "airlock_decision": "allow", "url": url}
+            chunks: list[bytes] = []
+            total = 0
+            iterator = getattr(resp, "iter_content", None)
+            if callable(iterator):
+                for chunk in iterator(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > remaining_output:
+                        return {"ok": False, "error": "airlock response exceeds output budget"}
+                    chunks.append(chunk)
+            raw = b"".join(chunks)
+            budgets.output_bytes_used += len(raw)
+            return {
+                "ok": True,
+                "status_code": resp.status_code,
+                "content": raw.decode("utf-8", errors="replace"),
+                "content_type": (
+                    resp.headers.get("Content-Type", "")
+                    if hasattr(resp, "headers")
+                    else ""
+                ),
+                "size": len(raw),
+            }
 
         except requests.RequestException as exc:
             return {"ok": False, "error": f"airlock unreachable: {exc}"}
+        finally:
+            if resp is not None and callable(getattr(resp, "close", None)):
+                resp.close()
 
     # --- inference helper --------------------------------------------------
 
@@ -319,15 +425,22 @@ class Executor:
         self, prompt: str, budgets: Budgets
     ) -> dict:
         """Call the local inference worker for a completion."""
+        remaining_tokens = budgets.max_tokens - budgets.tokens_used
+        remaining_output = budgets.max_output_bytes - budgets.output_bytes_used
+        if remaining_tokens <= 0:
+            return {"ok": False, "error": "token budget would be exceeded"}
+        if remaining_output <= 0:
+            return {"ok": False, "error": "output-size budget would be exceeded"}
         try:
             resp = requests.post(
                 f"{_INFERENCE_URL}/completion",
                 json={
                     "prompt": prompt,
-                    "n_predict": 1024,
+                    "n_predict": min(1024, remaining_tokens),
                     "temperature": 0.3,
                 },
                 timeout=60,
+                allow_redirects=False,
             )
 
             if resp.status_code != 200:
@@ -336,8 +449,20 @@ class Executor:
             data = resp.json()
             text = data.get("content", "")
             tokens = data.get("tokens_predicted", 0)
+            if not isinstance(text, str):
+                return {"ok": False, "error": "inference returned invalid content"}
+            if (
+                not isinstance(tokens, int)
+                or isinstance(tokens, bool)
+                or tokens < 0
+                or tokens > remaining_tokens
+            ):
+                return {"ok": False, "error": "inference returned invalid token usage"}
+            output_size = len(text.encode("utf-8"))
+            if output_size > remaining_output:
+                return {"ok": False, "error": "inference output exceeds output budget"}
             budgets.tokens_used += tokens
-            budgets.output_bytes_used += len(text.encode("utf-8"))
+            budgets.output_bytes_used += output_size
 
             return {"ok": True, "text": text, "tokens": tokens}
 

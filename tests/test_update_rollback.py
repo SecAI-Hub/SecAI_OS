@@ -70,6 +70,21 @@ class TestHealthCheckServices:
     def test_checks_vault_config(self):
         content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
         assert "crypttab" in content
+        assert "verify-vault-mount.py" in content
+
+    def test_only_pristine_unconfigured_vault_is_setup_required(self):
+        content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
+        assert 'VAULT_MODE="setup_required"' in content
+        assert "plaintext or unexpected data exists" in content
+        assert "vault crypttab configuration exists but the mount did not verify" in content
+        assert "vault mapper exists but the mount did not verify" in content
+        assert 'write_result "setup_required"' in content
+
+    def test_setup_mode_keeps_vault_consumers_inactive(self):
+        content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
+        assert "missing vault dependency declaration" in content
+        assert "vault consumer must be inactive before setup" in content
+        assert "secure-ai-vault-mounted.service" in content
 
 
 class TestRollbackProtection:
@@ -83,7 +98,8 @@ class TestRollbackProtection:
 
     def test_rollback_counter_file(self):
         content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
-        assert "rollback-count" in content
+        assert "/var/lib/secure-ai/state/greenboot-failures" in content
+        assert '"/run/secure-ai/rollback-count"' not in content
 
     def test_clears_counter_on_success(self):
         content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
@@ -92,7 +108,24 @@ class TestRollbackProtection:
 
     def test_halts_on_max_rollbacks(self):
         content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
-        assert "max rollback" in content.lower() or "halting" in content
+        assert "emergency.target" in content
+        assert "Never mark a broken deployment healthy" in content
+
+    def test_failure_path_never_returns_success(self):
+        content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
+        failure_body = content.split("fail() {", 1)[1].split(
+            "\n}\n\nwrite_result()", 1
+        )[0]
+        assert "exit 0" not in failure_body
+        assert "exit 1" in failure_body
+
+    def test_health_gate_uses_authenticated_integrity_authorities(self):
+        content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
+        assert "/v1/models/verify-all" in content
+        assert "/api/v1/scan" in content
+        assert "/api/v1/verify" in content
+        assert "/api/v1/stats" in content
+        assert ".manifests" not in content
 
 
 class TestHealthCheckOutput:
@@ -242,6 +275,13 @@ class TestUpdateSystemdUnits:
         content = (SYSTEMD_DIR / "secure-ai-health-check.service").read_text()
         assert "01-secure-ai-health.sh" in content
 
+    def test_health_service_requires_successful_firstboot_controls(self):
+        content = (SYSTEMD_DIR / "secure-ai-health-check.service").read_text()
+        assert (
+            "Requires=secure-ai-firstboot.service secure-ai-credentials.service"
+            in content
+        )
+
     def test_check_service_has_core_dump_disabled(self):
         content = (SYSTEMD_DIR / "secure-ai-update-check.service").read_text()
         assert "LimitCORE=0" in content
@@ -249,6 +289,11 @@ class TestUpdateSystemdUnits:
     def test_health_service_has_core_dump_disabled(self):
         content = (SYSTEMD_DIR / "secure-ai-health-check.service").read_text()
         assert "LimitCORE=0" in content
+
+    def test_health_service_can_see_but_not_open_mapper_devices(self):
+        content = (SYSTEMD_DIR / "secure-ai-health-check.service").read_text()
+        assert "PrivateDevices=no" in content
+        assert "DevicePolicy=closed" in content
 
 
 class TestUIUpdateEndpoints:
@@ -268,9 +313,16 @@ class TestUIUpdateEndpoints:
         content = UI_APP_PATH.read_text()
         assert "/api/update/apply" in content
 
-    def test_update_rollback_endpoint(self):
-        content = UI_APP_PATH.read_text()
-        assert "/api/update/rollback" in content
+    def test_update_rollback_endpoint_is_not_exposed(self):
+        import sys
+
+        sys.path.insert(0, str(REPO_ROOT / "services" / "ui"))
+        from ui.app import app
+
+        assert not any(
+            rule.rule == "/api/update/rollback" and "POST" in rule.methods
+            for rule in app.url_map.iter_rules()
+        )
 
     def test_update_health_endpoint(self):
         content = UI_APP_PATH.read_text()
@@ -280,10 +332,9 @@ class TestUIUpdateEndpoints:
         content = UI_APP_PATH.read_text()
         assert "confirm" in content
 
-    def test_rollback_requires_confirm(self):
+    def test_apply_is_a_local_console_boundary(self):
         content = UI_APP_PATH.read_text()
-        # Both apply and rollback require confirm
-        assert content.count('"confirm"') >= 2
+        assert 'return _update_local_console_response("apply")' in content
 
     def test_calls_update_verify(self):
         content = UI_APP_PATH.read_text()

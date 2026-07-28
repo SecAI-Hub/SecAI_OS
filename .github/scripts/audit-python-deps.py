@@ -20,18 +20,52 @@ from typing import Any
 
 
 REQUIREMENT_FILES = [
-    Path("requirements-ci.txt"),
-    Path("services/agent/requirements.txt"),
-    Path("services/search-mediator/requirements.txt"),
+    Path("requirements-ci.lock"),
+    Path("services/agent/requirements.lock"),
+    Path("services/search-mediator/requirements.lock"),
     Path("services/ui/requirements.lock"),
     Path("services/quarantine/requirements.lock"),
+    Path("vendor/application-requirements.lock"),
 ]
 
 NO_DEPS_REQUIREMENT_FILES = [
-    (Path("files/scripts/diffusion-cuda.lock"), frozenset()),
-    (Path("files/scripts/diffusion-rocm.lock"), frozenset()),
-    (Path("files/scripts/diffusion-cpu.lock"), frozenset({"torch"})),
+    # Backend-local PyTorch/torchvision artifacts use PEP 440 local versions.
+    # The temporary audit copy canonicalizes those versions to their PyPI base
+    # releases so advisory findings remain visible. Real artifact locks and
+    # their hashes are never changed.
+    (
+        Path("files/scripts/diffusion-cuda.lock"),
+        frozenset({"torch", "torchvision"}),
+    ),
+    (
+        Path("files/scripts/diffusion-rocm.lock"),
+        frozenset({"torch", "torchvision", "triton-rocm"}),
+    ),
+    (
+        Path("files/scripts/diffusion-cpu.lock"),
+        frozenset({"torch", "torchvision"}),
+    ),
+    (
+        Path("files/scripts/diffusion-cuda-py314.lock"),
+        frozenset({"torch", "torchvision"}),
+    ),
+    (
+        Path("files/scripts/diffusion-rocm-py314.lock"),
+        frozenset({"torch", "torchvision", "triton-rocm"}),
+    ),
+    (
+        Path("files/scripts/diffusion-cpu-py314.lock"),
+        frozenset({"torch", "torchvision"}),
+    ),
 ]
+
+# ROCm publishes its backend-specific Triton build as ``triton-rocm`` outside
+# PyPI. Audit the corresponding upstream ``triton`` release as a conservative
+# advisory proxy while retaining the exact backend artifact and hash in the
+# committed lock.
+CANONICAL_ADVISORY_NAMES = {
+    "triton-rocm": "triton",
+}
 
 WAIVERS_FILE = Path(".github/vuln-waivers.json")
 
@@ -68,29 +102,68 @@ def extract_findings(data: Any) -> list[tuple[str, str, str]]:
     return findings
 
 
-def strip_requirement_blocks(req: Path, package_names: frozenset[str]) -> Path:
-    """Return an auditable copy with selected pip-compile package blocks removed."""
-    if not package_names:
-        return req
+def split_local_advisory_requirements(
+    req: Path,
+    package_names: frozenset[str],
+) -> tuple[Path, Path]:
+    """Build hash-complete and canonical-advisory temporary inputs.
 
-    package_re = re.compile(r"^([A-Za-z0-9_.-]+)==")
-    output = tempfile.NamedTemporaryFile(
+    ``pip-audit`` cannot query advisories for versions such as
+    ``2.13.0+cu129`` because those artifacts are not published on PyPI. It also
+    enables hash mode for the whole file when any requirement has a hash, so a
+    canonical unhashed line cannot coexist with the remaining hashed lock.
+
+    Return one hash-complete copy for all ordinary packages and one small,
+    unhashed advisory-only copy containing canonical base releases. Both are
+    audited, so backend-local packages cannot silently disappear from coverage.
+    """
+    if not package_names:
+        return req, req
+
+    package_re = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)")
+    remaining = tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
         delete=False,
         prefix=f"{req.stem}-audit-",
         suffix=".txt",
     )
-    skip = False
-    with output:
+    advisory = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        delete=False,
+        prefix=f"{req.stem}-local-advisory-",
+        suffix=".txt",
+    )
+    canonicalized: set[str] = set()
+    selected = False
+    with remaining, advisory:
+        advisory.write("--index-url https://pypi.org/simple\n")
         for line in req.read_text(encoding="utf-8").splitlines():
+            if line.startswith("--find-links https://download.pytorch.org/"):
+                continue
             match = package_re.match(line)
             if match:
                 name = match.group(1).lower().replace("_", "-")
-                skip = name in package_names
-            if not skip:
-                output.write(line + "\n")
-    return Path(output.name)
+                selected = name in package_names
+                if selected:
+                    version = match.group(2).split("+", 1)[0]
+                    advisory_name = CANONICAL_ADVISORY_NAMES.get(name, name)
+                    advisory.write(f"{advisory_name}=={version}\n")
+                    canonicalized.add(name)
+                    continue
+            if selected:
+                continue
+            remaining.write(line + "\n")
+    missing = package_names - canonicalized
+    if missing:
+        Path(remaining.name).unlink(missing_ok=True)
+        Path(advisory.name).unlink(missing_ok=True)
+        raise ValueError(
+            f"{req}: expected local package block(s) missing: "
+            + ", ".join(sorted(missing))
+        )
+    return Path(remaining.name), Path(advisory.name)
 
 
 def run_audit(req: Path, *, no_deps: bool = False) -> tuple[int, Any | None, str]:
@@ -123,7 +196,7 @@ def audit_one(
     waivers: set[str],
     *,
     no_deps: bool = False,
-    label: Path | None = None,
+    label: str | Path | None = None,
 ) -> int:
     display = label or req
     code, data, stderr = run_audit(req, no_deps=no_deps)
@@ -170,21 +243,36 @@ def main() -> int:
 
         errors += audit_one(req, waivers)
 
-    for req, skipped_packages in NO_DEPS_REQUIREMENT_FILES:
+    for req, local_packages in NO_DEPS_REQUIREMENT_FILES:
         print(f"=== pip-audit {req} (no-deps) ===")
         if not req.exists():
             print(f"::error::{req} is missing")
             errors += 1
             continue
-        audit_path = strip_requirement_blocks(req, skipped_packages)
-        if skipped_packages:
-            skipped = ", ".join(sorted(skipped_packages))
-            print(f"NOTE: {req}: skipped non-PyPI local-version package(s): {skipped}")
+        audit_path, advisory_path = split_local_advisory_requirements(
+            req,
+            local_packages,
+        )
+        if local_packages:
+            canonicalized = ", ".join(sorted(local_packages))
+            print(
+                f"NOTE: {req}: separately auditing canonical local "
+                f"version(s): {canonicalized}"
+            )
         try:
             errors += audit_one(audit_path, waivers, no_deps=True, label=req)
+            if advisory_path != req:
+                errors += audit_one(
+                    advisory_path,
+                    waivers,
+                    no_deps=True,
+                    label=f"{req} (canonical local-version advisories)",
+                )
         finally:
             if audit_path != req:
                 audit_path.unlink(missing_ok=True)
+            if advisory_path != req:
+                advisory_path.unlink(missing_ok=True)
 
     if errors:
         print(f"FAIL: {errors} Python dependency audit error(s)")

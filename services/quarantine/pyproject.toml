@@ -5,14 +5,18 @@ description = "Quarantine pipeline: verify, scan, smoke-test, and promote model 
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
+    "requests==2.33.1",
     "watchdog>=4.0",
     "yara-python==4.5.4",
+    "pip==26.1.2",
+    "setuptools==83.0.0",
+    "wheel==0.46.2",
 ]
 
 [project.optional-dependencies]
 scan = [
     "modelscan==0.8.8",
-    "fickling==0.1.10",
+    "fickling==0.1.12",
     "modelaudit==0.2.42",
 ]
 garak = [

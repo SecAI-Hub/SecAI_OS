@@ -1,0 +1,55 @@
+.git
+.github
+.idea
+.vscode
+.venv
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/node_modules
+**/dist
+
+# Local runtime state and operator credentials must never enter a build context.
+deploy/sandbox/.env
+deploy/sandbox/runtime
+**/.env
+**/.env.*
+!**/.env.example
+deploy/sandbox/runtime/credentials
+secrets
+credentials
+**/.secrets
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+
+# Customer/runtime artifacts.
+**/*.gguf
+**/*.safetensors
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.log
+**/vault
+deploy/sandbox/runtime/quarantine
+**/audit-output
+**/reports/private
+
+# Local VM qualification output and one-time bootstrap secrets.
+output
+**/secai-first-boot-secrets.txt
+**/secai-ks.cfg
+**/*.qcow2
+**/*.ova
+**/*.vmdk
+
+# Developer and generated artifacts not required by sandbox images.
+tests
+docs
+.bluebuild-scripts_*
+Containerfile

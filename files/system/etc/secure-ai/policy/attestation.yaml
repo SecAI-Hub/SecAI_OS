@@ -14,8 +14,13 @@
 version: 1
 
 # --- TPM2 ---
-# Set to true to require TPM2 hardware for attestation.
-# When true, attestation fails (state=failed) if tpm2_pcrread is unavailable.
+# The root-only first-boot enrollment service writes an explicit hardware or
+# evaluation profile under /var/lib/secure-ai/tpm-attestation. A hardware
+# profile overrides this compatibility value and requires Secure Boot, the
+# enrolled AK, a fresh nonce-bound tpm2_quote/tpm2_checkquote result, and the
+# authenticated enrolled PCR set. Bare metal fails closed if enrollment cannot
+# complete. An explicit VM evaluation profile cannot claim verified evidence or
+# complete critical-incident recovery.
 require_tpm: false
 
 # --- Secure Boot ---
@@ -25,7 +30,7 @@ require_secure_boot: false
 
 # --- Expected PCR values ---
 # Map of PCR index to expected SHA-256 digest.
-# Leave empty to skip PCR verification (still reads values for the bundle).
+# Leave empty to report measurements without claiming they were verified.
 # Populate after first measured boot to lock down the expected state.
 # Example:
 #   "0": "0xabc123..."  (BIOS/UEFI firmware)
@@ -40,6 +45,7 @@ service_binaries:
   tool-firewall: /usr/libexec/secure-ai/tool-firewall
   airlock: /usr/libexec/secure-ai/airlock
   policy-engine: /usr/libexec/secure-ai/policy-engine
+  tpm-attestation-setup: /usr/libexec/secure-ai/secure-tpm-attestation.py
   gpu-integrity-watch: /usr/libexec/secure-ai/gpu-integrity-watch
   mcp-firewall: /usr/libexec/secure-ai/mcp-firewall
 
@@ -51,6 +57,12 @@ policy_files:
   - /etc/secure-ai/policy/agent.yaml
   - /etc/secure-ai/policy/landlock.yaml
   - /etc/secure-ai/policy/attestation.yaml
+  - /etc/secure-ai/policy/models.lock.yaml
+  - /etc/secure-ai/policy/diffusion-models.lock.yaml
+  - /etc/secure-ai/policy/sources.allowlist.yaml
+  - /etc/secure-ai/model-catalog.yaml
+  - /usr/lib/systemd/system/secure-ai-tpm-attestation-setup.service
+  - /usr/lib/systemd/system/secure-ai-runtime-attestor.service
 
 # --- Refresh interval ---
 # How often the attestor re-checks the system state.
@@ -59,6 +71,7 @@ refresh_interval: "5m"
 
 # --- HMAC key ---
 # Path to the HMAC signing key for runtime state bundles.
-# If absent, bundles are emitted unsigned (bundle_hmac = "unsigned").
-# In production, generate with: dd if=/dev/urandom bs=32 count=1 > /run/secure-ai/attestation-hmac-key
+# The service fails to start unless this systemd credential is exactly one
+# canonical 64-lowercase-hex 256-bit value. The incident recorder receives the
+# same key only for local recovery-bundle verification.
 hmac_key_path: /run/secure-ai/attestation-hmac-key

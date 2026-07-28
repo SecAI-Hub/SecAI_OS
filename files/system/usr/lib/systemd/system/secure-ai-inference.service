@@ -1,32 +1,28 @@
 [Unit]
 Description=Secure AI Inference Worker (llama-server)
-After=secure-ai-registry.service
-Wants=secure-ai-registry.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+RequiresMountsFor=/var/lib/secure-ai/vault/models
+After=secure-ai-vault-mounted.service secure-ai-registry.service
+Requires=secure-ai-vault-mounted.service secure-ai-registry.service
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStartPre=/usr/libexec/secure-ai/select-model.sh
-ExecStart=/usr/libexec/secure-ai/inference-wrapper.sh \
-    --host 127.0.0.1 \
-    --port 8465 \
-    --model ${MODEL_PATH} \
-    --n-gpu-layers ${GPU_LAYERS} \
-    --ctx-size ${CTX_SIZE} \
-    --threads ${THREADS}
-Environment=MODEL_PATH=
-Environment=GPU_LAYERS=-1
+ExecStart=/usr/libexec/secure-ai/start-inference.sh
+Environment=GPU_LAYERS=0
+EnvironmentFile=-/var/lib/secure-ai/inference.env
 Environment=CTX_SIZE=8192
 Environment=THREADS=4
 Environment=PORT=8465
-EnvironmentFile=-/var/lib/secure-ai/inference.env
 WatchdogSec=30
 
 # Filesystem isolation — needs GPU access, no network
 DynamicUser=yes
+SupplementaryGroups=video render secure-ai-registry
+RuntimeDirectory=secure-ai-inference
+RuntimeDirectoryMode=0700
 ReadOnlyPaths=/etc/secure-ai
-ReadOnlyPaths=/var/lib/secure-ai/registry
-PrivateNetwork=yes
+ReadOnlyPaths=/var/lib/secure-ai/vault/models
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -55,8 +51,9 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
+# Inference is reachable only from local application peers.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering — needs GPU ioctls, so allow @raw-io for CUDA/ROCm
 SystemCallFilter=@system-service @io-event

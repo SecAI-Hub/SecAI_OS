@@ -1,19 +1,46 @@
 [Unit]
 Description=SecAI Profile Applicator (one-shot, privileged)
-After=secure-ai-registry.service
+After=secure-ai-registry.service dbus.service
 
 [Service]
 Type=oneshot
+SupplementaryGroups=secure-ai-ui-control
 ExecStart=/usr/libexec/secure-ai/apply-profile.sh
 ExecStopPost=-/bin/rm -f /run/secure-ai-ui/profile-request
 TimeoutStartSec=120
+UMask=0077
 
-# Hardening — this service needs systemctl access but nothing else exotic
+# This root broker talks to systemd over its AF_UNIX control socket. It has no
+# network, device, mount, or capability requirement.
+NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/secure-ai /usr/lib/systemd/system
+ReadWritePaths=/var/lib/secure-ai/state /var/lib/secure-ai/logs
+ReadWritePaths=/run/secure-ai /run/secure-ai-ui
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+LimitCORE=0
+MemoryMax=128M
+TasksMax=32

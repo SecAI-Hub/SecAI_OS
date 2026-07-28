@@ -24,6 +24,13 @@ __pycache__/
 *.egg-info/
 dist/
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated service/test artifacts
+/services/quarantine/build/
+/services/incident-recorder/.tmp/
 
 # IDE
 .idea/
@@ -38,3 +45,11 @@ Thumbs.db
 # Sandbox bundle
 /deploy/sandbox/.env
 /deploy/sandbox/runtime/
+
+# Local VM qualification output and one-time bootstrap secrets
+/output/
+secai-first-boot-secrets.txt
+secai-ks.cfg
+*.qcow2
+*.ova
+*.vmdk

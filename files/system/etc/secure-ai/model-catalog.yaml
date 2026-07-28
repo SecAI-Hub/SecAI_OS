@@ -1,10 +1,11 @@
-# Pre-curated model catalog - users can download these with one click.
-# All entries below were promoted by the SecAI_OS quarantine pipeline on
-# 2026-05-15. Failed or untested models are intentionally excluded.
+# Pre-curated acquisition catalog for one-click downloads.
+# These are immutable-pinned candidates, not pre-trusted runtime models. Every
+# download remains quarantined until this appliance completes all mandatory
+# integrity, static, and (for GGUF) behavioral checks and promotes it locally.
 #
 # To add a model: download it through the catalog/quarantine path, confirm a
-# promoted audit event, add the immutable pins for GGUF artifacts to
-# policy/models.lock.yaml, then append an entry here.
+# add its immutable single-file or directory-manifest pin under policy/, then
+# append an entry here. Catalog inclusion never bypasses local quarantine.
 # Changes take effect on next UI restart (or reload via /api/admin/reload).
 
 models:
@@ -12,173 +13,208 @@ models:
     type: llm
     category: llm
     filename: "granite-guardian-3.1-2b-q4_k_m.gguf"
-    url: "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/main/granite-guardian-3.1-2b-q4_k_m.gguf"
+    url: "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/01d30577cdd395fb65947d398f9e2b776c71355e/granite-guardian-3.1-2b-q4_k_m.gguf"
+    expected_revision: "01d30577cdd395fb65947d398f9e2b776c71355e"
     size_gb: 1.5
     vram_gb: 3
-    description: "Approved guard-focused LLM. Promoted after static, integrity, and behavioral smoke tests."
+    description: "Pinned guard-focused LLM candidate; locally rescanned before every promotion."
     expected_sha256: "2eaa7ed23bbd122fc654d9409f3076d35799b1cbc58f992b159d53cbaa51bed2"
     expected_size_bytes: 1530557952
-    security_status: approved
-    tested_on: "2026-05-15"
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "ShieldGemma 2B (Q4_K_M)"
     type: llm
     category: llm
     filename: "shieldgemma-2b.Q4_K_M.gguf"
-    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q4_K_M.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/8755ece4b20dd84d7564131e385d9c205d03621a/shieldgemma-2b.Q4_K_M.gguf"
+    expected_revision: "8755ece4b20dd84d7564131e385d9c205d03621a"
     size_gb: 1.7
     vram_gb: 3
-    description: "Approved safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    description: "Pinned safety-tuned LLM candidate; locally rescanned before every promotion."
     expected_sha256: "47b0c3f4ec0bf93659ab2fc92cf2041374ef78bf1cb5b8c790421f463e7b7979"
     expected_size_bytes: 1708583104
-    security_status: approved
-    tested_on: "2026-05-15"
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "GA Guard Core (Q2_K)"
     type: llm
     category: llm
     filename: "GA_Guard_Core.Q2_K.gguf"
-    url: "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/main/GA_Guard_Core.Q2_K.gguf"
+    url: "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/7d7a73c98639749fc9d6bcacec97df9b621b9340/GA_Guard_Core.Q2_K.gguf"
+    expected_revision: "7d7a73c98639749fc9d6bcacec97df9b621b9340"
     size_gb: 1.7
     vram_gb: 3
-    description: "Approved guard-focused LLM. Promoted after static, integrity, and behavioral smoke tests."
+    description: "Pinned guard-focused LLM candidate; locally rescanned before every promotion."
     expected_sha256: "ff6087763f3886e3355058f34a8f9f6b3a8ba4a8f70a5795001bdaee1b3368b3"
     expected_size_bytes: 1668960032
-    security_status: approved
-    tested_on: "2026-05-15"
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "ShieldGemma 2B (Q5_K_M)"
     type: llm
     category: llm
     filename: "shieldgemma-2b.Q5_K_M.gguf"
-    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q5_K_M.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/8755ece4b20dd84d7564131e385d9c205d03621a/shieldgemma-2b.Q5_K_M.gguf"
+    expected_revision: "8755ece4b20dd84d7564131e385d9c205d03621a"
     size_gb: 1.9
     vram_gb: 4
-    description: "Approved higher-quality safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    description: "Pinned higher-quality safety-tuned candidate; locally rescanned before every promotion."
     expected_sha256: "265ec9c9c2b069aa8737fdb79bf56d561b48e165b76728d52dd82b1932069b0f"
     expected_size_bytes: 1923279040
-    security_status: approved
-    tested_on: "2026-05-15"
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "ShieldGemma 9B (Q2_K)"
     type: llm
     category: llm
     filename: "shieldgemma-9b.Q2_K.gguf"
-    url: "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/main/shieldgemma-9b.Q2_K.gguf"
+    url: "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/ee6d7475c96d0beaba677f3f9c9d4d3b03bc1d55/shieldgemma-9b.Q2_K.gguf"
+    expected_revision: "ee6d7475c96d0beaba677f3f9c9d4d3b03bc1d55"
     size_gb: 3.8
     vram_gb: 6
-    description: "Approved larger safety-tuned LLM. Promoted after static, integrity, and behavioral smoke tests."
+    description: "Pinned larger safety-tuned LLM candidate; locally rescanned before every promotion."
     expected_sha256: "3e86670d2abe5ce0be1c31582216dd6ae9731cc85cf3978e27f2d3b9238edf08"
     expected_size_bytes: 3805398560
-    security_status: approved
-    tested_on: "2026-05-15"
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Tiny Random SDXL"
     type: diffusion
     category: image
     filename: "image-tiny-sdxl-dg845"
     url: "https://huggingface.co/dg845/tiny-random-stable-diffusion-xl"
+    expected_revision: "7ae769dd7f63b06308f2f23881d329a0cb1c89d2"
+    expected_manifest_sha256: "e0123078fb614ddfe0b7b0346ad03e46d9083c6084aec2ed2635879b590713e6"
+    expected_size_bytes: 3373961
     size_gb: 0.01
     vram_gb: 2
-    description: "Approved tiny SDXL image pipeline for low-resource smoke testing."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned tiny SDXL candidate for low-resource smoke testing."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "BK-SDM Tiny"
     type: diffusion
     category: image
     filename: "image-bk-sdm-tiny"
     url: "https://huggingface.co/nota-ai/bk-sdm-tiny"
+    expected_revision: "0364108e53b7f7f4d2585e817a0b7a83dc261cfa"
+    expected_manifest_sha256: "a1f361875311fc21730eb6e8573864d4ee3666dd20a5206f46c7df9db7095aea"
+    expected_size_bytes: 1669906169
     size_gb: 1.7
     vram_gb: 4
-    description: "Approved compact Stable Diffusion image pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned compact Stable Diffusion candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "BK-SDM Small"
     type: diffusion
     category: image
     filename: "image-bk-sdm-small"
     url: "https://huggingface.co/nota-ai/bk-sdm-small"
+    expected_revision: "572238db7ed3a10858900803f3fc8cca53e893e0"
+    expected_manifest_sha256: "5bb2dcca00811e04c4769b4d0051f0004033fa26099498ff0d174d65e3c27a68"
+    expected_size_bytes: 1987834232
     size_gb: 2.0
     vram_gb: 5
-    description: "Approved small Stable Diffusion image pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned small Stable Diffusion candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "BK-SDM Base"
     type: diffusion
     category: image
     filename: "image-bk-sdm-base"
     url: "https://huggingface.co/nota-ai/bk-sdm-base"
+    expected_revision: "0c03b7a0369b49f97d1acf7256d4ee55ced9b2e0"
+    expected_manifest_sha256: "9737280ab316298e3026b021e3c3c78c1ceb943a577b73bc359e24cd88b5ac27"
+    expected_size_bytes: 2181916172
     size_gb: 2.2
     vram_gb: 6
-    description: "Approved base Stable Diffusion image pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned base Stable Diffusion candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Stable Diffusion 1.5"
     type: diffusion
     category: image
     filename: "image-sd15"
     url: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
+    expected_revision: "451f4fe16113bff5a5d2269ed5ad43b0592e9a14"
+    expected_manifest_sha256: "007714ef9c28cd3e97686d321f7ec5dc497031bef2d8e39034177ed975caf23e"
+    expected_size_bytes: 2742217630
     size_gb: 2.7
     vram_gb: 4
-    description: "Approved Stable Diffusion 1.5 image pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned Stable Diffusion 1.5 candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Tiny Stable Video Diffusion"
     type: diffusion
     category: video
     filename: "video-tiny-svd-seinpark"
     url: "https://huggingface.co/seinpark/tiny-stable-video-diffusion-img2vid"
+    expected_revision: "701088dac555f81b9961077c99bc3527d6548cd3"
+    expected_manifest_sha256: "bf49b5c212bdce95473eecc87e12a4c934cdfe8527f0c276682158d869fce4ce"
+    expected_size_bytes: 10240860
     size_gb: 0.01
     vram_gb: 2
-    description: "Approved tiny image-to-video pipeline for low-resource smoke testing."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned tiny image-to-video candidate for low-resource smoke testing."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Tiny Random LTX Video"
     type: diffusion
     category: video
     filename: "video-tiny-ltx-katuni4ka"
     url: "https://huggingface.co/katuni4ka/tiny-random-ltx-video"
+    expected_revision: "5a116fa316d6f98ef4ee4a50f8d2024d39beacdc"
+    expected_manifest_sha256: "c1da3d0051f7dc8217f9409f5ea10f11190887a6f3d934124ed5ec4bf2b7852d"
+    expected_size_bytes: 1141266
     size_gb: 0.01
     vram_gb: 2
-    description: "Approved tiny LTX video pipeline for low-resource smoke testing."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned tiny LTX video candidate for low-resource smoke testing."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Stable Video Diffusion"
     type: diffusion
     category: video
     filename: "video-svd-img2vid"
     url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid"
+    expected_revision: "9cf024d5bfa8f56622af86c884f26a52f6676f2e"
+    expected_manifest_sha256: "3a5c50adeb6d07668cd2da7ca59ae14244f1125f32dc2d17fa900a1a7e3e403c"
+    expected_size_bytes: 4509188849
     size_gb: 4.5
     vram_gb: 16
-    description: "Approved image-to-video Stable Video Diffusion pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned image-to-video Stable Video Diffusion candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Stable Video Diffusion XT"
     type: diffusion
     category: video
     filename: "video-svd-img2vid-xt"
     url: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
+    expected_revision: "9e43909513c6714f1bc78bcb44d96e733cd242aa"
+    expected_manifest_sha256: "5108113b09d11fd2c9a3b47853cc106933584f316ddd14f3185aec10834e7724"
+    expected_size_bytes: 4509188841
     size_gb: 4.5
     vram_gb: 16
-    description: "Approved image-to-video Stable Video Diffusion XT pipeline."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned image-to-video Stable Video Diffusion XT candidate."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"
 
   - name: "Stable Video Diffusion XT 1.1"
     type: diffusion
     category: video
     filename: "video-svd-xt-1-1-weights"
     url: "https://huggingface.co/weights/stable-video-diffusion-img2vid-xt-1-1"
+    expected_revision: "a423ba0d3e1a94a57ebc68e98691c43104198394"
+    expected_manifest_sha256: "634f478b142fa65531d327fd79c2eb02a092edebbbde129a544813e77c0a2301"
+    expected_size_bytes: 4509188809
     size_gb: 4.5
     vram_gb: 16
-    description: "Approved public XT 1.1 image-to-video pipeline mirror."
-    security_status: approved
-    tested_on: "2026-05-15"
+    description: "Pinned public XT 1.1 image-to-video candidate mirror."
+    security_status: pinned-candidate
+    provenance_pinned_on: "2026-07-27"

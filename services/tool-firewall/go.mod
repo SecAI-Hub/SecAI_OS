@@ -1,4 +1,4 @@
-module github.com/sec_ai/SecAI_OS/services/tool-firewall
+module github.com/SecAI-Hub/tool-firewall
 
 go 1.25
 

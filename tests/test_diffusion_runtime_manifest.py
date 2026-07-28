@@ -13,6 +13,7 @@ Validates:
 - Manifest specifies python_version and supported_architectures
 """
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -21,6 +22,13 @@ import yaml
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "files" / "scripts"
 MANIFEST_PATH = SCRIPTS_DIR / "diffusion-runtime-manifest.yaml"
+STANDARD_DOCKERFILE = (
+    Path(__file__).resolve().parent.parent
+    / "services"
+    / "diffusion-worker"
+    / "Dockerfile"
+)
+SANDBOX_DOCKERFILE = STANDARD_DOCKERFILE.with_name("Dockerfile.sandbox")
 
 
 @pytest.fixture
@@ -97,6 +105,29 @@ class TestBackendDefinitions:
         lockfile_path = SCRIPTS_DIR / lockfile_name
         assert lockfile_path.exists(), \
             f"Lockfile not found: {lockfile_path}"
+
+    @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
+    def test_backend_lockfile_matches_manifest_hash(self, manifest, backend):
+        cfg = manifest["backends"][backend]
+        lockfile_path = SCRIPTS_DIR / cfg["lockfile"]
+        expected = cfg.get("lock_sha256", "")
+        assert re.fullmatch(r"[0-9a-f]{64}", expected), \
+            f"Backend '{backend}' must carry a valid lock_sha256"
+        actual = hashlib.sha256(lockfile_path.read_bytes()).hexdigest()
+        assert actual == expected, \
+            f"Backend '{backend}' lockfile does not match its manifest trust anchor"
+
+    @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
+    def test_backend_input_matches_manifest_hash(self, manifest, backend):
+        cfg = manifest["backends"][backend]
+        input_path = SCRIPTS_DIR / cfg["inputfile"]
+        expected = cfg.get("input_sha256", "")
+        assert input_path.exists(), f"Input file not found: {input_path}"
+        assert re.fullmatch(r"[0-9a-f]{64}", expected), \
+            f"Backend '{backend}' must carry a valid input_sha256"
+        actual = hashlib.sha256(input_path.read_bytes()).hexdigest()
+        assert actual == expected, \
+            f"Backend '{backend}' input does not match its manifest trust anchor"
 
     @pytest.mark.parametrize("backend", EXPECTED_BACKENDS)
     def test_backend_has_torch_index(self, manifest, backend):
@@ -213,3 +244,47 @@ class TestLockfileIntegrity:
             block = content[idx:block_end]
             assert "--hash=sha256:" in block, \
                 f"Package '{pkg}' in {lockfile_name} has no --hash entry"
+
+
+class TestContainerLockCompatibility:
+    """Container profiles must consume locks resolved for their Python minor."""
+
+    @pytest.mark.parametrize(
+        ("backend", "torch_suffix"),
+        [("cpu", "cpu"), ("cuda", "cu129"), ("rocm", "rocm7.1")],
+    )
+    def test_python314_sandbox_lock_is_hashed(self, backend, torch_suffix):
+        lockfile = SCRIPTS_DIR / f"diffusion-{backend}-py314.lock"
+        content = lockfile.read_text()
+        assert f"torch==2.13.0+{torch_suffix} \\" in content
+        packages = re.findall(r"^(\S+==\S+)\s*\\", content, re.MULTILINE)
+        assert packages
+        for package in packages:
+            start = content.index(package)
+            end = content.find("\n\n", start)
+            block = content[start:] if end == -1 else content[start:end]
+            assert "--hash=sha256:" in block, \
+                f"Package '{package}' in {lockfile.name} has no hash"
+        assert "--extra-index-url" not in content
+        assert "--find-links https://download.pytorch.org/whl/" in content
+
+    def test_standard_image_uses_python312_locks(self):
+        dockerfile = STANDARD_DOCKERFILE.read_text()
+        assert "python:3.12-slim@" in dockerfile
+        assert 'diffusion-${COMPUTE}.lock' in dockerfile
+        assert "-py314.lock" not in dockerfile
+
+    def test_sandbox_image_uses_python314_locks(self):
+        dockerfile = SANDBOX_DOCKERFILE.read_text()
+        assert "PYTHON_VERSION=3.14.5" in dockerfile
+        assert 'diffusion-${COMPUTE}-py314.lock' in dockerfile
+
+    @pytest.mark.parametrize(
+        "dockerfile_path",
+        [STANDARD_DOCKERFILE, SANDBOX_DOCKERFILE],
+    )
+    def test_container_refuses_non_amd64_target(self, dockerfile_path):
+        dockerfile = dockerfile_path.read_text()
+        assert dockerfile.count("ARG TARGETARCH") >= 2
+        assert 'test "$TARGETARCH" = "amd64"' in dockerfile
+        assert "diffusion locks support only linux/amd64" in dockerfile

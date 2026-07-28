@@ -91,6 +91,10 @@ class TestInstallerScriptStructure:
         assert 'sha256' in self.script.lower(), \
             "Installer must verify SHA256 hashes"
 
+    def test_verifies_lockfile_trust_anchor(self):
+        assert 'BACKEND_LOCK_SHA256' in self.script
+        assert 'Lockfile SHA256 mismatch' in self.script
+
     def test_checks_https_only(self):
         assert 'https://' in self.script, \
             "Installer must enforce HTTPS-only downloads"
@@ -102,6 +106,9 @@ class TestInstallerScriptStructure:
     def test_verifies_final_url_after_redirect(self):
         assert 'final_url' in self.script or 'response.url' in self.script, \
             "Installer must verify the final URL after redirects"
+
+    def test_percent_encodes_pytorch_wheel_filenames(self):
+        assert 'urllib.parse.quote(filename, safe="-_.")' in self.script
 
     def test_verifies_wheel_tags(self):
         assert 'verify_wheel_tags' in self.script or 'wheel tag' in self.script.lower(), \
@@ -227,13 +234,16 @@ class TestUIRequestMarkerSemantics:
         assert "systemctl" not in source, \
             "Enable endpoint must not call systemctl"
 
-    def test_enable_endpoint_uses_o_creat_excl(self):
-        """The enable endpoint must use O_CREAT|O_EXCL for atomicity."""
+    def test_enable_endpoint_uses_complete_request_publisher(self):
+        """The path unit must never observe a partially created marker."""
         import inspect
-        from ui.app import diffusion_runtime_enable
+        from ui.app import _publish_runtime_request, diffusion_runtime_enable
         source = inspect.getsource(diffusion_runtime_enable)
-        assert "O_CREAT" in source and "O_EXCL" in source, \
-            "Enable endpoint must use O_CREAT|O_EXCL for atomic marker creation"
+        publisher = inspect.getsource(_publish_runtime_request)
+        assert "_publish_runtime_request" in source
+        assert "O_CREAT" in publisher and "O_EXCL" in publisher
+        assert "os.link" in publisher, \
+            "Request publication must be atomic and no-replace"
 
     def test_concurrent_enable_returns_409(self, tmp_path):
         """Second enable request returns 409 when marker already exists."""
@@ -255,7 +265,8 @@ class TestEndpointBehavior:
 
     @pytest.fixture
     def patched_app(self, tmp_path):
-        """Create a Flask test client with patched marker paths."""
+        """Create an authenticated client with isolated marker paths."""
+        import ui.app as ui_app
         from ui.app import app
         app.config["TESTING"] = True
         self._patches = [
@@ -264,10 +275,16 @@ class TestEndpointBehavior:
             patch("ui.app._DIFFUSION_REQUEST_MARKER", tmp_path / "request"),
             patch("ui.app._DIFFUSION_PROGRESS_FILE", tmp_path / "progress"),
             patch("ui.app._DIFFUSION_MANIFEST", MANIFEST_PATH),
+            patch("ui.app._ui_audit"),
+            patch.object(ui_app._auth, "is_configured", return_value=True),
+            patch.object(ui_app._auth, "validate_session", return_value=True),
         ]
         for p in self._patches:
             p.start()
         client = app.test_client()
+        client.environ_base["HTTP_AUTHORIZATION"] = (
+            "Bearer diffusion-installer-test-session"
+        )
         yield client, tmp_path
         for p in self._patches:
             p.stop()
@@ -628,8 +645,9 @@ class TestSystemdUnits:
         assert "secai-enable-diffusion.sh" in content
         assert "--progress-file" in content
 
-    def test_ui_service_has_runtime_directory(self):
+    def test_ui_service_uses_fixed_dac_control_directory(self):
         ui_unit = self.SYSTEMD_DIR / "secure-ai-ui.service"
         content = ui_unit.read_text()
-        assert "RuntimeDirectory=secure-ai-ui" in content
-        assert "RuntimeDirectoryMode=0700" in content
+        assert "RuntimeDirectory=secure-ai-ui" not in content
+        assert "secure-ai-ui-control" in content
+        assert "ReadWritePaths=/run/secure-ai-ui" in content

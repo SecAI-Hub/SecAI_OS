@@ -1,13 +1,17 @@
 [Unit]
 Description=Secure AI Model Integrity Check (verify all model hashes)
-After=secure-ai-registry.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=secure-ai-registry.service secure-ai-credentials.service secure-ai-vault-mounted.service
 Wants=secure-ai-registry.service
+Requires=secure-ai-credentials.service secure-ai-vault-mounted.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/secure-ai/integrity-check.sh
 Environment=REGISTRY_URL=http://127.0.0.1:8470
-Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models
+Environment=SERVICE_TOKEN_PATH=%d/registry-verify-token
+LoadCredential=registry-verify-token:/var/lib/secure-ai/credentials/registry-verify.token
 
 # Filesystem access
 ReadOnlyPaths=/usr/libexec/secure-ai

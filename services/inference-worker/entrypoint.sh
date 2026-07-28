@@ -6,7 +6,7 @@ BIND="${BIND_ADDR:-0.0.0.0:8465}"
 MODEL="${MODEL_PATH:-}"
 CTX_SIZE="${CONTEXT_SIZE:-8192}"
 GPU_LAYERS="${GPU_LAYERS:--1}"
-REGISTRY_DIR="${REGISTRY_DIR:-/var/lib/secure-ai/registry}"
+REGISTRY_DIR="${REGISTRY_DIR:-/var/lib/secure-ai/vault/models}"
 
 if [ -z "$MODEL" ]; then
     if [ -d "$REGISTRY_DIR" ]; then

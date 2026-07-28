@@ -1,0 +1,16 @@
+[Unit]
+Description=Clear each graphical session clipboard every 60 seconds
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionUser=!root
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=60s
+AccuracySec=1s
+RandomizedDelaySec=5s
+Persistent=false
+Unit=secure-ai-clipboard-clear.service
+
+[Install]
+WantedBy=graphical-session.target

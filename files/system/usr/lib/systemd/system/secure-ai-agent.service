@@ -1,12 +1,15 @@
 [Unit]
 Description=Secure AI Agent (policy-bound local autopilot)
-After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-inference.service
-Requires=secure-ai-registry.service secure-ai-tool-firewall.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-inference.service secure-ai-credentials.service secure-ai-vault-mounted.service
+Requires=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-credentials.service secure-ai-vault-mounted.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/libexec/secure-ai/agent
-Environment=BIND_ADDR=unix:/run/secure-ai/agent.sock
+Environment=BIND_ADDR=unix:/run/secure-ai/agent/agent.sock
 Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
@@ -15,16 +18,32 @@ Environment=SEARCH_MEDIATOR_URL=http://127.0.0.1:8485
 Environment=AGENT_POLICY_PATH=/etc/secure-ai/policy/agent.yaml
 Environment=VAULT_ROOT=/var/lib/secure-ai/vault
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/agent-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
+Environment=AGENT_TASK_STATE_PATH=/var/lib/secure-ai/agent/tasks.json
+Environment=AGENT_CONTAINMENT_STATE_PATH=/var/lib/secure-ai/agent/containment.json
+Environment=AGENT_UI_TOKEN_PATH=%d/ui-control-token
+Environment=AGENT_CONTAINMENT_TOKEN_PATH=%d/containment-token
+Environment=AGENT_SIGNING_KEY_PATH=%d/signing-key
+Environment=AIRLOCK_TOKEN_PATH=%d/airlock-token
+Environment=REGISTRY_TOKEN_PATH=%d/registry-token
+Environment=TOOL_FIREWALL_TOKEN_PATH=%d/tool-firewall-token
+LoadCredential=airlock-token:/var/lib/secure-ai/credentials/airlock.token
+LoadCredential=registry-token:/var/lib/secure-ai/credentials/registry-read.token
+LoadCredential=tool-firewall-token:/var/lib/secure-ai/credentials/tool-firewall.token
+LoadCredential=audit-hmac-key:/var/lib/secure-ai/credentials/agent-audit-hmac.key
+LoadCredential=ui-control-token:/var/lib/secure-ai/credentials/agent-ui.token
+LoadCredential=containment-token:/var/lib/secure-ai/credentials/agent-containment.token
+LoadCredential=signing-key:/var/lib/secure-ai/credentials/agent-signing.key
 
 # Filesystem isolation
 DynamicUser=yes
+SupplementaryGroups=secure-ai-services secure-ai-agent-ipc secure-ai-agent-state secure-ai-logs secure-ai-vault-read secure-ai-vault-write
 ReadOnlyPaths=/etc/secure-ai
-ReadOnlyPaths=/run/secure-ai/service-token
-ReadWritePaths=/run/secure-ai/agent.sock
+ReadWritePaths=/run/secure-ai/agent
 ReadOnlyPaths=/var/lib/secure-ai/vault/user_docs
 ReadWritePaths=/var/lib/secure-ai/vault/outputs
 ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/agent
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -83,9 +102,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

@@ -1,7 +1,8 @@
 """Sandbox and isolation primitives for agent execution (M43 — Stronger Isolation).
 
-Provides process-level compartmentalization, step signature validation,
-workspace hard-wall enforcement, and high-risk action subprocess isolation.
+Provides step signature validation and workspace boundary checks. The legacy
+per-step subprocess API now fails closed because a same-UID Python child is not
+an isolation boundary.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -33,18 +33,13 @@ _STEP_SIGN_KEY: bytes | None = None
 
 
 def _get_step_key() -> bytes:
-    """Load the step-signing key, creating one if needed."""
+    """Derive the step-signing key from the provisioned agent root key."""
     global _STEP_SIGN_KEY
     if _STEP_SIGN_KEY is not None:
         return _STEP_SIGN_KEY
-    try:
-        from .keystore import create_provider, load_config
-        config = load_config()
-        provider = create_provider(config)
-        _STEP_SIGN_KEY = provider.get_key("step-signing")
-    except Exception:
-        # Fallback: derive from default key
-        _STEP_SIGN_KEY = hashlib.sha256(b"step-signing-fallback").digest()
+    from .capabilities import _get_provider
+
+    _STEP_SIGN_KEY = _get_provider().derive("step-signing")
     return _STEP_SIGN_KEY
 
 
@@ -265,12 +260,7 @@ class WorkspaceGuard:
 # ---------------------------------------------------------------------------
 
 class SubprocessIsolator:
-    """Runs high-risk step handlers in separate subprocess with restricted profile.
-
-    This creates a one-way IPC boundary: the parent sends step data to the
-    subprocess via stdin/JSON, and receives the result via stdout/JSON.
-    The subprocess cannot access the parent's memory space.
-    """
+    """Compatibility surface that denies unsupported per-step isolation."""
 
     # Per-step timeout based on action type
     _TIMEOUTS: dict[StepAction, int] = {
@@ -302,51 +292,14 @@ class SubprocessIsolator:
         cap_dict: dict,
         handler_module: str = "agent.sandbox",
     ) -> dict[str, Any]:
-        """Execute a step handler in a subprocess with restricted profile.
-
-        The subprocess receives step data via stdin JSON and returns results
-        via stdout JSON.  Any exception kills only the subprocess, not the
-        main agent.
-
-        Returns the step result dict.
-        """
-        timeout = self.get_timeout(step.action)
-
-        payload = json.dumps({
-            "step": {
-                "step_id": step.step_id,
-                "action": step.action.value,
-                "params": step.params,
-            },
-            "capability": cap_dict,
-        })
-
-        try:
-            result = subprocess.run(
-                ["python3", "-m", handler_module, "--isolated-step"],
-                input=payload,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env={
-                    **os.environ,
-                    "SECAI_ISOLATED": "1",
-                    "SECAI_STEP_TIMEOUT": str(timeout),
-                },
-            )
-
-            if result.returncode != 0:
-                return {
-                    "ok": False,
-                    "error": f"isolated handler exited with code {result.returncode}: {result.stderr[:500]}",
-                }
-
-            return json.loads(result.stdout)
-
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "error": f"isolated handler timed out after {timeout}s"}
-        except (json.JSONDecodeError, OSError) as exc:
-            return {"ok": False, "error": f"isolated handler error: {exc}"}
+        """Deny execution until a separately confined worker exists."""
+        # A Python child with the same UID, mounts, environment, and syscall
+        # policy is not a meaningful privilege boundary. Fail closed until a
+        # separately sandboxed worker protocol is implemented.
+        return {
+            "ok": False,
+            "error": "per-step subprocess isolation is unavailable; action denied",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +398,8 @@ def _run_isolated_step() -> None:
     # In isolated mode, we simply validate and return a safe response
     # The actual handler execution is delegated to the executor
     result = {
-        "ok": True,
-        "isolated": True,
+        "ok": False,
+        "error": "standalone isolated-step execution is disabled",
         "step_id": data.get("step", {}).get("step_id", ""),
     }
     sys.stdout.write(json.dumps(result))

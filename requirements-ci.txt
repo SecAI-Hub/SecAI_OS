@@ -1,6 +1,7 @@
 # Pinned CI dependencies for reproducible builds.
 # Update by running: pip install --upgrade <pkg> && pip freeze | grep <pkg>
 # All versions must be reviewed before bumping.
+pip==26.1.2
 PyYAML==6.0.3
 Flask==3.1.3
 requests==2.33.1

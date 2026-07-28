@@ -1,20 +1,10 @@
-ARG ALLOW_MISSING_QUARANTINE_SCANNERS=false
 ARG ENABLE_GARAK_SCANNER=false
-ARG MODELSCAN_PACKAGE=
-ARG FICKLING_PACKAGE=
-ARG MODELAUDIT_PACKAGE=
-ARG GARAK_PACKAGE=
 
 FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0cff4df29a6597173dc8b813787318150141eb96ac783dc3ff4f5ff52c49a1e2 AS build
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e AS build
 
-ARG ALLOW_MISSING_QUARANTINE_SCANNERS
 ARG ENABLE_GARAK_SCANNER
-ARG MODELSCAN_PACKAGE
-ARG FICKLING_PACKAGE
-ARG MODELAUDIT_PACKAGE
-ARG GARAK_PACKAGE
 
 WORKDIR /app
 COPY pyproject.toml .
@@ -32,51 +22,27 @@ RUN apk upgrade --no-cache && \
     yara-dev
 
 RUN python -m venv /opt/venv && \
-    /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip==26.1.1 setuptools==82.0.1 wheel==0.46.2 && \
     /opt/venv/bin/python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
     /opt/venv/bin/python -m pip install --no-cache-dir --no-deps .
 
 RUN set -eu; \
-    missing=0; \
-    mkdir -p /opt/secure-ai/scanners; \
-    scanners="modelscan fickling modelaudit"; \
-    if [ "$ENABLE_GARAK_SCANNER" = "true" ]; then scanners="$scanners garak"; else echo "Skipping optional garak scanner by default"; fi; \
-    for scanner in $scanners; do \
-        venv="/opt/secure-ai/scanners/$scanner"; \
-        case "$scanner" in \
-            modelscan) scanner_package="$MODELSCAN_PACKAGE" ;; \
-            fickling) scanner_package="$FICKLING_PACKAGE" ;; \
-            modelaudit) scanner_package="$MODELAUDIT_PACKAGE" ;; \
-            garak) scanner_package="$GARAK_PACKAGE" ;; \
-            *) echo "ERROR: unknown quarantine scanner: $scanner"; exit 1 ;; \
-        esac; \
-        if [ -z "$scanner_package" ]; then \
-            scanner_package="$(python -c 'import sys, tomllib; name = sys.argv[1]; data = tomllib.load(open("pyproject.toml", "rb")); group = "garak" if name == "garak" else "scan"; deps = data["project"]["optional-dependencies"][group]; matches = [dep for dep in deps if "==" in dep and dep.split("==", 1)[0] == name]; sys.exit(f"missing pinned scanner dependency: {name}") if len(matches) != 1 else print(matches[0])' "$scanner")"; \
-        fi; \
-        python -m venv "$venv" || { missing=$((missing + 1)); continue; }; \
-        "$venv/bin/python" -m pip install --no-cache-dir --upgrade pip==26.1.1 setuptools==82.0.1 wheel==0.46.2 && \
-        "$venv/bin/python" -m pip install --no-cache-dir "$scanner_package" urllib3==2.7.0 && \
-        "$venv/bin/python" -m pip check && \
-        ln -sf "$venv/bin/$scanner" "/usr/local/bin/$scanner" || missing=$((missing + 1)); \
-    done; \
-    if [ "$missing" -gt 0 ] && [ "$ALLOW_MISSING_QUARANTINE_SCANNERS" != "true" ]; then \
-        echo "ERROR: $missing quarantine scanner(s) failed to install"; \
+    if [ "$ENABLE_GARAK_SCANNER" = "true" ]; then \
+        echo "ERROR: garak is not present in the reviewed default scanner lock"; \
         exit 1; \
-    fi
+    fi; \
+    /opt/venv/bin/python -m pip check; \
+    for scanner in modelscan fickling modelaudit; do \
+        test -x "/opt/venv/bin/$scanner"; \
+    done
 
 RUN rm -rf \
     /opt/venv/bin/pip* \
     /opt/venv/lib/python3.12/site-packages/pip \
     /opt/venv/lib/python3.12/site-packages/pip-*.dist-info \
     /opt/venv/lib/python3.12/site-packages/wheel \
-    /opt/venv/lib/python3.12/site-packages/wheel-*.dist-info \
-    /opt/secure-ai/scanners/*/bin/pip* \
-    /opt/secure-ai/scanners/*/lib/python3.12/site-packages/pip \
-    /opt/secure-ai/scanners/*/lib/python3.12/site-packages/pip-*.dist-info \
-    /opt/secure-ai/scanners/*/lib/python3.12/site-packages/wheel \
-    /opt/secure-ai/scanners/*/lib/python3.12/site-packages/wheel-*.dist-info
+    /opt/venv/lib/python3.12/site-packages/wheel-*.dist-info
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0cff4df29a6597173dc8b813787318150141eb96ac783dc3ff4f5ff52c49a1e2
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
 
 WORKDIR /app
 
@@ -93,11 +59,10 @@ RUN apk upgrade --no-cache && \
 
 COPY --from=llama_server /app/ /opt/llama-server/
 COPY --from=build /opt/venv /opt/venv
-COPY --from=build /opt/secure-ai/scanners /opt/secure-ai/scanners
 RUN mkdir -p /usr/local/bin && \
-    ln -sf /opt/secure-ai/scanners/modelscan/bin/modelscan /usr/local/bin/modelscan && \
-    ln -sf /opt/secure-ai/scanners/fickling/bin/fickling /usr/local/bin/fickling && \
-    ln -sf /opt/secure-ai/scanners/modelaudit/bin/modelaudit /usr/local/bin/modelaudit
+    ln -sf /opt/venv/bin/modelscan /usr/local/bin/modelscan && \
+    ln -sf /opt/venv/bin/fickling /usr/local/bin/fickling && \
+    ln -sf /opt/venv/bin/modelaudit /usr/local/bin/modelaudit
 
 ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server
 ENV LD_LIBRARY_PATH=/opt/llama-server

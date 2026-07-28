@@ -7,7 +7,7 @@ how to set up your development environment, run tests, and submit changes.
 
 | Tool | Minimum Version | Purpose |
 |---|---|---|
-| Go | 1.26.3+ | Build Go services (9 services, see below) |
+| Go | 1.26.5+ | Build Go services (10 tested modules; 9 release services plus the sandbox UI ingress) |
 | Python | 3.12+ recommended | Build Python services. Quarantine package metadata still allows 3.11 for scanner compatibility. |
 | shellcheck | Latest | Lint shell scripts |
 | git | 2.x | Version control |
@@ -31,7 +31,8 @@ cd SecAI_OS
 
 ```bash
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+           policy-engine runtime-attestor integrity-monitor incident-recorder \
+           ui-ingress; do
   (cd "services/$svc" && go build ./...)
 done
 ```
@@ -41,10 +42,19 @@ done
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r services/quarantine/requirements.txt
-pip install -r services/ui/requirements.txt
-pip install -r services/search-mediator/requirements.txt
-pip install pytest
+python -m pip install --require-hashes -r requirements-ci.lock
+python -m pip install --require-hashes -r services/agent/requirements.lock
+python -m pip install --require-hashes -r services/quarantine/requirements.lock
+python -m pip install --require-hashes -r services/ui/requirements.lock
+python -m pip install --require-hashes -r services/search-mediator/requirements.lock
+```
+
+Diffusion dependency changes must update both interpreter-specific container
+locks and the CPython 3.12 on-demand manifest as one reviewed set. With the
+pinned `uv 0.11.21` executable available:
+
+```bash
+PYTHON_BIN=.venv/bin/python scripts/generate-diffusion-locks.sh
 ```
 
 ### 4. Verify Shell Scripts
@@ -55,26 +65,27 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh
 
 ## Running Tests
 
-### Go Tests (429 tests across 9 services)
+### Go Tests (490 tests across 10 modules)
 
 ```bash
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+           policy-engine runtime-attestor integrity-monitor incident-recorder \
+           ui-ingress; do
   (cd "services/$svc" && go test -v -race ./...)
 done
 ```
 
-### Python Tests (1154 collected tests)
+### Python Tests (1426 collected tests)
 
 ```bash
-pip install -r requirements-ci.txt
+python -m pip install --require-hashes -r requirements-ci.lock
 PYTHONPATH=services python -m pytest tests/ -v
 ```
 
 ### Type Checking (mypy)
 
 ```bash
-pip install -r requirements-ci.txt
+python -m pip install --require-hashes -r requirements-ci.lock
 mypy --ignore-missing-imports \
   services/common/ services/agent/agent/ \
   services/quarantine/quarantine/ services/ui/ui/
@@ -89,13 +100,14 @@ shellcheck files/system/usr/libexec/secure-ai/*.sh files/scripts/*.sh
 ### Run Everything
 
 ```bash
-# Go (9 services, 429 tests)
+# Go (10 modules, 490 tests)
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-           policy-engine runtime-attestor integrity-monitor incident-recorder; do
+           policy-engine runtime-attestor integrity-monitor incident-recorder \
+           ui-ingress; do
   (cd "services/$svc" && go test -v -race ./...)
 done
 
-# Python (1154 collected tests)
+# Python (1426 collected tests)
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Type check

@@ -95,24 +95,46 @@ def helper_script_files() -> list[pathlib.Path]:
 errors = 0
 checked = 0
 
-from_re = re.compile(r"^\s*FROM\s+([^\s]+)")
+from_re = re.compile(
+    r"^\s*FROM\s+(?:--platform=[^\s]+\s+)?([^\s]+)"
+    r"(?:\s+AS\s+([A-Za-z0-9_.-]+))?",
+    re.IGNORECASE,
+)
+heredoc_re = re.compile(r"<<-?['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 for path in from_files():
+    stage_aliases: set[str] = set()
+    heredoc_end = None
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if heredoc_end is not None:
+            if line.strip() == heredoc_end:
+                heredoc_end = None
+            continue
+
         match = from_re.match(line)
-        if not match:
-            continue
-        image_ref = match.group(1)
-        if image_ref == "scratch":
-            continue
-        checked += 1
-        if "$" in image_ref:
-            if not has_active_waiver(path, image_ref):
+        if match:
+            image_ref = match.group(1)
+            stage_alias = match.group(2)
+            if image_ref == "scratch":
+                if stage_alias:
+                    stage_aliases.add(stage_alias)
+                continue
+            checked += 1
+            if "$" in image_ref:
                 print(f"ERROR: {rel(path)}:{line_no}: dynamic unpinned FROM {image_ref}")
                 errors += 1
-            continue
-        if "@sha256:" not in image_ref:
-            print(f"ERROR: {rel(path)}:{line_no}: unpinned FROM {image_ref}")
-            errors += 1
+            elif "@sha256:" not in image_ref and image_ref not in stage_aliases:
+                print(f"ERROR: {rel(path)}:{line_no}: unpinned FROM {image_ref}")
+                errors += 1
+            if stage_alias:
+                stage_aliases.add(stage_alias)
+
+        heredoc_match = heredoc_re.search(line)
+        if heredoc_match:
+            heredoc_end = heredoc_match.group(1)
+
+    if heredoc_end is not None:
+        print(f"ERROR: {rel(path)}: unterminated Dockerfile heredoc {heredoc_end}")
+        errors += 1
 
 image_re = re.compile(r"^\s*image:\s+([^\s#]+)")
 for path in compose_files():
@@ -151,5 +173,5 @@ if errors:
     print(f"FAIL: {errors} unpinned container image reference(s) found")
     sys.exit(1)
 
-print(f"OK: {checked} container image reference(s) are digest-pinned or explicitly waived")
+print(f"OK: {checked} container image reference(s) are digest-pinned or local stages")
 PY

@@ -25,22 +25,22 @@ This validates:
    sudo cp /var/lib/secure-ai/data/incidents.jsonl /tmp/incidents-backup.jsonl
    ```
 
-2. **Pull update**:
+2. **Resolve and stage a verified exact-digest update**:
    ```bash
-   rpm-ostree upgrade
+   sudo /usr/libexec/secure-ai/update-verify.sh check
+   sudo /usr/libexec/secure-ai/update-verify.sh stage
    ```
 
-3. **Reboot and verify**:
+3. **Re-verify, apply, reboot, and verify**:
    ```bash
-   sudo systemctl reboot
+   sudo /usr/libexec/secure-ai/update-verify.sh apply
    # After reboot:
    sudo /usr/libexec/secure-ai/first-boot-check.sh
    ```
 
 4. **Rollback if needed**:
    ```bash
-   rpm-ostree rollback
-   sudo systemctl reboot
+   sudo /usr/libexec/secure-ai/update-verify.sh rollback
    ```
 
 ## Log Rotation
@@ -78,17 +78,35 @@ The inter-service bearer token at `/run/secure-ai/service-token`:
 
 ### HMAC Signing Key (Attestation Bundles)
 
-1. Generate new key:
+The runtime attestor signs with this key and the incident recorder receives the
+same key only to verify fresh recovery bundles. Rotate both consumers
+together. The source must remain a root-owned mode-`0600` canonical
+64-lowercase-hex credential on encrypted host state.
+
+1. Generate and validate a new source:
    ```bash
-   openssl rand 32 > /tmp/new-hmac-key
+   sudo sh -c 'umask 077; openssl rand -hex 32 \
+     > /var/lib/secure-ai/credentials/.attestation-hmac.key.new'
+   sudo grep -Eq '^[0-9a-f]{64}$' \
+     /var/lib/secure-ai/credentials/.attestation-hmac.key.new
    ```
 
-2. Replace and restart attestor:
+2. Stop both consumers, replace atomically, and restart:
    ```bash
-   sudo mv /tmp/new-hmac-key /run/secure-ai/attestation-hmac-key
-   sudo chmod 0640 /run/secure-ai/attestation-hmac-key
-   sudo systemctl restart secure-ai-runtime-attestor
+   sudo systemctl stop secure-ai-incident-recorder.service \
+     secure-ai-runtime-attestor.service
+   sudo mv /var/lib/secure-ai/credentials/.attestation-hmac.key.new \
+     /var/lib/secure-ai/credentials/attestation-hmac.key
+   sudo chown root:root \
+     /var/lib/secure-ai/credentials/attestation-hmac.key
+   sudo chmod 0600 \
+     /var/lib/secure-ai/credentials/attestation-hmac.key
+   sudo systemctl start secure-ai-runtime-attestor.service \
+     secure-ai-incident-recorder.service
    ```
+
+3. Trigger a fresh attestation. Previously recorded recovery evidence is not
+   reusable after key rotation.
 
 ### Cosign Signing Key (Image & Release Artifacts)
 
@@ -327,14 +345,19 @@ after boot. The checks are defined in
 | Check | Failure Condition | Auto-Rollback? |
 |-------|-------------------|----------------|
 | nftables service | Not active | Yes |
-| Registry / Tool Firewall / UI | Enabled but failed to start within 60s | Yes |
+| Required service profile | Any declared required unit fails to start within 60s | Yes |
 | Registry API | `/health` unreachable after 30s | Yes |
-| Model integrity | SHA256 mismatch against manifest | Yes |
+| Registry model integrity | Authenticated `/v1/models/verify-all` fails | Yes |
+| Continuous integrity | Authenticated scan is not `trusted` | Yes |
+| Incident state | One or more incidents remain open | Yes |
 | nftables rules | `secure_ai` table not loaded | Yes |
 | Critical scripts | securectl / verify-boot-chain / canary-check missing | Yes |
+| Encrypted vault | A configured vault is not mounted from its expected mapper | Yes |
 
-Maximum **2 automatic rollback attempts**. After exhaustion, the system halts
-on the broken deployment for manual intervention (see Break-Glass Scenario 5 below).
+The gate records at most one failure per boot in persistent root-only state.
+After **2 failed boots**, it still returns failure and enters
+`emergency.target`; it never marks a broken deployment healthy merely to stop
+a loop. See Break-Glass Scenario 5 below.
 
 ### Manual Rollback Criteria
 
@@ -448,7 +471,7 @@ sessions invalidated. This is fully reversible.
 ```bash
 # Unlock the vault (you will be prompted for the passphrase)
 sudo cryptsetup open /dev/<vault-partition> secure-ai-vault
-sudo mount /dev/mapper/secure-ai-vault /var/lib/secure-ai
+sudo mount /dev/mapper/secure-ai-vault /var/lib/secure-ai/vault
 
 # Regenerate service token (invalidated by panic)
 openssl rand -hex 32 | sudo tee /run/secure-ai/service-token > /dev/null
@@ -465,7 +488,7 @@ Find the vault partition: `grep secure-ai-vault /etc/crypttab`.
 
 ### Scenario 4: Signing Policy Breaks
 
-**Context:** `rpm-ostree upgrade` fails with signature verification errors.
+**Context:** `update-verify.sh check` fails with signature verification errors.
 The signing policy (`policy.json` or cosign public key) is corrupted.
 
 **Diagnosis:**
@@ -475,22 +498,27 @@ cat /etc/containers/registries.d/secai-os.yaml            # Present?
 ls /etc/pki/containers/secai-cosign.pub                   # Present?
 ```
 
-**Recovery:** Re-run the bootstrap script in dry-run mode first, then for real:
+**Recovery:** Verify the signed release bundle, then re-run a reviewed
+bootstrap script against its exact release channel and digest:
 ```bash
-curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
-  -o /tmp/secai-bootstrap.sh
-sudo bash /tmp/secai-bootstrap.sh --dry-run   # verify
-sudo bash /tmp/secai-bootstrap.sh             # apply
+IMAGE_DIGEST="$(tr -d '\r\n' < IMAGE_DIGEST)"
+sudo bash ./secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest "$IMAGE_DIGEST" \
+  --dry-run
+sudo bash ./secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest "$IMAGE_DIGEST"
 ```
 
-See [recovery-bootstrap.md](install/recovery-bootstrap.md) for the full manual
-fallback procedure.
+See [recovery-bootstrap.md](install/recovery-bootstrap.md) for the complete
+verified recovery procedure. There is no unverified transport fallback.
 
 ### Scenario 5: Greenboot Exhaustion (Max Rollbacks Reached)
 
-**Context:** Greenboot hit `MAX_ROLLBACKS=2`. The system is halted on the
-broken deployment. Automatic rollback has stopped to prevent an infinite
-reboot loop.
+**Context:** Greenboot hit `MAX_ROLLBACKS=2` across distinct boot IDs and
+entered the local emergency recovery target. The health gate continues to
+report failure so the broken deployment is never accepted as healthy.
 
 **Recovery** (requires USB boot media):
 1. Boot from a Fedora Silverblue USB drive (Live session, not install).
@@ -500,7 +528,7 @@ reboot loop.
    ```
 3. Reset the rollback counter:
    ```bash
-   sudo rm -f /mnt/run/secure-ai/rollback-count
+   sudo rm -f /mnt/var/lib/secure-ai/state/greenboot-failures
    ```
 4. Pin the last known-good deployment:
    ```bash
@@ -560,7 +588,7 @@ sudo rm -rf /var/lib/secure-ai/quarantine/tampered/*
 Before allowing logrotate to trim old data:
 1. **Export forensic bundle** (preserves incident + audit evidence with HMAC signature):
    ```bash
-   curl -s http://127.0.0.1:8515/api/v1/forensic/export > forensic-$(date +%Y%m%d).json
+   sudo secai-forensic export --output forensic-$(date +%Y%m%d).json
    ```
 2. **Create a log-only backup** to external media:
    ```bash

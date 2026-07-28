@@ -5,7 +5,6 @@
 set -euo pipefail
 
 REGISTRY="ghcr.io/secai-hub/secai_os"
-TAG="latest"
 DIGEST=""
 IMAGE_REF=""
 VERSION=""
@@ -15,6 +14,12 @@ ROOTFS="btrfs"
 XZ_LEVEL="-3"
 INSTALL_DEPS=true
 DRY_RUN=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/cosign.pub" ]]; then
+    COSIGN_KEY="${SCRIPT_DIR}/cosign.pub"
+else
+    COSIGN_KEY="${SCRIPT_DIR}/../../cosign.pub"
+fi
 
 usage() {
     cat <<'USAGE'
@@ -23,9 +28,9 @@ Usage: secai-os-build-usb.sh [options]
 Build a direct-flash SecAI OS USB image (*.usb.raw.xz).
 
 Options:
-  --tag TAG              Image tag to build from (default: latest)
-  --digest DIGEST        Pin image by digest, e.g. sha256:<64 hex chars>
-  --image-ref REF        Full OCI image ref; overrides --tag/--digest
+  --digest DIGEST        Exact image digest, e.g. sha256:<64 lowercase hex>
+  --image-ref REF        Exact OCI ref in repository@sha256:<digest> form
+  --cosign-key PATH      Trusted cosign public key (default: bundled cosign.pub)
   --version VERSION      Version text used in the output filename
   --output-dir DIR       Output directory (default: ./secai-os-usb)
   --builder-image REF    bootc-image-builder image ref
@@ -37,8 +42,8 @@ Options:
   --help                 Show this help text
 
 Examples:
-  bash secai-os-build-usb.sh --tag v1.0.0
   bash secai-os-build-usb.sh --digest sha256:0123...
+  bash secai-os-build-usb.sh --image-ref ghcr.io/example/os@sha256:0123...
 USAGE
 }
 
@@ -48,12 +53,12 @@ fatal() { printf '[x] %s\n' "$*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --tag)
-            TAG="${2:-}"; shift 2 ;;
         --digest)
             DIGEST="${2:-}"; shift 2 ;;
         --image-ref)
             IMAGE_REF="${2:-}"; shift 2 ;;
+        --cosign-key)
+            COSIGN_KEY="${2:-}"; shift 2 ;;
         --version)
             VERSION="${2:-}"; shift 2 ;;
         --output-dir)
@@ -86,21 +91,15 @@ validate_image_ref() {
     esac
 }
 
-validate_tag() {
-    [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || \
-        fatal "--tag contains unsupported characters"
-}
-
 validate_version() {
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || \
         fatal "--version contains unsupported characters"
 }
 
-if [[ -n "$DIGEST" && ! "$DIGEST" =~ ^sha256:[0-9A-Fa-f]{64}$ ]]; then
-    fatal "--digest must be in the form sha256:<64 hex characters>"
+if [[ -n "$DIGEST" && ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    fatal "--digest must be in the form sha256:<64 lowercase hex characters>"
 fi
 
-validate_tag "$TAG"
 validate_image_ref "--builder-image" "$BUILDER_IMAGE"
 
 case "$ROOTFS" in
@@ -117,18 +116,21 @@ if [[ -z "$IMAGE_REF" ]]; then
     if [[ -n "$DIGEST" ]]; then
         IMAGE_REF="${REGISTRY}@${DIGEST}"
     else
-        IMAGE_REF="${REGISTRY}:${TAG}"
+        fatal "an immutable --image-ref or --digest is required"
     fi
+elif [[ -n "$DIGEST" ]]; then
+    fatal "--image-ref and --digest are mutually exclusive"
 fi
 validate_image_ref "--image-ref" "$IMAGE_REF"
+if [[ ! "$IMAGE_REF" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+    fatal "--image-ref must be an exact repository@sha256:<64 lowercase hex> reference"
+fi
+[[ -f "$COSIGN_KEY" && -r "$COSIGN_KEY" ]] || \
+    fatal "trusted cosign public key is missing or unreadable: ${COSIGN_KEY}"
 
 if [[ -z "$VERSION" ]]; then
-    if [[ -n "$DIGEST" ]]; then
-        digest_short="${DIGEST#sha256:}"
-        VERSION="sha256-${digest_short:0:12}"
-    else
-        VERSION="$TAG"
-    fi
+    digest_short="${IMAGE_REF##*@sha256:}"
+    VERSION="sha256-${digest_short:0:12}"
 fi
 validate_version "$VERSION"
 
@@ -190,7 +192,7 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-require_commands podman xz find id mkdir mv rm
+require_commands podman cosign xz find id mkdir mv rm
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -205,6 +207,9 @@ else
 fi
 
 mkdir -p "$storage_src"
+
+info "Verifying signed source image ${IMAGE_REF}"
+cosign verify --key "$COSIGN_KEY" "$IMAGE_REF" >/dev/null
 
 info "Building portable USB image from ${IMAGE_REF}"
 if podman image exists "$IMAGE_REF"; then

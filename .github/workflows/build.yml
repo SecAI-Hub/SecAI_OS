@@ -5,8 +5,6 @@ on:
         "00 06 * * *"
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
   pull_request:
   workflow_dispatch:
 
@@ -22,19 +20,184 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - name: Validate committed wheelhouse
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.5"
+          cache: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify supported Fedora base pin
         run: |
-          echo "=== Validating vendor/wheels/SHA256SUMS ==="
-          if [ ! -f vendor/wheels/SHA256SUMS ]; then
-            echo "WARNING: vendor/wheels/SHA256SUMS not found"
-            echo "Wheelhouse not yet populated — hermetic build will fail."
-          else
-            echo "OK: vendor/wheels/SHA256SUMS exists"
+          python3 - <<'PY'
+          import re
+          import yaml
+
+          with open("recipes/recipe.yml", encoding="utf-8") as handle:
+              recipe = yaml.safe_load(handle)
+          version = str(recipe.get("image-version", ""))
+          match = re.fullmatch(r"44@(sha256:[0-9a-f]{64})", version)
+          if not match:
+              raise SystemExit(
+                  "recipes/recipe.yml must use Fedora 44 with a canonical digest pin"
+              )
+          print(f"Configured Fedora 44 base digest: {match.group(1)}")
+          PY
+
+          configured_digest=$(python3 -c '
+          import yaml
+          with open("recipes/recipe.yml", encoding="utf-8") as handle:
+              print(str(yaml.safe_load(handle)["image-version"]).split("@", 1)[1])
+          ')
+          current_digest=$(
+            skopeo inspect docker://ghcr.io/ublue-os/silverblue-main:44 |
+              jq -er '.Digest'
+          )
+          if [ "$configured_digest" != "$current_digest" ]; then
+            echo "::error::Fedora 44 base tag moved. Review the new image and update the recipe digest."
+            echo "Configured: $configured_digest"
+            echo "Current:    $current_digest"
+            exit 1
           fi
+
+      - name: Verify Fedora 44 package availability
+        run: |
+          base_ref=$(
+            python3 - <<'PY'
+          import yaml
+
+          with open("recipes/recipe.yml", encoding="utf-8") as handle:
+              recipe = yaml.safe_load(handle)
+          version = str(recipe["image-version"])
+          digest = version.split("@", 1)[1]
+          print(f'{recipe["base-image"]}@{digest}')
+          PY
+          )
+          mapfile -t packages < <(
+            python3 - <<'PY'
+          import yaml
+
+          with open("recipes/recipe.yml", encoding="utf-8") as handle:
+              recipe = yaml.safe_load(handle)
+          for module in recipe.get("modules", []):
+              if module.get("type") == "rpm-ostree":
+                  for package in module.get("install", []):
+                      print(package)
+          PY
+          )
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "::error::Recipe contains no RPM package requirements"
+            exit 1
+          fi
+          docker pull "$base_ref"
+          docker run --rm --entrypoint /bin/bash "$base_ref" \
+            -s -- "${packages[@]}" <<'BASH'
+          set -euo pipefail
+          dnf5 -q makecache --refresh
+          missing=0
+          for package in "$@"; do
+            if rpm -q --quiet -- "$package" ||
+               dnf5 -q repoquery --available "$package" | grep -q .; then
+              echo "OK: ${package}"
+            else
+              echo "MISSING: ${package}" >&2
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Fedora package resolution failed for ${missing} package(s)" >&2
+            exit 1
+          fi
+          BASH
+
+      - name: Materialize verified Go dependency trees
+        run: |
+          while IFS= read -r module; do
+            service_dir=$(dirname "$module")
+            echo "Vendoring ${service_dir}"
+            (
+              cd "$service_dir"
+              go mod verify
+              go mod vendor
+            )
+          done < <(find services -mindepth 2 -maxdepth 2 -name go.mod -print | sort)
+
+      - name: Materialize Python wheelhouse
+        run: |
+          mkdir -p vendor/wheels
+          find vendor/wheels -maxdepth 1 -type f -name '*.whl' -delete
+          python3 -m pip download \
+            --dest vendor/wheels \
+            --require-hashes \
+            --only-binary=:all: \
+            -r vendor/application-requirements.lock
+          (
+            cd vendor/wheels
+            find . -maxdepth 1 -type f -name '*.whl' -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+            test -s SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+
+      - name: Fetch checksum-pinned external source
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import pathlib
+          import shutil
+          import tarfile
+          import urllib.request
+
+          import yaml
+
+          with open(".upstreams.lock.yaml", encoding="utf-8") as handle:
+              lock = yaml.safe_load(handle)
+
+          for name, entry in sorted(lock.get("upstreams", {}).items()):
+              commit = str(entry["pinned_commit"])
+              expected = str(entry["archive_sha256"])
+              if len(commit) != 40 or len(expected) != 64:
+                  raise SystemExit(f"{name}: invalid source pin")
+              url = entry["upstream_url"].removesuffix(".git")
+              archive_url = f"{url}/archive/{commit}.tar.gz"
+              print(f"Fetching {name}@{commit}")
+              with urllib.request.urlopen(archive_url, timeout=60) as response:
+                  content = response.read()
+              actual = hashlib.sha256(content).hexdigest()
+              if actual != expected:
+                  raise SystemExit(
+                      f"{name}: archive mismatch: expected {expected}, got {actual}"
+                  )
+
+              destination = pathlib.Path(entry["local_path"])
+              shutil.rmtree(destination, ignore_errors=True)
+              destination.mkdir(parents=True)
+              with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+                  members = archive.getmembers()
+                  prefix = members[0].name.split("/", 1)[0] + "/"
+                  for member in members:
+                      if member.issym() or member.islnk():
+                          raise SystemExit(f"{name}: archive contains a link")
+                      if not member.name.startswith(prefix):
+                          raise SystemExit(f"{name}: malformed archive root")
+                      relative = pathlib.PurePosixPath(member.name.removeprefix(prefix))
+                      if relative.is_absolute() or ".." in relative.parts:
+                          raise SystemExit(f"{name}: unsafe archive path")
+                      member.name = relative.as_posix()
+                      if member.name and member.name != ".":
+                          archive.extract(member, destination, filter="data")
+          PY
 
       - name: Download and verify llama.cpp tarball
         run: |
+          mkdir -p .source-prep
           # Read pinned version + checksum from build-services.sh
           LLAMA_CPP_VERSION=$(grep -oP 'LLAMA_CPP_VERSION:-\K[^}]+' files/scripts/build-services.sh | head -1)
           LLAMA_CPP_SHA256=$(grep -oP 'LLAMA_CPP_SHA256:-\K[^}]+' files/scripts/build-services.sh | head -1)
@@ -54,13 +217,18 @@ jobs:
           echo "OK: llama.cpp checksum verified"
           echo "TARBALL_SHA256=${ACTUAL}" >> "$GITHUB_ENV"
           echo "LLAMA_CPP_VERSION=${LLAMA_CPP_VERSION}" >> "$GITHUB_ENV"
-          mv "/tmp/${TARBALL}" "/tmp/llama-cpp-staged.tar.gz"
+          mv "/tmp/${TARBALL}" ".source-prep/llama-cpp-staged.tar.gz"
 
       - name: Emit SOURCE_PREP_MANIFEST.json
         run: |
           python3 -c "
           import json, hashlib, os
+          from pathlib import Path
           from datetime import datetime
+
+          def digest(path):
+              with open(path, 'rb') as handle:
+                  return hashlib.sha256(handle.read()).hexdigest()
 
           manifest = {
               'schema_version': 1,
@@ -70,21 +238,26 @@ jobs:
               'llama_cpp_tarball_sha256': os.environ.get('TARBALL_SHA256', 'unknown'),
           }
 
-          # Wheelhouse SHA256SUMS digest
-          try:
-              with open('vendor/wheels/SHA256SUMS', 'rb') as f:
-                  manifest['wheelhouse_sha256sums_digest'] = hashlib.sha256(f.read()).hexdigest()
-          except FileNotFoundError:
-              manifest['wheelhouse_sha256sums_digest'] = 'not_populated'
+          required_files = [
+              Path('vendor/wheels/SHA256SUMS'),
+              Path('vendor/application-requirements.lock'),
+              Path('.upstreams.lock.yaml'),
+          ]
+          missing = [str(path) for path in required_files if not path.is_file()]
+          if missing:
+              raise SystemExit(f'missing source-prep inputs: {missing}')
+          wheel_lines = [
+              line for line in required_files[0].read_text().splitlines() if line.strip()
+          ]
+          if not wheel_lines:
+              raise SystemExit('wheelhouse checksum manifest is empty')
+          manifest['wheelhouse_sha256sums_digest'] = digest(required_files[0])
+          manifest['application_requirements_lock_digest'] = digest(required_files[1])
+          manifest['upstreams_lock_digest'] = digest(required_files[2])
+          manifest['wheel_count'] = len(wheel_lines)
+          manifest['application_dependency_mode'] = 'staged-offline'
 
-          # Upstreams lock manifest digest
-          try:
-              with open('.upstreams.lock.yaml', 'rb') as f:
-                  manifest['upstreams_lock_digest'] = hashlib.sha256(f.read()).hexdigest()
-          except FileNotFoundError:
-              manifest['upstreams_lock_digest'] = 'not_found'
-
-          with open('SOURCE_PREP_MANIFEST.json', 'w') as f:
+          with open('.source-prep/SOURCE_PREP_MANIFEST.json', 'w') as f:
               json.dump(manifest, f, indent=2)
               f.write('\n')
 
@@ -97,17 +270,62 @@ jobs:
         with:
           name: source-prep
           path: |
-            SOURCE_PREP_MANIFEST.json
-            /tmp/llama-cpp-staged.tar.gz
+            .source-prep/
+            .upstreams.lock.yaml
+            upstreams/
+            vendor/wheels/
+            services/*/vendor/
+          if-no-files-found: error
+          retention-days: 1
 
-  bluebuild:
-    name: "Stage 2: Build Custom Image"
+  bluebuild_pr:
+    name: "Stage 2: Build Custom Image (Unprivileged PR)"
+    if: github.event_name == 'pull_request'
     needs: [source-prep]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe:
+          - recipe.yml
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download verified source-prep inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-prep
+          path: .
+
+      - name: Build Custom Image Without Publishing
+        uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
+        with:
+          recipe: ${{ matrix.recipe }}
+          skip_checkout: true
+          verify_install: true
+          # The action declares this input required, but push=false never signs.
+          # Pass an explicit non-secret empty value to keep forked PRs isolated.
+          cosign_private_key: ""
+          push: false
+          registry_token: ""
+          pr_event_number: ${{ github.event.number }}
+          maximize_build_space: true
+
+  bluebuild_publish:
+    name: "Stage 2: Build, Sign, and Publish Custom Image"
+    if: github.event_name != 'pull_request'
+    needs: [source-prep]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
       packages: write
       id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -116,25 +334,25 @@ jobs:
           # "recipe.yml" maps to "recipes/recipe.yml" by convention.
           - recipe.yml
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download verified source-prep inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-prep
+          path: .
+
       - name: Build Custom Image
         id: build
         uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
         with:
           recipe: ${{ matrix.recipe }}
+          skip_checkout: true
+          verify_install: true
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
-          push: ${{ github.event_name != 'pull_request' }}
-          registry_token: ${{ github.token }}
-          pr_event_number: ${{ github.event.number }}
-          maximize_build_space: true
-
-      # Retry once on transient failures (COPR CDN 504s, rpm-ostree mirror flakes)
-      - name: Retry build on transient failure
-        if: failure() && steps.build.outcome == 'failure'
-        uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
-        with:
-          recipe: ${{ matrix.recipe }}
-          cosign_private_key: ${{ secrets.SIGNING_SECRET }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
@@ -143,61 +361,209 @@ jobs:
         if: github.event_name != 'pull_request'
         run: echo "IMAGE_REF=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
-      # Scan the source tree rather than the full OS image.
-      # The OS image is a multi-GB Fedora Silverblue base with thousands of
-      # system packages — scanning it via `syft scan <image>` exceeds the
-      # runner's memory/time limits. Fedora provides its own SBOMs for base
-      # packages. This SBOM covers our custom services and configuration.
-      - name: Generate SBOM
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: sbom.cdx.json
-
-      - name: Attest SBOM
-        if: github.event_name != 'pull_request'
-        run: |
-          cosign attest --type cyclonedx \
-            --predicate sbom.cdx.json \
-            --key env://COSIGN_PRIVATE_KEY \
-            "$IMAGE_REF"
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-
       # Publish the image digest so users can pin installs to an exact build.
       # The digest appears in the workflow summary and as an artifact.
-      - name: Extract and publish image digest
+      - name: Resolve and verify the built image
         if: github.event_name != 'pull_request'
         id: digest
         run: |
-          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:latest" 2>/dev/null | jq -r '.Digest' || echo "")
-          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
-            echo "WARNING: Could not extract image digest"
-            echo "digest=unknown" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-            echo "${DIGEST}" > IMAGE_DIGEST
-            {
-              echo "## Image Digest"
-              echo ""
-              echo "Pinned install reference:"
-              echo '```'
-              echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}"
-              echo '```'
-              echo ""
-              echo "Full image ref: \`${IMAGE_REF}@${DIGEST}\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:latest")
+          digest=$(jq -er '.Digest' <<<"$inspect_json")
+          revision=$(jq -er '.Labels["org.opencontainers.image.revision"]' <<<"$inspect_json")
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Registry returned a non-canonical image digest"
+            exit 1
           fi
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::The published image was built from ${revision}, not ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          pinned_ref="${IMAGE_REF}@${digest}"
+          cosign verify --key cosign.pub "$pinned_ref" >/dev/null
+          echo "$digest" > IMAGE_DIGEST
+          echo "$pinned_ref" > IMAGE_REF_PINNED
+          {
+            echo "digest=$digest"
+            echo "pinned_ref=$pinned_ref"
+            echo "image_ref=$IMAGE_REF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Verified image"
+            echo ""
+            echo "Source commit: \`${GITHUB_SHA}\`"
+            echo "Pinned image: \`${pinned_ref}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate final-image SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ steps.digest.outputs.pinned_ref }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+
+      - name: Validate final-image SBOM
+        if: github.event_name != 'pull_request'
+        run: |
+          component_count=$(jq -er '(.components // []) | length' sbom.cdx.json)
+          if [ "$component_count" -lt 100 ]; then
+            echo "::error::Final-image SBOM is implausibly small (${component_count} components)"
+            exit 1
+          fi
+          jq -e '.bomFormat == "CycloneDX" and (.metadata.component.name | length > 0)' \
+            sbom.cdx.json >/dev/null
+
+      - name: Extract release-bound integrity baseline
+        if: github.event_name != 'pull_request'
+        env:
+          PINNED_REF: ${{ steps.digest.outputs.pinned_ref }}
+        run: |
+          docker pull "$PINNED_REF"
+          docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c \
+            'rpm -q cosign && command -v cosign >/dev/null && cosign version'
+          docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c '
+            for package in golang cmake gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
+              if rpm -q --quiet -- "$package"; then
+                echo "FATAL: build-only package remains in final image: $package" >&2
+                exit 1
+              fi
+            done
+            for command_name in go cmake gcc g++ git pip pip3; do
+              if command -v "$command_name" >/dev/null 2>&1; then
+                echo "FATAL: build-only command remains in final image: $command_name" >&2
+                exit 1
+              fi
+            done
+          '
+          container_id=$(docker create "$PINNED_REF")
+          cleanup() {
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker cp \
+            "${container_id}:/usr/share/secure-ai/integrity/release-baseline.json" \
+            RELEASE_BASELINE.json
+          mkdir -p image-root/usr/lib/systemd image-root/usr image-root/etc
+          docker cp "${container_id}:/usr/lib/systemd/system" \
+            image-root/usr/lib/systemd/
+          docker cp "${container_id}:/usr/libexec" image-root/usr/
+          docker cp "${container_id}:/etc/greenboot" image-root/etc/
+          python3 .github/scripts/check-assembled-execstart.py \
+            --rootfs image-root
+          jq -e \
+            --arg source_commit "$GITHUB_SHA" \
+            '.version == 1
+             and .source_commit == $source_commit
+             and (.files | type == "array" and length > 0)
+             and all(.files[];
+               (.path | startswith("/"))
+               and (.sha256 | test("^[0-9a-f]{64}$"))
+               and (.size | type == "number" and . >= 0))' \
+            RELEASE_BASELINE.json >/dev/null
+
+      - name: Create and attach image attestations
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+          PINNED_REF: ${{ steps.digest.outputs.pinned_ref }}
+        run: |
+          baseline_sha256=$(sha256sum RELEASE_BASELINE.json | awk '{print $1}')
+          base_digest=$(
+            python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          recipe = Path("recipes/recipe.yml").read_text(encoding="utf-8")
+          match = re.search(
+              r'^image-version:\s*["\x27]?44@(sha256:[0-9a-f]{64})["\x27]?\s*$',
+              recipe,
+              re.MULTILINE,
+          )
+          if not match:
+              raise SystemExit("unable to derive immutable Fedora base digest")
+          print(match.group(1))
+          PY
+          )
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg repository "https://github.com/${GITHUB_REPOSITORY}" \
+            --arg workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg recipe "recipes/recipe.yml" \
+            --arg base_digest "$base_digest" \
+            --arg baseline_sha256 "$baseline_sha256" \
+            '{
+              buildDefinition: {
+                buildType: "https://blue-build.org/secai-os/v1",
+                externalParameters: {
+                  source_repository: $repository,
+                  source_commit: $commit,
+                  recipe: $recipe
+                },
+                internalParameters: {},
+                resolvedDependencies: [
+                  {uri: "pkg:oci/ublue-os/silverblue-main@44", digest: {sha256: ($base_digest | sub("^sha256:"; ""))}},
+                  {uri: "file:/usr/share/secure-ai/integrity/release-baseline.json", digest: {sha256: $baseline_sha256}}
+                ]
+              },
+              runDetails: {
+                builder: {id: $workflow},
+                metadata: {invocationId: $workflow}
+              }
+            }' > image-provenance.json
+
+          cosign attest --yes --type cyclonedx \
+            --predicate sbom.cdx.json \
+            --key env://COSIGN_PRIVATE_KEY \
+            "$PINNED_REF"
+          cosign attest --yes --type slsaprovenance \
+            --predicate image-provenance.json \
+            --key env://COSIGN_PRIVATE_KEY \
+            "$PINNED_REF"
+          cosign verify-attestation --type cyclonedx --key cosign.pub \
+            "$PINNED_REF" >/dev/null
+          cosign verify-attestation --type slsaprovenance --key cosign.pub \
+            "$PINNED_REF" >/dev/null
+
+      - name: Generate GitHub image provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ${{ steps.digest.outputs.image_ref }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
 
       - name: Upload image digest artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-digest
-          path: IMAGE_DIGEST
-          if-no-files-found: warn
+          path: |
+            IMAGE_DIGEST
+            IMAGE_REF_PINNED
+            RELEASE_BASELINE.json
+            sbom.cdx.json
+            image-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  bluebuild:
+    name: "Stage 2: BlueBuild Gate"
+    if: >-
+      always() &&
+      ((github.event_name == 'pull_request' &&
+        needs.bluebuild_pr.result == 'success') ||
+       (github.event_name != 'pull_request' &&
+        needs.bluebuild_publish.result == 'success'))
+    needs: [bluebuild_pr, bluebuild_publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm the event-appropriate build completed
+        run: echo "BlueBuild completed without crossing the PR trust boundary."
 
   smoke-test:
     name: Tier 1 Smoke Test (Artifact Verification)
@@ -207,16 +573,19 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
-      - name: Install pyyaml
-        run: pip install pyyaml
+      - name: Install locked validation dependencies
+        run: python -m pip install --require-hashes -r requirements-ci.lock
 
       - name: Validate recipe systemd units
         run: |
+          python3 .github/scripts/check-assembled-execstart.py
           python3 -c "
           import yaml, sys
 

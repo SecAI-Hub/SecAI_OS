@@ -616,8 +616,11 @@ func TestCheckToken_Empty(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
-	if !called {
-		t.Error("handler should be called when no token configured")
+	if called {
+		t.Error("handler must not be called when authentication is unavailable")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 with no configured token, got %d", w.Code)
 	}
 }
 

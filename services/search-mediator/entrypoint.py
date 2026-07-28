@@ -16,7 +16,7 @@ def main() -> None:
         "--bind",
         os.getenv("BIND_ADDR", "0.0.0.0:8485"),
         "--workers",
-        os.getenv("GUNICORN_WORKERS", "2"),
+        "1",
         "--threads",
         os.getenv("GUNICORN_THREADS", "2"),
         "--timeout",

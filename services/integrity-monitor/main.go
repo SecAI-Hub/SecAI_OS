@@ -5,9 +5,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +22,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -72,16 +76,32 @@ type SignedBaseline struct {
 	HMAC      string          `json:"hmac" yaml:"hmac"`
 }
 
+// ReleaseBaseline is generated from the immutable, signed OS image.  It is
+// the trust input for first-boot baseline initialization; the runtime HMAC
+// baseline may not self-bless files that disagree with these measurements.
+type ReleaseBaseline struct {
+	Version      int                   `json:"version"`
+	SourceCommit string                `json:"source_commit"`
+	Files        []ReleaseBaselineFile `json:"files"`
+}
+
+type ReleaseBaselineFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
 // MonitorPolicy defines what to watch.
 type MonitorPolicy struct {
-	Version         int      `yaml:"version"`
-	ScanInterval    string   `yaml:"scan_interval"`
-	ServiceBinaries []string `yaml:"service_binaries"`
-	PolicyFiles     []string `yaml:"policy_files"`
-	ModelDirs       []string `yaml:"model_dirs"`
-	SystemdUnits    []string `yaml:"systemd_units"`
-	TrustMaterial   []string `yaml:"trust_material"`
-	HMACKeyPath     string   `yaml:"hmac_key_path"`
+	Version          int      `yaml:"version"`
+	ScanInterval     string   `yaml:"scan_interval"`
+	ServiceBinaries  []string `yaml:"service_binaries"`
+	PolicyFiles      []string `yaml:"policy_files"`
+	ModelDirs        []string `yaml:"model_dirs"`
+	RegistryManifest string   `yaml:"registry_manifest"`
+	SystemdUnits     []string `yaml:"systemd_units"`
+	TrustMaterial    []string `yaml:"trust_material"`
+	HMACKeyPath      string   `yaml:"hmac_key_path"`
 	// DegradationThreshold: number of violations before recovery_required
 	DegradationThreshold int `yaml:"degradation_threshold"`
 }
@@ -118,8 +138,9 @@ var (
 	auditMu   sync.Mutex
 	auditPath string
 
-	serviceToken string
-	hmacKey      []byte
+	serviceToken          string
+	incidentRecorderToken string
+	hmacKey               []byte
 
 	scanCount     atomic.Int64
 	degradedCount atomic.Int64
@@ -164,9 +185,10 @@ func loadMonitorPolicy() error {
 				"/etc/secure-ai/policy/landlock.yaml",
 			},
 			ModelDirs: []string{
-				"/var/lib/secure-ai/registry",
+				"/var/lib/secure-ai/vault/models",
 			},
-			SystemdUnits: []string{},
+			RegistryManifest: "/var/lib/secure-ai/registry/manifest.json",
+			SystemdUnits:     []string{},
 			TrustMaterial: []string{
 				"/etc/secure-ai/cosign/cosign.pub",
 			},
@@ -185,6 +207,9 @@ func loadMonitorPolicy() error {
 	}
 	if pol.DegradationThreshold <= 0 {
 		pol.DegradationThreshold = 3
+	}
+	if strings.TrimSpace(pol.RegistryManifest) == "" {
+		pol.RegistryManifest = "/var/lib/secure-ai/registry/manifest.json"
 	}
 	policyMu.Lock()
 	monitorPolicy = pol
@@ -206,6 +231,13 @@ func getMonitorPolicy() MonitorPolicy {
 // =========================================================================
 
 func hashFile(path string) (string, int64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", 0, fmt.Errorf("path is not a regular file")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", 0, err
@@ -236,21 +268,8 @@ func collectWatchedFiles(pol MonitorPolicy) []struct {
 			category WatchCategory
 		}{p, CatPolicyFile})
 	}
-	for _, dir := range pol.ModelDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			files = append(files, struct {
-				path     string
-				category WatchCategory
-			}{filepath.Join(dir, e.Name()), CatModelFile})
-		}
-	}
+	// Mutable model registries are validated against manifest.json during each
+	// scan. They are deliberately not frozen into the immutable baseline.
 	for _, p := range pol.SystemdUnits {
 		files = append(files, struct {
 			path     string
@@ -304,11 +323,13 @@ func computeBaselineHMAC(bl SignedBaseline) string {
 	if len(hmacKey) == 0 {
 		return "unsigned"
 	}
-	h := hmac.New(sha256.New, hmacKey)
-	h.Write([]byte(bl.CreatedAt))
-	for _, e := range bl.Entries {
-		h.Write([]byte(fmt.Sprintf("|%s:%s:%s", e.Path, e.Hash, e.Category)))
+	bl.HMAC = ""
+	data, err := json.Marshal(bl)
+	if err != nil {
+		return "unsigned"
 	}
+	h := hmac.New(sha256.New, hmacKey)
+	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -332,6 +353,389 @@ func setBaseline(bl SignedBaseline) {
 	baseline = bl
 }
 
+func baselinePath() string {
+	if path := os.Getenv("BASELINE_PATH"); path != "" {
+		return path
+	}
+	return "/var/lib/secure-ai/integrity/baseline.json"
+}
+
+func saveBaseline(bl SignedBaseline) error {
+	if len(hmacKey) == 0 || bl.HMAC == "" || bl.HMAC == "unsigned" {
+		return fmt.Errorf("refusing to persist unauthenticated baseline")
+	}
+	data, err := json.MarshalIndent(bl, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode baseline: %w", err)
+	}
+	data = append(data, '\n')
+
+	path := baselinePath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0770); err != nil {
+		return fmt.Errorf("create baseline directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, ".baseline-*")
+	if err != nil {
+		return fmt.Errorf("create baseline temporary file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+
+	if err := temp.Chmod(0644); err != nil {
+		temp.Close()
+		return fmt.Errorf("set baseline permissions: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return fmt.Errorf("write baseline: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return fmt.Errorf("sync baseline: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close baseline: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("commit baseline: %w", err)
+	}
+	return nil
+}
+
+func loadBaseline() (SignedBaseline, error) {
+	data, err := os.ReadFile(baselinePath())
+	if err != nil {
+		return SignedBaseline{}, fmt.Errorf("read persisted baseline: %w", err)
+	}
+	if len(data) > 16*1024*1024 {
+		return SignedBaseline{}, fmt.Errorf("persisted baseline exceeds 16 MiB limit")
+	}
+	var bl SignedBaseline
+	if err := json.Unmarshal(data, &bl); err != nil {
+		return SignedBaseline{}, fmt.Errorf("decode persisted baseline: %w", err)
+	}
+	if bl.CreatedAt == "" || len(bl.Entries) == 0 {
+		return SignedBaseline{}, fmt.Errorf("persisted baseline is incomplete")
+	}
+	if !verifyBaselineHMAC(bl) {
+		return SignedBaseline{}, fmt.Errorf("persisted baseline HMAC verification failed")
+	}
+	return bl, nil
+}
+
+func initializePersistedBaseline() error {
+	bl := computeBaseline(getMonitorPolicy())
+	if len(bl.Entries) == 0 {
+		return fmt.Errorf("refusing to initialize an empty integrity baseline")
+	}
+	if err := verifyReleaseBaseline(bl); err != nil {
+		return fmt.Errorf("release-bound baseline verification failed: %w", err)
+	}
+	if err := saveBaseline(bl); err != nil {
+		return err
+	}
+	setBaseline(bl)
+	log.Printf("persisted integrity baseline initialized: entries=%d path=%s",
+		len(bl.Entries), baselinePath())
+	return nil
+}
+
+func expectedBaselinePath() string {
+	if path := os.Getenv("EXPECTED_BASELINE_PATH"); path != "" {
+		return path
+	}
+	return "/usr/share/secure-ai/integrity/release-baseline.json"
+}
+
+func isLowerHex(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyReleaseBaseline(runtime SignedBaseline) error {
+	data, err := os.ReadFile(expectedBaselinePath())
+	if err != nil {
+		return fmt.Errorf("read expected baseline: %w", err)
+	}
+	if len(data) > 32*1024*1024 {
+		return fmt.Errorf("expected baseline exceeds 32 MiB limit")
+	}
+	var expected ReleaseBaseline
+	if err := json.Unmarshal(data, &expected); err != nil {
+		return fmt.Errorf("decode expected baseline: %w", err)
+	}
+	if expected.Version != 1 {
+		return fmt.Errorf("unsupported expected baseline version %d", expected.Version)
+	}
+	if !isLowerHex(expected.SourceCommit, 40) {
+		return fmt.Errorf("expected baseline source_commit is not a canonical git SHA")
+	}
+	if len(expected.Files) == 0 {
+		return fmt.Errorf("expected baseline contains no files")
+	}
+
+	expectedByPath := make(map[string]ReleaseBaselineFile, len(expected.Files))
+	for _, entry := range expected.Files {
+		if !filepath.IsAbs(entry.Path) || filepath.Clean(entry.Path) != entry.Path {
+			return fmt.Errorf("expected baseline contains invalid path %q", entry.Path)
+		}
+		if !isLowerHex(entry.SHA256, sha256.Size*2) || entry.Size < 0 {
+			return fmt.Errorf("expected baseline contains invalid measurement for %s", entry.Path)
+		}
+		if _, duplicate := expectedByPath[entry.Path]; duplicate {
+			return fmt.Errorf("expected baseline contains duplicate path %s", entry.Path)
+		}
+		expectedByPath[entry.Path] = entry
+
+		actualHash, actualSize, err := hashFile(entry.Path)
+		if err != nil {
+			return fmt.Errorf("measure expected file %s: %w", entry.Path, err)
+		}
+		if actualHash != entry.SHA256 || actualSize != entry.Size {
+			return fmt.Errorf("release measurement mismatch for %s", entry.Path)
+		}
+	}
+
+	for _, entry := range runtime.Entries {
+		if entry.Category == CatModelFile {
+			continue
+		}
+		expected, ok := expectedByPath[entry.Path]
+		if !ok {
+			return fmt.Errorf("critical runtime path is absent from release baseline: %s", entry.Path)
+		}
+		if expected.SHA256 != entry.Hash || expected.Size != entry.Size {
+			return fmt.Errorf("runtime baseline disagrees with release measurement for %s", entry.Path)
+		}
+	}
+	return nil
+}
+
+type registryManifest struct {
+	Version int             `json:"version"`
+	Models  []registryModel `json:"models"`
+}
+
+type registryModel struct {
+	Name      string `json:"name"`
+	Filename  string `json:"filename"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+type registryHashedEntry struct {
+	path string
+	name string
+	info fs.FileInfo
+}
+
+func hashRegistryArtifact(path string) (string, int64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if info.Mode().IsRegular() {
+		return hashFile(path)
+	}
+	if !info.IsDir() {
+		return "", 0, fmt.Errorf("artifact is not a regular file or directory")
+	}
+
+	var entries []registryHashedEntry
+	var total int64
+	entryCount := 0
+	err = filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if current == path {
+			return nil
+		}
+		entryCount++
+		if entryCount > 25_000 {
+			return fmt.Errorf("artifact contains too many entries")
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("artifact contains a symbolic link: %s", current)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !entryInfo.Mode().IsRegular() {
+			return fmt.Errorf("artifact contains a non-regular entry: %s", current)
+		}
+		if statInfo, ok := entryInfo.Sys().(*syscall.Stat_t); ok && statInfo.Nlink != 1 {
+			return fmt.Errorf("artifact contains a hard-linked entry: %s", current)
+		}
+		relative, err := filepath.Rel(path, current)
+		relative = filepath.ToSlash(relative)
+		if err != nil || !filepath.IsLocal(relative) || !utf8.ValidString(relative) ||
+			len([]byte(relative)) > 4096 {
+			return fmt.Errorf("artifact entry escapes root: %s", current)
+		}
+		entries = append(entries, registryHashedEntry{
+			path: current,
+			name: relative,
+			info: entryInfo,
+		})
+		if len(entries) > 20_000 || entryInfo.Size() < 0 ||
+			entryInfo.Size() > int64(50)*1024*1024*1024 {
+			return fmt.Errorf("artifact exceeds file limits")
+		}
+		total += entryInfo.Size()
+		if total > int64(64)*1024*1024*1024 {
+			return fmt.Errorf("artifact exceeds total size limit")
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("SecAI-Directory-Hash-v1\x00"))
+	for _, entry := range entries {
+		nameBytes := []byte(entry.name)
+		var encoded [8]byte
+		binary.BigEndian.PutUint64(encoded[:], uint64(len(nameBytes)))
+		_, _ = digest.Write(encoded[:])
+		_, _ = digest.Write(nameBytes)
+		binary.BigEndian.PutUint64(encoded[:], uint64(entry.info.Size()))
+		_, _ = digest.Write(encoded[:])
+		file, err := os.Open(entry.path)
+		if err != nil {
+			return "", 0, err
+		}
+		openedInfo, statErr := file.Stat()
+		if statErr != nil || !openedInfo.Mode().IsRegular() ||
+			!os.SameFile(entry.info, openedInfo) ||
+			openedInfo.Size() != entry.info.Size() {
+			file.Close()
+			return "", 0, fmt.Errorf("artifact changed while hashing: %s", entry.path)
+		}
+		_, copyErr := io.CopyN(digest, file, openedInfo.Size())
+		var extra [1]byte
+		if extraCount, extraErr := file.Read(extra[:]); extraErr != nil && extraErr != io.EOF {
+			copyErr = extraErr
+		} else if extraCount != 0 {
+			copyErr = fmt.Errorf("artifact changed while hashing: %s", entry.path)
+		}
+		afterInfo, afterErr := file.Stat()
+		closeErr := file.Close()
+		if copyErr != nil {
+			return "", 0, copyErr
+		}
+		if afterErr != nil || !os.SameFile(openedInfo, afterInfo) ||
+			afterInfo.Size() != openedInfo.Size() ||
+			!afterInfo.ModTime().Equal(openedInfo.ModTime()) {
+			return "", 0, fmt.Errorf("artifact changed while hashing: %s", entry.path)
+		}
+		if closeErr != nil {
+			return "", 0, closeErr
+		}
+	}
+	return hex.EncodeToString(digest.Sum(nil)), total, nil
+}
+
+func modelViolation(now, path, expected, actual string) IntegrityViolation {
+	return IntegrityViolation{
+		DetectedAt:   now,
+		Category:     CatModelFile,
+		Path:         path,
+		ExpectedHash: expected,
+		ActualHash:   actual,
+		Action:       actionForCategory(CatModelFile),
+	}
+}
+
+// verifyModelRegistry treats the registry manifest as the enrollment
+// authority for mutable model artifacts. The manifest itself is never frozen
+// into the release baseline; every scan instead validates its schema, rejects
+// unknown files, and re-hashes every registered artifact.
+func verifyModelRegistry(dir, manifestFile, now string) []IntegrityViolation {
+	info, err := os.Lstat(manifestFile)
+	if err != nil || !info.Mode().IsRegular() {
+		return []IntegrityViolation{
+			modelViolation(now, manifestFile, "valid registry manifest", "missing_or_nonregular"),
+		}
+	}
+	data, err := os.ReadFile(manifestFile)
+	if err != nil || len(data) > 16*1024*1024 {
+		return []IntegrityViolation{
+			modelViolation(now, manifestFile, "valid registry manifest", "unreadable_or_oversized"),
+		}
+	}
+	var manifest registryManifest
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != 1 {
+		return []IntegrityViolation{
+			modelViolation(now, manifestFile, "valid version-1 registry manifest", "invalid"),
+		}
+	}
+
+	expected := make(map[string]registryModel, len(manifest.Models))
+	var violations []IntegrityViolation
+	for _, model := range manifest.Models {
+		clean := filepath.Clean(model.Filename)
+		if model.Name == "" || clean == "." || filepath.Base(clean) != clean ||
+			!filepath.IsLocal(clean) || !isLowerHex(model.SHA256, sha256.Size*2) ||
+			model.SizeBytes < 0 {
+			violations = append(violations,
+				modelViolation(now, manifestFile, "canonical model entry", "invalid_entry"))
+			continue
+		}
+		if _, duplicate := expected[clean]; duplicate {
+			violations = append(violations,
+				modelViolation(now, manifestFile, "unique model filename", "duplicate_entry"))
+			continue
+		}
+		expected[clean] = model
+	}
+
+	for filename, model := range expected {
+		artifactPath := filepath.Join(dir, filename)
+		actualHash, actualSize, err := hashRegistryArtifact(artifactPath)
+		if err != nil {
+			violations = append(violations,
+				modelViolation(now, artifactPath, model.SHA256, "missing_or_invalid"))
+			continue
+		}
+		if actualHash != model.SHA256 || actualSize != model.SizeBytes {
+			violations = append(violations,
+				modelViolation(now, artifactPath, model.SHA256, actualHash))
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return append(violations,
+			modelViolation(now, dir, "readable registry directory", "unreadable"))
+	}
+	for _, entry := range entries {
+		if entry.Name() == "manifest.json" {
+			continue
+		}
+		if _, enrolled := expected[entry.Name()]; !enrolled {
+			violations = append(violations,
+				modelViolation(now, filepath.Join(dir, entry.Name()),
+					"registered artifact", "unregistered"))
+		}
+	}
+	return violations
+}
+
 // =========================================================================
 // Integrity scan
 // =========================================================================
@@ -349,6 +753,9 @@ func performScan() (IntegrityState, []IntegrityViolation) {
 
 	var violations []IntegrityViolation
 	now := time.Now().UTC().Format(time.RFC3339)
+	for _, dir := range pol.ModelDirs {
+		violations = append(violations, verifyModelRegistry(dir, pol.RegistryManifest, now)...)
+	}
 
 	for _, f := range files {
 		baseEntry, inBaseline := baselineMap[f.path]
@@ -383,6 +790,9 @@ func performScan() (IntegrityState, []IntegrityViolation) {
 
 	// Check for files in baseline that are no longer watched (deleted)
 	for path, entry := range baselineMap {
+		if entry.Category == CatModelFile {
+			continue
+		}
 		found := false
 		for _, f := range files {
 			if f.path == path {
@@ -434,7 +844,7 @@ func performScan() (IntegrityState, []IntegrityViolation) {
 	// Report violations to the incident-recorder (async, non-blocking).
 	// Capture token to avoid race with global state reset.
 	if len(violations) > 0 {
-		token := serviceToken
+		token := incidentRecorderToken
 		go reportViolations(state, violations, token)
 	}
 
@@ -514,37 +924,62 @@ func writeAudit(v IntegrityViolation) {
 // Service token auth
 // =========================================================================
 
-func loadServiceToken() {
+func loadServiceToken() error {
 	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
 	if tokenPath == "" {
 		tokenPath = "/run/secure-ai/service-token"
 	}
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		log.Printf("warning: service token not loaded (%v) — running in dev mode", err)
-		return
+		return fmt.Errorf("read service token %s: %w", tokenPath, err)
 	}
 	serviceToken = strings.TrimSpace(string(data))
+	if serviceToken == "" {
+		return fmt.Errorf("service token %s is empty", tokenPath)
+	}
+	return nil
 }
 
-func loadHMACKey() {
+func loadIncidentRecorderToken() error {
+	path := os.Getenv("INCIDENT_RECORDER_TOKEN_PATH")
+	if path == "" {
+		return fmt.Errorf("INCIDENT_RECORDER_TOKEN_PATH is not configured")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read incident-recorder token %s: %w", path, err)
+	}
+	incidentRecorderToken = strings.TrimSpace(string(data))
+	if incidentRecorderToken == "" {
+		return fmt.Errorf("incident-recorder token %s is empty", path)
+	}
+	return nil
+}
+
+func loadHMACKey() error {
 	pol := getMonitorPolicy()
-	keyPath := pol.HMACKeyPath
+	keyPath := os.Getenv("HMAC_KEY_PATH")
+	if keyPath == "" {
+		keyPath = pol.HMACKeyPath
+	}
 	if keyPath == "" {
 		keyPath = "/run/secure-ai/integrity-hmac-key"
 	}
 	data, err := os.ReadFile(keyPath)
 	if err != nil {
-		log.Printf("warning: HMAC key not loaded (%v) — baselines will be unsigned", err)
-		return
+		return fmt.Errorf("read integrity HMAC key %s: %w", keyPath, err)
+	}
+	if len(data) < 32 {
+		return fmt.Errorf("integrity HMAC key %s is too short", keyPath)
 	}
 	hmacKey = data
+	return nil
 }
 
 func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if serviceToken == "" {
-			next(w, r)
+			http.Error(w, `{"error":"service authentication unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 		auth := r.Header.Get("Authorization")
@@ -614,8 +1049,28 @@ func handleRebaseline(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if os.Getenv("ENABLE_REMOTE_REBASELINE") != "true" {
+		http.Error(w, `{"error":"remote rebaseline is disabled; use the offline recovery workflow"}`,
+			http.StatusForbidden)
+		return
+	}
 	pol := getMonitorPolicy()
 	bl := computeBaseline(pol)
+	if len(bl.Entries) == 0 {
+		http.Error(w, `{"error":"refusing to persist an empty baseline"}`,
+			http.StatusConflict)
+		return
+	}
+	if err := verifyReleaseBaseline(bl); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"release-bound verification failed: %s"}`, err),
+			http.StatusConflict)
+		return
+	}
+	if err := saveBaseline(bl); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"persist baseline: %s"}`, err),
+			http.StatusInternalServerError)
+		return
+	}
 	setBaseline(bl)
 	log.Printf("baseline recomputed: %d entries", len(bl.Entries))
 
@@ -665,6 +1120,20 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func newIntegrityMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	// Only liveness is unauthenticated. Baseline/status data and every control
+	// operation require the target-specific service credential.
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/v1/status", requireServiceToken(handleStatus))
+	mux.HandleFunc("/api/v1/baseline", requireServiceToken(handleBaseline))
+	mux.HandleFunc("/api/v1/verify", requireServiceToken(handleVerify))
+	mux.HandleFunc("/api/v1/scan", requireServiceToken(handleScan))
+	mux.HandleFunc("/api/v1/rebaseline", requireServiceToken(handleRebaseline))
+	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
+	return mux
+}
+
 // =========================================================================
 // Scan loop
 // =========================================================================
@@ -696,15 +1165,33 @@ func main() {
 		log.Fatalf("failed to load monitor policy: %v", err)
 	}
 
-	initAuditLog()
-	loadServiceToken()
-	loadHMACKey()
+	if err := loadHMACKey(); err != nil {
+		log.Fatalf("baseline authentication unavailable: %v", err)
+	}
 
-	// Compute initial baseline
-	pol := getMonitorPolicy()
-	bl := computeBaseline(pol)
+	if len(os.Args) == 2 && os.Args[1] == "--initialize-baseline" {
+		if err := initializePersistedBaseline(); err != nil {
+			log.Fatalf("cannot initialize integrity baseline: %v", err)
+		}
+		return
+	}
+
+	initAuditLog()
+	if err := loadServiceToken(); err != nil {
+		log.Fatalf("service authentication unavailable: %v", err)
+	}
+	if err := loadIncidentRecorderToken(); err != nil {
+		log.Fatalf("incident-recorder authentication unavailable: %v", err)
+	}
+
+	// The baseline is initialized once during trusted first boot.  Restarts
+	// verify and reuse it; they never bless the current filesystem state.
+	bl, err := loadBaseline()
+	if err != nil {
+		log.Fatalf("trusted integrity baseline unavailable: %v", err)
+	}
 	setBaseline(bl)
-	log.Printf("initial baseline: %d entries", len(bl.Entries))
+	log.Printf("authenticated baseline loaded: %d entries", len(bl.Entries))
 
 	// Initial scan
 	state, violations := performScan()
@@ -718,21 +1205,10 @@ func main() {
 		bind = "127.0.0.1:8510"
 	}
 
-	mux := http.NewServeMux()
-	// Read-only endpoints
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/api/v1/status", handleStatus)
-	mux.HandleFunc("/api/v1/baseline", handleBaseline)
-	mux.HandleFunc("/api/v1/verify", handleVerify)
-	// Mutating endpoints (token-protected)
-	mux.HandleFunc("/api/v1/scan", requireServiceToken(handleScan))
-	mux.HandleFunc("/api/v1/rebaseline", requireServiceToken(handleRebaseline))
-	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
-
 	log.Printf("secure-ai-integrity-monitor listening on %s", bind)
 	server := &http.Server{
 		Addr:              bind,
-		Handler:           mux,
+		Handler:           newIntegrityMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

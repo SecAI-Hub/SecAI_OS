@@ -58,17 +58,12 @@ models:
   # Require YARA rules to compile and run during static scanning.
   require_yara: true
 
+  # Require ModelAudit to complete successfully.
+  require_modelaudit: true
+
   # Require behavioral testing (adversarial prompt suite) before promotion.
   # Only applies to LLM models, not diffusion models.
   require_behavior_tests: true
-
-  # Require source origin verification against sources.allowlist.yaml.
-  # If false, models from unknown sources can pass quarantine.
-  require_source_verification: true
-
-  # Require entropy analysis to detect anomalous weight distributions
-  # that may indicate steganographic payloads or data exfiltration.
-  require_entropy_analysis: true
 
   # Allow multi-file diffusion model directories.
   # These contain model_index.json + multiple safetensors components.
@@ -78,64 +73,32 @@ models:
 # quarantine — Scanning pipeline configuration
 # ---------------------------------------------------------------------------
 quarantine:
-  # Toggle individual pipeline stages. Set to false to skip a stage.
-  # WARNING: Disabling stages weakens your security posture.
-  stages:
-    # Stage 1: Verify the model's download origin against
-    # sources.allowlist.yaml. Prevents models from untrusted sources.
-    source_policy: true
-
-    # Stage 2: Validate file headers match the claimed format.
-    # Rejects files with denied extensions (pickle, pt, bin).
-    format_gate: true
-
-    # Stage 3: SHA-256 hash pinning. On first download, the hash is
-    # recorded. On subsequent downloads, it must match. Detects
-    # supply-chain substitution attacks.
-    integrity_check: true
-
-    # Stage 4: Verify cosign or GPG signatures from the model source.
-    # Provides cryptographic proof of origin.
-    provenance_check: true
-
-    # Stage 5: Static analysis with ModelScan, YARA, fickling,
-    # modelaudit, entropy analysis, and gguf-guard (if installed).
-    # Catches known malicious patterns, anomalous weight distributions,
-    # and structural policy violations.
-    static_scan: true
-
-    # Stage 6: Adversarial prompt suite for LLM models.
-    # Runs 50 prompts testing for jailbreaks, harmful content,
-    # and instruction injection. Scored against thresholds below.
-    behavioral_test: true
-
-    # Stage 7: Deep scan for diffusion models only.
-    # Validates config integrity and component checksums.
-    diffusion_deep_scan: true
+  # All seven pipeline stages are mandatory. Only stricter behavioral
+  # thresholds can be configured.
 
   # Behavioral test thresholds:
   # Fail if more than this fraction of prompts are flagged.
   # 0.3 = 30% of prompts. Lower is stricter.
   smoke_test_max_score: 0.3
 
-  # Fail if more than this number of CRITICAL flags are raised.
-  # 1 means a single critical finding is tolerated; 2+ fails.
-  smoke_test_max_critical: 1
+  # Reject on any CRITICAL command-injection, exfiltration, or
+  # credential-theft finding. This production invariant cannot be relaxed.
+  smoke_test_max_critical: 0
 
 # ---------------------------------------------------------------------------
 # gguf_guard — Deep GGUF model integrity and anomaly scanner
 # ---------------------------------------------------------------------------
-# gguf-guard is an optional external tool that provides:
+# gguf-guard is a required external tool that provides:
 #   - Per-tensor anomaly scoring (layered: per-tensor, cross-layer, model-global)
 #   - Quant-format-aware block analysis (scale entropy, repeated blocks)
 #   - Per-tensor SHA-256 integrity manifests with Merkle tree verification
 #   - Structural policy validation and model family identification
 gguf_guard:
-  # If true, quarantine fails (fail-closed) when gguf-guard is not installed.
-  # If false, gguf-guard stages are skipped with a warning.
-  required: false
+  # This production invariant cannot be set to false.
+  required: true
 
-  # Generate a per-tensor SHA-256 manifest when a model is promoted.
+  # Generate a per-tensor SHA-256 manifest within the trusted registry
+  # transaction when a model is promoted.
   # This manifest can later be verified to detect per-tensor tampering
   # that whole-file SHA-256 would miss.
   generate_manifest: true

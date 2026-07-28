@@ -1,330 +1,451 @@
 #!/usr/bin/env bash
 #
-# SecAI OS — Restore Script (M50)
+# SecAI OS authenticated restore utility.
 #
-# Restores appliance state from a backup created by secai-backup.sh.
-# Supports full restore or selective restore by category.
-#
-# Usage:
-#   secai-restore.sh full    <backup-file>  Restore everything
-#   secai-restore.sh config  <backup-file>  Restore policy + config only
-#   secai-restore.sh logs    <backup-file>  Restore logs + incidents only
-#   secai-restore.sh keys    <backup-file>  Restore keys + LUKS header only
-#   secai-restore.sh inspect <backup-file>  List backup contents
-#   secai-restore.sh --help                 Show help
+# Restore input is treated as hostile until age authentication, strict manifest
+# verification, bounded type-safe extraction, and a transactional local install
+# have all succeeded.
 #
 set -euo pipefail
+umask 077
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 SECURE_AI_ROOT="/var/lib/secure-ai"
 AUDIT_LOG="${SECURE_AI_ROOT}/logs/backup-audit.jsonl"
 HEALTH_CHECK="/usr/libexec/secure-ai/first-boot-check.sh"
+ARCHIVE_HELPER="${ARCHIVE_HELPER:-/usr/libexec/secure-ai/secure-backup-archive.py}"
+WORK_ROOT="${WORK_ROOT:-/run/secure-ai/restore-tmp}"
 
-# ---------------------------------------------------------------------------
-# Colors
-# ---------------------------------------------------------------------------
+AGE_IDENTITY=""
+RESTORE_LUKS_HEADER=false
+VAULT_DEVICE=""
+CONFIRM_LUKS_UUID=""
+WORK_DIR=""
+SERVICES_STOPPED=false
+ACTIVE_UNITS=()
+
+SERVICE_UNITS=(
+    secure-ai-ui.service
+    secure-ai-diffusion.service
+    secure-ai-search-mediator.service
+    secure-ai-searxng.service
+    secure-ai-tor.service
+    secure-ai-airlock.service
+    secure-ai-agent.service
+    secure-ai-mcp-firewall.service
+    secure-ai-tool-firewall.service
+    secure-ai-quarantine-watcher.service
+    secure-ai-inference.service
+    secure-ai-gpu-integrity-watch.service
+    secure-ai-integrity-monitor.service
+    secure-ai-registry.service
+    secure-ai-policy-engine.service
+    secure-ai-incident-recorder.service
+    secure-ai-runtime-attestor.service
+)
+
 if [ -t 1 ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 else
-    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' NC=''
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''
 fi
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-info()  { echo -e "${GREEN}[+]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-error() { echo -e "${RED}[x]${NC} $*" >&2; }
+info()  { printf '%s[+]%s %s\n' "$GREEN" "$NC" "$*"; }
+warn()  { printf '%s[!]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
+error() { printf '%s[x]%s %s\n' "$RED" "$NC" "$*" >&2; }
 fatal() { error "$*"; exit 1; }
-step()  { echo -e "\n${BOLD}${CYAN}=== $* ===${NC}"; }
+step()  { printf '\n%s%s=== %s ===%s\n' "$BOLD" "$CYAN" "$*" "$NC"; }
 
 usage() {
     cat <<'USAGE'
-SecAI OS — Restore Script
+SecAI OS — Authenticated Restore
 
 Usage:
-  secai-restore.sh <command> <backup-file>
+  secai-restore.sh full    FILE.age [--identity FILE]
+  secai-restore.sh config  FILE.age [--identity FILE]
+  secai-restore.sh logs    FILE.age [--identity FILE]
+  secai-restore.sh keys    FILE.age [--identity FILE]
+  secai-restore.sh inspect FILE.age [--identity FILE]
 
-Commands:
-  full    <file>    Restore everything from backup
-  config  <file>    Restore policy and appliance configuration only
-  logs    <file>    Restore audit logs and incident store only
-  keys    <file>    Restore signing keys and LUKS vault header only
-  inspect <file>    Show backup contents without restoring
+LUKS header restore is never inferred from archived /etc data and is skipped by
+default. It is permitted only when all three explicit options are supplied:
+
+  --restore-luks-header
+  --vault-device /dev/<exact-block-device>
+  --confirm-luks-uuid <uuid-read-from-that-device>
+
+The archive UUID, current target UUID, and explicit confirmation must all match;
+the target must be a closed, unmounted LUKS block device with no holders.
 
 Options:
-  --help            Show this help message
-
-Backups must be created by secai-backup.sh.
+  --identity FILE          age identity used for decryption
+  --restore-luks-header    opt in to the irreversible LUKS header operation
+  --vault-device DEVICE    exact underlying LUKS block device
+  --confirm-luks-uuid UUID explicit target identity proof
+  --help                   show this help
 USAGE
     exit 0
+}
+
+restart_services() {
+    if [ "$SERVICES_STOPPED" != true ]; then
+        return 0
+    fi
+    if [ "${#ACTIVE_UNITS[@]}" -eq 0 ]; then
+        SERVICES_STOPPED=false
+        return 0
+    fi
+    systemctl start "${ACTIVE_UNITS[@]}" || return 1
+    SERVICES_STOPPED=false
+}
+
+cleanup() {
+    local status=$?
+    if [ "$SERVICES_STOPPED" = true ]; then
+        restart_services || warn "Failed to restore the pre-restore service state"
+    fi
+    if [ -n "$WORK_DIR" ] && [[ "$WORK_DIR" == "$WORK_ROOT/"* ]] && [ -d "$WORK_DIR" ]; then
+        rm -rf -- "$WORK_DIR"
+    fi
+    return "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+require_root_and_tools() {
+    [ "$(id -u)" -eq 0 ] || fatal "Restore and inspection must be run as root (sudo)"
+    local tool
+    for tool in age python3 sha256sum; do
+        command -v "$tool" >/dev/null 2>&1 || fatal "Required command is missing: $tool"
+    done
+    [ -x "$ARCHIVE_HELPER" ] || fatal "Archive helper is missing or not executable: $ARCHIVE_HELPER"
+}
+
+prepare_work_dir() {
+    install -d -m 0700 -o root -g root -- "$WORK_ROOT"
+    [ ! -L "$WORK_ROOT" ] || fatal "Refusing symbolic-link work directory: $WORK_ROOT"
+    WORK_DIR=$(mktemp -d "${WORK_ROOT}/restore.XXXXXXXX")
+    chmod 0700 "$WORK_DIR"
 }
 
 audit_event() {
     local action="$1"
     local detail="$2"
-    mkdir -p "$(dirname "$AUDIT_LOG")" 2>/dev/null || true
-    python3 -c "
-import json, hashlib
-from datetime import datetime, timezone
-entry = {
-    'timestamp': datetime.now(timezone.utc).isoformat(),
-    'event': 'restore',
-    'action': '${action}',
-    'detail': '${detail}'
-}
-entry['hash'] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-print(json.dumps(entry))
-" >> "$AUDIT_LOG" 2>/dev/null || true
-}
-
-# ---------------------------------------------------------------------------
-# Decrypt if needed
-# ---------------------------------------------------------------------------
-decrypt_if_needed() {
-    local file="$1"
-    if [[ "$file" == *.age ]]; then
-        info "Decrypting with age..."
-        local decrypted="${file%.age}"
-        age -d -o "$decrypted" "$file" || fatal "age decryption failed"
-        echo "$decrypted"
-    elif [[ "$file" == *.gpg ]]; then
-        info "Decrypting with gpg..."
-        local decrypted="${file%.gpg}"
-        gpg --decrypt --batch --yes -o "$decrypted" "$file" 2>/dev/null \
-            || fatal "gpg decryption failed"
-        echo "$decrypted"
-    else
-        echo "$file"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Verify backup integrity
-# ---------------------------------------------------------------------------
-verify_backup() {
-    local file="$1"
-    local sha_file="${file}.sha256"
-    if [ -f "$sha_file" ]; then
-        local expected actual
-        expected=$(cut -d' ' -f1 "$sha_file")
-        actual=$(sha256sum "$file" | cut -d' ' -f1)
-        if [ "$expected" != "$actual" ]; then
-            fatal "Backup checksum mismatch — archive may be corrupted"
-        fi
-        info "Backup integrity: verified"
-    else
-        warn "No .sha256 sidecar — skipping external integrity check"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# do_inspect <file>
-# ---------------------------------------------------------------------------
-do_inspect() {
-    local file="$1"
-    [ -f "$file" ] || fatal "File not found: ${file}"
-
-    step "Inspecting backup: $(basename "$file")"
-
-    local work_file
-    work_file=$(decrypt_if_needed "$file")
-
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-
-    tar xzf "$work_file" -C "$tmp" 2>/dev/null || fatal "Cannot extract archive"
-
-    if [ -f "${tmp}/manifest.json" ]; then
-        python3 -c "
+    install -d -m 2770 -o root -g secure-ai-logs -- "$(dirname "$AUDIT_LOG")"
+    python3 - "$AUDIT_LOG" "$action" "$detail" <<'PY'
+import fcntl
+import hashlib
 import json
-with open('${tmp}/manifest.json') as f:
-    m = json.load(f)
-print(f\"Created:  {m.get('created', 'unknown')}\")
-print(f\"Hostname: {m.get('hostname', 'unknown')}\")
-print(f\"Files:    {m.get('file_count', 0)}\")
-print()
-for rel, info in sorted(m.get('files', {}).items()):
-    size = info.get('size', 0)
-    if size > 1048576:
-        s = f'{size/1048576:.1f} MB'
-    elif size > 1024:
-        s = f'{size/1024:.1f} KB'
-    else:
-        s = f'{size} B'
-    print(f'  {s:>10s}  {rel}')
-" 2>/dev/null || warn "Could not parse manifest"
+import os
+import sys
+from datetime import datetime, timezone
+
+path, action, detail = sys.argv[1:]
+timestamp = datetime.now(timezone.utc).isoformat()
+with open(path, "a+", encoding="utf-8") as handle:
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    handle.seek(0)
+    previous = ""
+    for raw_line in handle:
+        if raw_line.strip():
+            previous = json.loads(raw_line)["entry_hash"]
+    data = {"action": action, "detail": detail}
+    canonical = json.dumps(
+        {
+            "prev_hash": previous,
+            "event": "restore",
+            "data": data,
+            "timestamp": timestamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    entry = {
+        "timestamp": timestamp,
+        "event": "restore",
+        "data": data,
+        "prev_hash": previous,
+        "entry_hash": hashlib.sha256(canonical).hexdigest(),
+        "algorithm": "sha256",
+    }
+    handle.seek(0, os.SEEK_END)
+    handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.chmod(path, 0o640)
+PY
+}
+
+verify_transport_checksum() {
+    local artifact="$1"
+    local sidecar="${artifact}.sha256"
+    [ -f "$sidecar" ] && [ ! -L "$sidecar" ] \
+        || fatal "Required transport checksum is missing or unsafe: $sidecar"
+    local expected declared extra
+    IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
+    declared="${declared#\\*}"
+    [ -z "${extra:-}" ] || fatal "Checksum sidecar has unexpected fields"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fatal "Checksum sidecar has an invalid SHA-256"
+    [ "$declared" = "$(basename "$artifact")" ] \
+        || fatal "Checksum sidecar names a different artifact"
+    local actual
+    actual=$(sha256sum -- "$artifact" | awk '{print $1}')
+    [ "$expected" = "$actual" ] || fatal "Encrypted backup transport checksum mismatch"
+}
+
+decrypt_to_tmpfs() {
+    local artifact="$1"
+    local plaintext="$2"
+    local -a args=(-d)
+    if [ -n "$AGE_IDENTITY" ]; then
+        [ -f "$AGE_IDENTITY" ] && [ ! -L "$AGE_IDENTITY" ] \
+            || fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
+            || fatal "Age identity must be owned by root"
+        local identity_mode
+        identity_mode=$(stat -c '%a' "$AGE_IDENTITY")
+        (( (8#$identity_mode & 077) == 0 )) \
+            || fatal "Age identity must not be accessible by group or other users"
+        args+=(-i "$AGE_IDENTITY")
+    fi
+    age "${args[@]}" -- "$artifact" > "$plaintext" || fatal "Age authentication/decryption failed"
+    chmod 0600 "$plaintext"
+}
+
+authenticate_and_extract() {
+    local artifact="$1"
+    local plaintext="${WORK_DIR}/authenticated.tar.gz"
+    local staging="${WORK_DIR}/staging"
+    mkdir -m 0700 -- "$staging"
+
+    verify_transport_checksum "$artifact"
+    decrypt_to_tmpfs "$artifact" "$plaintext"
+    "$ARCHIVE_HELPER" extract --archive "$plaintext" --destination "$staging" >/dev/null \
+        || fatal "Backup archive failed strict manifest or extraction validation"
+    printf '%s\n' "$staging"
+}
+
+manifest_value() {
+    local manifest="$1"
+    local field="$2"
+    python3 - "$manifest" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    manifest = json.load(handle)
+field = sys.argv[2]
+if field == "category":
+    print(manifest["category"])
+elif field == "luks_uuid":
+    print(manifest["luks_header"]["uuid"])
+elif field == "luks_included":
+    print("true" if manifest["luks_header"]["included"] else "false")
+else:
+    raise SystemExit("unsupported manifest field")
+PY
+}
+
+validate_requested_category() {
+    local requested="$1"
+    local archived="$2"
+    if [ "$requested" = "full" ]; then
+        [ "$archived" = "full" ] \
+            || fatal "A full restore requires a full backup, not category '$archived'"
     else
-        info "Contents:"
-        tar tzf "$work_file" 2>/dev/null | head -50
+        [ "$archived" = "full" ] || [ "$archived" = "$requested" ] \
+            || fatal "Backup category '$archived' cannot satisfy a '$requested' restore"
     fi
 }
 
-# ---------------------------------------------------------------------------
-# do_restore <category> <file>
-# ---------------------------------------------------------------------------
+stop_active_services() {
+    [ -d /run/systemd/system ] || {
+        warn "systemd is not running; service state will not be managed"
+        return 0
+    }
+    local unit
+    ACTIVE_UNITS=()
+    for unit in "${SERVICE_UNITS[@]}"; do
+        if systemctl is-active --quiet "$unit"; then
+            ACTIVE_UNITS+=("$unit")
+        fi
+    done
+    if [ "${#ACTIVE_UNITS[@]}" -gt 0 ]; then
+        SERVICES_STOPPED=true
+        systemctl stop "${ACTIVE_UNITS[@]}" \
+            || fatal "Could not stop all active services before the restore transaction"
+    fi
+}
+
+restore_luks_header_if_requested() {
+    local staging="$1"
+    local manifest="${staging}/manifest.json"
+    local included
+    included=$(manifest_value "$manifest" luks_included)
+
+    if [ "$RESTORE_LUKS_HEADER" != true ]; then
+        if [ "$included" = true ]; then
+            info "LUKS header is present but was safely skipped (explicit opt-in required)"
+        fi
+        return 0
+    fi
+
+    [ "$included" = true ] || fatal "LUKS header restore requested, but archive has no header"
+    [ -n "$VAULT_DEVICE" ] || fatal "--vault-device is required with --restore-luks-header"
+    [ -n "$CONFIRM_LUKS_UUID" ] \
+        || fatal "--confirm-luks-uuid is required with --restore-luks-header"
+    command -v cryptsetup >/dev/null 2>&1 || fatal "cryptsetup is required for header restore"
+    command -v lsblk >/dev/null 2>&1 || fatal "lsblk is required for header restore"
+
+    local target
+    target=$(readlink -f -- "$VAULT_DEVICE") || fatal "Cannot resolve vault device"
+    [[ "$target" == /dev/* ]] || fatal "Vault target must resolve beneath /dev"
+    [ -b "$target" ] || fatal "Vault target is not a block device: $target"
+    cryptsetup isLuks "$target" >/dev/null 2>&1 \
+        || fatal "Vault target is not currently a LUKS device: $target"
+
+    local actual_uuid archived_uuid header_uuid
+    actual_uuid=$(cryptsetup luksUUID "$target") || fatal "Could not read target LUKS UUID"
+    archived_uuid=$(manifest_value "$manifest" luks_uuid)
+    actual_uuid=${actual_uuid,,}
+    archived_uuid=${archived_uuid,,}
+    CONFIRM_LUKS_UUID=${CONFIRM_LUKS_UUID,,}
+    [ "$actual_uuid" = "$archived_uuid" ] \
+        || fatal "Archive LUKS UUID does not match the selected target"
+    [ "$actual_uuid" = "$CONFIRM_LUKS_UUID" ] \
+        || fatal "Explicit LUKS UUID confirmation does not match the selected target"
+
+    local header="${staging}/luks-header-backup"
+    [ -f "$header" ] && [ ! -L "$header" ] || fatal "Validated archive header is missing"
+    header_uuid=$(cryptsetup luksUUID "$header" 2>/dev/null || true)
+    [ -n "$header_uuid" ] || fatal "Archived LUKS header cannot be parsed by cryptsetup"
+    [ "${header_uuid,,}" = "$archived_uuid" ] \
+        || fatal "Archived header UUID does not match its authenticated manifest"
+
+    local block_line_count
+    block_line_count=$(lsblk -nrpo NAME "$target" | wc -l | tr -d ' ')
+    [ "$block_line_count" -eq 1 ] \
+        || fatal "Vault target has active holders; close all mappings before header restore"
+    if lsblk -nrpo MOUNTPOINTS "$target" | grep -q '[^[:space:]]'; then
+        fatal "Vault target is mounted; unmount and close it before header restore"
+    fi
+
+    step "Restoring explicitly verified LUKS header"
+    cryptsetup luksHeaderRestore "$target" \
+        --header-backup-file "$header" \
+        --batch-mode \
+        || fatal "LUKS header restore failed"
+    local restored_uuid
+    restored_uuid=$(cryptsetup luksUUID "$target") \
+        || fatal "Header was restored but the resulting UUID cannot be read"
+    [ "${restored_uuid,,}" = "$archived_uuid" ] \
+        || fatal "Header restore completed with an unexpected UUID"
+    info "LUKS header restored to verified target $target"
+}
+
+do_inspect() {
+    local artifact="$1"
+    require_root_and_tools
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
+        || fatal "Backup must be a regular encrypted file: $artifact"
+    [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
+    prepare_work_dir
+    step "Authenticating and inspecting backup"
+    verify_transport_checksum "$artifact"
+    local plaintext="${WORK_DIR}/authenticated.tar.gz"
+    decrypt_to_tmpfs "$artifact" "$plaintext"
+    "$ARCHIVE_HELPER" inspect --archive "$plaintext"
+}
+
 do_restore() {
     local category="$1"
-    local file="$2"
+    local artifact="$2"
+    require_root_and_tools
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
+        || fatal "Backup must be a regular encrypted file: $artifact"
+    [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
+    prepare_work_dir
 
-    [ "$(id -u)" -eq 0 ] || fatal "Restore must be run as root (sudo)"
-    [ -f "$file" ] || fatal "File not found: ${file}"
-
-    step "Restoring ${category} from $(basename "$file")"
-
-    # Verify integrity
-    verify_backup "$file"
-
-    # Decrypt if needed
-    local work_file
-    work_file=$(decrypt_if_needed "$file")
-
-    # Extract to staging
+    step "Authenticating and safely extracting backup"
     local staging
-    staging=$(mktemp -d "/tmp/secai-restore.XXXXXX")
-    trap 'rm -rf "$staging"' EXIT
+    staging=$(authenticate_and_extract "$artifact")
+    local archived_category
+    archived_category=$(manifest_value "${staging}/manifest.json" category)
+    validate_requested_category "$category" "$archived_category"
 
-    tar xzf "$work_file" -C "$staging" 2>/dev/null || fatal "Cannot extract archive"
+    step "Stopping active appliance services"
+    stop_active_services
 
-    # Restore by category
-    local restored=0
+    step "Applying atomic restore transaction"
+    local result
+    result=$(
+        "$ARCHIVE_HELPER" apply \
+            --staging "$staging" \
+            --category "$category" \
+            --etc-root /etc \
+            --secure-root "$SECURE_AI_ROOT"
+    ) || fatal "Restore transaction failed"
+    info "Restore transaction result: $result"
 
-    # Config
-    if [ "$category" = "full" ] || [ "$category" = "config" ]; then
-        if [ -d "${staging}/etc/secure-ai" ]; then
-            cp -a "${staging}/etc/secure-ai/." /etc/secure-ai/ 2>/dev/null || true
-            info "Restored: /etc/secure-ai/ (policy + config)"
-            restored=$((restored + 1))
-        fi
-    fi
+    restore_luks_header_if_requested "$staging"
 
-    # Logs + incidents
-    if [ "$category" = "full" ] || [ "$category" = "logs" ]; then
-        if [ -f "${staging}${SECURE_AI_ROOT}/data/incidents.jsonl" ]; then
-            mkdir -p "${SECURE_AI_ROOT}/data"
-            cp -a "${staging}${SECURE_AI_ROOT}/data/incidents.jsonl" \
-                "${SECURE_AI_ROOT}/data/incidents.jsonl"
-            info "Restored: incidents.jsonl"
-            restored=$((restored + 1))
-        fi
-        if [ -d "${staging}${SECURE_AI_ROOT}/logs" ]; then
-            mkdir -p "${SECURE_AI_ROOT}/logs"
-            cp -a "${staging}${SECURE_AI_ROOT}/logs/." "${SECURE_AI_ROOT}/logs/" 2>/dev/null || true
-            info "Restored: audit logs"
-            restored=$((restored + 1))
-        fi
-    fi
+    step "Restoring previous service state"
+    restart_services || fatal "Files were restored, but one or more prior services did not restart"
 
-    # Keys + LUKS header
-    if [ "$category" = "full" ] || [ "$category" = "keys" ]; then
-        if [ -d "${staging}${SECURE_AI_ROOT}/keys" ]; then
-            mkdir -p "${SECURE_AI_ROOT}/keys"
-            cp -a "${staging}${SECURE_AI_ROOT}/keys/." "${SECURE_AI_ROOT}/keys/" 2>/dev/null || true
-            chmod 700 "${SECURE_AI_ROOT}/keys"
-            info "Restored: signing keys"
-            restored=$((restored + 1))
-        fi
-
-        # LUKS header — double confirmation required
-        if [ -f "${staging}/luks-header-backup" ]; then
-            echo ""
-            echo -e "  ${RED}${BOLD}WARNING: Restoring a LUKS header is irreversible.${NC}"
-            echo -e "  An incorrect header will make the vault unrecoverable."
-            echo -e "  Only proceed if you are sure this header matches the vault device."
-            echo ""
-            echo -en "  Type ${BOLD}YES${NC} to restore the LUKS header: "
-            local confirm
-            read -r confirm
-            if [ "$confirm" = "YES" ]; then
-                local vault_dev=""
-                if [ -f /etc/crypttab ]; then
-                    vault_dev=$(awk '/secure-ai-vault/ {print $2}' /etc/crypttab 2>/dev/null || true)
-                fi
-                if [ -n "$vault_dev" ]; then
-                    if cryptsetup luksHeaderRestore "$vault_dev" \
-                        --header-backup-file "${staging}/luks-header-backup" 2>/dev/null; then
-                        info "Restored: LUKS header to ${vault_dev}"
-                        restored=$((restored + 1))
-                    else
-                        error "LUKS header restore failed"
-                    fi
-                else
-                    warn "Vault device not found in /etc/crypttab — LUKS header not restored"
-                    warn "Manual restore: cryptsetup luksHeaderRestore /dev/<device> --header-backup-file ${staging}/luks-header-backup"
-                fi
-            else
-                info "LUKS header restore skipped"
-            fi
-        fi
-    fi
-
-    # Registry manifest
-    if [ "$category" = "full" ]; then
-        if [ -f "${staging}${SECURE_AI_ROOT}/registry/manifest.json" ]; then
-            mkdir -p "${SECURE_AI_ROOT}/registry"
-            cp -a "${staging}${SECURE_AI_ROOT}/registry/manifest.json" \
-                "${SECURE_AI_ROOT}/registry/manifest.json"
-            info "Restored: registry manifest"
-            restored=$((restored + 1))
-        fi
-    fi
-
-    if [ "$restored" -eq 0 ]; then
-        warn "No matching files found in backup for category '${category}'"
-        exit 0
-    fi
-
-    # Restart services
-    step "Restarting services"
-    systemctl restart secure-ai-\*.service 2>/dev/null || warn "Some services failed to restart"
-    info "Services restarted"
-
-    # Health check
-    step "Post-restore health check"
+    step "Running post-restore health verification"
     if [ -x "$HEALTH_CHECK" ]; then
-        $HEALTH_CHECK || warn "Health check reported issues — review output above"
+        "$HEALTH_CHECK" || fatal "Restore completed, but post-restore health verification failed"
     else
-        warn "Health check script not found — verify manually"
+        fatal "Post-restore health checker is missing: $HEALTH_CHECK"
     fi
 
-    # Audit
-    audit_event "$category" "restored from: $(basename "$file")"
-
-    echo ""
-    info "Restore complete (${restored} items restored)"
+    audit_event "$category" "authenticated restore from: $(basename "$artifact")" \
+        || fatal "Restore completed but could not be recorded in the audit chain"
+    info "Authenticated $category restore completed"
 }
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-CMD=""
+COMMAND=""
 CATEGORY=""
-FILE_ARG=""
-
-while [ $# -gt 0 ]; do
+ARTIFACT=""
+while [ "$#" -gt 0 ]; do
     case "$1" in
         full|config|logs|keys)
-            CMD="restore"; CATEGORY="$1"; shift
-            [ -z "${1:-}" ] && fatal "${CATEGORY} requires a backup file path"
-            FILE_ARG="$1"; shift ;;
+            [ -z "$COMMAND" ] || fatal "Only one command may be specified"
+            [ "$#" -ge 2 ] || fatal "$1 requires an encrypted backup path"
+            COMMAND="restore"; CATEGORY="$1"; ARTIFACT="$2"; shift 2 ;;
         inspect)
-            CMD="inspect"; shift
-            [ -z "${1:-}" ] && fatal "inspect requires a backup file path"
-            FILE_ARG="$1"; shift ;;
+            [ -z "$COMMAND" ] || fatal "Only one command may be specified"
+            [ "$#" -ge 2 ] || fatal "inspect requires an encrypted backup path"
+            COMMAND="inspect"; ARTIFACT="$2"; shift 2 ;;
+        --identity)
+            [ "$#" -ge 2 ] || fatal "--identity requires a file"
+            AGE_IDENTITY="$2"; shift 2 ;;
+        --restore-luks-header)
+            RESTORE_LUKS_HEADER=true; shift ;;
+        --vault-device)
+            [ "$#" -ge 2 ] || fatal "--vault-device requires a block device"
+            VAULT_DEVICE="$2"; shift 2 ;;
+        --confirm-luks-uuid)
+            [ "$#" -ge 2 ] || fatal "--confirm-luks-uuid requires a UUID"
+            CONFIRM_LUKS_UUID="$2"; shift 2 ;;
         --help|-h)
             usage ;;
         *)
-            fatal "Unknown argument: $1  (use --help for usage)" ;;
+            fatal "Unknown argument: $1 (use --help)" ;;
     esac
 done
 
-[ -z "$CMD" ] && usage
+[ -n "$COMMAND" ] || usage
+if [ "$RESTORE_LUKS_HEADER" != true ] && [ -n "$VAULT_DEVICE$CONFIRM_LUKS_UUID" ]; then
+    fatal "--vault-device/--confirm-luks-uuid require --restore-luks-header"
+fi
+if [ "$COMMAND" = inspect ] && {
+    [ "$RESTORE_LUKS_HEADER" = true ] || [ -n "$VAULT_DEVICE$CONFIRM_LUKS_UUID" ];
+}; then
+    fatal "LUKS restore options are invalid with inspect"
+fi
 
-case "$CMD" in
-    restore) do_restore "$CATEGORY" "$FILE_ARG" ;;
-    inspect) do_inspect "$FILE_ARG" ;;
+case "$COMMAND" in
+    inspect) do_inspect "$ARTIFACT" ;;
+    restore) do_restore "$CATEGORY" "$ARTIFACT" ;;
 esac

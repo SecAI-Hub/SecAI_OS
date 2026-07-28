@@ -63,9 +63,8 @@
             Roll Back to Previous Version
         </span>
     </div>
-    <p class="meta mb-md">If the current deployment has issues, roll back to the previous rpm-ostree deployment.</p>
-    <button class="btn btn-danger btn-sm" id="btn-rollback" type="button">Rollback &amp; Reboot</button>
-    <p class="form-hint mt-sm">The system will reboot into the previous deployment. A health check will verify system integrity.</p>
+    <p class="meta mb-md">Rollback is intentionally unavailable over the web. Use the physical/local root console so a compromised UI session cannot select a boot deployment.</p>
+    <p class="form-hint"><code>sudo /usr/libexec/secure-ai/update-verify.sh rollback</code></p>
 </div>
 
 <!-- Update Settings -->
@@ -236,31 +235,9 @@
         }
     }
 
-    async function rollbackUpdate() {
-        var confirmed = await showConfirm('Rollback System', 'Roll back to the previous rpm-ostree deployment? The system will reboot.', 'Rollback & Reboot');
-        if (!confirmed) return;
-
-        try {
-            var resp = await fetch('/api/update/rollback', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({confirm: true}),
-            });
-            var data = await resp.json();
-            if (data.success) {
-                toast('Rolling back. System is rebooting...', 'warning', 10000);
-            } else {
-                toast(data.error || 'Rollback failed.', 'error');
-            }
-        } catch(e) {
-            toast('Could not initiate rollback.', 'error');
-        }
-    }
-
     document.getElementById('btn-check').addEventListener('click', checkUpdates);
     document.getElementById('btn-stage').addEventListener('click', stageUpdate);
     document.getElementById('btn-apply').addEventListener('click', applyUpdate);
-    document.getElementById('btn-rollback').addEventListener('click', rollbackUpdate);
 
     loadUpdateStatus();
     loadHealthStatus();

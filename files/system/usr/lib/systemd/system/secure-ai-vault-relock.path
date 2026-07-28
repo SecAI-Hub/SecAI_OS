@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for fixed-function Secure AI vault relock requests
+After=secure-ai-firstboot.service
+
+[Path]
+DirectoryNotEmpty=/run/secure-ai/vault-control/requests
+Unit=secure-ai-vault-relock.service
+
+[Install]
+WantedBy=multi-user.target

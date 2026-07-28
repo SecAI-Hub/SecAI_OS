@@ -130,20 +130,24 @@ class TestApplyProfileScript:
         assert (SCRIPTS_DIR / "apply-profile.sh").exists()
 
     def test_validates_profile_names(self):
-        content = (SCRIPTS_DIR / "apply-profile.sh").read_text(encoding="utf-8")
+        content = (
+            (SCRIPTS_DIR / "apply-profile.sh").read_text(encoding="utf-8")
+            + (SCRIPTS_DIR / "secure-profile-plan.py").read_text(encoding="utf-8")
+        )
         assert "offline_private" in content
         assert "research" in content
         assert "full_lab" in content
         # Must have an allowlist validation
-        assert "validate_profile" in content or "VALID_PROFILES" in content
+        assert "VALID_PROFILES" in content
 
     def test_atomic_writes(self):
-        content = (SCRIPTS_DIR / "apply-profile.sh").read_text(encoding="utf-8")
-        # Must use rename for atomic writes
-        assert ".tmp" in content
+        content = (SCRIPTS_DIR / "secure-profile-plan.py").read_text(encoding="utf-8")
+        assert "tempfile.mkstemp" in content
+        assert "os.replace" in content
+        assert "os.fsync" in content
 
     def test_fallback_to_offline_private(self):
-        content = (SCRIPTS_DIR / "apply-profile.sh").read_text(encoding="utf-8")
+        content = (SCRIPTS_DIR / "secure-profile-plan.py").read_text(encoding="utf-8")
         assert "DEFAULT_PROFILE" in content
         assert "offline_private" in content
 

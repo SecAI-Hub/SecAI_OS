@@ -8,9 +8,11 @@
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
         <h3 style="margin-bottom:0.5rem;color:var(--success)">Your data stays on this device</h3>
         <p style="color:var(--text-secondary);line-height:1.6">
-            SecAI OS runs all AI inference locally — on your hardware, using your GPU.
-            No prompts, responses, or model data are sent to any cloud service.
-            The network firewall blocks all outbound connections by default.
+            SecAI OS is designed to run inference locally on your hardware.
+            GPU acceleration is used when a supported, verified runtime is active;
+            otherwise supported workloads may use a CPU fallback. In the
+            <code>offline_private</code> profile, appliance policy blocks intended
+            service egress by default. Always check the live status below.
         </p>
     </div>
 
@@ -23,18 +25,18 @@
             <li id="ws-network">Network: <strong>blocked</strong> — no data leaves this device</li>
             <li>Vault: encrypted with AES-256 (LUKS2 + Argon2id)</li>
             <li>Models: verified through a 7-stage quarantine pipeline before use</li>
-            <li>Services: sandboxed with seccomp-BPF, Landlock, and systemd hardening</li>
-            <li>Audit: tamper-evident hash-chained logs record all security events</li>
+            <li>Services: each service has a documented mix of systemd, seccomp, namespace, and filesystem controls; Landlock applies only where the capability matrix says it does</li>
+            <li>Audit: supported control-plane events use hash-chained logs; coverage and checkpoint verification are shown on the Security dashboard</li>
         </ul>
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;margin-bottom:1rem">
         <h3 style="margin-bottom:0.5rem">What happens if something goes wrong</h3>
         <ul style="color:var(--text-secondary);line-height:1.8;padding-left:1.25rem">
-            <li><strong>Tampered model detected:</strong> automatically quarantined and removed</li>
-            <li><strong>Integrity check fails:</strong> system degrades to safe mode, alerts you</li>
-            <li><strong>Suspicious activity:</strong> agent frozen, airlock disabled, vault re-locked automatically</li>
-            <li><strong>Bad update:</strong> Greenboot rolls back to the last known-good state</li>
+            <li><strong>Tampered model detected:</strong> promotion is blocked and the artifact remains contained for review; removal depends on the configured response policy</li>
+            <li><strong>Integrity check fails:</strong> configured containment controls are requested and the result is recorded; confirm enforcement in the live status</li>
+            <li><strong>Suspicious activity:</strong> configured agent-freeze, airlock-containment, and vault-relock brokers attempt enforcement and report failures</li>
+            <li><strong>Bad update:</strong> rollback is available only when Greenboot and a verified previous deployment are present and healthy</li>
             <li><strong>Worst case:</strong> 3-level emergency panic — lock, wipe keys, or full wipe</li>
         </ul>
     </div>
@@ -44,8 +46,10 @@
         <p style="color:var(--text-secondary);line-height:1.6">
             SecAI OS does not collect any telemetry. No usage analytics, no crash reports,
             no phone-home, no heartbeat. The only network activity is what you explicitly
-            enable by switching to the "research" or "full lab" profile — and even then,
-            all traffic is Tor-routed with PII stripping.
+            enable by switching to the "research" or "full lab" profile. Search is
+            designed to use Tor and mediation; other allowlisted full-lab egress may
+            use the airlock without Tor. PII filtering reduces exposure but cannot
+            guarantee that all identifying content is removed.
         </p>
     </div>
 
@@ -57,8 +61,8 @@
         <ul style="color:var(--text-secondary);line-height:1.8;padding-left:1.25rem">
             <li>The <a href="/security" style="color:var(--accent)">Security dashboard</a> shows real-time verification status</li>
             <li>Audit logs are hash-chained — any tampering breaks the chain visibly</li>
-            <li>The OS image is cosign-signed with SLSA3 provenance attestation</li>
-            <li>Every model passes 7 stages of automated verification before use</li>
+            <li>Release signatures and provenance are security evidence only when the installed artifact includes them and verification succeeds</li>
+            <li>Model promotion requires the enabled quarantine gates to succeed; consult the scan report for skipped or unavailable gates</li>
             <li><a href="/security" style="color:var(--accent)">Export a forensic bundle</a> for independent verification</li>
         </ul>
     </div>
@@ -73,7 +77,13 @@
     try {
         var resp = await fetch('/api/profile');
         var data = await resp.json();
-        var p = data.active || 'offline_private';
+        if (!resp.ok || !data.active) {
+            document.getElementById('ws-profile').textContent = 'configuration error';
+            document.getElementById('ws-network').innerHTML =
+                'Network: <strong>unknown</strong> — profile readiness or configuration must be repaired before making a privacy claim';
+            return;
+        }
+        var p = data.active;
         document.getElementById('ws-profile').textContent = p.replace(/_/g, ' ');
         var netEl = document.getElementById('ws-network');
         if (p === 'offline_private') {

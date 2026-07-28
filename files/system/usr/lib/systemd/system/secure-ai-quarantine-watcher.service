@@ -1,27 +1,50 @@
 [Unit]
 Description=Secure AI Quarantine Watcher (verify + scan + promote pipeline)
-After=secure-ai-registry.service
-Requires=secure-ai-registry.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=secure-ai-registry.service secure-ai-credentials.service secure-ai-vault-mounted.service
+Requires=secure-ai-registry.service secure-ai-credentials.service secure-ai-vault-mounted.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/quarantine-watcher
-Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine
-Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+UMask=0007
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require quarantine -- /usr/libexec/secure-ai/quarantine-watcher
+Environment=QUARANTINE_DIR=/var/lib/secure-ai/quarantine/incoming
+Environment=PROCESSING_DIR=/var/lib/secure-ai/quarantine/processing
+Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models
+Environment=PROMOTION_STAGING_DIR=/var/lib/secure-ai/promotion-staging
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=MODELS_LOCK_PATH=/etc/secure-ai/policy/models.lock.yaml
+Environment=DIFFUSION_MODELS_LOCK_PATH=/etc/secure-ai/policy/diffusion-models.lock.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/quarantine-audit.jsonl
+Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
 Environment=LLAMA_SERVER_BIN=/usr/bin/llama-server
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=GGUF_GUARD_BIN=/usr/local/bin/gguf-guard
+Environment=COSIGN_BIN=/usr/bin/cosign
+Environment=FICKLING_BIN=/usr/local/bin/fickling
+Environment=MODELAUDIT_BIN=/usr/local/bin/modelaudit
+Environment=MODELSCAN_BIN=/usr/local/bin/modelscan
+Environment=GARAK_BIN=/usr/local/bin/garak
+Environment=REGISTRY_TOKEN_PATH=%d/registry-promote-token
+Environment=SERVICE_TOKEN_PATH=%d/registry-promote-token
+Environment=SCANNER_WORKER_BIN=/usr/libexec/secure-ai/quarantine-scanner
+Environment=LANDLOCK_APPLY_BIN=/usr/libexec/secure-ai/landlock-apply.py
+Environment=BWRAP_BIN=/usr/bin/bwrap
+Environment=SCANNER_WORKER_TIMEOUT=1800
+Environment=SCANNER_WORKER_MAX_OUTPUT=8388608
+LoadCredential=registry-promote-token:/var/lib/secure-ai/credentials/registry-promote.token
+LoadCredential=audit-hmac-key:/var/lib/secure-ai/credentials/quarantine-audit-hmac.key
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-import secure-ai-quarantine secure-ai-promotion
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
-ReadWritePaths=/var/lib/secure-ai/quarantine
-ReadWritePaths=/var/lib/secure-ai/registry
+ReadWritePaths=/var/lib/secure-ai/quarantine/incoming
+ReadWritePaths=/var/lib/secure-ai/quarantine/processing
+ReadWritePaths=/var/lib/secure-ai/promotion-staging
 ReadWritePaths=/var/lib/secure-ai/logs
 PrivateTmp=yes
 PrivateDevices=yes
@@ -53,15 +76,15 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 
 # Namespace restrictions
-RestrictNamespaces=yes
+RestrictNamespaces=user pid net mnt ipc uts
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
-
 # Syscall filtering — needs process spawning for smoke tests
-SystemCallFilter=@system-service @process
-SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallFilter=@system-service @process @mount
+# Rootless bubblewrap needs capset/chroot/pivot_root only after entering its
+# unprivileged user/mount namespaces. The host capability bounding set remains
+# empty, NoNewPrivileges is set, and the inner sandbox disables nested userns.
+SystemCallFilter=~@clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
@@ -75,11 +98,9 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

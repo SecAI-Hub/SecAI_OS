@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,23 +20,53 @@ func resetGlobalState(t *testing.T) {
 	incidentsMu.Lock()
 	incidents = nil
 	incidentsMu.Unlock()
-	serviceToken = ""
+	readToken = ""
+	operatorToken = ""
+	recoveryAdminToken = ""
+	forensicToken = ""
+	canaryReporterToken = ""
+	gpuReporterToken = ""
+	integrityReporterToken = ""
+	attestorReporterToken = ""
+	containmentTokens = ContainmentTokens{}
+	forensicHMACKey = []byte("0123456789abcdef0123456789abcdef")
 	incidentCount.Store(0)
 	containedCount.Store(0)
 	resolvedCount.Store(0)
 	idCounter.Store(0)
+	auditMu.Lock()
+	if auditFile != nil {
+		_ = auditFile.Close()
+	}
 	auditFile = nil
+	auditMu.Unlock()
+	incidentStorePath = ""
+	containmentExecutor = func(inc Incident, _ ServiceEndpoints, _ string) ([]ContainmentResult, bool) {
+		results := make([]ContainmentResult, 0, len(inc.ContainmentActions))
+		for _, action := range inc.ContainmentActions {
+			results = append(results, ContainmentResult{
+				Action:      action,
+				Success:     true,
+				CompletedAt: "2026-07-27T00:00:00Z",
+			})
+		}
+		return results, true
+	}
+	t.Cleanup(func() {
+		containmentExecutor = executeContainment
+	})
 
 	// Load default containment policy
 	containmentPolicyMu.Lock()
 	containmentPolicy = defaultContainmentPolicy()
 	containmentPolicyMu.Unlock()
 
-	// Set endpoints to unreachable addresses to prevent async containment
-	// goroutines from racing with subsequent test state resets.
+	// Unit tests use the deterministic executor above. Contract/integration
+	// tests opt back into executeContainment explicitly.
 	endpoints = ServiceEndpoints{
-		AgentURL:   "http://127.0.0.1:1",
-		AirlockURL: "http://127.0.0.1:1",
+		AgentURL:    "http://127.0.0.1:1",
+		AgentSocket: "",
+		AirlockURL:  "http://127.0.0.1:1",
 		RegistryURL: "http://127.0.0.1:1",
 	}
 }
@@ -145,6 +176,35 @@ func TestCreateIncident_AutoContainment(t *testing.T) {
 	if len(inc.ContainmentActions) == 0 {
 		t.Error("should have containment actions")
 	}
+	if len(inc.ContainmentResults) != len(inc.ContainmentActions) {
+		t.Fatalf("expected per-action results, got %+v", inc.ContainmentResults)
+	}
+}
+
+func TestCreateIncident_DoesNotClaimFailedContainment(t *testing.T) {
+	resetGlobalState(t)
+	containmentExecutor = func(inc Incident, _ ServiceEndpoints, _ string) ([]ContainmentResult, bool) {
+		return []ContainmentResult{{
+			Action:      inc.ContainmentActions[0],
+			Success:     false,
+			Error:       "target unavailable",
+			CompletedAt: "2026-07-27T00:00:00Z",
+		}}, false
+	}
+	inc := createIncident(IncidentReport{
+		Class:       ClassPromptInjection,
+		Source:      "agent",
+		Description: "containment target unavailable",
+	})
+	if inc.State != StateContainmentFailed {
+		t.Fatalf("failed actions must not be represented as contained, got %s", inc.State)
+	}
+	if containedCount.Load() != 0 {
+		t.Fatal("failed containment must not increment contained_count")
+	}
+	if len(inc.ContainmentResults) != 1 || inc.ContainmentResults[0].Error == "" {
+		t.Fatalf("failure evidence was not recorded: %+v", inc.ContainmentResults)
+	}
 }
 
 func TestCreateIncident_NoAutoContainment(t *testing.T) {
@@ -247,6 +307,7 @@ func TestResolveIncident(t *testing.T) {
 	inc := createIncident(IncidentReport{
 		Class: ClassToolCallBurst, Source: "agent", Description: "burst",
 	})
+	completeRecoveryCeremony(t, recoveryMgr, inc.ID)
 	resolved, found := resolveIncident(inc.ID)
 	if !found {
 		t.Fatal("incident should be found")
@@ -286,6 +347,7 @@ func TestGetOpenIncidents(t *testing.T) {
 	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})
 	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
 	inc3 := createIncident(IncidentReport{Class: ClassToolCallBurst, Source: "c", Description: "c"})
+	completeRecoveryCeremony(t, recoveryMgr, inc3.ID)
 	resolveIncident(inc3.ID)
 
 	open := getOpenIncidents()
@@ -464,7 +526,7 @@ func TestHTTP_List_FilterByClass(t *testing.T) {
 
 func TestHTTP_List_FilterByState(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"}) // open
+	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})   // open
 	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"}) // contained
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/incidents?state=open", nil)
@@ -514,6 +576,7 @@ func TestHTTP_Get_MissingID(t *testing.T) {
 func TestHTTP_Resolve(t *testing.T) {
 	resetGlobalState(t)
 	inc := createIncident(IncidentReport{Class: ClassToolCallBurst, Source: "agent", Description: "burst"})
+	completeRecoveryCeremony(t, recoveryMgr, inc.ID)
 
 	body, _ := json.Marshal(map[string]string{"id": inc.ID})
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/resolve", bytes.NewReader(body))
@@ -601,22 +664,25 @@ func TestHTTP_Reload_MethodNotAllowed(t *testing.T) {
 func TestToken_NoTokenConfigured(t *testing.T) {
 	resetGlobalState(t)
 	called := false
-	handler := requireServiceToken(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireReadToken(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
-	if !called {
-		t.Error("should pass through without token")
+	if called {
+		t.Error("must fail closed without token")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without token, got %d", w.Code)
 	}
 }
 
 func TestToken_RequiresBearer(t *testing.T) {
 	resetGlobalState(t)
-	serviceToken = "test-token"
-	handler := requireServiceToken(func(w http.ResponseWriter, r *http.Request) {})
+	readToken = "test-token"
+	handler := requireReadToken(func(w http.ResponseWriter, r *http.Request) {})
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
@@ -627,9 +693,9 @@ func TestToken_RequiresBearer(t *testing.T) {
 
 func TestToken_ValidToken(t *testing.T) {
 	resetGlobalState(t)
-	serviceToken = "valid"
+	readToken = "valid"
 	called := false
-	handler := requireServiceToken(func(w http.ResponseWriter, r *http.Request) {
+	handler := requireReadToken(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -639,6 +705,132 @@ func TestToken_ValidToken(t *testing.T) {
 	handler(w, r)
 	if !called {
 		t.Error("should call handler with valid token")
+	}
+}
+
+func TestIncidentEndpointScopesAreIndependent(t *testing.T) {
+	resetGlobalState(t)
+	readToken = "read-token"
+	operatorToken = "operator-token"
+	recoveryAdminToken = "recovery-token"
+	forensicToken = "forensic-token"
+	canaryReporterToken = "canary-token"
+	gpuReporterToken = "gpu-token"
+	integrityReporterToken = "integrity-token"
+	attestorReporterToken = "attestor-token"
+
+	assertStatus := func(method, path, token, body string, expected int) {
+		t.Helper()
+		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		newIncidentMux().ServeHTTP(w, r)
+		if w.Code != expected {
+			t.Fatalf("%s %s with %q: expected %d, got %d: %s",
+				method, path, token, expected, w.Code, w.Body.String())
+		}
+	}
+
+	assertStatus(http.MethodGet, "/api/v1/stats", "read-token", "", http.StatusOK)
+	assertStatus(http.MethodGet, "/api/v1/stats", "operator-token", "", http.StatusForbidden)
+	assertStatus(http.MethodPost, "/api/v1/reload", "operator-token", "", http.StatusOK)
+	assertStatus(http.MethodPost, "/api/v1/reload", "read-token", "", http.StatusForbidden)
+	assertStatus(http.MethodGet, "/api/v1/recovery/status", "recovery-token", "", http.StatusOK)
+	assertStatus(http.MethodGet, "/api/v1/recovery/status", "operator-token", "", http.StatusForbidden)
+	assertStatus(http.MethodGet, "/api/v1/forensic/export", "forensic-token", "", http.StatusOK)
+	assertStatus(http.MethodGet, "/api/v1/forensic/export", "recovery-token", "", http.StatusForbidden)
+
+	reportBody := `{"class":"integrity_violation","severity":"critical","source":"canary-tripwire","description":"canary changed"}`
+	assertStatus(http.MethodPost, "/api/v1/incidents/report", "canary-token", reportBody, http.StatusCreated)
+	assertStatus(http.MethodPost, "/api/v1/incidents/report", "read-token", reportBody, http.StatusForbidden)
+	assertStatus(http.MethodGet, "/api/v1/stats", "canary-token", "", http.StatusForbidden)
+}
+
+func TestReporterCredentialCannotForgeSourceOrClass(t *testing.T) {
+	resetGlobalState(t)
+	canaryReporterToken = "canary-token"
+	gpuReporterToken = "gpu-token"
+	integrityReporterToken = "integrity-token"
+	attestorReporterToken = "attestor-token"
+
+	assertForbidden := func(body string) {
+		t.Helper()
+		r := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/incidents/report",
+			bytes.NewBufferString(body),
+		)
+		r.Header.Set("Authorization", "Bearer canary-token")
+		w := httptest.NewRecorder()
+		requireReporterToken(handleReport)(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected reporter forgery to be forbidden, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+	assertForbidden(`{"class":"integrity_violation","source":"runtime-attestor","description":"forged source"}`)
+	assertForbidden(`{"class":"attestation_failure","source":"canary-tripwire","description":"forged class"}`)
+	if incidentCount.Load() != 0 {
+		t.Fatal("forged reports must not create incidents")
+	}
+}
+
+func TestLoadAuthorizationTokensRequiresDistinctScopedCredentials(t *testing.T) {
+	resetGlobalState(t)
+	temp := t.TempDir()
+	credentials := []struct {
+		env   string
+		name  string
+		value string
+	}{
+		{"INCIDENT_READ_TOKEN_PATH", "read", strings.Repeat("1", 64)},
+		{"INCIDENT_OPERATOR_TOKEN_PATH", "operator", strings.Repeat("2", 64)},
+		{"INCIDENT_RECOVERY_ADMIN_TOKEN_PATH", "recovery", strings.Repeat("3", 64)},
+		{"INCIDENT_FORENSIC_TOKEN_PATH", "forensic", strings.Repeat("4", 64)},
+		{"INCIDENT_REPORTER_CANARY_TOKEN_PATH", "canary", strings.Repeat("5", 64)},
+		{"INCIDENT_REPORTER_GPU_INTEGRITY_TOKEN_PATH", "gpu", strings.Repeat("6", 64)},
+		{"INCIDENT_REPORTER_INTEGRITY_MONITOR_TOKEN_PATH", "integrity", strings.Repeat("7", 64)},
+		{"INCIDENT_REPORTER_RUNTIME_ATTESTOR_TOKEN_PATH", "attestor", strings.Repeat("8", 64)},
+	}
+	for _, credential := range credentials {
+		path := filepath.Join(temp, credential.name+".token")
+		if err := os.WriteFile(path, []byte(credential.value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(credential.env, path)
+	}
+	if err := loadAuthorizationTokens(); err != nil {
+		t.Fatalf("expected scoped credentials to load: %v", err)
+	}
+	if readToken != credentials[0].value || attestorReporterToken != credentials[7].value {
+		t.Fatal("scoped credentials were not loaded into the expected authorities")
+	}
+
+	duplicatePath := os.Getenv("INCIDENT_READ_TOKEN_PATH")
+	t.Setenv("INCIDENT_OPERATOR_TOKEN_PATH", duplicatePath)
+	if err := loadAuthorizationTokens(); err == nil ||
+		!strings.Contains(err.Error(), "distinct") {
+		t.Fatalf("expected duplicate scope credentials to fail closed, got %v", err)
+	}
+}
+
+func TestReportRejectsUnknownFieldsAndTrailingObjects(t *testing.T) {
+	resetGlobalState(t)
+	for _, body := range []string{
+		`{"class":"integrity_violation","source":"canary-tripwire","description":"x","unexpected":true}`,
+		`{"class":"integrity_violation","source":"canary-tripwire","description":"x"} {}`,
+	} {
+		r := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/incidents/report",
+			bytes.NewBufferString(body),
+		)
+		w := httptest.NewRecorder()
+		handleReport(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected strict report decoder to reject %q, got %d", body, w.Code)
+		}
 	}
 }
 
@@ -756,13 +948,21 @@ func TestAuditLog_SyncedToDisk(t *testing.T) {
 		t.Fatal("audit log should contain the incident entry")
 	}
 
-	// Verify the entry is valid JSON
-	var entry Incident
-	if err := json.Unmarshal(data[:len(data)-1], &entry); err != nil { // strip trailing newline
-		t.Errorf("audit entry should be valid JSON: %v", err)
+	// Creation and containment completion are separate durable audit records.
+	// Every record must be valid JSON, and the final record must reflect the
+	// authoritative post-containment state.
+	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+	if len(lines) == 0 {
+		t.Fatal("audit log should contain at least one JSONL record")
 	}
-	if entry.Class != ClassIntegrityViolation {
-		t.Errorf("audit entry class should be integrity_violation, got %s", entry.Class)
+	for i, line := range lines {
+		var entry Incident
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("audit entry %d should be valid JSON: %v", i, err)
+		}
+		if entry.Class != ClassIntegrityViolation {
+			t.Fatalf("audit entry %d class should be integrity_violation, got %s", i, entry.Class)
+		}
 	}
 }
 

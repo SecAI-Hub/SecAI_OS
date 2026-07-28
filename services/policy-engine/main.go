@@ -241,26 +241,26 @@ func getPolicy() (UnifiedPolicy, string) {
 // Service token auth
 // =========================================================================
 
-func loadServiceToken() {
+func loadServiceToken() error {
 	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
 	if tokenPath == "" {
 		tokenPath = "/run/secure-ai/service-token"
 	}
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		log.Printf("warning: service token not loaded (%v) — running in dev mode", err)
-		return
+		return fmt.Errorf("read service token %s: %w", tokenPath, err)
 	}
 	serviceToken = strings.TrimSpace(string(data))
 	if serviceToken == "" {
-		log.Printf("warning: service token file is empty — running in dev mode")
+		return fmt.Errorf("service token %s is empty", tokenPath)
 	}
+	return nil
 }
 
 func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if serviceToken == "" {
-			next(w, r)
+			http.Error(w, `{"error":"service authentication unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 		auth := r.Header.Get("Authorization")
@@ -803,6 +803,16 @@ func handleDigest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"policy_digest": digest})
 }
 
+func newPolicyMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/v1/decide", requireServiceToken(handleDecide))
+	mux.HandleFunc("/api/v1/stats", requireServiceToken(handleStats))
+	mux.HandleFunc("/api/v1/digest", requireServiceToken(handleDigest))
+	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
+	return mux
+}
+
 // =========================================================================
 // Main
 // =========================================================================
@@ -813,26 +823,19 @@ func main() {
 	}
 
 	initAuditLog()
-	loadServiceToken()
+	if err := loadServiceToken(); err != nil {
+		log.Fatalf("service authentication unavailable: %v", err)
+	}
 
 	bind := os.Getenv("BIND_ADDR")
 	if bind == "" {
 		bind = "127.0.0.1:8500"
 	}
 
-	mux := http.NewServeMux()
-	// Read-only endpoints
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/api/v1/decide", handleDecide)
-	mux.HandleFunc("/api/v1/stats", handleStats)
-	mux.HandleFunc("/api/v1/digest", handleDigest)
-	// Mutating endpoints
-	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
-
 	log.Printf("secure-ai-policy-engine listening on %s", bind)
 	server := &http.Server{
 		Addr:              bind,
-		Handler:           mux,
+		Handler:           newPolicyMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

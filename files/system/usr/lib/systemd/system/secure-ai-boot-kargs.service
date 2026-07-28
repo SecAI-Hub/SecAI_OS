@@ -9,6 +9,45 @@ ConditionPathExists=/usr/bin/rpm-ostree
 Type=oneshot
 ExecStart=/usr/libexec/secure-ai/sync-boot-kargs.sh
 RemainAfterExit=yes
+User=root
+Group=root
+UMask=0022
+
+# rpm-ostree performs the boot mutation in its privileged daemon. This client
+# needs only the system D-Bus socket plus read-only hardware discovery.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai/state
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+LimitNOFILE=256
+LimitCORE=0
+TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target

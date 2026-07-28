@@ -80,7 +80,7 @@ If hot reload is not sufficient or you want to be certain:
 
 ```bash
 sudo systemctl restart secure-ai-airlock.service
-sudo systemctl restart secure-ai-quarantine.service
+sudo systemctl restart secure-ai-quarantine-watcher.service
 ```
 
 ## Step 4: Verify the New Source

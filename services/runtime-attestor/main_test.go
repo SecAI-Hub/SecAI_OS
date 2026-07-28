@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -54,10 +56,73 @@ func resetGlobalState(t *testing.T) {
 	currentBundle = RuntimeStateBundle{}
 	stateMu.Unlock()
 	serviceToken = ""
+	incidentRecorderToken = ""
 	hmacKey = nil
+	auditEnforced = false
+	auditMu.Lock()
+	if auditFile != nil {
+		_ = auditFile.Close()
+		auditFile = nil
+	}
+	auditMu.Unlock()
+	hardwareProfileMu.Lock()
+	hardwareProfile = AttestationHardwareProfile{Version: 1, Mode: "evaluation"}
+	hardwareProfileMu.Unlock()
 	attestCount.Store(0)
 	degradeCount.Store(0)
 	failCount.Store(0)
+}
+
+func installTestTrustInputs(t *testing.T) {
+	t.Helper()
+	pol := getAttestPolicy()
+	seen := make(map[string]bool)
+	paths := make([]string, 0, len(pol.ServiceBinaries)+len(pol.PolicyFiles)+1)
+	for _, path := range pol.ServiceBinaries {
+		paths = append(paths, path)
+	}
+	paths = append(paths, pol.PolicyFiles...)
+	if path := os.Getenv("ATTESTATION_POLICY_PATH"); path != "" {
+		paths = append(paths, path)
+	}
+
+	files := make([]ReleaseBaselineFile, 0, len(paths))
+	for _, path := range paths {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(content)
+		files = append(files, ReleaseBaselineFile{
+			Path:   path,
+			SHA256: hex.EncodeToString(sum[:]),
+			Size:   int64(len(content)),
+		})
+	}
+	baselineData, err := json.Marshal(ReleaseBaseline{
+		Version:      1,
+		SourceCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Files:        files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselinePath := filepath.Join(t.TempDir(), "release-baseline.json")
+	if err := os.WriteFile(baselinePath, baselineData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXPECTED_BASELINE_PATH", baselinePath)
+
+	bootData := []byte(`{"status":"ok","checks":{"ostree_signature":{"state":"valid","commit":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}`)
+	bootPath := filepath.Join(t.TempDir(), "boot-verify-last.json")
+	if err := os.WriteFile(bootPath, bootData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BOOT_VERIFICATION_PATH", bootPath)
 }
 
 const testAttestPolicyYAML = `
@@ -243,7 +308,10 @@ func TestCollectPolicyDigest_ValidFiles(t *testing.T) {
 	f1 := writeTempPolicyFile(t, "policy.yaml", "policy: content: 1")
 	f2 := writeTempPolicyFile(t, "agent.yaml", "agent: content: 2")
 
-	digest := collectPolicyDigest([]string{f1, f2})
+	digest, failures := collectPolicyDigest([]string{f1, f2})
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
 	if digest == "" {
 		t.Error("policy digest should not be empty")
 	}
@@ -254,18 +322,23 @@ func TestCollectPolicyDigest_ValidFiles(t *testing.T) {
 
 func TestCollectPolicyDigest_MissingFiles(t *testing.T) {
 	resetGlobalState(t)
-	digest := collectPolicyDigest([]string{"/nonexistent/a.yaml", "/nonexistent/b.yaml"})
-	// Should still return a digest (of empty data)
+	digest, failures := collectPolicyDigest([]string{"/nonexistent/a.yaml", "/nonexistent/b.yaml"})
 	if digest == "" {
 		t.Error("policy digest should not be empty even with missing files")
+	}
+	if len(failures) != 2 {
+		t.Fatalf("expected both missing policies to be failures, got %v", failures)
 	}
 }
 
 func TestCollectPolicyDigest_Deterministic(t *testing.T) {
 	resetGlobalState(t)
 	f := writeTempPolicyFile(t, "policy.yaml", "same-content")
-	d1 := collectPolicyDigest([]string{f})
-	d2 := collectPolicyDigest([]string{f})
+	d1, failures1 := collectPolicyDigest([]string{f})
+	d2, failures2 := collectPolicyDigest([]string{f})
+	if len(failures1) != 0 || len(failures2) != 0 {
+		t.Fatalf("unexpected policy failures: %v %v", failures1, failures2)
+	}
 	if d1 != d2 {
 		t.Error("same policy file should produce same digest")
 	}
@@ -276,10 +349,51 @@ func TestCollectPolicyDigest_OrderMatters(t *testing.T) {
 	f1 := writeTempPolicyFile(t, "a.yaml", "content-a")
 	f2 := writeTempPolicyFile(t, "b.yaml", "content-b")
 
-	d1 := collectPolicyDigest([]string{f1, f2})
-	d2 := collectPolicyDigest([]string{f2, f1})
+	d1, _ := collectPolicyDigest([]string{f1, f2})
+	d2, _ := collectPolicyDigest([]string{f2, f1})
 	if d1 == d2 {
 		t.Error("order of policy files should affect digest")
+	}
+}
+
+func TestVerifyReleaseMeasurements_DetectsPolicyTamper(t *testing.T) {
+	resetGlobalState(t)
+	policyFile := writeTempPolicyFile(t, "policy.yaml", "allow: true")
+	policyYAML := `
+version: 1
+require_tpm: false
+require_secure_boot: false
+service_binaries: {}
+policy_files:
+  - ` + policyFile + `
+refresh_interval: "1m"
+`
+	path := writeTempAttestPolicy(t, policyYAML)
+	t.Setenv("ATTESTATION_POLICY_PATH", path)
+	if err := loadAttestPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	installTestTrustInputs(t)
+
+	_, verified, failures := verifyReleaseMeasurements(getAttestPolicy(), map[string]string{})
+	if !verified || len(failures) != 0 {
+		t.Fatalf("expected release measurements to verify: %v", failures)
+	}
+	if err := os.WriteFile(policyFile, []byte("allow: false"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, verified, failures = verifyReleaseMeasurements(getAttestPolicy(), map[string]string{})
+	if verified || len(failures) == 0 {
+		t.Fatal("tampered policy must fail release measurement verification")
+	}
+}
+
+func TestVerifyReleaseMeasurements_MissingBaselineFails(t *testing.T) {
+	resetGlobalState(t)
+	t.Setenv("EXPECTED_BASELINE_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	_, verified, failures := verifyReleaseMeasurements(AttestationPolicy{}, map[string]string{})
+	if verified || len(failures) == 0 {
+		t.Fatal("missing release baseline must fail closed")
 	}
 }
 
@@ -297,6 +411,53 @@ func TestComputeBundleHMAC_NoKey(t *testing.T) {
 	result := computeBundleHMAC(bundle)
 	if result != "unsigned" {
 		t.Errorf("expected 'unsigned' without key, got %s", result)
+	}
+}
+
+func TestCredentialLoadersRequireCanonical256BitHex(t *testing.T) {
+	resetGlobalState(t)
+	directory := t.TempDir()
+	servicePath := filepath.Join(directory, "service.token")
+	reporterPath := filepath.Join(directory, "reporter.token")
+	hmacPath := filepath.Join(directory, "attestation.key")
+	for path, value := range map[string]string{
+		servicePath:  strings.Repeat("a", 64) + "\n",
+		reporterPath: strings.Repeat("b", 64),
+		hmacPath:     strings.Repeat("01", 32) + "\n",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("SERVICE_TOKEN_PATH", servicePath)
+	t.Setenv("INCIDENT_RECORDER_TOKEN_PATH", reporterPath)
+	t.Setenv("HMAC_KEY_PATH", hmacPath)
+	if err := loadServiceToken(); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadIncidentRecorderToken(); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadHMACKey(); err != nil {
+		t.Fatal(err)
+	}
+	if serviceToken != strings.Repeat("a", 64) ||
+		incidentRecorderToken != strings.Repeat("b", 64) ||
+		len(hmacKey) != sha256.Size {
+		t.Fatal("canonical credentials were not loaded exactly")
+	}
+
+	if err := os.WriteFile(servicePath, []byte(strings.Repeat("A", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadServiceToken(); err == nil {
+		t.Fatal("uppercase credential was accepted")
+	}
+	if err := os.WriteFile(servicePath, []byte(strings.Repeat("a", 64)+"\nextra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadServiceToken(); err == nil {
+		t.Fatal("credential with trailing data was accepted")
 	}
 }
 
@@ -364,6 +525,7 @@ func TestComputeBundleHMAC_VerifyCorrectness(t *testing.T) {
 		Timestamp:            "2026-01-01T00:00:00Z",
 		State:                StateAttested,
 		DeploymentDigest:     "deploy-abc",
+		DeploymentVerified:   true,
 		PolicyDigest:         "policy-def",
 		RegistryManifestHash: "registry-ghi",
 		TPMAvailable:         true,
@@ -371,14 +533,222 @@ func TestComputeBundleHMAC_VerifyCorrectness(t *testing.T) {
 	}
 	result := computeBundleHMAC(bundle)
 
-	// Independently compute expected HMAC
-	data := "2026-01-01T00:00:00Z|attested|deploy-abc|policy-def|registry-ghi|true|false"
+	// Independently compute HMAC over canonical JSON with BundleHMAC blank.
+	bundle.BundleHMAC = ""
+	data, err := canonicalBundleJSON(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(data))
+	mac.Write(data)
 	expected := hex.EncodeToString(mac.Sum(nil))
 
 	if result != expected {
 		t.Errorf("HMAC mismatch: got %s, want %s", result, expected)
+	}
+}
+
+func TestComputeBundleHMAC_CoversEveryEvidenceClass(t *testing.T) {
+	resetGlobalState(t)
+	hmacKey = []byte("complete-bundle-test-key")
+	original := RuntimeStateBundle{
+		Timestamp:               "2026-01-01T00:00:00Z",
+		State:                   StateAttested,
+		BootMeasurements:        BootMeasurements{PCRValues: map[string]string{"7": "0xabc"}},
+		DeploymentDigest:        "sha256:abc",
+		DeploymentVerified:      true,
+		ReleaseSourceCommit:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ReleaseBaselineVerified: true,
+		ServiceDigests:          map[string]string{"registry": "svc"},
+		PolicyDigest:            "policy",
+		RegistryManifestHash:    "registry",
+		KernelCmdline:           "quiet",
+		KernelLockdown:          "integrity",
+		TPMAvailable:            true,
+		TPMMeasurementsVerified: true,
+		Failures:                []string{"evidence"},
+	}
+	expected := computeBundleHMAC(original)
+
+	mutations := map[string]func(*RuntimeStateBundle){
+		"boot measurements":   func(b *RuntimeStateBundle) { b.BootMeasurements.PCRValues["7"] = "tampered" },
+		"service digests":     func(b *RuntimeStateBundle) { b.ServiceDigests["registry"] = "tampered" },
+		"deployment evidence": func(b *RuntimeStateBundle) { b.DeploymentVerified = false },
+		"release evidence":    func(b *RuntimeStateBundle) { b.ReleaseBaselineVerified = false },
+		"registry hash":       func(b *RuntimeStateBundle) { b.RegistryManifestHash = "tampered" },
+		"kernel state":        func(b *RuntimeStateBundle) { b.KernelLockdown = "none" },
+		"failures":            func(b *RuntimeStateBundle) { b.Failures[0] = "tampered" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var changed RuntimeStateBundle
+			if err := json.Unmarshal(encoded, &changed); err != nil {
+				t.Fatal(err)
+			}
+			mutate(&changed)
+			if actual := computeBundleHMAC(changed); actual == expected {
+				t.Fatalf("tampering with %s did not change bundle HMAC", name)
+			}
+		})
+	}
+}
+
+func TestCrossServiceBundleHMACGoldenVector(t *testing.T) {
+	resetGlobalState(t)
+	hmacKey = []byte{
+		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+	}
+	bundle := RuntimeStateBundle{
+		Timestamp:        "2026-07-27T12:34:56.123456789Z",
+		State:            StateAttested,
+		AssuranceMode:    "hardware",
+		EvidenceVerified: true,
+		RequestNonce:     strings.Repeat("11", 32),
+		BootMeasurements: BootMeasurements{
+			SecureBootEnabled: true,
+			PCRValues: map[string]string{
+				"0": "0x" + strings.Repeat("22", 32),
+				"7": "0x" + strings.Repeat("23", 32),
+			},
+			MeasuredAt: "2026-07-27T12:34:55.999999999Z",
+		},
+		DeploymentDigest:        "sha256:" + strings.Repeat("33", 32),
+		DeploymentVerified:      true,
+		ReleaseSourceCommit:     strings.Repeat("44", 20),
+		ReleaseBaselineVerified: true,
+		ServiceDigests: map[string]string{
+			"registry":      strings.Repeat("55", 32),
+			"tool-firewall": strings.Repeat("56", 32),
+		},
+		PolicyDigest:            strings.Repeat("66", 32),
+		RegistryManifestHash:    strings.Repeat("77", 32),
+		KernelCmdline:           "quiet lockdown=confidentiality",
+		KernelLockdown:          "[confidentiality] integrity",
+		TPMAvailable:            true,
+		TPMMeasurementsVerified: true,
+		TPMQuoteVerified:        true,
+		TPMAKPublicKeySHA256:    strings.Repeat("88", 32),
+		TPMQuotePCRSelection:    "sha256:0,2,4,7",
+		Failures:                []string{"golden-vector"},
+	}
+	const expected = "2f79b51e951ec69d0de69a6a36893b9c3802734517942b465f782e643865fff5"
+	if actual := computeBundleHMAC(bundle); actual != expected {
+		t.Fatalf("cross-service HMAC changed: got %s, want %s", actual, expected)
+	}
+}
+
+func TestEnrolledDeploymentBinding(t *testing.T) {
+	profile := AttestationHardwareProfile{
+		Mode:               "hardware",
+		EnrolledDeployment: "sha256:" + strings.Repeat("a", 64),
+	}
+	if !enrolledDeploymentMatches(profile, profile.EnrolledDeployment) {
+		t.Fatal("exact enrolled deployment should match")
+	}
+	if enrolledDeploymentMatches(profile, "sha256:"+strings.Repeat("b", 64)) {
+		t.Fatal("different signed deployment must invalidate hardware enrollment")
+	}
+	profile.Mode = "evaluation"
+	if !enrolledDeploymentMatches(profile, "") {
+		t.Fatal("evaluation profile has no hardware enrollment binding")
+	}
+}
+
+func TestVerifyTPMQuote_NonceAKAndAuthenticatedPCRBinding(t *testing.T) {
+	resetGlobalState(t)
+	directory := t.TempDir()
+	binDirectory := filepath.Join(directory, "bin")
+	if err := os.Mkdir(binDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quoteScript := `#!/bin/sh
+set -eu
+message=
+signature=
+pcr=
+nonce=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -m) message=$2; shift 2 ;;
+    -s) signature=$2; shift 2 ;;
+    -o) pcr=$2; shift 2 ;;
+    -q) nonce=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$nonce" = "$EXPECTED_NONCE" ]
+umask 077
+printf 'message' > "$message"
+printf 'signature' > "$signature"
+printf 'quoted-pcr-golden' > "$pcr"
+`
+	checkScript := `#!/bin/sh
+set -eu
+nonce=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -q) nonce=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$nonce" = "$EXPECTED_NONCE" ]
+[ "${FAKE_CHECKQUOTE_FAIL:-0}" != 1 ]
+`
+	for name, content := range map[string]string{
+		"tpm2_quote":      quoteScript,
+		"tpm2_checkquote": checkScript,
+	} {
+		if err := os.WriteFile(
+			filepath.Join(binDirectory, name),
+			[]byte(content),
+			0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDirectory)
+	nonce := strings.Repeat("a", 64)
+	t.Setenv("EXPECTED_NONCE", nonce)
+	akPublic := []byte("-----BEGIN PUBLIC KEY-----\ngolden\n-----END PUBLIC KEY-----\n")
+	akPath := filepath.Join(directory, "ak-public.pem")
+	if err := os.WriteFile(akPath, akPublic, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TPM_AK_PUBLIC_KEY_PATH", akPath)
+	akDigest := sha256.Sum256(akPublic)
+	pcrDigest := sha256.Sum256([]byte("quoted-pcr-golden"))
+	profile := AttestationHardwareProfile{
+		Mode:                  "hardware",
+		AKHandle:              hardwareAKHandle,
+		AKPublicKeySHA256:     hex.EncodeToString(akDigest[:]),
+		PCRSelection:          hardwarePCRSelection,
+		QuotedPCRDigestSHA256: hex.EncodeToString(pcrDigest[:]),
+	}
+
+	evidence := verifyTPMQuote(profile, nonce)
+	if !evidence.available || !evidence.quoteVerified ||
+		!evidence.measurementsVerified || len(evidence.failures) != 0 {
+		t.Fatalf("valid nonce-bound quote was rejected: %+v", evidence)
+	}
+
+	tamperedProfile := profile
+	tamperedProfile.QuotedPCRDigestSHA256 = strings.Repeat("0", 64)
+	tampered := verifyTPMQuote(tamperedProfile, nonce)
+	if !tampered.quoteVerified || tampered.measurementsVerified {
+		t.Fatalf("tampered PCR baseline was accepted: %+v", tampered)
+	}
+
+	t.Setenv("FAKE_CHECKQUOTE_FAIL", "1")
+	unverified := verifyTPMQuote(profile, nonce)
+	if unverified.quoteVerified || unverified.measurementsVerified {
+		t.Fatalf("failed tpm2_checkquote was accepted: %+v", unverified)
 	}
 }
 
@@ -393,6 +763,7 @@ func TestPerformAttestation_NoRequirements(t *testing.T) {
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	bundle := performAttestation()
 	// With no TPM/SB requirements and no service binaries, should be attested
@@ -420,6 +791,7 @@ refresh_interval: "1m"
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	bundle := performAttestation()
 	if bundle.State != StateDegraded {
@@ -447,6 +819,7 @@ refresh_interval: "1m"
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	bundle := performAttestation()
 	if bundle.State != StateAttested {
@@ -464,6 +837,7 @@ func TestPerformAttestation_RequireTPM_FailsInCI(t *testing.T) {
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	bundle := performAttestation()
 	// In CI/dev environments, TPM is not available → should fail
@@ -482,6 +856,7 @@ func TestPerformAttestation_AttestCountIncremented(t *testing.T) {
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	before := attestCount.Load()
 	performAttestation()
@@ -507,6 +882,7 @@ refresh_interval: "1m"
 	if err := loadAttestPolicy(); err != nil {
 		t.Fatalf("loadAttestPolicy: %v", err)
 	}
+	installTestTrustInputs(t)
 
 	before := degradeCount.Load()
 	performAttestation()
@@ -532,6 +908,7 @@ func TestGetCurrentState_AfterAttestation(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 
 	performAttestation()
 	state, bundle := getCurrentState()
@@ -571,6 +948,7 @@ func TestHTTP_Attest_Get(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 	performAttestation()
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/attest", nil)
@@ -612,11 +990,12 @@ func TestHTTP_Attest_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHTTP_Verify_Attested(t *testing.T) {
+func TestHTTP_Verify_EvaluationPolicySatisfiedWithoutHardwareVerification(t *testing.T) {
 	resetGlobalState(t)
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 	performAttestation()
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/verify", nil)
@@ -628,8 +1007,11 @@ func TestHTTP_Verify_Attested(t *testing.T) {
 	}
 	var body map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["verified"] != true {
-		t.Error("should be verified when attested")
+	if body["policy_satisfied"] != true {
+		t.Error("explicit evaluation profile should satisfy its limited policy")
+	}
+	if body["verified"] != false || body["evidence_verified"] != false {
+		t.Error("evaluation mode must not claim cryptographically verified hardware evidence")
 	}
 }
 
@@ -664,6 +1046,7 @@ refresh_interval: "1m"
 	path := writeTempAttestPolicy(t, policyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 	performAttestation()
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/verify", nil)
@@ -696,6 +1079,7 @@ func TestHTTP_Refresh_Post(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/refresh", nil)
 	w := httptest.NewRecorder()
@@ -716,6 +1100,7 @@ func TestHTTP_SecurityStatus(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 	performAttestation()
 
 	r := httptest.NewRequest(http.MethodGet, "/api/security/status", nil)
@@ -747,6 +1132,7 @@ func TestHTTP_SecurityStatus_CountsTracked(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 
 	// Run attestation twice
 	performAttestation()
@@ -781,8 +1167,11 @@ func TestToken_NoTokenConfigured(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/refresh", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
-	if !called {
-		t.Error("handler should pass through when no token configured")
+	if called {
+		t.Error("handler must fail closed when no token is configured")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without configured token, got %d", w.Code)
 	}
 }
 
@@ -846,6 +1235,7 @@ func TestToken_RefreshRequiresToken(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 
 	serviceToken = "refresh-secret"
 	handler := requireServiceToken(handleRefresh)
@@ -865,6 +1255,42 @@ func TestToken_RefreshRequiresToken(t *testing.T) {
 	handler(w2, r2)
 	if w2.Code != http.StatusOK {
 		t.Errorf("refresh with token: expected 200, got %d", w2.Code)
+	}
+}
+
+func TestRuntimeMux_ProtectsAllEvidenceEndpoints(t *testing.T) {
+	resetGlobalState(t)
+	serviceToken = "runtime-secret"
+	mux := newRuntimeMux()
+
+	for _, path := range []string{
+		"/api/v1/attest",
+		"/api/v1/verify",
+		"/api/security/status",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("%s returned %d without authentication", path, response.Code)
+			}
+
+			request = httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("Authorization", "Bearer runtime-secret")
+			response = httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code == http.StatusForbidden {
+				t.Fatalf("%s rejected the configured target credential", path)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("health must remain available without credentials, got %d", response.Code)
 	}
 }
 
@@ -888,6 +1314,7 @@ func TestAuditLog_WritesOnAttestation(t *testing.T) {
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
+	installTestTrustInputs(t)
 
 	performAttestation()
 
@@ -905,6 +1332,35 @@ func TestAuditLog_WritesOnAttestation(t *testing.T) {
 	}
 	if bundle.Timestamp == "" {
 		t.Error("audit log entry should have timestamp")
+	}
+}
+
+func TestAuditFailureCannotPublishPolicySatisfyingEvidence(t *testing.T) {
+	resetGlobalState(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	t.Setenv("AUDIT_LOG_PATH", logPath)
+	if err := initAuditLog(); err != nil {
+		t.Fatal(err)
+	}
+	if err := auditFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
+	t.Setenv("ATTESTATION_POLICY_PATH", path)
+	if err := loadAttestPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	installTestTrustInputs(t)
+	bundle := performAttestation()
+	auditFile = nil
+
+	if bundle.State != StateFailed || bundle.EvidenceVerified {
+		t.Fatalf("audit failure published trusted evidence: %+v", bundle)
+	}
+	if !slices.Contains(bundle.Failures, "attestation audit persistence failed") {
+		t.Fatalf("audit failure missing from evidence: %v", bundle.Failures)
 	}
 }
 

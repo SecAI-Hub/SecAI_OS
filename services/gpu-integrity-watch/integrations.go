@@ -83,8 +83,8 @@ func buildAttestState(scorer *ScoringEngine, latestResults []ProbeResult) GPUAtt
 type IncidentReport struct {
 	Class       string                 `json:"class"`
 	Source      string                 `json:"source"`
-	Description string                `json:"description"`
-	Severity    string                `json:"severity,omitempty"`
+	Description string                 `json:"description"`
+	Severity    string                 `json:"severity,omitempty"`
 	Evidence    map[string]interface{} `json:"evidence,omitempty"`
 }
 

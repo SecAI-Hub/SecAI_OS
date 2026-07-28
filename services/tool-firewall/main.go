@@ -106,7 +106,7 @@ var (
 	deniedRequests atomic.Int64
 )
 
-var serviceToken string // loaded at startup; empty = dev mode (no auth)
+var serviceToken string
 
 const (
 	defaultMaxArgLength   = 4096
@@ -116,31 +116,28 @@ const (
 )
 
 // loadServiceToken reads the service-to-service auth token from disk.
-// If the file does not exist, token auth is disabled (dev/test mode).
-func loadServiceToken() {
+func loadServiceToken() error {
 	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
 	if tokenPath == "" {
 		tokenPath = "/run/secure-ai/service-token"
 	}
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		log.Printf("warning: service token not loaded (%v) — running in dev mode (no token auth)", err)
-		return
+		return fmt.Errorf("read service token %s: %w", tokenPath, err)
 	}
 	serviceToken = strings.TrimSpace(string(data))
 	if serviceToken == "" {
-		log.Printf("warning: service token file is empty — running in dev mode (no token auth)")
-		return
+		return fmt.Errorf("service token %s is empty", tokenPath)
 	}
 	log.Printf("service token loaded from %s", tokenPath)
+	return nil
 }
 
 // requireServiceToken wraps a handler to enforce Bearer token auth on mutating endpoints.
-// If no token was loaded at startup (dev mode), all requests pass through.
 func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if serviceToken == "" {
-			next(w, r)
+			http.Error(w, `{"error":"service authentication unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
 		auth := r.Header.Get("Authorization")
@@ -659,6 +656,15 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func newToolFirewallMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/v1/evaluate", requireServiceToken(handleEvaluate))
+	mux.HandleFunc("/v1/stats", requireServiceToken(handleStats))
+	mux.HandleFunc("/v1/reload", requireServiceToken(handleReload))
+	return mux
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -669,25 +675,19 @@ func main() {
 	}
 
 	initAuditLog()
-	loadServiceToken()
+	if err := loadServiceToken(); err != nil {
+		log.Fatalf("service authentication unavailable: %v", err)
+	}
 
 	bind := os.Getenv("BIND_ADDR")
 	if bind == "" {
 		bind = "127.0.0.1:8475"
 	}
 
-	mux := http.NewServeMux()
-	// Read-only endpoints — no auth required
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/v1/evaluate", handleEvaluate)
-	mux.HandleFunc("/v1/stats", handleStats)
-	// Mutating endpoints — require service token
-	mux.HandleFunc("/v1/reload", requireServiceToken(handleReload))
-
 	log.Printf("secure-ai-tool-firewall listening on %s", bind)
 	server := &http.Server{
 		Addr:              bind,
-		Handler:           mux,
+		Handler:           newToolFirewallMux(),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,

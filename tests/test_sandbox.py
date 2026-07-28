@@ -10,7 +10,12 @@ Validates:
 import importlib.util
 import json
 from pathlib import Path
+import platform
+import subprocess
+import sys
+import textwrap
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -68,6 +73,12 @@ class TestSystemdHardening:
         for name in CORE_SERVICES:
             content = self._read_unit(name)
             for directive in REQUIRED_DIRECTIVES:
+                if (
+                    name == "secure-ai-quarantine-watcher"
+                    and directive == "RestrictNamespaces=yes"
+                ):
+                    assert "RestrictNamespaces=user pid net mnt ipc uts" in content
+                    continue
                 assert directive in content, (
                     f"{name}.service missing directive: {directive}"
                 )
@@ -99,8 +110,8 @@ class TestSystemdHardening:
                 f"{name} missing GPU DeviceAllow"
             )
 
-    def test_private_network_on_isolated_services(self):
-        """Services that don't need outbound should have PrivateNetwork=yes."""
+    def test_non_egress_services_allow_only_local_ipc(self):
+        """Shared-loopback services must deny non-local IP destinations."""
         isolated = [
             "secure-ai-inference",
             "secure-ai-diffusion",
@@ -109,7 +120,12 @@ class TestSystemdHardening:
         ]
         for name in isolated:
             content = self._read_unit(name)
-            assert "PrivateNetwork=yes" in content, f"{name} missing PrivateNetwork"
+            assert "IPAddressDeny=any" in content, (
+                f"{name} does not default-deny IP destinations"
+            )
+            assert "IPAddressAllow=localhost" in content, (
+                f"{name} does not restrict IP traffic to shared loopback IPC"
+            )
 
     def test_airlock_no_private_network(self):
         """Airlock is the ONLY service that needs outbound — no PrivateNetwork."""
@@ -254,15 +270,104 @@ class TestLandlockPolicy:
                     f"service '{name}' has invalid access mode '{mode}' on {entry['path']}"
                 )
 
-    def test_inference_has_read_only_registry(self):
-        """Inference should only have read-only access to the registry."""
+    def test_inference_has_read_only_encrypted_models(self):
+        """Inference should only have read-only access to encrypted model blobs."""
         policy = self._load_policy()
         inference = policy["services"]["inference"]
         for entry in inference["paths"]:
-            if entry["path"] == "/var/lib/secure-ai/registry":
-                assert entry["access"] == "ro", "inference should have ro access to registry"
+            if entry["path"] == "/var/lib/secure-ai/vault/models":
+                assert entry["access"] == "ro", "inference should have ro model access"
                 return
-        assert False, "inference missing registry path rule"
+        assert False, "inference missing encrypted model path rule"
+
+    def test_quarantine_watcher_uses_required_landlock(self):
+        unit = (
+            REPO_ROOT
+            / "files/system/usr/lib/systemd/system/secure-ai-quarantine-watcher.service"
+        ).read_text()
+        assert (
+            "ExecStart=/usr/libexec/secure-ai/landlock-apply.py "
+            "--require quarantine -- /usr/libexec/secure-ai/quarantine-watcher"
+        ) in unit
+
+    def test_quarantine_scanner_omits_common_credential_paths(self):
+        policy = self._load_policy()
+        scanner = policy["services"]["quarantine_scanner"]
+        assert scanner["include_common_paths"] is False
+        paths = {entry["path"]: entry["access"] for entry in scanner["paths"]}
+        assert paths["/var/lib/secure-ai/quarantine/processing"] == "ro"
+        assert "/var/lib/secure-ai/quarantine/incoming" not in paths
+        assert "/run/credentials" not in paths
+        assert "/var/lib/secure-ai/promotion-staging" not in paths
+        assert "/var/lib/secure-ai/logs" not in paths
+
+    def test_quarantine_claim_dac_and_private_network_boundary(self):
+        tmpfiles = (
+            REPO_ROOT / "files/system/usr/lib/tmpfiles.d/secure-ai.conf"
+        ).read_text()
+        unit = (
+            REPO_ROOT
+            / "files/system/usr/lib/systemd/system/secure-ai-quarantine-watcher.service"
+        ).read_text()
+        policy = self._load_policy()
+
+        assert (
+            "d /var/lib/secure-ai/quarantine/processing   "
+            "2770 root secure-ai-quarantine"
+        ) in tmpfiles
+        supplementary = next(
+            line
+            for line in unit.splitlines()
+            if line.startswith("SupplementaryGroups=")
+        )
+        assert "secure-ai-quarantine" in supplementary
+        assert "Environment=BWRAP_BIN=/usr/bin/bwrap" in unit
+        assert "ReadWritePaths=/var/lib/secure-ai/quarantine/processing" in unit
+        assert "RestrictNamespaces=user pid net mnt ipc uts" in unit
+
+        watcher_paths = {
+            entry["path"]: entry["access"]
+            for entry in policy["services"]["quarantine"]["paths"]
+        }
+        assert watcher_paths["/var/lib/secure-ai/quarantine/processing"] == "rw"
+        assert watcher_paths["/usr/bin/bwrap"] == "exe"
+
+    def test_quarantine_scanner_runtime_is_assembled(self):
+        recipe = yaml.safe_load(
+            (REPO_ROOT / "recipes/recipe.yml").read_text()
+        )
+        rpm_module = next(
+            module
+            for module in recipe["modules"]
+            if module.get("type") == "rpm-ostree"
+        )
+        build_script = (
+            REPO_ROOT / "files/scripts/build-services.sh"
+        ).read_text()
+
+        assert "bubblewrap" in rpm_module["install"]
+        assert 'cat > "${INSTALL_DIR}/quarantine-scanner"' in build_script
+        assert "from quarantine.scanner_worker import main" in build_script
+        assert (
+            "import quarantine.scanner_broker, "
+            "quarantine.scanner_stage, quarantine.scanner_worker"
+        ) in build_script
+        required_block = build_script.split(
+            "REQUIRED_BINARIES=(", 1
+        )[1].split(")", 1)[0]
+        assert '"${INSTALL_DIR}/quarantine-scanner"' in required_block
+        assert '"/usr/bin/bwrap"' in required_block
+
+    def test_ui_can_only_write_quarantine_incoming(self):
+        unit = (
+            REPO_ROOT
+            / "files/system/usr/lib/systemd/system/secure-ai-ui.service"
+        ).read_text()
+        assert "ReadWritePaths=/var/lib/secure-ai/quarantine/incoming" in unit
+        assert "ReadWritePaths=/var/lib/secure-ai/quarantine\n" not in unit
+        assert "secure-ai-quarantine" not in next(
+            line for line in unit.splitlines() if line.startswith("SupplementaryGroups=")
+        )
 
     def test_diffusion_can_write_outputs(self):
         """Diffusion should have write access to outputs directory."""
@@ -294,6 +399,40 @@ class TestLandlockHelper:
         result = landlock_mod._access_for_mode("rw")
         assert result == landlock_mod.ACCESS_RW
 
+    def test_access_for_mode_rw_includes_modern_mutation_rights(self):
+        result = landlock_mod._access_for_mode("rw", abi_version=5)
+        assert result & landlock_mod.LANDLOCK_ACCESS_FS_REFER
+        assert result & landlock_mod.LANDLOCK_ACCESS_FS_TRUNCATE
+        assert result & landlock_mod.LANDLOCK_ACCESS_FS_IOCTL_DEV
+
+    def test_read_only_mode_never_grants_modern_mutation_rights(self):
+        result = landlock_mod._access_for_mode("ro", abi_version=5)
+        denied = (
+            landlock_mod.LANDLOCK_ACCESS_FS_REFER
+            | landlock_mod.LANDLOCK_ACCESS_FS_TRUNCATE
+            | landlock_mod.LANDLOCK_ACCESS_FS_IOCTL_DEV
+        )
+        assert result & denied == 0
+
+    def test_handled_mask_tracks_detected_abi(self):
+        abi1 = landlock_mod._handled_access_for_abi(1)
+        abi2 = landlock_mod._handled_access_for_abi(2)
+        abi3 = landlock_mod._handled_access_for_abi(3)
+        abi5 = landlock_mod._handled_access_for_abi(5)
+        assert abi1 & landlock_mod.LANDLOCK_ACCESS_FS_REFER == 0
+        assert abi2 & landlock_mod.LANDLOCK_ACCESS_FS_REFER
+        assert abi2 & landlock_mod.LANDLOCK_ACCESS_FS_TRUNCATE == 0
+        assert abi3 & landlock_mod.LANDLOCK_ACCESS_FS_TRUNCATE
+        assert abi3 & landlock_mod.LANDLOCK_ACCESS_FS_IOCTL_DEV == 0
+        assert abi5 & landlock_mod.LANDLOCK_ACCESS_FS_IOCTL_DEV
+
+    @pytest.mark.parametrize("machine", ["x86_64", "amd64", "aarch64", "arm64"])
+    def test_supported_fedora_architectures(self, machine):
+        assert landlock_mod._syscall_numbers(machine) == (444, 445, 446)
+
+    def test_unknown_architecture_fails_closed(self):
+        assert landlock_mod._syscall_numbers("mips-unknown") is None
+
     def test_access_for_mode_exe(self):
         result = landlock_mod._access_for_mode("exe")
         expected = landlock_mod.ACCESS_EXE | landlock_mod.ACCESS_RO
@@ -308,3 +447,75 @@ class TestLandlockHelper:
         import platform
         if platform.system() != "Linux":
             assert landlock_mod.check_landlock_available() == 0
+
+    def test_wrapper_execs_only_after_policy_application(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(landlock_mod, "apply_landlock", lambda service: calls.append(service) or True)
+
+        class ExecCalled(Exception):
+            pass
+
+        def fake_exec(path, argv):
+            calls.append((path, argv))
+            raise ExecCalled
+
+        monkeypatch.setattr(landlock_mod.os, "execvp", fake_exec)
+        monkeypatch.setattr(
+            landlock_mod.sys,
+            "argv",
+            ["landlock-apply.py", "--require", "registry", "--", "/bin/true", "--flag"],
+        )
+        with pytest.raises(ExecCalled):
+            landlock_mod.main()
+        assert calls == [
+            "registry",
+            ("/bin/true", ["/bin/true", "--flag"]),
+        ]
+
+    @pytest.mark.skipif(platform.system() != "Linux", reason="Landlock is Linux-only")
+    def test_landlock_denies_path_outside_allowlist(self, tmp_path):
+        abi = landlock_mod.check_landlock_available()
+        if abi == 0:
+            pytest.skip("kernel does not expose Landlock")
+        if abi < 3:
+            pytest.skip("kernel lacks Landlock TRUNCATE mediation")
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        readonly = allowed / "readonly"
+        readonly.write_text("preserve")
+        policy = tmp_path / "landlock.yaml"
+        policy.write_text(
+            yaml.safe_dump({
+                "version": 1,
+                "services": {
+                    "negative_test": {
+                        "paths": [{"path": str(allowed), "access": "ro", "required": True}]
+                    }
+                },
+            })
+        )
+        helper = REPO_ROOT / "files/system/usr/libexec/secure-ai/landlock-apply.py"
+        code = textwrap.dedent(
+            f"""
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("ll", {str(helper)!r})
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.POLICY_PATH = {str(policy)!r}
+            if not mod.apply_landlock("negative_test"):
+                raise SystemExit(3)
+            try:
+                open("/etc/passwd", "rb")
+            except PermissionError:
+                pass
+            else:
+                raise SystemExit(4)
+            try:
+                open({str(readonly)!r}, "wb")
+            except PermissionError:
+                raise SystemExit(0)
+            raise SystemExit(5)
+            """
+        )
+        result = subprocess.run([sys.executable, "-c", code], check=False)
+        assert result.returncode == 0, "Landlock allowed a read outside the policy"

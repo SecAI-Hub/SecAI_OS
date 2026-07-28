@@ -13,6 +13,7 @@ import socket
 import stat
 import sys
 import tempfile
+import concurrent.futures
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -57,8 +58,51 @@ from agent.agent.keystore import (
 from agent.agent.storage import StorageGateway
 from agent.agent.planner import Planner
 from agent.agent.executor import Executor
+from agent.agent.sandbox import SubprocessIsolator
+from agent.agent.task_store import TaskStore
 from agent.agent.app import app
 import agent.agent.app as agent_app_module
+
+_AGENT_TEST_TOKEN = "agent-unit-test-service-credential-32-bytes"
+_AGENT_CONTAINMENT_TEST_TOKEN = "agent-containment-test-credential-32-bytes"
+
+
+@pytest.fixture(autouse=True)
+def provision_agent_test_service_credential(tmp_path, monkeypatch):
+    token_path = tmp_path / "agent-service.token"
+    token_path.write_text(_AGENT_TEST_TOKEN, encoding="utf-8")
+    token_path.chmod(0o600)
+    containment_token_path = tmp_path / "agent-containment.token"
+    containment_token_path.write_text(
+        _AGENT_CONTAINMENT_TEST_TOKEN,
+        encoding="utf-8",
+    )
+    containment_token_path.chmod(0o600)
+    monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv("AGENT_UI_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv(
+        "AGENT_CONTAINMENT_TOKEN_PATH",
+        str(containment_token_path),
+    )
+    monkeypatch.setenv("AIRLOCK_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv("TOOL_FIREWALL_TOKEN_PATH", str(token_path))
+    agent_app_module._audit = agent_app_module.AuditChain(tmp_path / "agent-audit.jsonl")
+    yield
+    agent_app_module._audit = None
+
+
+def _authenticated_agent_client():
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {_AGENT_TEST_TOKEN}"
+    return client
+
+
+def _containment_agent_client():
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = (
+        f"Bearer {_AGENT_CONTAINMENT_TEST_TOKEN}"
+    )
+    return client
 
 
 # ============================================================================
@@ -457,6 +501,24 @@ class TestStorageGateway:
         assert not result["ok"]
         assert "too large" in result["error"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX hard links required")
+    def test_hard_link_cannot_cross_write_boundary(self):
+        original = Path(self.tmpdir) / "outputs" / "original.txt"
+        alias = Path(self.tmpdir) / "outputs" / "alias.txt"
+        original.write_text("preserve me", encoding="utf-8")
+        os.link(original, alias)
+
+        result = self.gateway.write_file(
+            str(alias),
+            "replacement",
+            self.cap,
+            overwrite=True,
+        )
+
+        assert result["ok"] is False
+        assert "hard-linked" in result["error"]
+        assert original.read_text(encoding="utf-8") == "preserve me"
+
 
 # ============================================================================
 # Planner tests (heuristic fallback)
@@ -644,7 +706,7 @@ class TestExecutor:
         )
         budgets = Budgets()
         result_step = self.executor.execute(step, self.cap, budgets)
-        assert result_step.status == StepStatus.COMPLETED  # step completes but result is not ok
+        assert result_step.status == StepStatus.FAILED
         assert not result_step.result["ok"]
 
     def test_budget_exceeded_blocks_execution(self):
@@ -689,7 +751,7 @@ class TestExecutor:
         )
         budgets = Budgets()
         result_step = self.executor.execute(step, self.cap, budgets)
-        assert result_step.status == StepStatus.COMPLETED
+        assert result_step.status == StepStatus.FAILED
         assert not result_step.result["ok"]
         assert "no content" in result_step.result["error"]
 
@@ -710,7 +772,8 @@ class TestExecutor:
 class TestAgentAPI:
 
     def setup_method(self):
-        self.client = app.test_client()
+        agent_app_module._containment_frozen.clear()
+        self.client = _authenticated_agent_client()
 
     def test_health(self):
         resp = self.client.get("/health")
@@ -718,6 +781,59 @@ class TestAgentAPI:
         data = resp.get_json()
         assert data["status"] == "ok"
         assert data["service"] == "agent"
+
+    def test_task_body_and_preferences_are_strictly_validated(self):
+        assert self.client.post("/v1/task", json=[]).status_code == 400
+        assert self.client.post("/v1/task", json={
+            "intent": "test",
+            "unexpected": True,
+        }).status_code == 400
+        response = self.client.post("/v1/task", json={
+            "intent": "test",
+            "preferences": {"tool_invoke": "always"},
+        })
+        assert response.status_code == 400
+        assert "unsupported" in response.get_json()["error"]
+
+    def test_containment_freeze_persists_and_blocks_new_work(self, tmp_path):
+        old_path = agent_app_module._CONTAINMENT_STATE_PATH
+        agent_app_module._CONTAINMENT_STATE_PATH = str(
+            tmp_path / "containment.json"
+        )
+        try:
+            resp = _containment_agent_client().post("/api/v1/freeze", json={
+                "action": "freeze",
+                "incident_id": "INC-20260727-0001",
+                "reason": "integrity violation",
+            })
+            assert resp.status_code == 200
+            assert resp.get_json()["drained"] is True
+            state = json.loads(
+                Path(agent_app_module._CONTAINMENT_STATE_PATH).read_text()
+            )
+            assert state["frozen"] is True
+            assert state["incident_id"] == "INC-20260727-0001"
+
+            blocked = self.client.post("/v1/task", json={"intent": "run"})
+            assert blocked.status_code == 423
+            assert "frozen" in blocked.get_json()["error"]
+        finally:
+            agent_app_module._containment_frozen.clear()
+            agent_app_module._CONTAINMENT_STATE_PATH = old_path
+
+    def test_unix_socket_credentials_are_route_scoped(self, monkeypatch):
+        monkeypatch.setattr(agent_app_module, "_BIND_ADDR", "unix:/tmp/agent.sock")
+
+        containment_client = _containment_agent_client()
+        general = containment_client.get("/v1/tasks")
+        assert general.status_code == 401
+
+        ui_client = _authenticated_agent_client()
+        freeze = ui_client.post("/api/v1/freeze", json={
+            "action": "freeze",
+            "incident_id": "INC-1",
+        })
+        assert freeze.status_code == 401
 
     def test_list_modes(self):
         resp = self.client.get("/v1/modes")
@@ -814,7 +930,7 @@ class TestAgentAPI:
 
     def test_approve_nonexistent(self):
         resp = self.client.post("/v1/task/fake/approve", json={})
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
     @patch("agent.agent.planner.requests.post")
     def test_approve_pending_task_allows_internal_reverification(self, mock_post):
@@ -887,9 +1003,52 @@ class TestAgentAPI:
         assert resp.status_code == 403
         assert "invalid" in resp.get_json()["error"]
 
+    @patch("agent.agent.planner.requests.post")
+    def test_concurrent_approval_schedules_exactly_once(self, mock_post):
+        clear_nonce_cache()
+        with agent_app_module._tasks_lock:
+            agent_app_module._tasks.clear()
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        submitted = self.client.post("/v1/task", json={
+            "intent": "read /var/lib/secure-ai/vault/user_docs/notes.txt",
+        })
+        assert submitted.status_code == 201
+        task_id = submitted.get_json()["task_id"]
+
+        def approve():
+            client = _authenticated_agent_client()
+            return client.post(
+                f"/v1/task/{task_id}/approve",
+                json={"approve_all": True},
+            ).status_code
+
+        with patch("agent.agent.app._schedule_execution", return_value=True) as schedule:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                statuses = sorted(pool.map(lambda _index: approve(), range(2)))
+
+        assert statuses == [200, 409]
+        schedule.assert_called_once()
+
+    @patch("agent.agent.planner.requests.post")
+    def test_approval_rejects_unknown_step_id(self, mock_post):
+        clear_nonce_cache()
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        submitted = self.client.post("/v1/task", json={
+            "intent": "read /var/lib/secure-ai/vault/user_docs/notes.txt",
+        })
+        task_id = submitted.get_json()["task_id"]
+
+        response = self.client.post(
+            f"/v1/task/{task_id}/approve",
+            json={"step_ids": ["not-a-real-step"]},
+        )
+
+        assert response.status_code == 400
+        assert "unknown" in response.get_json()["error"]
+
     def test_deny_nonexistent(self):
         resp = self.client.post("/v1/task/fake/deny", json={})
-        assert resp.status_code == 404
+        assert resp.status_code == 400
 
     def test_deny_completed_task_returns_conflict(self):
         task = Task(intent="done")
@@ -951,6 +1110,15 @@ class TestAgentAPI:
             "workspace": "/vault/user_docs",
         })
         assert resp.status_code == 400
+
+    @patch("agent.agent.planner.requests.post")
+    def test_submitted_capability_has_finite_ttl_and_signed_budgets(self, mock_post):
+        mock_post.side_effect = requests.ConnectionError("no inference")
+        response = self.client.post("/v1/task", json={"intent": "read my documents"})
+        assert response.status_code == 201
+        capability = response.get_json()["capability"]
+        assert capability["expires_at"] > capability["issued_at"]
+        assert capability["budget_limits"]["max_steps"] > 0
 
 
 # ============================================================================
@@ -1052,7 +1220,8 @@ class TestSecurityInvariants:
         with patch("agent.agent.executor.requests.post", return_value=mock_resp) as mock_post:
             result_step = executor.execute(step, cap, budgets)
 
-        assert result_step.result["ok"] is True
+        assert result_step.result["ok"] is False
+        assert "execution broker" in result_step.result["error"]
         _, kwargs = mock_post.call_args
         assert kwargs["json"]["tool"] == "filesystem.read"
         assert kwargs["json"]["params"] == {"path": "/tmp/test"}
@@ -1185,6 +1354,26 @@ class TestTokenSigning:
         assert not valid
         assert "signature mismatch" in reason
 
+    def test_verify_tampered_preferences_and_budget_fails(self):
+        token = create_token(
+            SessionMode.STANDARD,
+            configurable_prefs={"read_file": "ask"},
+            custom_budgets={"max_steps": 30},
+        )
+        token.configurable_prefs["read_file"] = "always"
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "signature mismatch" in reason
+
+        token = create_token(
+            SessionMode.STANDARD,
+            custom_budgets={"max_steps": 30},
+        )
+        token.budget_limits["max_steps"] = 999
+        valid, reason = verify_token(token)
+        assert not valid
+        assert "signature mismatch" in reason
+
     def test_verify_unsigned_token_fails(self):
         """A token without a signature is rejected."""
         token = CapabilityToken()
@@ -1309,14 +1498,13 @@ class TestTwoPhaseApproval:
         self.engine = PolicyEngine()
         self.cap = create_token(SessionMode.STANDARD)
 
-    def test_trust_change_requires_two_phase(self):
-        """TRUST_CHANGE always requires approval via two-phase."""
+    def test_trust_change_denied_without_executor(self):
         step = Step(action=StepAction.TRUST_CHANGE)
         decision, reason, evidence = self.engine.evaluate_with_evidence(
             step, self.cap
         )
-        assert decision == "ask"
-        assert "approval" in reason.lower() or "two-phase" in reason.lower()
+        assert decision == "deny"
+        assert "no production executor" in reason
 
     def test_export_data_requires_two_phase(self):
         step = Step(action=StepAction.EXPORT_DATA)
@@ -1325,15 +1513,15 @@ class TestTwoPhaseApproval:
         )
         assert decision in ("ask", "deny")  # denied in offline, ask otherwise
 
-    def test_widen_scope_requires_two_phase(self):
+    def test_widen_scope_denied_without_executor(self):
         step = Step(action=StepAction.WIDEN_SCOPE)
         decision, _, _ = self.engine.evaluate_with_evidence(step, self.cap)
-        assert decision == "ask"
+        assert decision == "deny"
 
-    def test_enable_tool_requires_two_phase(self):
+    def test_enable_tool_denied_without_executor(self):
         step = Step(action=StepAction.ENABLE_TOOL)
         decision, _, _ = self.engine.evaluate_with_evidence(step, self.cap)
-        assert decision == "ask"
+        assert decision == "deny"
 
     def test_change_security_always_denied(self):
         """CHANGE_SECURITY is denied even with two-phase (always-deny)."""
@@ -1439,11 +1627,12 @@ class TestVerifiedSupervisorAPI:
     def setup_method(self):
         _reset_signing_key()
         clear_nonce_cache()
-        self.client = app.test_client()
+        agent_app_module._containment_frozen.clear()
+        self.client = _authenticated_agent_client()
 
     @patch("agent.agent.planner.requests.post")
-    def test_submitted_task_has_signed_token(self, mock_post):
-        """Submitted tasks get tokens with signatures and binding fields."""
+    def test_submitted_task_redacts_capability_authenticator(self, mock_post):
+        """API output exposes metadata, never replayable capability authority."""
         mock_post.side_effect = requests.ConnectionError("no inference")
         resp = self.client.post("/v1/task", json={
             "intent": "summarize my documents",
@@ -1452,8 +1641,8 @@ class TestVerifiedSupervisorAPI:
         assert resp.status_code == 201
         data = resp.get_json()
         cap = data.get("capability", {})
-        assert cap.get("signature") != ""
-        assert cap.get("nonce") != ""
+        assert "signature" not in cap
+        assert "nonce" not in cap
         assert cap.get("intent_hash") != ""
         assert cap.get("task_id") == data["task_id"]
 
@@ -1543,6 +1732,13 @@ class TestSoftwareKeyProvider:
         loaded = self.provider.get_key("preexisting")
         assert loaded == key_data
 
+    def test_binary_key_boundary_whitespace_is_not_trimmed(self):
+        key_data = b"\x20" + b"\x00" * 62 + b"\x0a"
+        key_path = os.path.join(self.tmpdir, "binary.key")
+        Path(key_path).write_bytes(key_data)
+
+        assert self.provider.get_key("binary") == key_data
+
     def test_derive_subkey(self):
         k1 = self.provider.derive("context-a")
         k2 = self.provider.derive("context-b")
@@ -1568,6 +1764,14 @@ class TestSoftwareKeyProvider:
             default_key_path=key_path,
         )
         assert provider.get_key("default") == key_data
+
+    def test_missing_production_key_fails_closed(self):
+        provider = SoftwareKeyProvider(
+            key_dir=self.tmpdir,
+            allow_ephemeral=False,
+        )
+        with pytest.raises(RuntimeError, match="signing key unavailable"):
+            provider.get_key("missing")
 
 
 class TestTPM2KeyProvider:
@@ -1667,13 +1871,12 @@ class TestKeystoreFactory:
             provider = create_provider({"backend": "auto"})
         assert provider.provider_name() == "software"
 
-    def test_create_provider_pkcs11_fallback(self):
-        """PKCS#11 falls back to software when unavailable."""
-        provider = create_provider({
-            "backend": "pkcs11",
-            "pkcs11": {"module_path": "/nonexistent.so"},
-        })
-        assert provider.provider_name() == "software"
+    def test_create_provider_pkcs11_fails_closed(self):
+        with pytest.raises(RuntimeError, match="PKCS#11"):
+            create_provider({
+                "backend": "pkcs11",
+                "pkcs11": {"module_path": "/nonexistent.so"},
+            })
 
     def test_keystore_integrates_with_capabilities(self):
         """Keystore provider is used by create_token for signing."""
@@ -1690,15 +1893,81 @@ class TestUnixSocketServer:
         if not hasattr(socket, "AF_UNIX"):
             pytest.skip("Unix domain sockets are not available on this platform")
 
-        sock_path = tmp_path / "agent.sock"
-        server = agent_app_module._make_unix_server(str(sock_path))
-        try:
-            assert sock_path.exists()
-            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o600
-            assert server.server_address == str(sock_path)
-        finally:
-            server.server_close()
+        # Darwin's sockaddr_un is short; mirror the appliance's short /run path.
+        with tempfile.TemporaryDirectory(prefix="secai-agent-", dir="/tmp") as socket_dir:
+            sock_path = Path(socket_dir) / "agent.sock"
+            server = agent_app_module._make_unix_server(str(sock_path))
             try:
-                sock_path.unlink()
-            except FileNotFoundError:
-                pass
+                assert sock_path.exists()
+                assert stat.S_IMODE(sock_path.stat().st_mode) == 0o660
+                assert server.server_address == str(sock_path)
+            finally:
+                server.server_close()
+                try:
+                    sock_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
+class TestTaskStore:
+    def test_state_is_atomic_group_writable_and_interrupted_work_needs_recovery(
+        self, tmp_path
+    ):
+        state_path = tmp_path / "agent" / "tasks.json"
+        store = TaskStore(state_path)
+        task = Task(
+            intent="read a document",
+            status=TaskStatus.RUNNING,
+            steps=[
+                Step(
+                    action=StepAction.READ_FILE,
+                    status=StepStatus.RUNNING,
+                    params={"authorization": "do-not-persist"},
+                    result={
+                        "content": "sensitive-output",
+                        "text": "private-model-response",
+                    },
+                )
+            ],
+        )
+
+        assert store.save([task]) is True
+        assert stat.S_IMODE(state_path.stat().st_mode) == 0o660
+        assert stat.S_IMODE(state_path.parent.stat().st_mode) == 0o2770
+        assert "do-not-persist" not in state_path.read_text(encoding="utf-8")
+        assert "sensitive-output" not in state_path.read_text(encoding="utf-8")
+        assert "private-model-response" not in state_path.read_text(encoding="utf-8")
+
+        restored = store.load()[task.task_id]
+        assert restored.status == TaskStatus.RECOVERY_REQUIRED
+        assert restored.capability is None
+        assert restored.steps[0].status == StepStatus.FAILED
+
+    def test_persistence_failure_sets_health_signal(self, tmp_path):
+        parent_file = tmp_path / "not-a-directory"
+        parent_file.write_text("x", encoding="utf-8")
+        store = TaskStore(parent_file / "tasks.json")
+
+        assert store.save([Task(intent="test")]) is False
+        assert store.healthy is False
+        assert store.last_error
+
+    def test_missing_state_after_error_clears_health_signal(self, tmp_path):
+        state_path = tmp_path / "tasks.json"
+        state_path.write_text("{not json", encoding="utf-8")
+        store = TaskStore(state_path)
+        assert store.load() == {}
+        assert store.healthy is False
+
+        state_path.unlink()
+        assert store.load() == {}
+        assert store.healthy is True
+
+
+def test_legacy_subprocess_isolation_surface_fails_closed():
+    result = SubprocessIsolator().execute_isolated(
+        Step(action=StepAction.OUTBOUND_REQUEST),
+        {},
+    )
+    assert result["ok"] is False
+    assert "unavailable" in result["error"]

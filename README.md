@@ -3,12 +3,18 @@
 [![CI](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml/badge.svg)](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml)
 [![Build](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/build.yml/badge.svg)](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/build.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Fedora 42](https://img.shields.io/badge/Fedora-42-blue)](https://fedoraproject.org/)
+[![Fedora 44](https://img.shields.io/badge/Fedora-44-blue)](https://fedoraproject.org/)
 [![uBlue](https://img.shields.io/badge/Built_on-uBlue-purple)](https://universal-blue.org/)
 
 **Bootable local-first AI OS with sealed runtime, model quarantine pipeline, airlock egress controls, encrypted vault, and private Tor-routed search.**
 
-Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All AI compute -- inference and generation -- stays on-device. Network egress is denied by default. GPU auto-detected at first boot.
+Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All AI compute -- inference and generation -- stays on-device. Network egress is denied by default. GPU capability is detected at first boot.
+
+> **Release status:** SecAI OS is under active security hardening. A capability is
+> not considered production-verified until a release-specific evidence bundle
+> completes the [production readiness checklist](docs/production-readiness-checklist.md).
+> See the [capability matrix](docs/capability-matrix.md) for verified,
+> experimental, hardware-dependent, and planned functionality.
 
 ```
 +-------------------+     +-------------------+     +-------------------+
@@ -46,7 +52,7 @@ Built on [uBlue](https://universal-blue.org/) (Fedora Atomic / Silverblue). All 
 
 ## Quickstart
 
-Install [Fedora Silverblue 42](https://fedoraproject.org/silverblue/), then run the bootstrap script. The script configures cosign signature verification **before** the first image pull — no unverified data is ever fetched.
+Install [Fedora Silverblue 44](https://fedoraproject.org/silverblue/), then run the bootstrap script. The script configures cosign signature verification before the first image pull.
 
 ```bash
 # 1. Download and review the bootstrap script
@@ -54,15 +60,20 @@ curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scrip
   -o /tmp/secai-bootstrap.sh
 less /tmp/secai-bootstrap.sh
 
-# 2. Run the bootstrap (use --digest from the latest release for production)
-sudo bash /tmp/secai-bootstrap.sh
+# 2. Bind the release channel to its exact signed digest
+sudo bash /tmp/secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest sha256:RELEASE_DIGEST
 
-# 3. Reboot and open the setup wizard
+# 3. Reboot and run the privileged setup ceremony from the local console
 sudo systemctl reboot
-# Then open http://127.0.0.1:8480
+sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
 ```
 
-The setup wizard guides you through privacy profile selection, system verification, and model import.
+The console wizard verifies the signed deployment, creates and verifies the
+encrypted LUKS vault, and optionally enrolls TPM2. Only after that succeeds,
+open `http://127.0.0.1:8480` for the unprivileged UI onboarding flow, privacy
+profile selection, and model import.
 
 | Method | Time | Best For | Details |
 |--------|------|----------|---------|
@@ -74,13 +85,18 @@ The setup wizard guides you through privacy profile selection, system verificati
 
 See [docs/install/quickstart.md](docs/install/quickstart.md) for full step-by-step instructions, including the [sandbox path](docs/install/sandbox.md), VM build details, and verification commands.
 
-For production deployments with digest pinning: `sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST`
+Only use a release that publishes a non-placeholder digest and passes the
+release verifier. Pin that digest with:
+`sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST`
 
 See [bare metal](docs/install/bare-metal.md) | [virtual machine](docs/install/vm.md) | [sandbox](docs/install/sandbox.md) | [development](docs/install/dev.md) | [recovery](docs/install/recovery-bootstrap.md)
 
 ### Get Your First Model
 
-Open `http://127.0.0.1:8480`, go to **Models**, and click **Download** on any model in the catalog. The 7-stage quarantine pipeline runs automatically. Once promoted, the model is ready to use.
+The default privacy posture keeps Airlock egress disabled. Import a locally
+obtained, hash-verified model from **Models**, or explicitly enable the
+controlled Airlock acquisition path before selecting **Download**. The model
+must complete quarantine and atomic promotion before it becomes selectable.
 
 ---
 
@@ -93,6 +109,7 @@ Open `http://127.0.0.1:8480`, go to **Models**, and click **Download** on any mo
 | Registry | 8470 | Go | Trusted artifact manifest, read-only model store |
 | Tool Firewall | 8475 | Go | Policy-gated tool invocation gateway |
 | Web UI | 8480 | Python | Chat, image/video generation, model management |
+| UI Ingress (sandbox only) | 8480 | Go | Fixed loopback relay with no mounted credential; preserves internal-only UI networking |
 | Airlock | 8490 | Go | Sanitized egress decision gate (disabled by default) |
 | Inference Worker | 8465 | llama.cpp | LLM inference (CUDA / ROCm / Vulkan / Metal / CPU) |
 | Diffusion Worker | 8455 | Python | Image and video generation |
@@ -101,7 +118,7 @@ Open `http://127.0.0.1:8480`, go to **Models**, and click **Download** on any mo
 | GPU Integrity Watch | 8495 | Go | Continuous GPU runtime verification and anomaly detection |
 | MCP Firewall | 8496 | Go | Model Context Protocol policy gateway (default-deny, taint tracking) |
 | Policy Engine | 8500 | Go | Unified policy decision point (6 domains, decision evidence, OPA-upgradeable) |
-| Runtime Attestor | 8505 | Go | TPM2 quote verification, HMAC-signed state bundles, startup gating |
+| Runtime Attestor | 8505 | Go | Enrolled AK, nonce-bound TPM2 quote/checkquote, authenticated PCR baseline, HMAC-signed state bundles, startup gating |
 | Integrity Monitor | 8510 | Go | Continuous baseline-verified file watcher (binaries, policies, models, trust material) |
 | Incident Recorder | 8515 | Go | Security event capture, incident lifecycle, auto-containment |
 | Search Mediator | 8485 | Python | Tor-routed web search with PII stripping |
@@ -119,10 +136,10 @@ Every model passes through the same fully automatic pipeline:
 | 1 | **Source Policy** | Verifies origin against allowlist |
 | 2 | **Format Gate** | Validates headers, rejects unsafe formats (pickle, .pt, .bin) |
 | 3 | **Integrity Check** | SHA-256 hash pinning verification |
-| 4 | **Provenance** | Cosign signature verification |
+| 4 | **Provenance** | Records source-appropriate signature or immutable revision evidence |
 | 5 | **Static Scan** | ModelScan + YARA + fickling + modelaudit + entropy analysis + gguf-guard |
-| 6 | **Behavioral Test** | 22 adversarial prompts across 10 attack categories (LLM only) |
-| 7 | **Diffusion Scan** | Config integrity, symlink detection (diffusion only) |
+| 6 | **Behavioral Test** | 41 adversarial prompts across 15 attack categories (GGUF only) |
+| 7 | **Diffusion Scan** | Strict config/tensor parsing plus mandatory image-owned per-file manifest (diffusion only) |
 
 ---
 
@@ -138,24 +155,24 @@ Every model passes through the same fully automatic pipeline:
 | **Memory** | Swap/zswap disabled, core dumps discarded, mlock for secrets, TEE detection |
 | **Network** | nftables default-deny egress, DNS rate-limited, traffic analysis countermeasures |
 | **Filesystem** | Encrypted vault (LUKS2/AES-256/Argon2id), restrictive permissions, fs-verity |
-| **Models** | 7-stage quarantine pipeline with gguf-guard deep integrity scanning |
+| **Models** | Credentialless, no-routable-network 7-stage quarantine; immutable file/directory pins; registry-side revalidation |
 | **Tools** | Default-deny policy, path allowlisting, traversal protection, rate limiting |
 | **Egress** | Airlock disabled by default, PII/credential scanning, destination allowlist |
 | **Search** | Tor-routed, privacy-preserving query obfuscation (decoy queries, k-anonymity), injection detection |
-| **Audit** | Hash-chained tamper-evident logs with periodic verification |
+| **Audit** | Security-critical HMAC-chained logs, explicit format enrollment, keyed checkpoints, and periodic verification |
 | **Auth** | Scrypt passphrase hashing, rate-limited login, session management |
 | **Vault** | Auto-lock after 30 min idle, TPM2-sealed keys |
 | **Services** | Systemd sandboxing: ProtectSystem, PrivateNetwork, seccomp-bpf, Landlock |
 | **Agent** | Deny-by-default policy engine, HMAC-signed capability tokens, hard budgets, loopback-only IPC |
 | **Policy Engine** | Unified decision point (6 domains), structured evidence, OPA/Rego-upgradeable |
-| **Attestation** | TPM2 quote verification, HMAC-signed runtime state bundles, startup gating |
+| **Attestation** | Root-only AK/PCR enrollment, fresh nonce-bound TPM2 quote/checkquote, cross-service-verified HMAC bundles, fail-closed startup gating |
 | **Integrity** | Continuous baseline-verified file watcher (30s scans), signed baselines, auto-degradation |
 | **Incident Response** | 9 incident classes, auto-containment (freeze agent, disable airlock, vault relock, quarantine model) |
 | **GPU** | Vendor-specific DeviceAllow, PrivateNetwork, driver fingerprinting, device allowlist |
 | **HSM/Keys** | Pluggable keystore (software/TPM2/PKCS#11), key rotation, PCR-sealed key hierarchy |
-| **Clipboard** | VM clipboard agents disabled, auto-clear every 60s |
+| **Clipboard** | Verifiable guest controls, explicit host-policy check, per-session 60s auto-clear |
 | **Tripwire** | Canary files in sensitive dirs, inotify real-time monitoring |
-| **Emergency** | 3-level panic (lock / wipe keys / full wipe) with passphrase gates |
+| **Emergency** | Verified lock, TPM unlock removal, or LUKS cryptographic erase |
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
 | **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
 
@@ -164,7 +181,8 @@ See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual ri
 ### Verify Image Signatures
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+cosign verify --key cosign.pub \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ---
@@ -177,19 +195,22 @@ Every push to `main` builds a signed OCI image via [BlueBuild](https://blue-buil
 
 ```
 ghcr.io/secai-hub/secai_os:latest     # rolling latest
-ghcr.io/secai-hub/secai_os:42          # Fedora 42 base
+ghcr.io/secai-hub/secai_os:44          # Fedora 44 base
 ```
 
-Install with digest pinning (recommended for production):
+Install with mandatory digest pinning:
 
 ```bash
-sudo bash secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+sudo bash secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest sha256:RELEASE_DIGEST
 ```
 
 The image is cosign-signed. Verify before pulling:
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+cosign verify --key cosign.pub \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ### Tagged Releases
@@ -207,8 +228,6 @@ Tagged releases (`v*`) are built by the [Release workflow](.github/workflows/rel
 | `RELEASE_MANIFEST.json` | Machine-readable release manifest (binaries, SBOMs, provenance, build metadata) |
 | `secai-os-*.iso.sig` | Cosign signature for the bootable ISO |
 | `secai-os-*-usb.raw.xz.sig` | Cosign signature for the portable USB image |
-| `secai-os-*.qcow2(.sig)` | Optional KVM/QEMU disk image and signature when a self-hosted KVM runner is configured |
-| `secai-os-*.ova(.sig)` | Optional VirtualBox/VMware appliance and signature when a self-hosted KVM runner is configured |
 
 Go services shipped as release binaries: `airlock`, `registry`, `tool-firewall`, `gpu-integrity-watch`, `mcp-firewall`, `policy-engine`, `runtime-attestor`, `integrity-monitor`, `incident-recorder`.
 
@@ -216,7 +235,14 @@ Python services (`ui`, `agent`, `quarantine`, `diffusion-worker`, `search-mediat
 
 ### Bootable Media
 
-A signed bootable installer ISO is built by every tagged release using [build-container-installer](https://github.com/JasonN3/build-container-installer). Each release also includes a compressed portable USB image (`secai-os-*-usb.raw.xz`) built from the same bootc container so the OS can be flashed directly to a USB stick and run without first installing to the internal disk. Both artifacts are available as **workflow artifacts** (90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml), and their cosign signatures are published to the GitHub Release for verification.
+A signed bootable installer ISO is built by every tagged release from the
+cosign-verified immutable bootc digest. Each release also includes a compressed
+portable USB image (`secai-os-*-usb.raw.xz`) built from that same digest so the
+OS can be flashed directly to a USB stick and run without first installing to
+the internal disk. Both artifacts are available as **workflow artifacts**
+(90-day retention) from the [Release workflow runs](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml),
+and their cosign signatures are published to the GitHub Release for
+verification.
 
 For Windows users writing the portable USB image:
 
@@ -228,13 +254,20 @@ For Windows users writing the portable USB image:
 To build portable USB or VM media locally from the OCI image:
 
 ```bash
-bash scripts/build-usb-image.sh       # produces output/secai-os-<version>-x86_64-usb.raw(.xz)
-bash scripts/vm/build-qcow2.sh        # creates output/secai-os.qcow2 and prints the virt-install command
-bash scripts/vm/build-qcow2.sh --ci   # runs virt-install unattended on a KVM build runner
+bash scripts/build-usb-image.sh \
+  --image-ref ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST \
+  --output-dir output
+bash scripts/vm/build-qcow2.sh \
+  --image-ref ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 bash scripts/vm/build-ova.sh          # converts output/secai-os.qcow2 to output/secai-os.ova
 ```
 
-The USB builder uses a digest-pinned bootc-image-builder image by default. VM builds require a Linux host with `virt-install`, `virsh`, `qemu-img`, and `libvirt`.
+The media builders verify the exact source image with `cosign.pub` before use
+and use a digest-pinned bootc-image-builder image. VM builds require a Linux
+host with `cosign`, `virt-install`, `virsh`, `qemu-img`, and `libvirt`. QCOW2
+and OVA images are intentionally local-only: their encrypted-boot credentials
+are unique to the operator and are never published as generic release
+artifacts. CI builds ephemeral VM images for qualification and destroys them.
 
 ### Verify a Release
 
@@ -265,15 +298,16 @@ Trust anchors: [`diffusion-runtime-manifest.yaml`](files/scripts/diffusion-runti
 
 ## Hardware Support
 
-GPU is **auto-detected at first boot**. No manual configuration needed.
+GPU capability is detected at first boot. Production support is granted only
+for hardware combinations recorded in a release-specific qualification report.
 
 | Vendor | GPUs | Backend | LLM | Diffusion |
 |--------|------|---------|-----|-----------|
-| **NVIDIA** | RTX 5090/5080/4090/4080/3090/3080 | CUDA | Full offload | Full offload |
-| **AMD** | RX 7900 XTX/XT, RX 7800/7700, RDNA/CDNA | ROCm (HIP) | Full offload | Full offload |
-| **Intel** | Arc A770/A750/A580, Arc B-series | XPU (oneAPI) | Via Vulkan | Via IPEX |
-| **Apple** | M4/M3/M2/M1 (Pro/Max/Ultra) | Metal / MPS | Full offload | MPS acceleration |
-| **CPU** | x86_64 (AVX2/AVX-512), ARM64 (NEON) | CPU | Optimized | Functional |
+| **NVIDIA** | RTX 30/40/50-series | CUDA | Hardware-dependent | Hardware-dependent |
+| **AMD** | RDNA/CDNA | ROCm (HIP) | Experimental | Experimental |
+| **Intel** | Arc A/B-series | XPU / Vulkan | Experimental | Experimental |
+| **Apple** | M1–M4 | Metal / MPS | Sandbox/dev only | Sandbox/dev only |
+| **CPU** | x86_64 (AVX2/AVX-512) | CPU | Supported fallback | Functional, slow |
 
 **Minimum:** 16 GB RAM, 8 GB VRAM, 64 GB storage. See [docs/compatibility-matrix.md](docs/compatibility-matrix.md) for detailed specs.
 
@@ -315,8 +349,8 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 | Job | Workflow Link | What It Proves |
 |-----|--------------|---------------|
-| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 429 Go tests across 9 services with `-race` (build, test, vet) |
-| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | 1,154 Python tests (unit/integration + adversarial/acceptance), ruff lint, bandit security scan (enforced on HIGH/HIGH), mypy type checking |
+| `go-build-and-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | All Go modules with `-race` (build, test, vet); enforced floor in [test-counts.json](docs/test-counts.json) |
+| `python-test` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Unit/integration + adversarial/acceptance tests, ruff, bandit, and mypy; enforced floor in [test-counts.json](docs/test-counts.json) |
 | `appsec-lint` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Hadolint for container build files and Semgrep project security rules |
 | `security-regression` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | Adversarial test suite: prompt injection, policy bypass, containment, recovery |
 | `supply-chain-verify` | [View job](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/ci.yml) | SBOM generation via Syft, cosign availability, provenance keywords in release/build workflows |
@@ -338,7 +372,7 @@ All CI jobs are defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | [API Reference](docs/api.md) | HTTP API for all services |
 | [Policy Schema](docs/policy-schema.md) | Full policy.yaml schema reference |
 | [Security Status](docs/security-status.md) | Implementation status of all 54 milestones |
-| [Test Matrix](docs/test-matrix.md) | Test coverage: 1,583 tests across Go and Python (see [test-counts.json](docs/test-counts.json)) |
+| [Test Matrix](docs/test-matrix.md) | Current test areas and enforced count floors |
 | [Compatibility Matrix](docs/compatibility-matrix.md) | GPU, VM, and hardware support |
 | [Security Test Matrix](docs/security-test-matrix.md) | Security feature test coverage |
 | [FAQ](docs/faq.md) | Common questions |
@@ -420,27 +454,34 @@ Open `http://127.0.0.1:8480`:
 - **Generate** -- Text-to-image, image-to-image, text-to-video with diffusion models
 - **Security** -- Service health, Secure Boot/TPM2 status, audit chain, emergency panic
 - **Updates** -- Staged update workflow (check / stage / apply / rollback)
-- **Settings** -- Vault lock/unlock, passphrase change, session management
+- **Settings** -- Vault status and local-console instructions, profile settings, session management
 
 ### Emergency Panic
 
 ```bash
-sudo securectl panic 1                          # Lock (reversible)
-sudo securectl panic 2 --confirm "passphrase"   # Wipe keys
-sudo securectl panic 3 --confirm "passphrase"   # Full wipe (DATA UNRECOVERABLE)
+sudo securectl panic 1  # Reversible runtime lock
+sudo securectl panic 2  # Prompts locally; removes TPM/hardware unlock
+sudo securectl panic 3  # Prompts locally; destroys all vault LUKS keyslots
 ```
 
-Also available via Web UI (Security page) and API (`POST /api/emergency/panic`).
+The Security page shows status and local-console instructions; it never owns
+root authority. Passphrases are not accepted in an HTTP body or command-line
+argument. Level 3 cryptographically erases the encrypted vault; unlinking
+unencrypted metadata does not claim physical overwrite on flash or
+copy-on-write media.
 
 ### Vault Management
 
 ```bash
 curl http://127.0.0.1:8480/api/vault/status         # Check status
-curl -X POST http://127.0.0.1:8480/api/vault/lock    # Lock
-curl -X POST http://127.0.0.1:8480/api/vault/unlock \ # Unlock
-  -H 'Content-Type: application/json' \
-  -d '{"passphrase": "your-passphrase"}'
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py \
+  --lock-once --reason operator_request              # Lock
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py \
+  --unlock-once                                      # Local passphrase prompt
 ```
+
+The HTTP lock/unlock routes intentionally return `501`; the web process never
+receives a LUKS passphrase or root service-control authority.
 
 ### Web Search (Tor-Routed, Optional)
 
@@ -456,14 +497,14 @@ Privacy: Tor-routed, PII stripped, injection detection, privacy-preserving query
 ## Running Tests
 
 ```bash
-# Go tests (429 total across 9 services)
+# Go tests across all service modules
 for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
            policy-engine runtime-attestor integrity-monitor incident-recorder; do
   (cd services/$svc && go test -v -race ./...)
 done
 
-# Python tests (1,154 total)
-python -m pip install -r requirements-ci.txt
+# Python tests
+python -m pip install --require-hashes -r requirements-ci.lock
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Shell script linting
@@ -477,7 +518,12 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 54 project milestones (click to expand)</summary>
+<summary>All 54 implementation milestones (click to expand)</summary>
+
+Checked milestones mean that the associated source implementation exists.
+They are not release certification, production sign-off, or hardware
+qualification. The [capability matrix](docs/capability-matrix.md) and the
+evidence produced for a specific release are authoritative.
 
 - [x] **Milestone 0** -- Threat model, dataflow, invariants, policy files
 - [x] **Milestone 1** -- Bootable OS, encrypted vault, GPU drivers
@@ -488,7 +534,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 6** -- Systemd sandboxing, kernel hardening, nftables
 - [x] **Milestone 7** -- CI/CD, Go/Python tests, shellcheck
 - [x] **Milestone 8** -- Image/video generation, diffusion worker
-- [x] **Milestone 9** -- Multi-GPU support (NVIDIA/AMD/Intel/Apple)
+- [x] **Milestone 9** -- Multi-backend code paths (hardware qualification tracked separately)
 - [x] **Milestone 10** -- Tor-routed search, SearXNG, PII stripping
 - [x] **Milestone 11** -- VM support, OVA/QCOW2 builds
 - [x] **Milestone 12** -- Model integrity monitoring
@@ -520,13 +566,13 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 - [x] **Milestone 38** -- Incident recorder + containment automation (9 classes, 4-state lifecycle)
 - [x] **Milestone 39** -- GPU integrity deep integration (driver fingerprinting, attestor/incident wiring)
 - [x] **Milestone 40** -- Agent verified supervisor hardening (signed tokens, replay protection, two-phase approval)
-- [x] **Milestone 41** -- HSM-backed key handling (pluggable keystore: software/TPM2/PKCS#11)
+- [x] **Milestone 41** -- Keystore abstraction (software/TPM2; PKCS#11 operations remain planned)
 - [x] **Milestone 42** -- Enforcement wiring + CI supply chain verification
 - [x] **Milestone 43** -- Stronger isolation: sandbox tightening, adversarial tests, CI security regression, MCP isolation, recovery ceremonies, M5 acceptance suite
 - [x] **Milestone 44** -- Auditability and documentation hardening: test-count drift CI check, CI evidence links and badges, M4/M5 terminology disambiguation, audit quick-path doc, recovery runbook, verify-release script, security/product roadmap split
 - [x] **Milestone 45** -- Production readiness hardening: incident persistence (file-backed), graceful shutdown for all Go services, HTTP timeouts, systemd production hardening, first-boot validation, audit log rotation, CI vulnerability scanning, production operations guide
 - [x] **Milestone 46** -- Operational maturity: bootstrap trust gap fix (cosign verify before rebase), CI runs on all changes (removed paths-ignore for .md), Python quality gates (ruff + bandit + split test suites), docs-validation CI job, production-readiness checklist, SLOs, release channel policy, support lifecycle, sample verification output
-- [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.26.3 service CI/builders, verification-first bootstrap docs
+- [x] **Milestone 47** -- CI enforcement hardening: enforced vulnerability scanning (govulncheck + pip-audit + bandit fail on HIGH/HIGH) with waiver mechanism, mypy type checking for security-sensitive services, pinned reproducible Python CI dependencies, Go 1.26.5 service CI/builders, verification-first bootstrap docs
 - [x] **Milestone 48** -- Production hardening: build script fail-closed (fatal errors for 12 required services + binary verification gate), incident store fsync (crash-safe persistence), GPU backend metadata recording, llama-server watchdog (Type=notify + WatchdogSec=30), model catalog externalization (YAML with fallback), circuit breaker for inter-service HTTP calls, post-upgrade model verification in Greenboot, cosign key rotation documentation (full lifecycle)
 - [x] **Milestone 49** -- Signed-first install path: bootstrap script configures signing policy before first rebase (eliminates unverified transport), digest-pinned install flow (CI publishes digests in build summary + release assets), first-boot setup wizard (interactive integrity verification + vault + TPM2 + health check), recovery/dev path separated into dedicated doc
 - [x] **Milestone 50** -- Production operations package: backup/restore scripts (full/config/logs/keys categories, age/gpg encryption, SHA256 manifest, LUKS header backup/restore), rollback decision matrix (Greenboot auto-rollback + manual criteria), 5 break-glass recovery procedures, formal data retention policy (7 data classes, disk capacity thresholds)
@@ -563,8 +609,9 @@ services/
   diffusion-worker/         Python -- Image/video generation (:8455)
   search-mediator/          Python -- Tor-routed web search (:8485)
   ui/                       Python/Flask -- Web UI (:8480)
+  ui-ingress/               Go -- Uncredentialed fixed sandbox relay (:8480)
   common/                   Python -- Shared utilities (audit, auth, mlock)
-tests/                      1,154 Python tests, 429 Go tests (1,583 total)
+tests/                      Python, integration, adversarial, and acceptance tests
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs

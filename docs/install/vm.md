@@ -8,7 +8,10 @@ This guide covers running SecAI OS in a virtual machine. VM mode is suitable for
 
 Running SecAI OS in a VM introduces limitations that do not apply to bare metal:
 
-- **No TPM2 sealing:** Most hypervisors do not provide a hardware TPM. Vault passphrase cannot be sealed to TPM.
+- **No hardware-rooted TPM assurance:** A hypervisor may expose a virtual TPM,
+  but the host controls its state. SecAI OS treats vTPM attestation as
+  evaluation-only. Vault sealing requires an explicit degraded-lab
+  `--allow-vtpm` acknowledgement and retains a passphrase recovery keyslot.
 - **No Secure Boot chain:** VM Secure Boot (when available) does not provide the same guarantees as hardware Secure Boot with MOK enrollment.
 - **Host visibility:** The hypervisor host can inspect VM memory, potentially exposing decrypted model data and inference content.
 - **Shared resources:** Side-channel attacks from other VMs or the host are possible.
@@ -29,7 +32,7 @@ For production use with sensitive models, bare metal installation is recommended
 
 ### OVA Import
 
-If an OVA image is available:
+After creating a user-specific OVA with the local builder:
 
 1. Open VirtualBox and select File > Import Appliance.
 2. Select the SecAI OS OVA file.
@@ -37,6 +40,17 @@ If an OVA image is available:
 4. Click Import.
 5. After import, go to Settings > System and ensure EFI is enabled.
 6. Start the VM.
+7. Treat the image as evaluation-only until you rotate its temporary login and
+   encrypted host-state credentials and create the separate data vault from
+   the local console.
+
+The UI binds only to guest loopback. Forward it over SSH rather than publishing
+port 8480:
+
+```bash
+ssh -L 8480:127.0.0.1:8480 secai@<guest-ip>
+# Browse to http://127.0.0.1:8480 on the host.
+```
 
 ### Manual Setup
 
@@ -44,7 +58,7 @@ If an OVA image is available:
 2. Allocate at least 4 CPUs and 16 GB RAM.
 3. Create a 100 GB dynamically allocated VDI disk.
 4. In Settings > System, enable EFI.
-5. In Settings > Storage, attach the Fedora Silverblue 42 ISO.
+5. In Settings > Storage, attach the Fedora Silverblue 44 ISO.
 6. Start the VM and follow the standard Fedora Silverblue installation.
 7. After installation, rebase to SecAI OS using the [bootstrap script](bare-metal.md#production-install-recommended).
 
@@ -71,7 +85,7 @@ For reliable GPU passthrough, use KVM/QEMU instead.
 
 ### Setup
 
-1. Create a new VM and select the Fedora Silverblue 42 ISO.
+1. Create a new VM and select the Fedora Silverblue 44 ISO.
 2. Choose "Linux" > "Fedora 64-bit" as the guest OS.
 3. Allocate at least 4 CPUs and 16 GB RAM.
 4. Set disk size to 100 GB.
@@ -105,7 +119,7 @@ KVM with QEMU and libvirt provides the best VM experience for SecAI OS, includin
 ### Setup with virt-manager
 
 1. Open virt-manager and create a new VM.
-2. Select the Fedora Silverblue 42 ISO as installation media.
+2. Select the Fedora Silverblue 44 ISO as installation media.
 3. Allocate at least 4 CPUs and 16 GB RAM.
 4. Create a 100 GB qcow2 disk.
 5. Before starting, go to Overview > Firmware and select UEFI (OVMF).
@@ -123,24 +137,35 @@ virt-install \
   --ram 16384 \
   --vcpus 4 \
   --disk path=/var/lib/libvirt/images/secai-os.qcow2,format=qcow2 \
-  --cdrom /path/to/Fedora-Silverblue-42-x86_64.iso \
-  --os-variant fedora42 \
+  --cdrom /path/to/Fedora-Silverblue-44-x86_64.iso \
+  --os-variant fedora44 \
   --boot uefi \
   --network bridge=virbr0
 ```
 
 ### Automated QCOW2/OVA Builders
 
-The repository includes helper scripts for local KVM builders and release runners:
+The repository includes helper scripts for local KVM builders:
 
 ```bash
 bash scripts/vm/build-qcow2.sh --image-ref ghcr.io/secai-hub/secai_os@sha256:<digest>
 bash scripts/vm/build-ova.sh output/secai-os.qcow2 output
 ```
 
-The QCOW2 builder installs the SecAI signing policy in the kickstart and rebases with `ostree-image-signed:docker://` on the first pull. It does not perform an unsigned bootstrap pull. The generated kickstart is written with mode `0600` because it contains temporary VM and vault passwords.
+The QCOW2 builder installs the SecAI signing policy in the kickstart and
+rebases with `ostree-image-signed:docker://` on the first pull. It does not
+perform an unsigned bootstrap pull. It creates encrypted host state and leaves
+`/dev/sda5` unused for the separate vault ceremony. Local-build temporary
+credentials are written to a mode-`0600` file instead of build logs; the
+kickstart is also mode `0600` and is removed after unattended CI builds.
+For a local build, delete both files after rotating the VM login and encrypted
+host-state credentials.
 
-On a self-hosted KVM release runner, `build-qcow2.sh --ci` runs `virt-install` unattended and fails if the required virtualization tooling is missing.
+CI uses `build-qcow2.sh --ci` only for ephemeral builder and boot qualification.
+That mode requires caller-provided random credentials, and the workflow destroys
+the resulting images. SecAI OS does not publish a generic QCOW2 or OVA because
+doing so would require either sharing an encrypted-boot secret or publishing an
+image that its recipient cannot unlock.
 
 ### GPU Passthrough (KVM/QEMU)
 
@@ -187,7 +212,11 @@ This is the most reliable GPU passthrough option.
 
 - **Snapshots:** Take a VM snapshot after initial setup and before importing models. This provides a clean rollback point.
 - **Networking:** Use NAT networking by default. The VM's nftables rules provide defense-in-depth, but host-level isolation adds another layer.
-- **Clipboard:** Disable clipboard sharing between host and guest to prevent accidental data leakage.
+- **Clipboard:** Disable both shared clipboard and drag-and-drop in the
+  hypervisor configuration. SecAI OS records guest-side control status in
+  `/var/lib/secure-ai/state/clipboard.json`, but a guest cannot attest or
+  override every host policy. Treat
+  `requires_hypervisor_verification` as a deployment blocker.
 - **Shared folders:** Do not use shared folders between host and guest. Transfer models via the UI import feature instead.
 - **Resource monitoring:** Monitor VM resource usage. LLM inference is resource-intensive; under-provisioned VMs will produce slow responses.
 - **Nested virtualization:** Not recommended. SecAI OS does not use containers or VMs internally, but nested virtualization adds latency and complexity.

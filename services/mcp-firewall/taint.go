@@ -8,7 +8,7 @@ import (
 // TaintEntry records the origin of a taint label.
 type TaintEntry struct {
 	Label     string    `json:"label"`
-	Source    string    `json:"source"`    // e.g. "server/tool"
+	Source    string    `json:"source"` // e.g. "server/tool"
 	AppliedAt time.Time `json:"applied_at"`
 }
 

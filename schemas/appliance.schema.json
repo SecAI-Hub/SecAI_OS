@@ -383,33 +383,6 @@
           "type": "boolean",
           "default": true,
           "description": "Allow passphrase fallback when PCR values do not match."
-        },
-        "auto_reseal_on_update": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically reseal TPM2 after rpm-ostree upgrades."
-        }
-      }
-    },
-    "sandbox": {
-      "type": "object",
-      "description": "Process isolation settings (seccomp-bpf, Landlock).",
-      "additionalProperties": false,
-      "properties": {
-        "seccomp_enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable seccomp-bpf syscall filtering."
-        },
-        "landlock_enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable Landlock filesystem access control."
-        },
-        "core_dumps_disabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Prevent core dumps across all services."
         }
       }
     },

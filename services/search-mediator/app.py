@@ -14,6 +14,7 @@ inference and online information, and it routes everything through Tor.
 import hashlib
 import hmac
 import html
+import ipaddress
 import logging
 import os
 import re
@@ -410,10 +411,7 @@ def load_policy() -> dict:
 
 
 def _read_service_token() -> str:
-    """Read the inter-service token when present.
-
-    Empty token means development mode / auth disabled.
-    """
+    """Read the inter-service token."""
     token_path = os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
     try:
         return Path(token_path).read_text().strip()
@@ -421,11 +419,26 @@ def _read_service_token() -> str:
         return ""
 
 
+def _insecure_loopback_dev_auth_allowed() -> bool:
+    """Allow an explicit no-auth mode only on a loopback listener."""
+    if os.getenv("SECAI_ALLOW_INSECURE_NO_AUTH") != "1":
+        return False
+    try:
+        host, _port = BIND_ADDR.rsplit(":", 1)
+        host = host.strip("[]")
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _require_service_token() -> tuple[bool, Response | None]:
-    """Validate Bearer auth for egress-capable endpoints when configured."""
+    """Validate Bearer auth for egress-capable endpoints, fail closed."""
     token = _read_service_token()
     if not token:
-        return True, None
+        if _insecure_loopback_dev_auth_allowed():
+            log.warning("explicit loopback-only insecure authentication mode is active")
+            return True, None
+        return False, (jsonify({"error": "service authentication unavailable"}), 503)
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -667,6 +680,10 @@ def audit_search(query: str, redactions: list, num_results: int, blocked: bool,
 
 @app.route("/health")
 def health():
+    """Authenticated readiness probe; may contact the Tor-backed upstream."""
+    authorized, auth_response = _require_service_token()
+    if not authorized:
+        return auth_response
     enabled = _is_search_enabled()
     session_mode = _get_session_mode()
 

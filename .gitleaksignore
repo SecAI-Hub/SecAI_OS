@@ -1,0 +1,9 @@
+# Reviewed historical false positives. Keep these fingerprint-specific so new
+# findings in the same files still fail the secret-scanning gate.
+2637e09b5c597d09b4a57cda861c119425990ff6:services/quarantine/quarantine/yara_rules/secure_ai_default.yar:private-key:37
+49918a4bcd5b024d90e42bf8d29a237ee8cc90f8:services/quarantine/quarantine/pipeline.py:generic-api-key:575
+715c871fdb3834e652bfdebd1004a5893d92629e:tests/test_search.py:generic-api-key:59
+b7f25d4961ff5dc2f063c2a9cf9adb437c245b79:services/mcp-firewall/main_test.go:generic-api-key:429
+b7f25d4961ff5dc2f063c2a9cf9adb437c245b79:services/mcp-firewall/main_test.go:generic-api-key:454
+bad97b6df1f529648bfe7982a19f5b4085313608:services/airlock/main_test.go:generic-api-key:134
+cb2be48d68b0a84f6536016c0734747c33fa1e38:services/ai-incident-recorder/main_test.go:generic-api-key:379

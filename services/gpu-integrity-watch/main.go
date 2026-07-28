@@ -340,11 +340,27 @@ func cmdStatus() {
 		}
 	}
 
-	resp, err := outboundHTTPClient.Get(addr + "/v1/status")
+	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
+	if tokenPath == "" {
+		tokenPath = "/var/lib/secure-ai/credentials/gpu-integrity-watch.token"
+	}
+	tokenData, err := os.ReadFile(tokenPath)
+	if err != nil || strings.TrimSpace(string(tokenData)) == "" {
+		log.Fatalf("cannot load daemon credential from %s", tokenPath)
+	}
+	req, err := http.NewRequest(http.MethodGet, addr+"/v1/status", nil)
+	if err != nil {
+		log.Fatalf("cannot create daemon request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokenData)))
+	resp, err := outboundHTTPClient.Do(req)
 	if err != nil {
 		log.Fatalf("cannot reach daemon: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("daemon returned HTTP %d", resp.StatusCode)
+	}
 
 	var status map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&status)
@@ -364,7 +380,8 @@ func cmdDaemon() {
 	weights := convertWeights(profile.Scoring.Weights)
 	scorer := NewScoringEngine(weights, profile.Scoring.MaxHistory)
 	executor := NewActionExecutor(profile.Actions, profile.ModelDir, profile.InferenceURL)
-	token := os.Getenv("SERVICE_TOKEN")
+	inboundToken := readRequiredCredential("SERVICE_TOKEN_PATH")
+	incidentToken := readRequiredCredential("INCIDENT_RECORDER_TOKEN_PATH")
 
 	// Background probe cycle
 	interval := 5 * time.Minute
@@ -408,7 +425,7 @@ func cmdDaemon() {
 			log.Printf("cycle: verdict=%s score=%.2f", entry.Verdict, entry.CompositeScore)
 
 			// Report incidents on warning/critical
-			reportIncident(incidentURL, token, entry, results)
+			reportIncident(incidentURL, incidentToken, entry, results)
 
 			<-ticker.C
 		}
@@ -487,7 +504,7 @@ func cmdDaemon() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkToken(r, token) {
+		if !checkToken(r, inboundToken) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -533,7 +550,7 @@ func cmdDaemon() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkToken(r, token) {
+		if !checkToken(r, inboundToken) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -589,7 +606,7 @@ func cmdDaemon() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           authenticatedGPUHandler(mux, inboundToken),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -618,11 +635,40 @@ func cmdDaemon() {
 
 func checkToken(r *http.Request, expected string) bool {
 	if expected == "" {
-		return true
+		return false
 	}
 	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
 	provided := strings.TrimPrefix(auth, "Bearer ")
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func authenticatedGPUHandler(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && !checkToken(r, token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func readRequiredCredential(envName string) string {
+	path := os.Getenv(envName)
+	if path == "" {
+		log.Fatalf("%s is not configured", envName)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("cannot read %s: %v", envName, err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		log.Fatalf("%s points to an empty credential", envName)
+	}
+	return token
 }
 
 func convertWeights(raw map[string]float64) map[ProbeType]float64 {

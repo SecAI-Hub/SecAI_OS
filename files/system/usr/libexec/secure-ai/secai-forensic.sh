@@ -1,181 +1,188 @@
 #!/usr/bin/env bash
 #
-# SecAI OS — Forensic Bundle Export/Verify (M51)
-#
-# Exports a signed forensic bundle from the incident recorder, or
-# verifies the integrity of a previously exported bundle.
-#
-# Usage:
-#   secai-forensic export  [--output FILE]   Export a signed forensic bundle
-#   secai-forensic verify  <FILE>            Verify bundle hash integrity
-#   secai-forensic --help                    Show help
+# SecAI OS authenticated forensic bundle export and offline verification.
 #
 set -euo pipefail
+umask 077
 
 INCIDENT_RECORDER_URL="${INCIDENT_RECORDER_URL:-http://127.0.0.1:8515}"
-SERVICE_TOKEN_PATH="${SERVICE_TOKEN_PATH:-/run/secure-ai/service-token}"
+FORENSIC_TOKEN_PATH="${FORENSIC_TOKEN_PATH:-/var/lib/secure-ai/credentials/incident-forensic.token}"
+FORENSIC_HMAC_KEY_PATH="${FORENSIC_HMAC_KEY_PATH:-/var/lib/secure-ai/credentials/forensic-hmac.key}"
+WORK_ROOT="${WORK_ROOT:-/run/secure-ai/forensic-tmp}"
+VERIFY_HELPER="${VERIFY_HELPER:-/usr/libexec/secure-ai/secure-forensic-verify.py}"
+MAX_BUNDLE_BYTES=67108864
+WORK_DIR=""
+PARTIAL_OUTPUT=""
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
+if [ -t 1 ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; NC=''
+fi
 
-info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+info() { printf '%s[INFO]%s  %s\n' "$GREEN" "$NC" "$*"; }
+warn() { printf '%s[WARN]%s  %s\n' "$YELLOW" "$NC" "$*" >&2; }
+err()  { printf '%s[ERROR]%s %s\n' "$RED" "$NC" "$*" >&2; }
+fatal() { err "$*"; exit 1; }
 
 usage() {
-    cat <<'EOF'
-secai-forensic — Forensic bundle export and verification
+    cat <<'USAGE'
+secai-forensic — authenticated forensic export and verification
 
 Usage:
-  secai-forensic export [--output FILE]   Export a signed forensic bundle
-  secai-forensic verify <FILE>            Verify bundle hash integrity
-  secai-forensic --help                   Show this help
+  sudo secai-forensic export [--output FILE]
+  sudo secai-forensic verify FILE
+  secai-forensic --help
 
-The export subcommand downloads a signed forensic bundle from the local
-incident recorder service.  The bundle contains all incidents, audit log
-entries, system state, and a policy digest, signed with HMAC-SHA256.
+Export authenticates to the loopback-only incident recorder and writes through
+a mode-0600 temporary file before an atomic rename. Verify requires the
+root-only, dedicated forensic HMAC key and checks all of the following:
 
-The verify subcommand recomputes the bundle hash and checks it against
-the stored hash to detect tampering.
+  1. the exact canonical payload decodes as strict JSON;
+  2. its SHA-256 equals bundle_hash;
+  3. HMAC-SHA256(raw SHA-256 digest) equals signature; and
+  4. canonical payload fields exactly equal the exposed bundle fields.
 
-Environment:
-  INCIDENT_RECORDER_URL   (default: http://127.0.0.1:8515)
-  SERVICE_TOKEN_PATH      (default: /run/secure-ai/service-token)
-EOF
+The dedicated forensic bearer token is never placed in the process command line.
+USAGE
     exit 0
 }
 
-# ---------------------------------------------------------------------------
-# Export
-# ---------------------------------------------------------------------------
+cleanup() {
+    if [ -n "$PARTIAL_OUTPUT" ] && [ -f "$PARTIAL_OUTPUT" ] && [ ! -L "$PARTIAL_OUTPUT" ]; then
+        rm -f -- "$PARTIAL_OUTPUT"
+    fi
+    if [ -n "$WORK_DIR" ] && [[ "$WORK_DIR" == "$WORK_ROOT/"* ]] && [ -d "$WORK_DIR" ]; then
+        rm -rf -- "$WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || fatal "Forensic export and verification require root"
+}
+
+prepare_work_dir() {
+    install -d -m 0700 -o root -g root -- "$WORK_ROOT"
+    [ ! -L "$WORK_ROOT" ] || fatal "Refusing symbolic-link work directory: $WORK_ROOT"
+    WORK_DIR=$(mktemp -d "${WORK_ROOT}/forensic.XXXXXXXX")
+    chmod 0700 "$WORK_DIR"
+}
+
+validate_private_file() {
+    local path="$1"
+    local label="$2"
+    [ -f "$path" ] && [ ! -L "$path" ] || fatal "$label is missing or not a regular file"
+    [ "$(stat -c '%u' "$path")" -eq 0 ] || fatal "$label must be owned by root"
+    local mode
+    mode=$(stat -c '%a' "$path")
+    (( (8#$mode & 077) == 0 )) || fatal "$label must not be readable by group or other users"
+    [ -s "$path" ] || fatal "$label is empty"
+}
+
+validate_loopback_url() {
+    [[ "$INCIDENT_RECORDER_URL" =~ ^http://(127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$ ]] \
+        || fatal "INCIDENT_RECORDER_URL must be an explicit loopback HTTP origin"
+    local port="${BASH_REMATCH[2]}"
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] \
+        || fatal "INCIDENT_RECORDER_URL has an invalid port"
+}
+
+verify_bundle() {
+    local bundle="$1"
+    validate_private_file "$FORENSIC_HMAC_KEY_PATH" "Forensic HMAC key"
+    [ -x "$VERIFY_HELPER" ] || fatal "Forensic verifier is missing: $VERIFY_HELPER"
+    "$VERIFY_HELPER" \
+        --bundle "$bundle" \
+        --key "$FORENSIC_HMAC_KEY_PATH" \
+        --maximum-bytes "$MAX_BUNDLE_BYTES"
+}
+
 cmd_export() {
     local output="${1:-}"
-    if [[ -z "$output" ]]; then
-        output="forensic-bundle-$(date -u +%Y%m%d-%H%M%S).json"
+    [ -n "$output" ] || output="forensic-bundle-$(date -u +%Y%m%d-%H%M%S).json"
+    require_root
+    command -v curl >/dev/null 2>&1 || fatal "curl is required for export"
+    command -v python3 >/dev/null 2>&1 || fatal "python3 is required for verification"
+    validate_loopback_url
+    validate_private_file "$FORENSIC_TOKEN_PATH" "Incident-recorder forensic token"
+    validate_private_file "$FORENSIC_HMAC_KEY_PATH" "Forensic HMAC key"
+    prepare_work_dir
+
+    local token
+    IFS= read -r token < "$FORENSIC_TOKEN_PATH" || fatal "Could not read forensic token"
+    [[ "$token" =~ ^[0-9a-fA-F]{64,256}$ ]] \
+        || fatal "Incident-recorder token has an invalid encoding"
+
+    local output_parent output_name
+    output_parent=$(dirname -- "$output")
+    output_name=$(basename -- "$output")
+    [ -d "$output_parent" ] && [ ! -L "$output_parent" ] \
+        || fatal "Output parent must be an existing real directory"
+    [ "$output_name" != "." ] && [ "$output_name" != ".." ] \
+        || fatal "Invalid output filename"
+    [ ! -e "$output" ] && [ ! -L "$output" ] \
+        || fatal "Refusing to overwrite output: $output"
+
+    local curl_config="${WORK_DIR}/curl.conf"
+    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$curl_config"
+    chmod 0600 "$curl_config"
+
+    PARTIAL_OUTPUT=$(mktemp "${output_parent}/.${output_name}.partial.XXXXXXXX")
+    chmod 0600 "$PARTIAL_OUTPUT"
+    info "Exporting an authenticated bundle from the loopback incident recorder"
+    if ! curl \
+        --config "$curl_config" \
+        --proto '=http' \
+        --proto-redir '=http' \
+        --noproxy '*' \
+        --fail \
+        --silent \
+        --show-error \
+        --connect-timeout 2 \
+        --max-time 30 \
+        --max-filesize "$MAX_BUNDLE_BYTES" \
+        --output "$PARTIAL_OUTPUT" \
+        "${INCIDENT_RECORDER_URL}/api/v1/forensic/export"
+    then
+        fatal "Forensic export failed"
     fi
-
-    # Read service token if available
-    local auth_args=()
-    if [[ -f "$SERVICE_TOKEN_PATH" ]]; then
-        local token
-        token=$(cat "$SERVICE_TOKEN_PATH")
-        auth_args=(-H "Authorization: Bearer ${token}")
-    else
-        warn "Service token not found at ${SERVICE_TOKEN_PATH} — trying without auth"
-    fi
-
-    info "Exporting forensic bundle from ${INCIDENT_RECORDER_URL}..."
-
-    local http_code
-    http_code=$(curl -sf -w "%{http_code}" \
-        "${auth_args[@]+"${auth_args[@]}"}" \
-        "${INCIDENT_RECORDER_URL}/api/v1/forensic/export" \
-        -o "$output" 2>/dev/null) || true
-
-    if [[ ! -f "$output" ]] || [[ ! -s "$output" ]]; then
-        err "Export failed (HTTP ${http_code:-unknown}). Is the incident recorder running?"
-        rm -f "$output"
-        exit 1
-    fi
-
-    # Show summary
-    local size
-    size=$(wc -c < "$output" | tr -d ' ')
-    info "Exported: ${output} (${size} bytes)"
-
-    # Extract and show bundle hash
-    if command -v python3 &>/dev/null; then
-        python3 -c "
-import json, sys
-try:
-    b = json.load(open('${output}'))
-    print('Bundle hash:  ' + b.get('bundle_hash', 'N/A'))
-    print('Exported at:  ' + b.get('exported_at', 'N/A'))
-    print('Incidents:    ' + str(len(b.get('incidents', []))))
-    print('Audit lines:  ' + str(len(b.get('audit_entries', []))))
-    print('Signed:       ' + ('yes' if b.get('signature') else 'no'))
-except Exception as e:
-    print('Could not parse bundle: ' + str(e), file=sys.stderr)
-"
-    fi
+    [ -s "$PARTIAL_OUTPUT" ] || fatal "Incident recorder returned an empty bundle"
+    verify_bundle "$PARTIAL_OUTPUT" || fatal "Exported bundle failed authenticity verification"
+    sync -f "$PARTIAL_OUTPUT"
+    mv -- "$PARTIAL_OUTPUT" "$output"
+    PARTIAL_OUTPUT=""
+    chmod 0600 "$output"
+    info "Authenticated forensic bundle written atomically: $output"
 }
 
-# ---------------------------------------------------------------------------
-# Verify
-# ---------------------------------------------------------------------------
 cmd_verify() {
-    local file="$1"
-    if [[ ! -f "$file" ]]; then
-        err "File not found: ${file}"
-        exit 1
-    fi
-
-    if ! command -v python3 &>/dev/null; then
-        err "python3 is required for bundle verification"
-        exit 1
-    fi
-
-    python3 -c "
-import json, hashlib, sys
-
-bundle = json.load(open('${file}'))
-
-# Recompute hash over content fields (same structure as Go ExportForensicBundle)
-hash_input = json.dumps({
-    'exported_at':   bundle['exported_at'],
-    'incidents':     bundle['incidents'],
-    'audit_entries': bundle['audit_entries'],
-    'system_state':  bundle['system_state'],
-    'policy_digest': bundle['policy_digest'],
-}, separators=(',', ':'), sort_keys=False).encode()
-
-computed = hashlib.sha256(hash_input).hexdigest()
-stored = bundle.get('bundle_hash', '')
-
-if stored == computed:
-    print('VERIFIED: Bundle hash matches.')
-    print('  Hash: ' + stored)
-    print('  Incidents: ' + str(len(bundle.get('incidents', []))))
-    print('  Exported at: ' + bundle.get('exported_at', 'N/A'))
-    sys.exit(0)
-else:
-    print('FAILED: Bundle hash mismatch — content may have been tampered.', file=sys.stderr)
-    print('  Expected: ' + stored, file=sys.stderr)
-    print('  Computed: ' + computed, file=sys.stderr)
-    sys.exit(1)
-"
+    local bundle="$1"
+    require_root
+    command -v python3 >/dev/null 2>&1 || fatal "python3 is required for verification"
+    [ -f "$bundle" ] && [ ! -L "$bundle" ] \
+        || fatal "Bundle must be a regular file: $bundle"
+    verify_bundle "$bundle"
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 case "${1:-}" in
     export)
         shift
-        output=""
-        while [[ $# -gt 0 ]]; do
+        OUTPUT=""
+        while [ "$#" -gt 0 ]; do
             case "$1" in
                 --output)
-                    [[ $# -lt 2 ]] && { err "--output requires a filename"; exit 1; }
-                    output="$2"
-                    shift 2
-                    ;;
-                *)
-                    err "Unknown option: $1"
-                    usage
-                    ;;
+                    [ "$#" -ge 2 ] || fatal "--output requires a filename"
+                    OUTPUT="$2"; shift 2 ;;
+                *) fatal "Unknown export option: $1" ;;
             esac
         done
-        cmd_export "$output"
+        cmd_export "$OUTPUT"
         ;;
     verify)
         shift
-        [[ $# -lt 1 ]] && { err "verify requires a filename"; usage; }
+        [ "$#" -eq 1 ] || fatal "verify requires exactly one bundle path"
         cmd_verify "$1"
         ;;
     --help|-h)
@@ -183,7 +190,6 @@ case "${1:-}" in
         ;;
     *)
         err "Unknown command: ${1:-}"
-        echo ""
         usage
         ;;
 esac

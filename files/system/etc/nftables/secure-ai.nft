@@ -4,11 +4,12 @@
 #
 # Policy:
 #   - All localhost traffic is allowed (inter-service communication)
+#   - No inbound application ports; the UI is loopback-only
 #   - Outbound internet is BLOCKED by default
 #   - Only DHCP for initial network setup
 #   - DNS rate-limited (needed for DHCP/system updates)
 #   - HTTPS outbound for host-level tools (rpm-ostree, cosign)
-#   - Services use PrivateNetwork=yes; only airlock can reach the network
+#   - Runtime workload cgroups block direct network use; Airlock and Tor proxy it
 #   - Rate-limited logging to prevent log flooding
 #   - Invalid packets dropped early
 
@@ -34,9 +35,6 @@ table inet secure_ai {
 
         # Allow DHCP client responses
         udp sport 67 udp dport 68 accept
-
-        # Allow UI web interface from local network (port 8480)
-        tcp dport 8480 ct state new accept
 
         # Rate-limited logging for dropped packets
         limit rate 10/minute log prefix "secure-ai-in-drop: "
@@ -74,10 +72,10 @@ table inet secure_ai {
         # Allow NTP for time sync (needed for certificate validation)
         udp dport 123 accept
 
-        # Allow HTTPS outbound — host-level only (rpm-ostree, cosign)
-        # Services with PrivateNetwork=yes cannot reach this chain.
-        # The airlock service is the only service without PrivateNetwork,
-        # so it is the only non-host path to the internet.
+        # Allow HTTPS for host-level tools (rpm-ostree, cosign). Service-level
+        # cgroup IPAddressDeny policies block normal workload egress. Airlock
+        # and Tor proxy approved runtime traffic; root update/install and
+        # explicit network-diagnostic one-shots remain administrative paths.
         tcp dport 443 accept
 
         # Rate-limited logging for dropped packets

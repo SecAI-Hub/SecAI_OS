@@ -103,8 +103,8 @@ class TestSessionTimeout:
         app = _make_app(session_timeout="900")
         import ui.app as ui_app
 
-        ui_app._auth.setup_passphrase("testpass123")
-        token = ui_app._auth.login("testpass123")["token"]
+        ui_app._auth.setup_passphrase("test-passphrase-123")
+        token = ui_app._auth.login("test-passphrase-123")["token"]
         before = ui_app._auth._sessions[token]["last_active"]
 
         with app.test_client() as client:

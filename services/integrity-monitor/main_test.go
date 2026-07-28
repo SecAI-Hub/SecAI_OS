@@ -45,6 +45,7 @@ func resetGlobalState(t *testing.T) {
 	baseline = SignedBaseline{}
 	baselineMu.Unlock()
 	serviceToken = ""
+	incidentRecorderToken = ""
 	hmacKey = nil
 	scanCount.Store(0)
 	degradedCount.Store(0)
@@ -83,6 +84,48 @@ degradation_threshold: 3
 	}
 
 	return binDir, polDir
+}
+
+func installExpectedBaseline(t *testing.T) {
+	t.Helper()
+	runtime := computeBaseline(getMonitorPolicy())
+	files := make([]ReleaseBaselineFile, 0, len(runtime.Entries))
+	for _, entry := range runtime.Entries {
+		if entry.Category == CatModelFile {
+			continue
+		}
+		files = append(files, ReleaseBaselineFile{
+			Path: entry.Path, SHA256: entry.Hash, Size: entry.Size,
+		})
+	}
+	document, err := json.Marshal(ReleaseBaseline{
+		Version:      1,
+		SourceCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Files:        files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "release-baseline.json")
+	if err := os.WriteFile(path, document, 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXPECTED_BASELINE_PATH", path)
+}
+
+func writeRegistryManifest(t *testing.T, dir string, models []registryModel) {
+	t.Helper()
+	data, err := json.Marshal(registryManifest{Version: 1, Models: models})
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := filepath.Join(dir, ".manifest.tmp")
+	if err := os.WriteFile(temp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temp, filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // =========================================================================
@@ -313,6 +356,17 @@ func TestVerifyBaselineHMAC_Tampered(t *testing.T) {
 	bl.CreatedAt = "tampered"
 	if verifyBaselineHMAC(bl) {
 		t.Error("tampered baseline should not verify")
+	}
+}
+
+func TestVerifyBaselineHMAC_TamperedSize(t *testing.T) {
+	resetGlobalState(t)
+	setupTestEnvironment(t)
+	hmacKey = []byte("verify-key")
+	bl := computeBaseline(getMonitorPolicy())
+	bl.Entries[0].Size++
+	if verifyBaselineHMAC(bl) {
+		t.Error("baseline size tampering must invalidate the HMAC")
 	}
 }
 
@@ -614,6 +668,10 @@ func TestHTTP_Scan_Post(t *testing.T) {
 func TestHTTP_Rebaseline(t *testing.T) {
 	resetGlobalState(t)
 	setupTestEnvironment(t)
+	hmacKey = []byte("01234567890123456789012345678901")
+	t.Setenv("BASELINE_PATH", filepath.Join(t.TempDir(), "baseline.json"))
+	t.Setenv("ENABLE_REMOTE_REBASELINE", "true")
+	installExpectedBaseline(t)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/rebaseline", nil)
 	w := httptest.NewRecorder()
@@ -718,8 +776,11 @@ func TestToken_NoTokenConfigured(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
-	if !called {
-		t.Error("should pass through without token")
+	if called {
+		t.Error("must fail closed without token")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without token, got %d", w.Code)
 	}
 }
 
@@ -769,6 +830,30 @@ func TestToken_ValidToken(t *testing.T) {
 	}
 }
 
+func TestIntegrityMux_ProtectsEveryNonHealthEndpoint(t *testing.T) {
+	resetGlobalState(t)
+	serviceToken = "integrity-secret"
+	mux := newIntegrityMux()
+	for _, path := range []string{
+		"/api/v1/status",
+		"/api/v1/baseline",
+		"/api/v1/verify",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("%s returned %d without authentication", path, response.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("health must remain public, got %d", response.Code)
+	}
+}
+
 // =========================================================================
 // Audit logging tests
 // =========================================================================
@@ -813,6 +898,18 @@ func TestScan_ModelDirectory(t *testing.T) {
 	modelDir := t.TempDir()
 	createTempFile(t, modelDir, "model-a.gguf", "model-a-content")
 	createTempFile(t, modelDir, "model-b.gguf", "model-b-content")
+	hashA, sizeA, err := hashRegistryArtifact(filepath.Join(modelDir, "model-a.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, sizeB, err := hashRegistryArtifact(filepath.Join(modelDir, "model-b.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryManifest(t, modelDir, []registryModel{
+		{Name: "model-a", Filename: "model-a.gguf", SHA256: hashA, SizeBytes: sizeA},
+		{Name: "model-b", Filename: "model-b.gguf", SHA256: hashB, SizeBytes: sizeB},
+	})
 
 	policyYAML := `
 version: 1
@@ -821,6 +918,7 @@ service_binaries: []
 policy_files: []
 model_dirs:
   - ` + modelDir + `
+registry_manifest: ` + filepath.Join(modelDir, "manifest.json") + `
 degradation_threshold: 3
 `
 	path := writeTempMonitorPolicy(t, policyYAML)
@@ -831,8 +929,8 @@ degradation_threshold: 3
 	bl := computeBaseline(pol)
 	setBaseline(bl)
 
-	if len(bl.Entries) != 2 {
-		t.Errorf("expected 2 model entries, got %d", len(bl.Entries))
+	if len(bl.Entries) != 0 {
+		t.Errorf("mutable models must not be frozen into the release baseline, got %d entries", len(bl.Entries))
 	}
 
 	// Tamper one model
@@ -852,13 +950,67 @@ degradation_threshold: 3
 	}
 }
 
+func TestScan_ModelDirectoryRejectsUnknownArtifact(t *testing.T) {
+	resetGlobalState(t)
+	modelDir := t.TempDir()
+	writeRegistryManifest(t, modelDir, nil)
+	monitorPolicy = MonitorPolicy{
+		ModelDirs:            []string{modelDir},
+		RegistryManifest:     filepath.Join(modelDir, "manifest.json"),
+		DegradationThreshold: 3,
+	}
+	setBaseline(SignedBaseline{})
+
+	createTempFile(t, modelDir, "unregistered.gguf", "unknown")
+	state, violations := performScan()
+	if state != StateDegraded || len(violations) != 1 {
+		t.Fatalf("unknown artifact must degrade registry trust: state=%s violations=%v",
+			state, violations)
+	}
+	if violations[0].ActualHash != "unregistered" {
+		t.Fatalf("unexpected violation: %+v", violations[0])
+	}
+}
+
+func TestScan_LegitimateRegistryPromotionRemainsTrusted(t *testing.T) {
+	resetGlobalState(t)
+	modelDir := t.TempDir()
+	writeRegistryManifest(t, modelDir, nil)
+	monitorPolicy = MonitorPolicy{
+		ModelDirs:            []string{modelDir},
+		RegistryManifest:     filepath.Join(modelDir, "manifest.json"),
+		DegradationThreshold: 3,
+	}
+	setBaseline(SignedBaseline{})
+	if state, violations := performScan(); state != StateTrusted || len(violations) != 0 {
+		t.Fatalf("empty registered model store should be trusted: %s %v", state, violations)
+	}
+
+	artifact := createTempFile(t, modelDir, "approved.gguf", "approved-content")
+	digest, size, err := hashRegistryArtifact(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryManifest(t, modelDir, []registryModel{{
+		Name: "approved", Filename: "approved.gguf", SHA256: digest, SizeBytes: size,
+	}})
+
+	if state, violations := performScan(); state != StateTrusted || len(violations) != 0 {
+		t.Fatalf("completed registry transaction must be trusted: %s %v", state, violations)
+	}
+}
+
 // =========================================================================
 // Rebaseline after tampering tests
 // =========================================================================
 
-func TestRebaseline_ClearsViolations(t *testing.T) {
+func TestRebaseline_CannotSelfBlessTampering(t *testing.T) {
 	resetGlobalState(t)
 	binDir, _ := setupTestEnvironment(t)
+	hmacKey = []byte("01234567890123456789012345678901")
+	t.Setenv("BASELINE_PATH", filepath.Join(t.TempDir(), "baseline.json"))
+	t.Setenv("ENABLE_REMOTE_REBASELINE", "true")
+	installExpectedBaseline(t)
 
 	pol := getMonitorPolicy()
 	bl := computeBaseline(pol)
@@ -871,19 +1023,16 @@ func TestRebaseline_ClearsViolations(t *testing.T) {
 		t.Fatalf("expected degraded, got %s", state1)
 	}
 
-	// Rebaseline → trusted
-	bl2 := computeBaseline(pol)
-	setBaseline(bl2)
-	stateMu.Lock()
-	currentState = StateTrusted
-	activeViolations = nil
-	stateMu.Unlock()
-
-	state2, violations2 := performScan()
-	if state2 != StateTrusted {
-		t.Errorf("expected trusted after rebaseline, got %s", state2)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/rebaseline", nil)
+	response := httptest.NewRecorder()
+	handleRebaseline(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("tampered release-bound file must not be rebaselined, got %d", response.Code)
 	}
-	if len(violations2) != 0 {
-		t.Errorf("expected no violations after rebaseline, got %d", len(violations2))
+	stateMu.RLock()
+	state2 := currentState
+	stateMu.RUnlock()
+	if state2 != StateDegraded {
+		t.Fatalf("failed rebaseline must preserve degraded state, got %s", state2)
 	}
 }

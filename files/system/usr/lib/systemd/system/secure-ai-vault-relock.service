@@ -1,0 +1,38 @@
+[Unit]
+Description=Secure AI fixed-function vault relock broker
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/vault-relock-broker.py
+Environment=VAULT_RELOCK_REQUEST_DIR=/run/secure-ai/vault-control/requests
+Environment=VAULT_RELOCK_PROCESSING_DIR=/run/secure-ai/vault-control/processing
+Environment=VAULT_RELOCK_RESULT_DIR=/run/secure-ai/vault-control/results
+
+# The broker can only read its request inbox, invoke the fixed watchdog, and
+# write results. It never accepts command/device/service names from callers.
+ProtectSystem=strict
+ReadOnlyPaths=/usr/libexec/secure-ai/vault-watchdog.py
+ReadWritePaths=/run/secure-ai/vault-control
+ReadWritePaths=/run/secure-ai/vault-state
+ReadWritePaths=/var/lib/secure-ai/logs
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+TimeoutStartSec=150
+LimitCORE=0

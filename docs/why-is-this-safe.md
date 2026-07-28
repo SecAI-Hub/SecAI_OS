@@ -26,7 +26,7 @@ You choose your profile at first boot. You can change it later from Settings. Th
 | Integrity check fails | System degrades to safe mode, alerts you |
 | Suspicious agent activity | Agent frozen, airlock disabled, vault re-locked |
 | Bad OS update | Greenboot auto-rolls back to last known-good state |
-| Worst case | 3-level emergency panic: lock, wipe keys, or full wipe |
+| Worst case | Verified service/vault lock, hardware-unlock removal, or LUKS keyslot destruction |
 
 ## No Telemetry
 
@@ -44,7 +44,9 @@ The only network activity is what you explicitly enable by switching to the "res
 You don't have to take our word for it:
 
 - **Security Dashboard** (`http://127.0.0.1:8480/security`) shows real-time verification: Secure Boot status, TPM2 sealing, audit chain integrity, model provenance, SLO compliance.
-- **Audit logs** are hash-chained — any tampering breaks the chain visibly.
+- **Security-critical keyed logs** are HMAC-chained and periodically verified;
+  logs still classified as structured-only are identified as such in the
+  audit-format manifest rather than being represented as tamper-evident.
 - **OS image** is cosign-signed with SLSA3 provenance attestation. Verify with:
   ```bash
   cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest

@@ -1,0 +1,43 @@
+[Unit]
+Description=Secure AI per-session clipboard clear
+Documentation=man:wl-copy(1)
+ConditionUser=!root
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/clipboard-clear.sh
+UMask=0077
+
+# This is deliberately a user service: a root system service cannot safely
+# inherit or address an individual user's Wayland/X11 session.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+LimitCORE=0
+MemoryMax=32M
+TasksMax=16

@@ -1,26 +1,45 @@
 [Unit]
 Description=Secure AI Trusted Registry (artifact manifest + model store)
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+RequiresMountsFor=/var/lib/secure-ai/vault/models
 After=local-fs.target secure-ai-firstboot.service
+Requires=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-policy-engine.service secure-ai-vault-mounted.service
 Wants=secure-ai-firstboot.service
+After=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-policy-engine.service secure-ai-vault-mounted.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/registry
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require registry -- /usr/libexec/secure-ai/registry
 Environment=BIND_ADDR=127.0.0.1:8470
-Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models
+Environment=REGISTRY_MANIFEST_PATH=/var/lib/secure-ai/registry/manifest.json
+Environment=REGISTRY_CONTAINMENT_DIR=/var/lib/secure-ai/vault/contained-models
 Environment=REGISTRY_LOCK_PATH=/etc/secure-ai/policy/models.lock.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/registry-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=REGISTRY_READ_TOKEN_PATH=%d/read-token
+Environment=REGISTRY_VERIFY_TOKEN_PATH=%d/verify-token
+Environment=REGISTRY_PROMOTE_TOKEN_PATH=%d/promote-token
+Environment=REGISTRY_ADMIN_TOKEN_PATH=%d/admin-token
+Environment=CONTAINMENT_TOKEN_PATH=%d/containment-token
+Environment=PROMOTION_STAGING_DIR=/var/lib/secure-ai/promotion-staging
+LoadCredential=read-token:/var/lib/secure-ai/credentials/registry-read.token
+LoadCredential=verify-token:/var/lib/secure-ai/credentials/registry-verify.token
+LoadCredential=promote-token:/var/lib/secure-ai/credentials/registry-promote.token
+LoadCredential=admin-token:/var/lib/secure-ai/credentials/registry-admin.token
+LoadCredential=containment-token:/var/lib/secure-ai/credentials/registry-containment.token
 
 # Filesystem isolation
 DynamicUser=yes
-StateDirectory=secure-ai/registry
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-registry secure-ai-registry-containment secure-ai-promotion secure-ai-logs
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/registry
+ReadWritePaths=/var/lib/secure-ai/vault/models
+ReadWritePaths=/var/lib/secure-ai/vault/contained-models
+ReadWritePaths=/var/lib/secure-ai/promotion-staging
 ReadWritePaths=/var/lib/secure-ai/logs
-PrivateNetwork=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -49,10 +68,11 @@ AmbientCapabilities=
 
 # Namespace restrictions
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
+# Registry serves only host-loopback control-plane peers.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering
 SystemCallFilter=@system-service
@@ -70,9 +90,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

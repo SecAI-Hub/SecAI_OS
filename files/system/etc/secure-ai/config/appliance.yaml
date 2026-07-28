@@ -7,6 +7,7 @@ appliance:
 paths:
   vault: "/var/lib/secure-ai/vault"
   registry: "/var/lib/secure-ai/registry"
+  models: "/var/lib/secure-ai/vault/models"
   quarantine: "/var/lib/secure-ai/quarantine"
   airlock_audit: "/var/lib/secure-ai/airlock-audit"
   tmpdir: "/run/secure-ai/tmp"
@@ -27,7 +28,10 @@ vm:
 inference:
   engine: "llama-cpp"
   bind: "127.0.0.1:8465"
-  gpu_layers: -1  # -1 = offload all layers to GPU; 0 = CPU only
+  # CPU is the immutable fallback. First-boot hardware detection may write a
+  # typed GPU_LAYERS=-1 override only after a supported device is observed and
+  # VM passthrough is explicitly enabled where applicable.
+  gpu_layers: 0
   context_size: 8192
   default_model: ""  # set after first model is promoted
 
@@ -119,28 +123,21 @@ auth:
   escalated_lockout: 900
 
 secure_boot:
-  # UEFI Secure Boot + TPM2 measured boot (M17).
-  # MOK (Machine Owner Key) signs bootloader and kernel.
-  # TPM2 seals the LUKS vault key to PCR values (firmware, kernel, bootloader,
-  # secure boot state). If the boot chain is tampered, TPM refuses to unseal
-  # and the user must enter the passphrase manually.
+  # TPM-backed vault unlock is an optional, hardware-dependent control.
+  # Enrollment creates a native systemd LUKS2 TPM token bound to the PCRs
+  # below. Image/bootloader/kernel signature verification is a separate
+  # release and firmware property; this setting does not enable Secure Boot.
+  # If the measured state changes, TPM unlock fails and the retained LUKS
+  # passphrase slot remains the recovery path.
   # PCR binding: PCR 0 (firmware), 2 (option ROM), 4 (bootloader), 7 (SB state).
   tpm2_pcr_binding: "sha256:0,2,4,7"
   # Allow passphrase fallback when PCR mismatch (e.g., after legitimate update).
   passphrase_fallback: true
-  # Auto-reseal after rpm-ostree upgrade (requires user passphrase confirmation).
-  auto_reseal_on_update: false
 
-sandbox:
-  # Per-service process isolation (M16).
-  # seccomp: JSON profiles in /etc/secure-ai/seccomp/ define allowed syscalls.
-  # landlock: YAML policy in /etc/secure-ai/policy/landlock.yaml restricts filesystem access.
-  # Both are enabled by default. If Landlock is unavailable (kernel < 5.13),
-  # enforcement is skipped with a warning.
-  seccomp_enabled: true
-  landlock_enabled: true
-  # Core dump prevention across all services (LimitCORE=0).
-  core_dumps_disabled: true
+# Process isolation is deliberately not configurable here. Systemd
+# SystemCallFilter= directives provide each unit's seccomp-BPF policy, and
+# services named in policy/landlock.yaml are launched through the fail-closed
+# Landlock wrapper. LimitCORE=0 is likewise enforced in the unit files.
 
 memory_protection:
   # Memory protection hardening (M18).
@@ -158,12 +155,15 @@ memory_protection:
 
 clipboard:
   # Clipboard isolation (M21).
-  # VM clipboard agents (spice-vdagent, vmware-user, VBoxClient) are detected
-  # and disabled at first boot. Non-UI services get PrivateUsers=yes to prevent
-  # clipboard access. Clipboard is auto-cleared every 60 seconds.
+  # Guest-side VM clipboard agents and controls are inspected at first boot.
+  # Host/hypervisor policy must be verified separately because a guest cannot
+  # attest the host setting. Each graphical user's two selections are cleared
+  # by a per-session user timer; system services never receive display sockets.
   isolate_vm_clipboard: true
+  host_verification_required: true
   auto_clear_enabled: true
   auto_clear_interval: 60  # seconds
+  auto_clear_scope: graphical_user_session
   private_users_non_ui: true
 
 canary:
@@ -182,15 +182,21 @@ canary:
 emergency:
   # Emergency wipe / panic system (M23).
   # Three severity levels:
-  #   Level 1 — Lock: stop services, lock vault, invalidate sessions (reversible)
-  #   Level 2 — Wipe Keys: shred LUKS header, cosign keys, TPM2 keys, MOK key
-  #   Level 3 — Full Wipe: re-encrypt vault with random key (data unrecoverable),
-  #             clear memory, delete logs, registry, auth data
-  # Levels 2+ require passphrase confirmation.
+  #   Level 1 — runtime-mask services and verify the vault mapper is closed.
+  #   Level 2 — remove TPM2/hardware unlock while retaining passphrase recovery.
+  #   Level 3 — erase all LUKS keyslots and unlink local application state.
+  # Levels 2+ require the actual vault passphrase and a UUID-bound confirmation
+  # at a local root console. Unlinking cannot guarantee flash/COW media overwrite;
+  # the vault erasure guarantee comes from destruction of its LUKS keyslots.
   # Countdown gives 5 seconds to cancel (skippable with --no-countdown).
   countdown_seconds: 5
-  require_passphrase_level2: true
+  level2_action: remove_hardware_unlock
+  level3_action: cryptographic_vault_erase
+  require_vault_passphrase_level2: true
+  destructive_local_console_only: true
+  media_overwrite_guaranteed: false
   audit_log: "/var/lib/secure-ai/logs/panic-audit.jsonl"
+  audit_security: keyed_hmac_chain
 
 updates:
   # Update verification + auto-rollback (M24).
@@ -237,9 +243,10 @@ profile:
         Agent remains active in offline_only mode because it provides useful
         local automation (file management, workspace tasks) with no network
         access, hard budget limits, and loopback-only IPC.  The agent service
-        unit uses PrivateNetwork=yes and the nftables rules block all egress.
-        policy.yaml network.runtime_egress=deny cannot be overridden by agent
-        mode.  This is verified by test_profile_system.py.
+        unit uses systemd IPAddressDeny=any with IPAddressAllow=localhost, so
+        its authenticated local dependencies remain reachable but routable
+        egress is denied. policy.yaml network.runtime_egress=deny cannot be
+        overridden by agent mode. This is verified by test_profile_system.py.
       services_enabled:
         # Tier 1: Security infrastructure (always on)
         - secure-ai-runtime-attestor.service

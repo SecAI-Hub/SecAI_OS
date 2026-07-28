@@ -72,42 +72,24 @@ class TestTEEDetection:
         import os
         assert os.access(SCRIPTS_DIR / "detect-tee.sh", os.X_OK)
 
-    def test_detects_amd_sev(self):
+    def test_wrapper_execs_typed_detector(self):
         content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "detect_amd_sev" in content
-        assert "SEV" in content
-        assert "sev" in content.lower()
+        assert "exec /usr/libexec/secure-ai/secure-hardware-detect.py tee" in content
+        assert "source " not in content
 
-    def test_detects_intel_tdx(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "detect_intel_tdx" in content
-        assert "TDX" in content
-        assert "tdx_guest" in content or "tdx-guest" in content
+    def test_detector_requires_evidence_not_cpu_capability_flags(self):
+        content = (SCRIPTS_DIR / "secure-hardware-detect.py").read_text()
+        assert "/dev/tdx_guest" in content
+        assert "/sys/kernel/security/sev" in content
+        assert "/sys/kernel/mm/mem_encrypt/active" in content
+        assert '"verified": active' in content
+        assert '"memory_encryption": active' in content
 
-    def test_detects_intel_tme(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "detect_intel_tme" in content
-        assert "TME" in content
-
-    def test_detects_arm_cca(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "detect_arm_cca" in content
-        assert "CCA" in content
-
-    def test_writes_env_file(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "tee.env" in content
-        assert "TEE_TYPE" in content
-        assert "TEE_ACTIVE" in content
-        assert "MEM_ENCRYPT" in content
-
-    def test_sev_snp_detection(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "SEV-SNP" in content
-
-    def test_sev_es_detection(self):
-        content = (SCRIPTS_DIR / "detect-tee.sh").read_text()
-        assert "SEV-ES" in content
+    def test_writes_typed_json_not_shell_state(self):
+        content = (SCRIPTS_DIR / "secure-hardware-detect.py").read_text()
+        assert 'TEE_STATE = STATE_DIR / "tee.json"' in content
+        assert "object_pairs_hook" in content
+        assert "tee.env" not in content
 
 
 class TestSecureBuffer:
@@ -192,8 +174,9 @@ class TestFirstbootMemoryChecks:
 
     def test_logs_tee_results(self):
         content = (SCRIPTS_DIR / "firstboot.sh").read_text()
-        assert "tee.env" in content
-        assert "MEM_ENCRYPT" in content
+        assert "show tee" in content
+        assert "NOT VERIFIED" in content
+        assert "tee.env" not in content
 
 
 class TestApplianceConfig:

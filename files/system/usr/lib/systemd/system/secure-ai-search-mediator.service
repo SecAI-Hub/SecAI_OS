@@ -1,11 +1,12 @@
 [Unit]
 Description=Secure AI Appliance - Search Mediator (Sanitized Web Search)
-After=secure-ai-searxng.service
+After=secure-ai-searxng.service secure-ai-credentials.service
+Requires=secure-ai-credentials.service
 Wants=secure-ai-searxng.service
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/search-mediator
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require search_mediator -- /usr/libexec/secure-ai/search-mediator
 Restart=on-failure
 RestartSec=5
 
@@ -14,10 +15,16 @@ Environment=SEARXNG_URL=http://127.0.0.1:8888
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AUDIT_DIR=/var/lib/secure-ai/logs
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+# AuditChain serialization is process-local; never fork multiple writers.
+Environment=GUNICORN_WORKERS=1
+Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/search-mediator.token
+LoadCredential=audit-hmac-key:/var/lib/secure-ai/credentials/search-audit-hmac.key
 
 # Filesystem isolation — only talks to SearXNG on localhost
 DynamicUser=yes
+SupplementaryGroups=secure-ai-logs
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
@@ -54,9 +61,6 @@ IPAddressAllow=localhost
 # Namespace restrictions
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
-
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
 
 # Syscall filtering
 SystemCallFilter=@system-service @network-io

@@ -426,7 +426,7 @@ func TestTaint_NoDuplicates(t *testing.T) {
 // ---------- redaction tests ----------
 
 func TestRedact_APIKey(t *testing.T) {
-	input := `config: api_key=sk-1234567890abcdef1234567890`
+	input := `config: api_key=sk-1234567890abcdef1234567890` // gitleaks:allow
 	result := redactString(input, []string{"api_key"})
 	if !strings.Contains(result, "[REDACTED:api_key]") {
 		t.Errorf("expected redacted api_key, got %s", result)
@@ -451,7 +451,7 @@ func TestRedact_Email(t *testing.T) {
 
 func TestRedact_Arguments(t *testing.T) {
 	args := map[string]string{
-		"content": "send to admin@corp.com with api_key=sk-abcdef1234567890123456",
+		"content": "send to admin@corp.com with api_key=sk-abcdef1234567890123456", // gitleaks:allow
 		"path":    "/home/user/safe.txt",
 	}
 
@@ -804,8 +804,8 @@ func TestHTTP_ReloadRequiresToken(t *testing.T) {
 
 func TestCheckToken_Empty(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
-	if !checkToken(r, "") {
-		t.Error("empty token should allow all")
+	if checkToken(r, "") {
+		t.Error("empty token must fail closed")
 	}
 }
 

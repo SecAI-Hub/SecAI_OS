@@ -7,37 +7,74 @@
 #   exe = execute (LANDLOCK_ACCESS_FS_EXECUTE)
 #
 # These policies are applied by the landlock-apply helper at service start.
-# If Landlock is not available (kernel < 5.13), the policies are skipped
-# with a warning in the audit log.
+# Native production units invoke the helper with --require and fail closed if
+# the kernel cannot enforce Landlock. Explicit development invocations may omit
+# --require to inspect policy behavior on unsupported hosts.
 
 version: 1
+
+common_paths:
+  - path: /run/credentials
+    access: ro
 
 services:
   inference:
     description: "Inference worker — read-only model access, no output writes"
     paths:
-      - path: /var/lib/secure-ai/registry
+      - path: /var/lib/secure-ai/vault/models
         access: ro
+        required: true
       - path: /etc/secure-ai
         access: ro
+        required: true
+      # start-inference.sh resolves and re-hashes the manifest-bound model
+      # before the Landlock boundary is applied.  The confined watchdog needs
+      # only these immutable helpers and their runtime libraries.
+      - path: /usr/libexec/secure-ai/inference-wrapper.sh
+        access: exe
+        required: true
       - path: /usr/bin/llama-server
         access: exe
+        required: true
+      - path: /usr/bin/bash
+        access: exe
+        required: true
+      - path: /usr/bin/env
+        access: exe
+        required: true
+      - path: /usr/bin/curl
+        access: exe
+        required: true
+      - path: /usr/bin/systemd-notify
+        access: exe
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
         access: ro
+      - path: /dev
+        access: rw
+        # The systemd DevicePolicy remains the authoritative GPU-device
+        # allowlist. Landlock must permit ioctl access to devices that survive
+        # that cgroup boundary, especially with ABI v5.
       - path: /tmp
         access: rw
 
   diffusion:
     description: "Diffusion worker — model read, output write"
     paths:
-      - path: /var/lib/secure-ai/registry
+      - path: /var/lib/secure-ai/vault/models
         access: ro
+        required: true
       - path: /var/lib/secure-ai/vault/outputs
         access: rw
+        required: true
+      - path: /var/lib/secure-ai/diffusion-venv
+        access: exe
+        required: true
       - path: /etc/secure-ai
         access: ro
+        required: true
       - path: /usr/bin/python3
         access: exe
       - path: /usr/lib
@@ -46,6 +83,15 @@ services:
         access: ro
       - path: /opt/secure-ai/services
         access: ro
+        required: true
+      - path: /proc
+        access: ro
+      - path: /sys
+        access: ro
+      - path: /dev
+        access: rw
+        # DevicePolicy/DeviceAllow in the unit narrows this broad path to the
+        # selected GPU device nodes.
       - path: /tmp
         access: rw
 
@@ -54,11 +100,19 @@ services:
     paths:
       - path: /var/lib/secure-ai/registry
         access: rw
+      - path: /var/lib/secure-ai/vault/models
+        access: rw
+      - path: /var/lib/secure-ai/vault/contained-models
+        access: rw
+      - path: /var/lib/secure-ai/promotion-staging
+        access: rw
       - path: /var/lib/secure-ai/logs
         access: rw
       - path: /etc/secure-ai
         access: ro
       - path: /usr/libexec/secure-ai/registry
+        access: exe
+      - path: /usr/local/bin/gguf-guard
         access: exe
       - path: /usr/lib
         access: ro
@@ -68,9 +122,9 @@ services:
         access: rw
 
   ui:
-    description: "Web UI — quarantine write, auth write, logs write, config read-only"
+    description: "Web UI — incoming model handoff only, auth/UI state, logs, config"
     paths:
-      - path: /var/lib/secure-ai/quarantine
+      - path: /var/lib/secure-ai/quarantine/incoming
         access: rw
       - path: /var/lib/secure-ai/auth
         access: rw
@@ -112,11 +166,14 @@ services:
         access: rw
 
   quarantine:
-    description: "Quarantine watcher — quarantine rw, registry rw, logs rw"
+    description: "Quarantine watcher — untrusted input + promotion staging only"
     paths:
-      - path: /var/lib/secure-ai/quarantine
+      - path: /var/lib/secure-ai/quarantine/incoming
         access: rw
-      - path: /var/lib/secure-ai/registry
+      - path: /var/lib/secure-ai/quarantine/processing
+        access: rw
+        required: true
+      - path: /var/lib/secure-ai/promotion-staging
         access: rw
       - path: /var/lib/secure-ai/logs
         access: rw
@@ -124,17 +181,94 @@ services:
         access: ro
       - path: /usr/bin/python3
         access: exe
+        required: true
+      - path: /usr/libexec/secure-ai/landlock-apply.py
+        access: exe
+        required: true
+      - path: /usr/libexec/secure-ai/quarantine-scanner
+        access: exe
+        required: true
+      - path: /usr/bin/bwrap
+        access: exe
+        required: true
+      - path: /usr/bin/env
+        access: exe
+        required: true
       - path: /usr/bin/llama-server
         access: exe
       - path: /usr/bin/sha256sum
         access: exe
       - path: /usr/bin/cosign
         access: exe
+      # Scanner entry points are symlinks into separately pinned virtual
+      # environments. Both the symlink directory and the resolved runtimes
+      # must be executable after landlock_restrict_self().
+      - path: /usr/local/bin
+        access: exe
+        required: true
+      - path: /opt/secure-ai/scanners
+        access: exe
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
         access: ro
       - path: /opt/secure-ai/services
+        access: ro
+        required: true
+      - path: /proc
+        access: ro
+      - path: /dev/null
+        access: rw
+      - path: /dev/urandom
+        access: ro
+      - path: /tmp
+        access: rw
+
+  quarantine_scanner:
+    description: "Credentialless parser worker — private claimed snapshot read-only, no promotion/log/credential access"
+    include_common_paths: false
+    paths:
+      - path: /var/lib/secure-ai/quarantine/processing
+        access: ro
+        required: true
+      - path: /etc/secure-ai
+        access: ro
+        required: true
+      - path: /usr/libexec/secure-ai/quarantine-scanner
+        access: exe
+        required: true
+      - path: /usr/bin/python3
+        access: exe
+        required: true
+      - path: /usr/bin/env
+        access: exe
+        required: true
+      - path: /usr/bin/llama-server
+        access: exe
+        required: true
+      - path: /usr/bin/sha256sum
+        access: exe
+      - path: /usr/bin/cosign
+        access: exe
+      - path: /usr/local/bin
+        access: exe
+        required: true
+      - path: /opt/secure-ai/scanners
+        access: exe
+        required: true
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /opt/secure-ai/services
+        access: ro
+        required: true
+      - path: /proc
+        access: ro
+      - path: /dev/null
+        access: rw
+      - path: /dev/urandom
         access: ro
       - path: /tmp
         access: rw
@@ -144,13 +278,38 @@ services:
     paths:
       - path: /var/lib/secure-ai/logs
         access: rw
+      - path: /var/lib/secure-ai/airlock
+        access: rw
       - path: /etc/secure-ai
+        access: ro
+        required: true
+      # TLS verification and hostname resolution happen after the policy is
+      # installed. Omitting these Fedora trust inputs makes HTTPS fail closed
+      # for every allowed destination.
+      - path: /etc/pki
+        access: ro
+        required: true
+      - path: /etc/resolv.conf
+        access: ro
+        required: true
+      - path: /etc/hosts
+        access: ro
+        required: true
+      - path: /etc/nsswitch.conf
+        access: ro
+        required: true
+      - path: /etc/gai.conf
+        access: ro
+      - path: /etc/localtime
         access: ro
       - path: /usr/libexec/secure-ai/airlock
         access: exe
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
+        access: ro
+      - path: /dev/urandom
         access: ro
       - path: /tmp
         access: rw
@@ -164,7 +323,18 @@ services:
         access: ro
       - path: /usr/libexec/secure-ai/search-mediator
         access: exe
+        required: true
+      - path: /usr/bin/env
+        access: exe
+        required: true
+      - path: /usr/bin/bash
+        access: exe
+        required: true
       - path: /usr/bin/python3
+        access: exe
+      - path: /usr/bin/gunicorn
+        access: exe
+      - path: /usr/local/bin/gunicorn
         access: exe
       - path: /usr/lib
         access: ro
@@ -172,6 +342,7 @@ services:
         access: ro
       - path: /opt/secure-ai/services
         access: ro
+        required: true
       - path: /tmp
         access: rw
 
@@ -182,7 +353,7 @@ services:
         access: rw
       - path: /var/lib/secure-ai/logs
         access: rw
-      - path: /var/lib/secure-ai/registry
+      - path: /var/lib/secure-ai/vault/models
         access: ro
       - path: /etc/secure-ai
         access: ro
@@ -190,8 +361,15 @@ services:
         access: ro
       - path: /sys/bus/pci/devices
         access: ro
-      - path: /dev/dri
+      - path: /sys/module
         access: ro
+      - path: /dev
+        access: rw
+        # The unit's DevicePolicy permits only GPU nodes.
+      - path: /usr/bin/nvidia-smi
+        access: exe
+      - path: /usr/bin/rocm-smi
+        access: exe
       - path: /usr/libexec/secure-ai/gpu-integrity-watch
         access: exe
       - path: /usr/lib
@@ -224,7 +402,11 @@ services:
     paths:
       - path: /var/lib/secure-ai/logs
         access: rw
+      - path: /var/lib/secure-ai/integrity
+        access: rw
       - path: /var/lib/secure-ai/registry
+        access: ro
+      - path: /var/lib/secure-ai/vault/models
         access: ro
       - path: /etc/secure-ai
         access: ro
@@ -234,6 +416,10 @@ services:
         access: exe
       - path: /usr/lib/systemd/system
         access: ro
+        required: true
+      - path: /usr/share/secure-ai/integrity
+        access: ro
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
@@ -256,14 +442,31 @@ services:
         access: ro
       - path: /proc/cmdline
         access: ro
+      - path: /dev/tpmrm0
+        access: rw
+      - path: /dev/tpm0
+        access: rw
       - path: /usr/libexec/secure-ai
         access: ro
       - path: /usr/libexec/secure-ai/runtime-attestor
         access: exe
       - path: /usr/bin/tpm2_pcrread
         access: exe
+      - path: /usr/bin/tpm2_quote
+        access: exe
+      - path: /usr/bin/tpm2_checkquote
+        access: exe
       - path: /usr/bin/rpm-ostree
         access: exe
+      - path: /usr/share/secure-ai/integrity
+        access: ro
+        required: true
+      - path: /var/lib/rpm-ostree
+        access: ro
+      - path: /sysroot/ostree
+        access: ro
+      - path: /run/dbus
+        access: ro
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
@@ -292,9 +495,15 @@ services:
     paths:
       - path: /var/lib/secure-ai/logs
         access: rw
+      - path: /var/lib/secure-ai/data
+        access: rw
       - path: /etc/secure-ai
         access: ro
       - path: /run/secure-ai
+        access: ro
+      - path: /run/secure-ai/vault-control/requests
+        access: rw
+      - path: /run/secure-ai/vault-control/results
         access: ro
       - path: /usr/libexec/secure-ai/incident-recorder
         access: exe

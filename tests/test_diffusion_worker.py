@@ -3,12 +3,28 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_PATH = REPO_ROOT / "services" / "diffusion-worker" / "app.py"
 TINY_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII="
 )
+_DIFFUSION_TEST_TOKEN = "diffusion-unit-test-service-credential"
+
+
+@pytest.fixture(autouse=True)
+def provision_diffusion_service_credential(tmp_path, monkeypatch):
+    token_path = tmp_path / "diffusion-service.token"
+    token_path.write_text(_DIFFUSION_TEST_TOKEN, encoding="utf-8")
+    token_path.chmod(0o600)
+    monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+
+
+def _client(module):
+    client = module.app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {_DIFFUSION_TEST_TOKEN}"
+    return client
 
 
 def _load_module():
@@ -20,7 +36,7 @@ def _load_module():
 
 def test_max_content_length_applies_in_wsgi_mode():
     module = _load_module()
-    assert module.app.config["MAX_CONTENT_LENGTH"] == 100 * 1024 * 1024
+    assert module.app.config["MAX_CONTENT_LENGTH"] == 24 * 1024 * 1024
 
 
 def test_load_pipeline_uses_fp16_variant_when_present(monkeypatch, tmp_path):
@@ -161,7 +177,7 @@ def test_outputs_list_serves_recent_generated_files(monkeypatch, tmp_path):
     (tmp_path / "gen_2.mp4").write_bytes(b"mp4")
     (tmp_path / "notes.txt").write_text("ignore")
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         list_resp = client.get("/v1/outputs")
         file_resp = client.get("/v1/outputs/gen_1.png")
         traversal_resp = client.get("/v1/outputs/../secret.png")
@@ -185,7 +201,7 @@ def test_img2img_rejects_zero_effective_steps_before_pipeline_load():
     module._find_diffusion_models = lambda: [{"name": "tiny", "path": "/tmp/tiny", "type": "image"}]
     module._load_pipeline = _unexpected_load
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/img2img",
             json={
@@ -205,7 +221,7 @@ def test_img2img_rejects_overlong_prompt():
     module = _load_module()
     module.app.config["TESTING"] = True
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/img2img",
             json={
@@ -238,12 +254,22 @@ def test_img2img_upscales_tiny_images_before_pipeline_call(monkeypatch, tmp_path
     class FakeImage:
         def __init__(self, size=(1, 1)):
             self.size = size
+            self.format = "PNG"
 
         def convert(self, _mode):
             return self
 
         def resize(self, size):
             return FakeImage(size)
+
+        def verify(self):
+            return None
+
+        def load(self):
+            return None
+
+        def close(self):
+            return None
 
     class FakeOutputImage:
         def save(self, target, format=None):
@@ -272,7 +298,7 @@ def test_img2img_upscales_tiny_images_before_pipeline_call(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "PIL", fake_pil_module)
     monkeypatch.setitem(sys.modules, "PIL.Image", fake_image_module)
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/img2img",
             json={
@@ -305,7 +331,7 @@ def test_generate_video_requires_image_for_image_conditioned_models():
 
     module._load_pipeline = _unexpected_load
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/video",
             json={
@@ -336,7 +362,7 @@ def test_generate_video_requires_prompt_for_text_conditioned_models():
 
     module._load_pipeline = _unexpected_load
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/video",
             json={
@@ -430,12 +456,22 @@ def test_generate_video_passes_image_for_image_conditioned_models(monkeypatch, t
     class FakeImage:
         def __init__(self, size=(1, 1)):
             self.size = size
+            self.format = "PNG"
 
         def convert(self, _mode):
             return self
 
         def resize(self, size):
             return FakeImage(size)
+
+        def verify(self):
+            return None
+
+        def load(self):
+            return None
+
+        def close(self):
+            return None
 
     fake_image_module = types.ModuleType("PIL.Image")
     fake_image_module.open = lambda _stream: FakeImage()
@@ -469,7 +505,7 @@ def test_generate_video_passes_image_for_image_conditioned_models(monkeypatch, t
     monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers_module)
     monkeypatch.setitem(sys.modules, "diffusers.utils", fake_diffusers_utils)
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/video",
             json={
@@ -512,12 +548,22 @@ def test_generate_video_honors_requested_dimensions_for_image_conditioned_models
     class FakeImage:
         def __init__(self, size=(64, 48)):
             self.size = size
+            self.format = "PNG"
 
         def convert(self, _mode):
             return self
 
         def resize(self, size):
             return FakeImage(size)
+
+        def verify(self):
+            return None
+
+        def load(self):
+            return None
+
+        def close(self):
+            return None
 
     fake_image_module = types.ModuleType("PIL.Image")
     fake_image_module.open = lambda _stream: FakeImage()
@@ -549,7 +595,7 @@ def test_generate_video_honors_requested_dimensions_for_image_conditioned_models
     monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers_module)
     monkeypatch.setitem(sys.modules, "diffusers.utils", fake_diffusers_utils)
 
-    with module.app.test_client() as client:
+    with _client(module) as client:
         resp = client.post(
             "/v1/generate/video",
             json={

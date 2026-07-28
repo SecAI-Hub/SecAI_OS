@@ -26,12 +26,12 @@ fi
 
 bash scripts/release/secai-os-build-iso.sh \
     --dry-run \
-    --tag v0.0.0 \
+    --digest "sha256:$(printf '0%.0s' {1..64})" \
     --output-dir /tmp/secai-os-iso-smoke >/dev/null
 
 bash scripts/release/secai-os-build-usb.sh \
     --dry-run \
-    --tag v0.0.0 \
+    --digest "sha256:$(printf '0%.0s' {1..64})" \
     --output-dir /tmp/secai-os-usb-smoke >/dev/null
 
 bash scripts/release/secai-os-run-docker.sh \

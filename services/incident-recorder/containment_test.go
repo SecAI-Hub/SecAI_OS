@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // =========================================================================
@@ -149,6 +153,40 @@ func TestExecuteContainment_BearerToken(t *testing.T) {
 	}
 }
 
+func TestFreezeAgentUnixSocketUsesContainmentCredential(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "agent.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	authReceived := make(chan string, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authReceived <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})}
+	defer server.Close()
+	go func() { _ = server.Serve(listener) }()
+
+	err = freezeAgent(
+		Incident{ID: "INC-UDS-001", Class: ClassIntegrityViolation},
+		ServiceEndpoints{AgentSocket: socketPath},
+		"agent-containment-only",
+	)
+	if err != nil {
+		t.Fatalf("freeze over Unix socket failed: %v", err)
+	}
+	select {
+	case auth := <-authReceived:
+		if auth != "Bearer agent-containment-only" {
+			t.Fatalf("unexpected Unix-socket authorization: %q", auth)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent Unix-socket request was not received")
+	}
+}
+
 func TestExecuteContainment_UnknownAction(t *testing.T) {
 	ep := ServiceEndpoints{}
 	inc := Incident{
@@ -175,18 +213,86 @@ func TestExecuteContainment_LogAlert_NoHTTP(t *testing.T) {
 	executeContainment(inc, ep, "")
 }
 
+func TestVaultRelockBrokerRequiresAuthenticatedResult(t *testing.T) {
+	requestDir := t.TempDir()
+	resultDir := t.TempDir()
+	inc := Incident{ID: "INC-BROKER-001", Class: ClassIntegrityViolation}
+
+	brokerDone := make(chan struct{})
+	go func() {
+		defer close(brokerDone)
+		requestPath := filepath.Join(requestDir, inc.ID+".json")
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(requestPath); err == nil {
+				result, _ := json.Marshal(vaultRelockResult{
+					Success:    true,
+					IncidentID: inc.ID,
+				})
+				_ = os.WriteFile(
+					filepath.Join(resultDir, inc.ID+".json"),
+					result,
+					0o640,
+				)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	if err := requestVaultRelock(inc, requestDir, resultDir); err != nil {
+		t.Fatalf("vault broker request failed: %v", err)
+	}
+	<-brokerDone
+}
+
+func TestVaultRelockBrokerRejectsFailure(t *testing.T) {
+	requestDir := t.TempDir()
+	resultDir := t.TempDir()
+	inc := Incident{ID: "INC-BROKER-FAIL", Class: ClassIntegrityViolation}
+
+	go func() {
+		requestPath := filepath.Join(requestDir, inc.ID+".json")
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(requestPath); err == nil {
+				result, _ := json.Marshal(vaultRelockResult{
+					Success:    false,
+					Error:      "cryptsetup close failed",
+					IncidentID: inc.ID,
+				})
+				_ = os.WriteFile(
+					filepath.Join(resultDir, inc.ID+".json"),
+					result,
+					0o640,
+				)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	if err := requestVaultRelock(inc, requestDir, resultDir); err == nil {
+		t.Fatal("broker failure must fail containment")
+	}
+}
+
 // =========================================================================
 // Service endpoint config tests
 // =========================================================================
 
 func TestLoadServiceEndpoints_Defaults(t *testing.T) {
 	t.Setenv("AGENT_URL", "")
+	t.Setenv("AGENT_SOCKET", "")
 	t.Setenv("AIRLOCK_URL", "")
 	t.Setenv("REGISTRY_URL", "")
 	loadServiceEndpoints()
 
-	if endpoints.AgentURL != "http://127.0.0.1:8476" {
-		t.Errorf("expected default agent URL, got %s", endpoints.AgentURL)
+	if endpoints.AgentURL != "" {
+		t.Errorf("expected native default to avoid agent TCP, got %s", endpoints.AgentURL)
+	}
+	if endpoints.AgentSocket != "/run/secure-ai/agent/agent.sock" {
+		t.Errorf("expected native agent Unix socket, got %s", endpoints.AgentSocket)
 	}
 	if endpoints.AirlockURL != "http://127.0.0.1:8490" {
 		t.Errorf("expected default airlock URL, got %s", endpoints.AirlockURL)
@@ -198,12 +304,16 @@ func TestLoadServiceEndpoints_Defaults(t *testing.T) {
 
 func TestLoadServiceEndpoints_CustomEnv(t *testing.T) {
 	t.Setenv("AGENT_URL", "http://custom:1234")
+	t.Setenv("AGENT_SOCKET", "/tmp/custom-agent.sock")
 	t.Setenv("AIRLOCK_URL", "http://custom:5678")
 	t.Setenv("REGISTRY_URL", "http://custom:9012")
 	loadServiceEndpoints()
 
 	if endpoints.AgentURL != "http://custom:1234" {
 		t.Errorf("expected custom agent URL, got %s", endpoints.AgentURL)
+	}
+	if endpoints.AgentSocket != "/tmp/custom-agent.sock" {
+		t.Errorf("expected custom agent socket, got %s", endpoints.AgentSocket)
 	}
 	if endpoints.AirlockURL != "http://custom:5678" {
 		t.Errorf("expected custom airlock URL, got %s", endpoints.AirlockURL)
@@ -226,6 +336,7 @@ func TestEnvOrDefault(t *testing.T) {
 
 func TestCreateIncident_TriggersContainment(t *testing.T) {
 	resetGlobalState(t)
+	containmentExecutor = executeContainment
 
 	// Set up a mock agent endpoint to receive freeze.
 	var mu sync.Mutex
@@ -241,6 +352,7 @@ func TestCreateIncident_TriggersContainment(t *testing.T) {
 	defer srv.Close()
 
 	endpoints.AgentURL = srv.URL
+	endpoints.AgentSocket = ""
 	endpoints.AirlockURL = srv.URL
 
 	// Create an incident that triggers auto-containment with freeze_agent.

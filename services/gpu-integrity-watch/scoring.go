@@ -33,10 +33,10 @@ type ScoreEntry struct {
 
 // ScoringEngine computes composite anomaly scores and tracks history.
 type ScoringEngine struct {
-	mu       sync.Mutex
-	history  []ScoreEntry
-	maxHist  int
-	weights  map[ProbeType]float64
+	mu      sync.Mutex
+	history []ScoreEntry
+	maxHist int
+	weights map[ProbeType]float64
 }
 
 // NewScoringEngine creates a scoring engine with configured weights and history size.

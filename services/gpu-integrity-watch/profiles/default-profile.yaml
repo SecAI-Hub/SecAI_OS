@@ -1,13 +1,13 @@
 version: 1
 
 # Directory containing model weight files to monitor.
-model_dir: /var/lib/secure-ai/models
+model_dir: /var/lib/secure-ai/vault/models
 
 # Inference endpoint for sentinel probes (llama-server).
-inference_url: "http://127.0.0.1:8080"
+inference_url: "http://127.0.0.1:8465"
 
 # File to store/load baseline hashes.
-baseline_file: /var/lib/secure-ai/integrity/baseline.yaml
+baseline_file: /var/lib/secure-ai/gpu-integrity/baseline.yaml
 
 # Probe configuration — probes run in order listed.
 probes:
@@ -67,10 +67,12 @@ actions:
     type: reload
     trigger: warning
 
-  - name: quarantine-critical
-    type: quarantine
+  # Registry quarantine is performed by the authenticated incident-recorder
+  # containment path. This unprivileged observer deliberately has no write
+  # access to the trusted model directory.
+  - name: report-critical
+    type: alert
     trigger: critical
-    target_dir: /var/lib/secure-ai/quarantine
 
   - name: fail-closed
     type: fail_closed
@@ -78,7 +80,7 @@ actions:
 
 # Daemon settings.
 daemon:
-  bind_addr: "127.0.0.1:8505"
+  bind_addr: "127.0.0.1:8495"
   interval: "5m"
 
 # Integration with other SecAI services.

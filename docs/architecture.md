@@ -1,6 +1,6 @@
 # System Architecture
 
-SecAI OS is a bootable local-first AI appliance built on uBlue (Fedora Atomic/Silverblue F42). It enforces defense-in-depth through five architecture zones, immutable OS layers, encrypted storage, and default-deny networking.
+SecAI OS is a bootable local-first AI appliance built on uBlue (Fedora Atomic/Silverblue 44). It enforces defense-in-depth through five architecture zones, immutable OS layers, encrypted storage, and default-deny networking.
 
 ---
 
@@ -22,6 +22,22 @@ A 7-stage verification pipeline that every model must pass before promotion. Che
 
 The active inference environment. llama-server runs promoted models from the trusted registry. The Tool Firewall gates all tool invocations through a default-deny policy. The MCP Firewall (:8496) enforces default-deny policy on Model Context Protocol tool calls with input redaction and taint tracking. The Search Mediator (disabled by default) provides sanitized, Tor-routed web search.
 
+In the lower-assurance Compose sandbox, policy, configuration, model catalog,
+and profile data are published together as immutable content-addressed
+generations. The launcher first quiesces all project containers, then one
+atomically replaced active-generation pointer selects a complete immutable
+candidate and Compose recreates enabled services against that exact
+generation. Candidate selection is not a readiness claim. After recreation
+and bounded health verification, the launcher publishes the live controller's
+random session ID and installs `ready-generation` last as the readiness commit.
+The UI validates the exact read-only profile against the generation manifest
+and requires a challenge-bound controller HMAC for the same session/profile;
+missing or mismatched state is Unknown/degraded. This fail-closed downtime
+avoids mixed policy/config binds and stale post-reboot profile claims.
+Generation mutation is an internal launcher-only operation protected by the
+launcher lock and quiescence checks; invoking the renderer directly or
+concurrently is not a supported production workflow.
+
 ### 5. Agent Layer
 
 A policy-bound local autopilot that orchestrates bounded local workflows. The Agent (:8476) decomposes user intent into steps, evaluates each step against the unified Policy Engine (:8500) with HMAC-signed capability tokens and sensitivity labels, then executes approved steps through the storage gateway and tool firewall. Low-risk local actions (search, summarize, draft) run automatically; high-risk actions (outbound requests, exports, trust changes) require two-phase approval. See [Agent Mode](components/agent.md) for full details.
@@ -35,7 +51,7 @@ The controlled boundary between the appliance and the external network. Disabled
 A set of services that continuously verify system integrity and automatically respond to security events:
 
 - **Policy Engine** (:8500) — Unified decision point for 6 policy domains (tool_access, path_access, egress, agent_risk, sensitivity, model_promotion). All services query the policy engine for allow/deny decisions with structured evidence. OPA/Rego-upgradeable.
-- **Runtime Attestor** (:8505) — Verifies TPM2 quotes, measures boot state, computes HMAC-signed runtime state bundles. Gates service startup: all downstream services depend on valid attestation. Reports degraded/failed attestation to the Incident Recorder.
+- **Runtime Attestor** (:8505) — After root-only first-boot enrollment, verifies a fresh nonce-bound TPM2 AK quote with `tpm2_checkquote`, binds it to the authenticated PCR 0/2/4/7 baseline and signed deployment, and computes canonical HMAC-signed runtime state bundles. The Incident Recorder independently verifies the full bundle HMAC and request nonce during recovery. Hardware profiles gate on verified evidence; explicit VM evaluation profiles never claim hardware assurance or critical-incident recoverability.
 - **Integrity Monitor** (:8510) — Continuous baseline-verified file watcher (30s scan intervals). Monitors service binaries, policy files, model files, systemd units, and trust material. Reports violations to the Incident Recorder with severity classification.
 - **Incident Recorder** (:8515) — Captures security events across 9 incident classes with 4-state lifecycle (open → contained → resolved → acknowledged). Executes auto-containment actions per policy: freeze agent, disable airlock, force vault relock, quarantine model.
 - **GPU Integrity Watch** (:8495) — Continuous GPU runtime verification with driver fingerprinting, device allowlist, and baseline comparison. Reports anomalies to the Incident Recorder.
@@ -177,7 +193,14 @@ Enforcement Layer (continuous, independent of user requests):
 
 ### Go for Latency-Sensitive and Security-Critical Services
 
-The Registry, Tool Firewall, Airlock, GPU Integrity Watch, MCP Firewall, Policy Engine, Runtime Attestor, Integrity Monitor, and Incident Recorder are written in Go. These services sit in the hot path of inference requests, act as network gateways, or perform continuous security verification where latency and reliability matter. Go provides low-latency HTTP handling, easy concurrency, and compiles to a single static binary with no runtime dependencies.
+The Registry, Tool Firewall, Airlock, GPU Integrity Watch, MCP Firewall, Policy
+Engine, Runtime Attestor, Integrity Monitor, Incident Recorder, and sandbox-only
+UI Ingress are written in Go. These services sit in the hot path of inference
+requests, act as network gateways, or perform continuous security verification
+where latency and reliability matter. Go provides low-latency handling, easy
+concurrency, and compiles to a single static binary with no runtime
+dependencies. The UI Ingress has no credentials or volumes and connects the
+host loopback port only to a dedicated internal link shared with the UI.
 
 ### Python for Scanning and UI
 

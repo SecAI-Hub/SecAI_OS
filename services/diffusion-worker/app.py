@@ -7,23 +7,29 @@ Models are loaded from the trusted registry only.
 """
 
 import base64
+import binascii
+import hmac
 import io
 import json
 import logging
 import os
+import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
 import yaml
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 
 log = logging.getLogger("diffusion-worker")
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB max request size
+app.config["MAX_CONTENT_LENGTH"] = int(
+    os.getenv("MAX_REQUEST_BODY_BYTES", str(24 * 1024 * 1024))
+)
 
-REGISTRY_DIR = Path(os.getenv("REGISTRY_DIR", "/var/lib/secure-ai/registry"))
+REGISTRY_DIR = Path(os.getenv("REGISTRY_DIR", "/var/lib/secure-ai/vault/models"))
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
 BIND_ADDR = os.getenv("BIND_ADDR", "0.0.0.0:8455")
 OUTPUTS_DIR = Path(os.getenv("OUTPUTS_DIR", "/var/lib/secure-ai/vault/outputs"))
@@ -34,9 +40,57 @@ MAX_FRAMES = int(os.getenv("MAX_FRAMES", "120"))
 VIDEO_DIMENSION_MULTIPLE = int(os.getenv("VIDEO_DIMENSION_MULTIPLE", "16"))
 DEVICE_PREFERENCE = os.getenv("DIFFUSION_DEVICE_PREFERENCE", "auto").strip().lower()
 CPU_OFFLOAD = os.getenv("DIFFUSION_CPU_OFFLOAD", "0").strip().lower()
+SERVICE_TOKEN_PATH = Path(
+    os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
+)
+MAX_INPUT_IMAGE_BYTES = int(
+    os.getenv("MAX_INPUT_IMAGE_BYTES", str(16 * 1024 * 1024))
+)
+MAX_INPUT_IMAGE_PIXELS = int(
+    os.getenv("MAX_INPUT_IMAGE_PIXELS", str(16_777_216))
+)
+MAX_CONCURRENT_GENERATIONS = max(
+    1, int(os.getenv("MAX_CONCURRENT_GENERATIONS", "1"))
+)
+ALLOWED_INPUT_IMAGE_FORMATS = {"PNG", "JPEG", "WEBP"}
 
 # Loaded pipeline instances (lazy init)
 _pipelines: dict[str, Any] = {}
+_generation_slots = threading.BoundedSemaphore(MAX_CONCURRENT_GENERATIONS)
+
+
+def _read_service_token() -> str:
+    try:
+        return SERVICE_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+@app.before_request
+def _protect_generation_endpoints():
+    """Require service identity for every non-health API and reserve GPU capacity."""
+    if not request.path.startswith("/v1/"):
+        return None
+
+    token = _read_service_token()
+    if not token:
+        return jsonify({"error": "service authentication unavailable"}), 503
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or not hmac.compare_digest(auth[7:], token):
+        return jsonify({"error": "forbidden"}), 403
+
+    if request.path.startswith("/v1/generate/"):
+        if not _generation_slots.acquire(blocking=False):
+            return jsonify({"error": "generation capacity exhausted"}), 429
+        g.generation_slot_acquired = True
+    return None
+
+
+@app.teardown_request
+def _release_generation_slot(_error=None):
+    if getattr(g, "generation_slot_acquired", False):
+        _generation_slots.release()
+        g.generation_slot_acquired = False
 
 
 def _env_truthy(value: str) -> bool:
@@ -141,6 +195,62 @@ def _optional_bounded_int(value, default: int, low: int, high: int) -> int:
     except (TypeError, ValueError):
         return default
     return _clamp(value, low, high)
+
+
+def _decode_input_image(image_b64: str):
+    """Strictly decode and validate an untrusted base64 image.
+
+    The encoded and decoded byte counts are bounded before Pillow parses the
+    payload. Pillow verifies the container once, then a fresh decoder loads
+    pixels under a hard decompression-bomb ceiling.
+    """
+    if not isinstance(image_b64, str) or not image_b64:
+        raise ValueError("image (base64) is required")
+    max_encoded = ((MAX_INPUT_IMAGE_BYTES + 2) // 3) * 4
+    if len(image_b64) > max_encoded:
+        raise ValueError("encoded image exceeds size limit")
+    try:
+        img_bytes = base64.b64decode(image_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("image is not valid base64") from exc
+    if len(img_bytes) > MAX_INPUT_IMAGE_BYTES:
+        raise ValueError("decoded image exceeds size limit")
+
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = MAX_INPUT_IMAGE_PIXELS
+    bomb_warning = getattr(Image, "DecompressionBombWarning", Warning)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bomb_warning)
+        probe = Image.open(io.BytesIO(img_bytes))
+        try:
+            image_format = str(getattr(probe, "format", "") or "").upper()
+            if image_format not in ALLOWED_INPUT_IMAGE_FORMATS:
+                raise ValueError(
+                    f"unsupported image format: {image_format or 'unknown'}"
+                )
+            width, height = probe.size
+            if (
+                width <= 0
+                or height <= 0
+                or width * height > MAX_INPUT_IMAGE_PIXELS
+            ):
+                raise ValueError("image dimensions exceed safety limit")
+            probe.verify()
+        finally:
+            close = getattr(probe, "close", None)
+            if callable(close):
+                close()
+
+        decoded = Image.open(io.BytesIO(img_bytes))
+        try:
+            decoded.load()
+            converted = decoded.convert("RGB")
+        finally:
+            close = getattr(decoded, "close", None)
+            if callable(close):
+                close()
+    return converted
 
 
 def _load_pipeline(model_path: str, pipeline_type: str = "image"):
@@ -630,7 +740,6 @@ def generate_video():
 
     try:
         import torch
-        from PIL import Image
         from diffusers.utils import export_to_video
 
         pipe = _load_pipeline(model_info["path"], "video")
@@ -640,8 +749,7 @@ def generate_video():
 
         start = time.monotonic()
         if image_conditioned:
-            img_bytes = base64.b64decode(image_b64)
-            init_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            init_image = _decode_input_image(image_b64)
             w, h = init_image.size
             if w <= 0 or h <= 0:
                 return jsonify({"error": "image dimensions must be > 0"}), 400
@@ -704,6 +812,8 @@ def generate_video():
             },
         })
 
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception:
         log.exception("video generation failed")
         return jsonify({"error": "video generation failed"}), 500
@@ -756,11 +866,8 @@ def generate_img2img():
 
     try:
         import torch
-        from PIL import Image
-
         # Decode input image
-        img_bytes = base64.b64decode(image_b64)
-        init_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        init_image = _decode_input_image(image_b64)
         init_image = _normalize_img2img_input(init_image)
 
         pipe = _load_pipeline(model_info["path"], "img2img")
@@ -797,6 +904,8 @@ def generate_img2img():
             "elapsed_seconds": elapsed,
         })
 
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception:
         log.exception("img2img generation failed")
         return jsonify({"error": "img2img generation failed"}), 500

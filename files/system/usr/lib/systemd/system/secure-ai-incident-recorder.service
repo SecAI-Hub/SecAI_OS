@@ -1,23 +1,59 @@
 [Unit]
 Description=Secure AI Incident Recorder (security event capture and containment)
-After=secure-ai-runtime-attestor.service secure-ai-policy-engine.service network.target
+Requires=secure-ai-credentials.service
+After=secure-ai-runtime-attestor.service secure-ai-policy-engine.service network.target secure-ai-credentials.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/incident-recorder
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require incident_recorder -- /usr/libexec/secure-ai/incident-recorder
 Environment=BIND_ADDR=127.0.0.1:8515
 Environment=CONTAINMENT_POLICY_PATH=/etc/secure-ai/policy/incident-containment.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/incident-recorder-audit.jsonl
 Environment=INCIDENT_STORE_PATH=/var/lib/secure-ai/data/incidents.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=INCIDENT_READ_TOKEN_PATH=%d/read-token
+Environment=INCIDENT_OPERATOR_TOKEN_PATH=%d/operator-token
+Environment=INCIDENT_RECOVERY_ADMIN_TOKEN_PATH=%d/recovery-admin-token
+Environment=INCIDENT_FORENSIC_TOKEN_PATH=%d/forensic-token
+Environment=INCIDENT_REPORTER_CANARY_TOKEN_PATH=%d/reporter-canary-token
+Environment=INCIDENT_REPORTER_GPU_INTEGRITY_TOKEN_PATH=%d/reporter-gpu-integrity-token
+Environment=INCIDENT_REPORTER_INTEGRITY_MONITOR_TOKEN_PATH=%d/reporter-integrity-monitor-token
+Environment=INCIDENT_REPORTER_RUNTIME_ATTESTOR_TOKEN_PATH=%d/reporter-runtime-attestor-token
+Environment=RUNTIME_ATTESTOR_TOKEN_PATH=%d/runtime-attestor-token
+Environment=ATTESTATION_HMAC_KEY_PATH=%d/attestation-hmac-key
+Environment=AIRLOCK_CONTAINMENT_TOKEN_PATH=%d/airlock-containment-token
+Environment=REGISTRY_CONTAINMENT_TOKEN_PATH=%d/registry-containment-token
+Environment=AGENT_CONTAINMENT_TOKEN_PATH=%d/agent-containment-token
+Environment=FORENSIC_HMAC_KEY_PATH=%d/forensic-hmac-key
+Environment=AGENT_SOCKET=/run/secure-ai/agent/agent.sock
+Environment=VAULT_RELOCK_REQUEST_DIR=/run/secure-ai/vault-control/requests
+Environment=VAULT_RELOCK_RESULT_DIR=/run/secure-ai/vault-control/results
+LoadCredential=read-token:/var/lib/secure-ai/credentials/incident-read.token
+LoadCredential=operator-token:/var/lib/secure-ai/credentials/incident-operator.token
+LoadCredential=recovery-admin-token:/var/lib/secure-ai/credentials/incident-recovery-admin.token
+LoadCredential=forensic-token:/var/lib/secure-ai/credentials/incident-forensic.token
+LoadCredential=reporter-canary-token:/var/lib/secure-ai/credentials/incident-reporter-canary.token
+LoadCredential=reporter-gpu-integrity-token:/var/lib/secure-ai/credentials/incident-reporter-gpu-integrity.token
+LoadCredential=reporter-integrity-monitor-token:/var/lib/secure-ai/credentials/incident-reporter-integrity-monitor.token
+LoadCredential=reporter-runtime-attestor-token:/var/lib/secure-ai/credentials/incident-reporter-runtime-attestor.token
+LoadCredential=runtime-attestor-token:/var/lib/secure-ai/credentials/runtime-attestor.token
+LoadCredential=attestation-hmac-key:/var/lib/secure-ai/credentials/attestation-hmac.key
+LoadCredential=airlock-containment-token:/var/lib/secure-ai/credentials/airlock-containment.token
+LoadCredential=registry-containment-token:/var/lib/secure-ai/credentials/registry-containment.token
+LoadCredential=agent-containment-token:/var/lib/secure-ai/credentials/agent-containment.token
+LoadCredential=forensic-hmac-key:/var/lib/secure-ai/credentials/forensic-hmac.key
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-data secure-ai-agent-ipc secure-ai-vault-control
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadWritePaths=/var/lib/secure-ai/data
+ReadWritePaths=/run/secure-ai/vault-control/requests
+ReadOnlyPaths=/run/secure-ai/vault-control/results
+ReadOnlyPaths=/run/secure-ai/agent
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -48,8 +84,6 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Private users
-PrivateUsers=yes
 PrivateNetwork=no
 
 # Network restriction — recorder only serves and calls local control-plane APIs
@@ -72,9 +106,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

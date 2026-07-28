@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "profile": "native-appliance",
+  "credential_model": "least-privilege-action-scoped-v1",
+  "credential_model_note": "Registry and incident-recorder APIs use endpoint- and source-scoped bearer credentials. Containment, UI control, recovery administration, forensic export, and agent signing remain independent capabilities.",
+  "services": [
+    {"id": "credentials", "unit": "secure-ai-credentials.service", "required": true, "health_url": "", "inbound_credential": ""},
+    {"id": "boot-verify", "unit": "secure-ai-boot-verify.service", "required": true, "health_url": "", "inbound_credential": ""},
+    {"id": "runtime-attestor", "unit": "secure-ai-runtime-attestor.service", "required": true, "health_url": "http://127.0.0.1:8505/health", "inbound_credential": "runtime-attestor.token"},
+    {"id": "policy-engine", "unit": "secure-ai-policy-engine.service", "required": true, "health_url": "http://127.0.0.1:8500/health", "inbound_credential": "policy-engine.token"},
+    {"id": "registry", "unit": "secure-ai-registry.service", "required": true, "requires_vault": true, "health_url": "http://127.0.0.1:8470/health", "inbound_credential": "registry-read.token", "inbound_credentials": ["registry-read.token", "registry-verify.token", "registry-promote.token", "registry-admin.token"], "containment_credential": "registry-containment.token"},
+    {"id": "tool-firewall", "unit": "secure-ai-tool-firewall.service", "required": true, "requires_vault": true, "health_url": "http://127.0.0.1:8475/health", "inbound_credential": "tool-firewall.token"},
+    {"id": "integrity-monitor", "unit": "secure-ai-integrity-monitor.service", "required": true, "requires_vault": true, "health_url": "http://127.0.0.1:8510/health", "inbound_credential": "integrity-monitor.token"},
+    {"id": "incident-recorder", "unit": "secure-ai-incident-recorder.service", "required": true, "health_url": "http://127.0.0.1:8515/health", "inbound_credential": "incident-read.token", "inbound_credentials": ["incident-read.token", "incident-operator.token", "incident-recovery-admin.token", "incident-forensic.token", "incident-reporter-canary.token", "incident-reporter-gpu-integrity.token", "incident-reporter-integrity-monitor.token", "incident-reporter-runtime-attestor.token"]},
+    {"id": "mcp-firewall", "unit": "secure-ai-mcp-firewall.service", "required": true, "requires_vault": true, "health_url": "http://127.0.0.1:8496/health", "inbound_credential": "mcp-firewall.token"},
+    {"id": "gpu-integrity-watch", "unit": "secure-ai-gpu-integrity-watch.service", "required": true, "health_url": "http://127.0.0.1:8495/health", "inbound_credential": "gpu-integrity-watch.token"},
+    {"id": "agent", "unit": "secure-ai-agent.service", "required": true, "requires_vault": true, "health_url": "unix:///run/secure-ai/agent/agent.sock", "inbound_credential": "agent-ui.token", "containment_credential": "agent-containment.token", "signing_credential": "agent-signing.key"},
+    {"id": "ui", "unit": "secure-ai-ui.service", "required": true, "health_url": "http://127.0.0.1:8480/health", "inbound_credential": ""},
+    {"id": "inference", "unit": "secure-ai-inference.service", "required": false, "requires_vault": true, "health_url": "http://127.0.0.1:8465/health", "inbound_credential": ""},
+    {"id": "airlock", "unit": "secure-ai-airlock.service", "required": false, "health_url": "http://127.0.0.1:8490/health", "inbound_credential": "airlock.token", "containment_credential": "airlock-containment.token"},
+    {"id": "search-mediator", "unit": "secure-ai-search-mediator.service", "required": false, "health_url": "http://127.0.0.1:8485/live", "inbound_credential": "search-mediator.token"},
+    {"id": "diffusion", "unit": "secure-ai-diffusion.service", "required": false, "requires_vault": true, "health_url": "http://127.0.0.1:8455/health", "inbound_credential": "diffusion.token"}
+  ]
+}

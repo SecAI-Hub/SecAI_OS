@@ -1,25 +1,38 @@
 [Unit]
 Description=Secure AI Continuous Integrity Monitor (baseline-verified file watcher)
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+RequiresMountsFor=/var/lib/secure-ai/vault/models
 # Starts after attestor and policy engine; monitors all service binaries and policies
-After=secure-ai-runtime-attestor.service secure-ai-policy-engine.service network.target
+Requires=secure-ai-credentials.service secure-ai-firstboot.service secure-ai-vault-mounted.service
+After=secure-ai-runtime-attestor.service secure-ai-policy-engine.service network.target secure-ai-credentials.service secure-ai-firstboot.service secure-ai-vault-mounted.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/integrity-monitor
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require integrity_monitor -- /usr/libexec/secure-ai/integrity-monitor
 Environment=BIND_ADDR=127.0.0.1:8510
 Environment=MONITOR_POLICY_PATH=/etc/secure-ai/policy/integrity-monitor.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/integrity-monitor-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+Environment=HMAC_KEY_PATH=%d/integrity-hmac-key
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
+Environment=BASELINE_PATH=/var/lib/secure-ai/integrity/baseline.json
+LoadCredential=service-token:/var/lib/secure-ai/credentials/integrity-monitor.token
+LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-integrity-monitor.token
+LoadCredential=integrity-hmac-key:/var/lib/secure-ai/credentials/integrity-hmac.key
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-integrity
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadOnlyPaths=/usr/libexec/secure-ai
 ReadOnlyPaths=/usr/lib/systemd/system
 ReadOnlyPaths=/var/lib/secure-ai/registry
+ReadOnlyPaths=/var/lib/secure-ai/vault/models
 ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/integrity
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -50,9 +63,6 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Private users
-PrivateUsers=yes
-
 # PrivateNetwork=no — needs localhost HTTP for API and to read service binaries
 PrivateNetwork=no
 
@@ -76,9 +86,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

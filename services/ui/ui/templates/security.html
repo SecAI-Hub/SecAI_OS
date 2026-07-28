@@ -399,39 +399,15 @@
     }
 
     async function triggerPanic(level) {
-        var titles = {1: 'Level 1: Lock', 2: 'Level 2: Shred Keys', 3: 'Level 3: Wipe All'};
+        var titles = {1: 'Level 1: Lock', 2: 'Level 2: Remove Hardware Unlock', 3: 'Level 3: Erase Vault Keys'};
         var messages = {
-            1: 'This will lock the vault and stop all AI services. This is reversible.',
-            2: 'This will PERMANENTLY SHRED all encryption keys. This CANNOT be undone. You will need your passphrase.',
-            3: 'This will RE-ENCRYPT the vault with a random key, making ALL DATA UNRECOVERABLE. This CANNOT be undone.'
+            1: 'Run sudo securectl panic 1 from the local console. This verified lock is reversible after a reboot or recovery.',
+            2: 'Run sudo securectl panic 2 from the local console. It will prompt for the vault passphrase and a UUID-bound confirmation before removing TPM unlock.',
+            3: 'Run sudo securectl panic 3 from the local console. It will prompt locally before destroying every vault LUKS keyslot.'
         };
 
-        var confirmed = await showConfirm(titles[level], messages[level], 'Trigger Panic Level ' + level, true);
-        if (!confirmed) return;
-
-        var body = {level: level};
-        if (level >= 2) {
-            var passphrase = prompt('Enter your passphrase to confirm Level ' + level + ' panic:');
-            if (!passphrase) return;
-            body.passphrase = passphrase;
-        }
-
-        try {
-            var resp = await fetch('/api/emergency/panic', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body),
-            });
-            var data = await resp.json();
-            if (data.success) {
-                toast('Panic level ' + level + ' triggered.', 'warning');
-                loadPanicStatus();
-            } else {
-                toast(data.error || 'Panic trigger failed.', 'error');
-            }
-        } catch(e) {
-            toast('Could not connect to server.', 'error');
-        }
+        await showConfirm(titles[level], messages[level], 'Close', true);
+        toast('Emergency actions are local-console only.', 'warning');
     }
 
     async function loadFsverityStatus() {

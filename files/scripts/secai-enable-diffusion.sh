@@ -262,7 +262,7 @@ print(f"SUPPORTED_ARCHES={\" \".join(arches)}")
 ')"
 
 if [ "$MANIFEST_POPULATED" != "yes" ]; then
-    rollback "Diffusion runtime manifest is not yet populated with real package hashes. Run scripts/refresh-diffusion-locks.sh on a Linux machine with the target Python version to generate the manifest, then commit the result."
+    rollback "Diffusion runtime manifest is not populated with real package hashes. Run scripts/generate-diffusion-locks.sh with pinned uv on a networked build host, review the staged locks/manifest, then commit them."
 fi
 
 if [ -n "$REQUIRED_PYTHON_VERSION" ] && [ "$CURRENT_PYTHON_VERSION" != "$REQUIRED_PYTHON_VERSION" ]; then
@@ -316,6 +316,7 @@ if backend not in m.get("backends", {}):
 cfg = m["backends"][backend]
 print(f"BACKEND_EXISTS=yes")
 print(f"BACKEND_LOCKFILE={cfg[\"lockfile\"]}")
+print(f"BACKEND_LOCK_SHA256={cfg.get(\"lock_sha256\", \"\")}")
 print(f"BACKEND_TORCH_INDEX={cfg[\"torch_index\"]}")
 '
 )"
@@ -328,8 +329,16 @@ LOCKFILE="${LOCKFILE_DIR}/${BACKEND_LOCKFILE}"
 if [ ! -f "$LOCKFILE" ]; then
     rollback "Lockfile not found: ${LOCKFILE}"
 fi
+if ! [[ "$BACKEND_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    rollback "Manifest has no valid SHA256 trust anchor for ${BACKEND_LOCKFILE}"
+fi
+ACTUAL_LOCK_SHA256=$(sha256sum "$LOCKFILE" | awk '{print $1}')
+if [ "$ACTUAL_LOCK_SHA256" != "$BACKEND_LOCK_SHA256" ]; then
+    rollback "Lockfile SHA256 mismatch for ${BACKEND_LOCKFILE}"
+fi
 
 echo "  Lockfile: ${BACKEND_LOCKFILE}"
+echo "  Lock SHA: ${BACKEND_LOCK_SHA256}"
 echo "  Index:    ${BACKEND_TORCH_INDEX}"
 
 _progress "detecting" 10 "Backend: ${GPU_BACKEND}"
@@ -575,7 +584,11 @@ for i, entry in enumerate(wheels):
 
     # Determine download URL
     if "pytorch.org" in source_pattern:
-        download_url = f"{torch_index}/{filename}"
+        # PEP 440 local-version separators (for example ``+cu129``) must be
+        # percent-encoded in PyTorch wheel paths. A literal '+' is rejected by
+        # the upstream object store.
+        encoded_filename = urllib.parse.quote(filename, safe="-_.")
+        download_url = f"{torch_index}/{encoded_filename}"
     else:
         download_url = resolve_pypi_wheel_url(pkg_name, pkg_version, filename)
 
@@ -839,9 +852,9 @@ mkdir -p "$OVERRIDE_DIR"
 cat > "$OVERRIDE_FILE" <<EOF
 [Service]
 ExecStart=
-ExecStart=${VENV_DIR}/bin/gunicorn \\
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require diffusion -- ${VENV_DIR}/bin/gunicorn \\
     --chdir /opt/secure-ai/services/diffusion-worker \\
-    --bind \${BIND_ADDR:-127.0.0.1:8455} \\
+    --bind \${BIND_ADDR} \\
     --workers 1 \\
     --threads 2 \\
     --timeout \${GUNICORN_TIMEOUT:-1800} \\
@@ -852,6 +865,7 @@ ExecStart=${VENV_DIR}/bin/gunicorn \\
     app:app
 Environment=VIRTUAL_ENV=${VENV_DIR}
 Environment=PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=PYTHONDONTWRITEBYTECODE=1
 EOF
 
 # ---------------------------------------------------------------------------

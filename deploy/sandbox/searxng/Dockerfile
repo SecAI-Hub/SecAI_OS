@@ -37,5 +37,9 @@ PY
 
 RUN chown searxng:searxng /usr/local/searxng/searx/settings.yml
 
+COPY --chown=977:977 entrypoint.sh /usr/local/bin/secai-searxng-entrypoint
+RUN chmod 0555 /usr/local/bin/secai-searxng-entrypoint
+
 USER 977:977
+ENTRYPOINT ["/usr/local/bin/secai-searxng-entrypoint"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 CMD ["/usr/local/searxng/.venv/bin/python", "-c", "from urllib.request import urlopen; import os, sys; port=os.getenv('SEARXNG_PORT','8888'); sys.exit(0 if urlopen(f'http://127.0.0.1:{port}/healthz', timeout=5).status == 200 else 1)"]

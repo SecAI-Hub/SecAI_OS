@@ -9,10 +9,27 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 ERRORS=0
 WARNINGS=0
+SERVICE_PROFILE="${SERVICE_PROFILE:-/etc/secure-ai/config/service-profile.json}"
 
 info()  { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; WARNINGS=$((WARNINGS + 1)); }
 fail()  { echo -e "${RED}[FAIL]${NC} $*"; ERRORS=$((ERRORS + 1)); }
+
+credential_get() {
+    local credential_name="$1"
+    local url="$2"
+    local credential_path="/var/lib/secure-ai/credentials/${credential_name}"
+    local token
+
+    if [ ! -s "$credential_path" ] || [ -L "$credential_path" ]; then
+        return 1
+    fi
+    IFS= read -r token < "$credential_path"
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        curl --config - --proto '=http' --proto-redir '=http' --noproxy '*' \
+            --fail --silent --show-error --max-time 5 --max-filesize 1048576 "$url"
+}
 
 echo "=============================================="
 echo "  Secure AI OS — First-Boot Health Check"
@@ -21,18 +38,21 @@ echo ""
 
 # 1. Core services status
 echo "--- Service Status ---"
-CORE_SERVICES=(
-    secure-ai-policy-engine
-    secure-ai-registry
-    secure-ai-tool-firewall
-    secure-ai-runtime-attestor
-    secure-ai-integrity-monitor
-    secure-ai-incident-recorder
-    secure-ai-mcp-firewall
-    secure-ai-gpu-integrity-watch
-    secure-ai-agent
-    secure-ai-ui
-)
+if [ ! -s "$SERVICE_PROFILE" ]; then
+    fail "Service profile manifest is missing: $SERVICE_PROFILE"
+    CORE_SERVICES=()
+else
+    mapfile -t CORE_SERVICES < <(
+        python3 - "$SERVICE_PROFILE" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    profile = json.load(handle)
+for service in profile.get("services", []):
+    if service.get("required"):
+        print(service["unit"])
+PY
+    )
+fi
 
 for svc in "${CORE_SERVICES[@]}"; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
@@ -42,32 +62,28 @@ for svc in "${CORE_SERVICES[@]}"; do
     fi
 done
 
-# Airlock is disabled by default (privacy risk surface)
-if systemctl is-active --quiet secure-ai-airlock 2>/dev/null; then
-    warn "secure-ai-airlock is running (disabled by default for privacy)"
-else
-    info "secure-ai-airlock is disabled (expected default)"
-fi
-
 echo ""
 
 # 2. Health endpoint checks
 echo "--- Health Endpoints ---"
-HEALTH_ENDPOINTS=(
-    "policy-engine|127.0.0.1:8500|/health"
-    "registry|127.0.0.1:8470|/health"
-    "tool-firewall|127.0.0.1:8475|/health"
-    "runtime-attestor|127.0.0.1:8505|/health"
-    "integrity-monitor|127.0.0.1:8510|/health"
-    "incident-recorder|127.0.0.1:8515|/health"
+mapfile -t HEALTH_ENDPOINTS < <(
+    python3 - "$SERVICE_PROFILE" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    profile = json.load(handle)
+for service in profile.get("services", []):
+    url = service.get("health_url", "")
+    if service.get("required") and url.startswith(("http://", "https://")):
+        print(f'{service["id"]}|{url}')
+PY
 )
 
 for entry in "${HEALTH_ENDPOINTS[@]}"; do
-    IFS='|' read -r name addr path <<< "$entry"
-    if curl -sf "http://${addr}${path}" > /dev/null 2>&1; then
+    IFS='|' read -r name url <<< "$entry"
+    if curl -sf "$url" > /dev/null 2>&1; then
         info "$name health OK"
     else
-        fail "$name health check FAILED at ${addr}${path}"
+        fail "$name health check FAILED at $url"
     fi
 done
 
@@ -76,8 +92,18 @@ echo ""
 # 3. Security posture checks
 echo "--- Security Posture ---"
 
+# A directory at the vault path is not readiness evidence. Require the exact
+# initialized LUKS mapper, filesystem, mount options, marker, and DAC contract.
+if [ -x /usr/libexec/secure-ai/verify-vault-mount.py ] && \
+   /usr/libexec/secure-ai/verify-vault-mount.py >/dev/null 2>&1; then
+    info "Encrypted vault: exact mount contract VERIFIED"
+else
+    fail "Encrypted vault is unconfigured or failed exact mount verification"
+fi
+
 # Check attestation state
-ATTEST=$(curl -sf http://127.0.0.1:8505/api/v1/verify 2>/dev/null || echo '{"verified":false}')
+ATTEST=$(credential_get runtime-attestor.token \
+    http://127.0.0.1:8505/api/v1/verify 2>/dev/null || echo '{"verified":false}')
 if echo "$ATTEST" | grep -q '"verified":true'; then
     info "Runtime attestation: VERIFIED"
 else
@@ -85,9 +111,10 @@ else
 fi
 
 # Check integrity monitor
-INTEG=$(curl -sf http://127.0.0.1:8510/api/v1/status 2>/dev/null || echo '{"state":"unknown"}')
-if echo "$INTEG" | grep -q '"clean"'; then
-    info "Integrity monitor: CLEAN"
+INTEG=$(credential_get integrity-monitor.token \
+    http://127.0.0.1:8510/api/v1/status 2>/dev/null || echo '{"state":"unknown"}')
+if echo "$INTEG" | grep -q '"state":"trusted"'; then
+    info "Integrity monitor: TRUSTED"
 elif echo "$INTEG" | grep -q '"state"'; then
     warn "Integrity monitor: state=$(echo "$INTEG" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("state","unknown"))' 2>/dev/null || echo 'unknown')"
 else
@@ -95,7 +122,8 @@ else
 fi
 
 # Check for open incidents
-INC_STATS=$(curl -sf http://127.0.0.1:8515/api/v1/stats 2>/dev/null || echo '{"open_incidents":0}')
+INC_STATS=$(credential_get incident-read.token \
+    http://127.0.0.1:8515/api/v1/stats 2>/dev/null || echo '{"open_incidents":0}')
 OPEN_INC=$(echo "$INC_STATS" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("open_incidents",0))' 2>/dev/null || echo 0)
 if [ "$OPEN_INC" -eq 0 ] 2>/dev/null; then
     info "No open incidents"
@@ -117,12 +145,39 @@ for dir in /var/lib/secure-ai/logs /var/lib/secure-ai/data /etc/secure-ai/policy
     fi
 done
 
-# Check service token exists
-if [ -f /run/secure-ai/service-token ]; then
-    info "Service token present"
-else
-    warn "Service token missing (/run/secure-ai/service-token) — services running in dev mode"
-fi
+# Root credential sources must exist, be non-empty regular files, and be
+# owner-only.  Missing credentials are a readiness failure: services no
+# longer have an unauthenticated development fallback.
+while IFS= read -r credential; do
+    [ -z "$credential" ] && continue
+    path="/var/lib/secure-ai/credentials/$credential"
+    if [ ! -f "$path" ] || [ -L "$path" ] || [ ! -s "$path" ]; then
+        fail "Required service credential is missing or unsafe: $credential"
+    elif [ "$(stat -c '%a:%U:%G' "$path" 2>/dev/null || true)" != "600:root:root" ]; then
+        fail "Required service credential has unsafe ownership/mode: $credential"
+    else
+        info "Credential source validated: $credential"
+    fi
+done < <(
+    python3 - "$SERVICE_PROFILE" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    profile = json.load(handle)
+credentials = set()
+for service in profile.get("services", []):
+    if not service.get("required"):
+        continue
+    credential = service.get("inbound_credential", "")
+    if credential:
+        credentials.add(credential)
+    for credential in service.get("inbound_credentials", []):
+        if isinstance(credential, str) and credential:
+            credentials.add(credential)
+for credential in sorted(credentials):
+    if credential:
+        print(credential)
+PY
+)
 
 # Check policy files
 if [ -f /etc/secure-ai/policy/policy.yaml ]; then
@@ -137,7 +192,11 @@ echo ""
 echo "--- Network ---"
 
 # Verify no unexpected listeners on public interfaces
-PUBLIC_LISTENERS=$(ss -tlnp 2>/dev/null | grep -v '127.0.0.1' | grep -v '::1' | grep -v 'LISTEN' | head -5 || true)
+PUBLIC_LISTENERS=$(
+    ss -H -tlnp 2>/dev/null |
+        awk '$4 !~ /^127\./ && $4 !~ /^\[::1\]:/ && $4 !~ /^::1:/ {print}' |
+        head -5 || true
+)
 if [ -z "$PUBLIC_LISTENERS" ]; then
     info "No services listening on public interfaces"
 else
@@ -155,9 +214,9 @@ if [ $ERRORS -gt 0 ]; then
 fi
 
 if [ $WARNINGS -gt 0 ]; then
-    echo -e "${YELLOW}PASS with warnings. Review warnings above.${NC}"
-    exit 0
+    echo -e "${YELLOW}NOT READY: $WARNINGS security warning(s) require review or explicit release evidence.${NC}"
+    exit 1
 fi
 
-echo -e "${GREEN}ALL CHECKS PASSED. System is production-ready.${NC}"
+echo -e "${GREEN}ALL DECLARED READINESS CHECKS PASSED.${NC}"
 exit 0

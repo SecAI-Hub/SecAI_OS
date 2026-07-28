@@ -80,6 +80,7 @@ models:
   - name: "ShieldGemma 2B (Q4_K_M)"
     format: "gguf"
     source: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF"
+    source_revision: "8755ece4b20dd84d7564131e385d9c205d03621a"
     filename: "shieldgemma-2b.Q4_K_M.gguf"
     sha256: "47b0c3f4ec0bf93659ab2fc92cf2041374ef78bf1cb5b8c790421f463e7b7979"
     size_bytes: 1708583104
@@ -87,6 +88,7 @@ models:
   - name: "ShieldGemma 2B (Q5_K_M)"
     format: "gguf"
     source: "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF"
+    source_revision: "8755ece4b20dd84d7564131e385d9c205d03621a"
     filename: "shieldgemma-2b.Q5_K_M.gguf"
     sha256: "265ec9c9c2b069aa8737fdb79bf56d561b48e165b76728d52dd82b1932069b0f"
     size_bytes: 1923279040
@@ -94,6 +96,7 @@ models:
   - name: "Granite Guardian 3.1 2B (Q4_K_M)"
     format: "gguf"
     source: "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF"
+    source_revision: "01d30577cdd395fb65947d398f9e2b776c71355e"
     filename: "granite-guardian-3.1-2b-q4_k_m.gguf"
     sha256: "2eaa7ed23bbd122fc654d9409f3076d35799b1cbc58f992b159d53cbaa51bed2"
     size_bytes: 1530557952
@@ -119,6 +122,7 @@ models:
   - name: "ShieldGemma 9B (Q2_K)"
     format: "gguf"
     source: "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF"
+    source_revision: "ee6d7475c96d0beaba677f3f9c9d4d3b03bc1d55"
     filename: "shieldgemma-9b.Q2_K.gguf"
     sha256: "3e86670d2abe5ce0be1c31582216dd6ae9731cc85cf3978e27f2d3b9238edf08"
     size_bytes: 3805398560
@@ -135,6 +139,7 @@ models:
   - name: "GA Guard Core (Q2_K)"
     format: "gguf"
     source: "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF"
+    source_revision: "7d7a73c98639749fc9d6bcacec97df9b621b9340"
     filename: "GA_Guard_Core.Q2_K.gguf"
     sha256: "ff6087763f3886e3355058f34a8f9f6b3a8ba4a8f70a5795001bdaee1b3368b3"
     size_bytes: 1668960032

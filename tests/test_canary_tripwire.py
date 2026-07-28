@@ -48,11 +48,11 @@ class TestCanaryPlaceScript:
         assert "/etc/secure-ai/.canary" in content
 
     def test_generates_unique_tokens(self):
-        content = (SCRIPTS_DIR / "canary-place.sh").read_text()
-        assert "urandom" in content or "generate_token" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "secrets.token_hex" in content
 
     def test_hashes_tokens(self):
-        content = (SCRIPTS_DIR / "canary-place.sh").read_text()
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
         assert "sha256" in content
 
     def test_writes_integrity_database(self):
@@ -60,8 +60,8 @@ class TestCanaryPlaceScript:
         assert "canary-db.json" in content
 
     def test_sets_readonly_permissions(self):
-        content = (SCRIPTS_DIR / "canary-place.sh").read_text()
-        assert "chmod 444" in content or "chmod 400" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "0o400" in content
 
 
 class TestCanaryCheckScript:
@@ -80,21 +80,23 @@ class TestCanaryCheckScript:
         assert "watch)" in content or "run_watch" in content
 
     def test_verifies_token_hash(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
         assert "sha256" in content
-        assert "token_hash" in content or "expected_hash" in content
+        assert "record[\"sha256\"]" in content
 
     def test_checks_permissions(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "permissions" in content or "perms" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "stat.S_IMODE" in content
+        assert '"mode"' in content
 
     def test_checks_ownership(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "owner" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert '"uid"' in content
+        assert '"gid"' in content
 
     def test_checks_file_existence(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "missing" in content or "! -f" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "required file is missing" in content
 
 
 class TestTripwireTrigger:
@@ -104,8 +106,10 @@ class TestTripwireTrigger:
 
     def test_kills_workers(self):
         content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "llama-server" in content
-        assert "diffusion" in content
+        # Canary code has no mount/kill privilege. The authenticated incident
+        # recorder owns fixed containment actions.
+        assert "freeze_agent" in content
+        assert "INCIDENT_RECORDER_URL" in content
 
     def test_writes_audit_log(self):
         content = (SCRIPTS_DIR / "canary-check.sh").read_text()
@@ -118,19 +122,22 @@ class TestTripwireTrigger:
 
     def test_stops_services(self):
         content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "systemctl stop" in content
+        assert "force_vault_relock" in content
+        assert "secure-ai-panic.service" in content
+        assert "systemctl stop" not in content
 
     def test_trigger_on_missing_file(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "canary file missing" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "required file is missing" in content
 
     def test_trigger_on_modified_token(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "canary token modified" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert "sha256" in content
+        assert "mismatch" in content
 
     def test_trigger_on_permission_change(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "permissions changed" in content
+        content = (SCRIPTS_DIR / "secure-canary.py").read_text()
+        assert '"mode": stat.S_IMODE' in content
 
 
 class TestInotifyWatch:
@@ -140,19 +147,21 @@ class TestInotifyWatch:
 
     def test_watches_modify_delete_attrib(self):
         content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "modify" in content
-        assert "delete" in content
+        assert "close_write" in content
+        assert "delete_self" in content
         assert "attrib" in content
 
     def test_graceful_fallback(self):
-        """If inotifywait is unavailable, should fall back to timer-based."""
+        """Missing real-time monitoring must fail so systemd reports it."""
         content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "not available" in content or "fallback" in content.lower()
+        assert "inotifywait is required" in content
 
     def test_monitors_config_files(self):
-        content = (SCRIPTS_DIR / "canary-check.sh").read_text()
-        assert "appliance.yaml" in content
-        assert "policy.yaml" in content
+        # /etc/secure-ai has its own authenticated canary. Detailed config
+        # inventory is owned by integrity-monitor rather than duplicated here.
+        place = (SCRIPTS_DIR / "canary-place.sh").read_text()
+        assert '"/etc/secure-ai/.canary"' in place
+        assert "secure-canary.py" in place or "CANARY_HELPER" in place
 
 
 class TestCanarySystemdUnits:

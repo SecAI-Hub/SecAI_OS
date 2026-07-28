@@ -1,23 +1,30 @@
 [Unit]
 Description=Secure AI Online Airlock (sanitized egress proxy)
-After=secure-ai-tool-firewall.service
-Requires=secure-ai-tool-firewall.service
+After=secure-ai-tool-firewall.service secure-ai-credentials.service
+Requires=secure-ai-tool-firewall.service secure-ai-credentials.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/airlock
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require airlock -- /usr/libexec/secure-ai/airlock
 Environment=BIND_ADDR=127.0.0.1:8490
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=SOURCES_ALLOWLIST_PATH=/etc/secure-ai/policy/sources.allowlist.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/airlock-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+Environment=CONTAINMENT_TOKEN_PATH=%d/containment-token
+Environment=AIRLOCK_CONTAINMENT_STATE_PATH=/var/lib/secure-ai/airlock/containment.json
+LoadCredential=service-token:/var/lib/secure-ai/credentials/airlock.token
+LoadCredential=containment-token:/var/lib/secure-ai/credentials/airlock-containment.token
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-airlock-state
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
+ReadWritePaths=/var/lib/secure-ai/airlock
 # NOTE: NO PrivateNetwork — airlock is the ONLY service with outbound access
 PrivateTmp=yes
 PrivateDevices=yes
@@ -49,9 +56,6 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
-
 # Syscall filtering
 SystemCallFilter=@system-service @network-io
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
@@ -69,9 +73,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

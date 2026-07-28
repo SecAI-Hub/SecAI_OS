@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -28,6 +29,22 @@ if _search_mediator_dir not in sys.path:
 _services_root = str(REPO_ROOT / "services")
 if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
+
+_SEARCH_TEST_TOKEN = "search-dp-unit-test-service-credential"
+_SEARCH_AUTH_HEADERS = {"Authorization": f"Bearer {_SEARCH_TEST_TOKEN}"}
+
+
+@pytest.fixture(autouse=True)
+def provision_search_test_credentials(tmp_path, monkeypatch):
+    import app as sm
+
+    token_path = tmp_path / "search-service.token"
+    token_path.write_text(_SEARCH_TEST_TOKEN, encoding="utf-8")
+    token_path.chmod(0o600)
+    monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+    sm._audit_chain = sm.AuditChain(tmp_path / "search-audit.jsonl")
+    yield
+    sm._audit_chain = None
 
 
 class TestDecoyQueries:
@@ -272,7 +289,11 @@ class TestSearchRouteDP:
                 mock_resp.json.return_value = {"results": []}
                 mock_get.return_value = mock_resp
 
-                resp = client.post("/v1/search", json={"query": "test search"})
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "test search"},
+                    headers=_SEARCH_AUTH_HEADERS,
+                )
                 assert resp.status_code == 200
                 data = resp.get_json()
                 assert data["decoys_sent"] == 2
@@ -286,9 +307,11 @@ class TestSearchRouteDP:
                      "enabled": True, "decoy_count": 0,
                      "uniqueness_mode": "auto-block", "batch_window": 5.0,
                  }):
-                resp = client.post("/v1/search", json={
-                    "query": "treatment for John Smith rare disease"
-                })
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "treatment for John Smith rare disease"},
+                    headers=_SEARCH_AUTH_HEADERS,
+                )
                 assert resp.status_code == 422
                 data = resp.get_json()
                 assert "unique" in data.get("error", "").lower() or "unique_matches" in data
@@ -312,9 +335,11 @@ class TestSearchRouteDP:
                 mock_resp.json.return_value = {"results": []}
                 mock_get.return_value = mock_resp
 
-                resp = client.post("/v1/search", json={
-                    "query": "treatment for John Smith condition"
-                })
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "treatment for John Smith condition"},
+                    headers=_SEARCH_AUTH_HEADERS,
+                )
                 assert resp.status_code == 200
                 data = resp.get_json()
                 assert "uniqueness_warning" in data
@@ -336,9 +361,11 @@ class TestSearchRouteDP:
                 mock_resp.json.return_value = {"results": []}
                 mock_get.return_value = mock_resp
 
-                resp = client.post("/v1/search", json={
-                    "query": "treatment for John Smith rare disease"
-                })
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "treatment for John Smith rare disease"},
+                    headers=_SEARCH_AUTH_HEADERS,
+                )
                 # Should succeed because DP is disabled
                 assert resp.status_code == 200
                 mock_decoys.assert_not_called()
@@ -362,8 +389,10 @@ class TestSearchRouteDP:
                 mock_resp.json.return_value = {"results": []}
                 mock_get.return_value = mock_resp
 
-                resp = client.post("/v1/search", json={
-                    "query": "treatment for headaches"
-                })
+                resp = client.post(
+                    "/v1/search",
+                    json={"query": "treatment for headaches"},
+                    headers=_SEARCH_AUTH_HEADERS,
+                )
                 assert resp.status_code == 200
                 mock_cover.assert_called_once_with("medical conditions")

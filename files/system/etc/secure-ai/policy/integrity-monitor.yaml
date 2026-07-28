@@ -24,6 +24,7 @@ service_binaries:
   - /usr/libexec/secure-ai/airlock
   - /usr/libexec/secure-ai/policy-engine
   - /usr/libexec/secure-ai/runtime-attestor
+  - /usr/libexec/secure-ai/secure-tpm-attestation.py
   - /usr/libexec/secure-ai/gpu-integrity-watch
   - /usr/libexec/secure-ai/mcp-firewall
   - /usr/libexec/secure-ai/integrity-monitor
@@ -36,17 +37,26 @@ policy_files:
   - /etc/secure-ai/policy/attestation.yaml
   - /etc/secure-ai/policy/landlock.yaml
   - /etc/secure-ai/policy/integrity-monitor.yaml
+  - /etc/secure-ai/policy/models.lock.yaml
+  - /etc/secure-ai/policy/diffusion-models.lock.yaml
+  - /etc/secure-ai/policy/sources.allowlist.yaml
+  - /etc/secure-ai/model-catalog.yaml
 
 # --- Model directories ---
 # All files in these directories are watched. Changed models are quarantined.
 model_dirs:
-  - /var/lib/secure-ai/registry
+  - /var/lib/secure-ai/vault/models
+
+# Enrollment metadata stays outside the relockable vault so containment can
+# still explain which encrypted blob was removed.
+registry_manifest: /var/lib/secure-ai/registry/manifest.json
 
 # --- Systemd units ---
 # Critical service units whose modification indicates tampering.
 systemd_units:
   - /usr/lib/systemd/system/secure-ai-policy-engine.service
   - /usr/lib/systemd/system/secure-ai-runtime-attestor.service
+  - /usr/lib/systemd/system/secure-ai-tpm-attestation-setup.service
   - /usr/lib/systemd/system/secure-ai-registry.service
   - /usr/lib/systemd/system/secure-ai-tool-firewall.service
   - /usr/lib/systemd/system/secure-ai-integrity-monitor.service
@@ -54,7 +64,7 @@ systemd_units:
 # --- Trust material ---
 # Cosign public keys and other trust anchors.
 trust_material:
-  - /etc/secure-ai/cosign/cosign.pub
+  - /etc/pki/containers/secai-cosign.pub
 
 # --- HMAC key ---
 # Path to the HMAC signing key for baseline manifests.

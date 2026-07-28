@@ -54,30 +54,28 @@ v1.0.0/
   RELEASE_MANIFEST.json # structured JSON: image, binaries, SBOMs, OpenVEX docs, provenance, build metadata
 
   # Release helper scripts
+  cosign.pub                    # Trust root; verify its documented fingerprint out of band
   secai-os-build-iso.sh          # Build the bootable ISO locally from the release image
   secai-os-build-usb.sh          # Build the direct-flash usb.raw.xz locally from the release image
   secai-os-run-docker.sh         # Download the release source and start the Docker sandbox on Linux/macOS
   secai-os-run-docker.ps1        # Download the release source and start the Docker sandbox on Windows
 
   # Install artifacts (bootable images)
-  secai-os-v1.0.0-x86_64.iso        # Bootable ISO (from isogenerator)
+  secai-os-v1.0.0-x86_64.iso        # Bootable ISO (verified bootc image)
   secai-os-v1.0.0-x86_64.iso.sig    # cosign detached signature
   secai-os-v1.0.0-x86_64-usb.raw.xz     # Portable USB image (direct-flash)
   secai-os-v1.0.0-x86_64-usb.raw.xz.sig # cosign detached signature
-  secai-os-v1.0.0.qcow2             # QCOW2 disk image (optional — requires KVM build infra)
-  secai-os-v1.0.0.qcow2.sig         # cosign detached signature
-  secai-os-v1.0.0.ova               # OVA appliance (optional — requires KVM build infra)
-  secai-os-v1.0.0.ova.sig           # cosign detached signature
 
   # Checksums and signature
   SHA256SUMS            # sha256sum of every artifact above (includes RELEASE_MANIFEST.json and custom-python.vex.json)
   SHA256SUMS.sig        # cosign detached signature over SHA256SUMS
 ```
 
-> **Note:** QCOW2 and OVA artifacts may be absent if the repository does not have
-> a self-hosted KVM runner. The installer ISO and portable USB image are produced
-> on standard runners. See `docs/release-artifacts.json` for the machine-readable
-> artifact specification.
+> **Note:** QCOW2 and OVA images are not release artifacts. Build them locally
+> so their encrypted host-state and login credentials are unique to the
+> recipient. CI uses ephemeral images only to qualify the builders and encrypted
+> boot path, then destroys them. See `docs/release-artifacts.json` for the
+> machine-readable artifact specification.
 
 ## Image Digest
 
@@ -96,10 +94,12 @@ per deployment style:
 
 ```bash
 # Build a bootable ISO from the signed release image.
-bash secai-os-build-iso.sh --tag v1.0.0
+bash secai-os-build-iso.sh \
+  --image-ref ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Build a direct-flash portable USB image from the signed release image.
-bash secai-os-build-usb.sh --tag v1.0.0
+bash secai-os-build-usb.sh \
+  --image-ref ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Download the release source bundle and start the Docker sandbox.
 bash secai-os-run-docker.sh --tag v1.0.0 --profile offline-private
@@ -167,6 +167,10 @@ Example structure:
     {"name": "secai-os-run-docker.sh", "sha256": "e3b0c44298fc..."},
     {"name": "secai-os-run-docker.ps1", "sha256": "1234abcd5678..."}
   ],
+  "trust_root": {
+    "name": "cosign.pub",
+    "sha256": "de6a17ed1cd444a2671798f14d6bf98c1658259dc443a130eba9f40855a7d310"
+  },
   "provenance": {
     "type": "https://slsa.dev/provenance/v1",
     "attested": true

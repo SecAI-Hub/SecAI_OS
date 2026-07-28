@@ -2,7 +2,7 @@
 
 Policy files under `/etc/secure-ai/policy/` control SecAI OS runtime behavior. The main appliance policy is `policy.yaml`; the agent has a separate `agent.yaml`.
 
-The machine-readable schema for `policy.yaml` lives at [`../schemas/policy.schema.json`](../schemas/policy.schema.json). The packaged defaults live at [`../files/system/etc/secure-ai/policy/policy.yaml`](../files/system/etc/secure-ai/policy/policy.yaml). The Docker sandbox copies those defaults into `deploy/sandbox/runtime/policy/policy.yaml` when it runs; that runtime overlay is intentionally git-ignored.
+The machine-readable schema for `policy.yaml` lives at [`../schemas/policy.schema.json`](../schemas/policy.schema.json). The packaged defaults live at [`../files/system/etc/secure-ai/policy/policy.yaml`](../files/system/etc/secure-ai/policy/policy.yaml). The sandbox launcher publishes those defaults and its selected-profile changes into an immutable `deploy/sandbox/runtime/generations/<sha256>/policy/policy.yaml`; the owner-only `runtime/active-generation` pointer selects the complete policy/config/catalog/profile candidate. Separate ready-session/generation markers are published only after recreation and health verification. These runtime artifacts are intentionally git-ignored.
 
 ---
 
@@ -53,14 +53,13 @@ defaults:
 |---|---|---|---|
 | `allowed_formats` | list | `["gguf", "safetensors"]` | Model formats accepted by quarantine. |
 | `deny_formats` | list | `["pickle", "pt", "bin"]` | Unsafe serialization formats rejected before scanning. |
-| `require_scan` | boolean | `true` | Require Stage 5 static scanning before promotion. |
-| `require_yara` | boolean | `true` | Require YARA and configured rules when static scanning is required. |
-| `require_behavior_tests` | boolean | `true` | Require adversarial behavioral testing for LLM artifacts. |
-| `require_source_verification` | boolean | `true` | Require model origin to match `sources.allowlist.yaml`. |
-| `require_entropy_analysis` | boolean | `true` | Require entropy checks for anomalous payload regions. |
-| `allow_diffusion_directories` | boolean | `true` | Allow multi-file diffusion directories with `model_index.json` and safetensors components. |
+| `require_scan` | constant | `true` | Must remain true; ModelScan is required before promotion. |
+| `require_yara` | constant | `true` | Must remain true; YARA and packaged rules are required. |
+| `require_modelaudit` | constant | `true` | Must remain true; ModelAudit must complete successfully. |
+| `require_behavior_tests` | constant | `true` | Must remain true; adversarial testing is required for GGUF artifacts. |
+| `allow_diffusion_directories` | boolean | `true` | Permit the directory pipeline. A passing directory must still match an image-owned `diffusion-models.lock.yaml` entry, exact Hugging Face commit, and canonical per-file manifest; local/TOFU directories are never promoted. |
 
-Stage 5 currently runs ModelScan, YARA, fickling, modelaudit, entropy analysis, and gguf-guard where applicable. Garak is available as an optional second-opinion behavioral scanner when installed/enabled.
+The pipeline orchestration stages cannot be disabled. Stage 5 runs ModelScan, YARA, format-specific parsing, ModelAudit, entropy analysis, and gguf-guard where applicable. Fickling is retained only for detecting explicitly denied pickle-capable formats; accepted GGUF and safetensors files are non-pickle formats. Garak remains an optional second-opinion behavioral scanner, but an installed Garak must complete successfully.
 
 Example:
 
@@ -70,9 +69,8 @@ models:
   deny_formats: ["pickle", "pt", "bin"]
   require_scan: true
   require_yara: true
+  require_modelaudit: true
   require_behavior_tests: true
-  require_source_verification: true
-  require_entropy_analysis: true
   allow_diffusion_directories: true
 ```
 
@@ -80,28 +78,15 @@ models:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `stages.source_policy` | boolean | `true` | Stage 1: verify origin against the source allowlist. |
-| `stages.format_gate` | boolean | `true` | Stage 2: validate headers and reject unsafe formats. |
-| `stages.integrity_check` | boolean | `true` | Stage 3: SHA-256 hash pinning. |
-| `stages.provenance_check` | boolean | `true` | Stage 4: cosign/GPG provenance checks when available. |
-| `stages.static_scan` | boolean | `true` | Stage 5: ModelScan, YARA, fickling, modelaudit, entropy, and gguf-guard. |
-| `stages.behavioral_test` | boolean | `true` | Stage 6: adversarial prompt suite for LLMs. |
-| `stages.diffusion_deep_scan` | boolean | `true` | Stage 7: diffusion config/component integrity. |
-| `smoke_test_max_score` | number | `0.3` | Fail if more than this fraction of behavioral prompts are flagged. |
-| `smoke_test_max_critical` | integer | `1` | Fail if more than this many critical behavioral flags are raised. |
+| `smoke_test_max_score` | number | `0.3` | Fail above this flagged fraction. Allowed range is `0.0`–`0.3`; lower values only tighten policy. |
+| `smoke_test_max_critical` | integer | `1` | Fail above this critical count. Allowed range is `0`–`1`; lower values only tighten policy. |
+
+Source, format, integrity, provenance-recording, static, behavioral, and diffusion deep-scan stages are mandatory in code. There are deliberately no per-stage disable switches.
 
 Example:
 
 ```yaml
 quarantine:
-  stages:
-    source_policy: true
-    format_gate: true
-    integrity_check: true
-    provenance_check: true
-    static_scan: true
-    behavioral_test: true
-    diffusion_deep_scan: true
   smoke_test_max_score: 0.3
   smoke_test_max_critical: 1
 ```
@@ -110,9 +95,9 @@ quarantine:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `required` | boolean | `false` | Fail closed when gguf-guard is unavailable. |
-| `generate_manifest` | boolean | `true` | Generate a per-tensor SHA-256 manifest on promotion. |
-| `generate_fingerprint` | boolean | `true` | Generate a structural fingerprint on promotion. |
+| `required` | constant | `true` | Must remain true; fail closed when gguf-guard is unavailable. |
+| `generate_manifest` | boolean | `true` | Generate a per-tensor SHA-256 manifest inside the trusted registry transaction. |
+| `generate_fingerprint` | boolean | `true` | Generate a structural fingerprint inside the trusted registry transaction. |
 | `verify_on_integrity_check` | boolean | `true` | Verify gguf-guard manifests during periodic integrity checks. |
 
 ### tools

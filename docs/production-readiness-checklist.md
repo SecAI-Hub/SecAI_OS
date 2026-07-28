@@ -2,7 +2,14 @@
 
 Formal release gate checklist for SecAI OS deployments. Every item must be verified before a release is tagged as production-ready. This checklist is separate from the [production operations guide](production-operations.md), which covers day-to-day operational procedures.
 
-Last updated: 2026-04-25
+Last updated: 2026-07-28
+
+This file is a template, not evidence that any release passed. A completed
+checklist must identify the immutable source commit and image digest, link every
+machine-produced result, name the required deployment profile and hardware, and
+be signed by the developer, independent security reviewer, and release manager.
+Unchecked, waived without expiry, or unavailable mandatory evidence blocks a
+production designation.
 
 ---
 
@@ -11,7 +18,7 @@ Last updated: 2026-04-25
 ### Build & CI
 
 - [ ] All CI jobs pass on the release commit (green badge on `main`)
-- [ ] Go build succeeds for all 9 services (`CGO_ENABLED=0`, `-race` tests pass)
+- [ ] Go build succeeds for all 10 tested modules: 9 native release services and the sandbox UI ingress (`CGO_ENABLED=0`, `-race` tests pass)
 - [ ] Python test suite passes (unit, integration, adversarial, M5 acceptance)
 - [ ] Ruff lint clean (no `E`, `F`, `W` errors)
 - [ ] Bandit security scan shows no high-severity findings
@@ -33,7 +40,7 @@ Last updated: 2026-04-25
 ### Supply Chain
 
 - [ ] Container image signed with cosign (`cosign verify --key cosign.pub`)
-- [ ] Per-service CycloneDX SBOMs generated (9 Go + 6 Python)
+- [ ] Per-release-service CycloneDX SBOMs generated (9 native Go + 6 Python), and the sandbox UI ingress container has a generated image SBOM
 - [ ] SLSA3 provenance attestation attached to image
 - [ ] SHA256SUMS file generated and signed
 - [ ] `verify-release.sh` runs clean against the release artifacts
@@ -56,13 +63,22 @@ Last updated: 2026-04-25
 
 ### First Boot
 
+Record the deployment profile being certified and derive its required services
+from the service manifest. Do not use a hard-coded service count.
+
 - [ ] `first-boot-check.sh` passes with zero failures
-- [ ] All 10 core services start and report healthy
+- [ ] Every required service in the selected deployment profile starts and reports healthy
 - [ ] Health endpoints respond for all HTTP services
-- [ ] Runtime attestation state is `verified`
+- [ ] Runtime attestation reports `assurance_mode=hardware`,
+      `evidence_verified=true`, `verified=true`, and
+      `policy_satisfied=true` after a fresh nonce-bound quote
+- [ ] `/var/lib/secure-ai/tpm-attestation/profile.json` is root-owned mode
+      `0600`, pins AK handle `0x81010020`, and contains the approved PCR
+      0/2/4/7 baseline
 - [ ] Integrity monitor state is `clean`
 - [ ] No open incidents after first boot
 - [ ] Service token is present and valid
+- [ ] Reboot recreates/loads every per-service credential and unauthorized requests remain denied
 - [ ] Firewall rules loaded (nftables default-deny egress)
 
 ### Functional Smoke Tests
@@ -70,9 +86,12 @@ Last updated: 2026-04-25
 - [ ] Web UI accessible at `http://localhost:8480`
 - [ ] Model import via UI works (quarantine pipeline triggers)
 - [ ] Quarantine pipeline completes (all 7 stages)
-- [ ] Vault lock/unlock works
+- [ ] Local-console vault lock/unlock works; HTTP unlock rejects passphrases
+- [ ] Persistent credentials are on dm-crypt/LUKS-backed host state
 - [ ] Tool firewall denies unauthorized tool calls
 - [ ] Airlock is disabled by default (no public egress)
+- [ ] Direct workload egress is blocked; only the authenticated Airlock fetch proxy can reach approved destinations
+- [ ] Quarantine workers have no service credential, network, or trusted-state write access
 - [ ] Agent mode responds to basic prompts
 - [ ] Emergency panic level 1 (lock) works and is reversible
 
@@ -84,6 +103,8 @@ Last updated: 2026-04-25
 - [ ] Log rotation: `logrotate -f` runs without errors
 - [ ] Service restart: each service recovers from `systemctl restart`
 - [ ] Start limit: rapid restart hits StartLimitBurst and stops cycling
+- [ ] Disk-full and interrupted-write tests preserve registry, audit, and incident-store consistency
+- [ ] Encrypted backup restore meets the release RPO/RTO and is independently verified
 
 ---
 

@@ -8,7 +8,7 @@ Last updated: 2026-05-14
 
 | Component | Value |
 |-----------|-------|
-| Base image | Fedora Silverblue 42 (uBlue) |
+| Base image | Fedora Silverblue 44 (uBlue) |
 | Image type | Immutable (rpm-ostree) |
 | Builder | BlueBuild with cosign signing |
 
@@ -16,16 +16,19 @@ Last updated: 2026-05-14
 
 | Vendor | GPU Family | Backend | LLM Support | Diffusion Support | Status |
 |--------|-----------|---------|-------------|-------------------|--------|
-| NVIDIA | RTX 50-series | CUDA | Yes | Yes | Supported |
-| NVIDIA | RTX 40-series | CUDA | Yes | Yes | Supported |
-| NVIDIA | RTX 30-series | CUDA | Yes | Yes | Supported |
-| AMD | RDNA3 | ROCm/HIP | Yes | Yes | Supported |
-| AMD | RDNA2 | ROCm/HIP | Yes | Yes | Supported |
-| AMD | CDNA | ROCm/HIP | Yes | Yes | Supported |
-| Intel | Arc A-series | XPU/Vulkan | Yes | Yes | Supported |
-| Intel | Arc B-series | XPU/Vulkan | Yes | Yes | Supported |
-| Apple | M4/M3/M2/M1 | Metal/MPS | Yes | Yes | Supported |
-| Any | CPU only | AVX2/AVX-512/NEON | Yes | Yes (slow) | Supported |
+| NVIDIA | RTX 50-series | CUDA | Code path | Code path | Hardware-dependent |
+| NVIDIA | RTX 40-series | CUDA | Code path | Code path | Hardware-dependent |
+| NVIDIA | RTX 30-series | CUDA | Code path | Code path | Hardware-dependent |
+| AMD | RDNA3 | ROCm/HIP | Code path | Code path | Experimental |
+| AMD | RDNA2 | ROCm/HIP | Code path | Code path | Experimental |
+| AMD | CDNA | ROCm/HIP | Code path | Code path | Experimental |
+| Intel | Arc A-series | XPU/Vulkan | Code path | Code path | Experimental |
+| Intel | Arc B-series | XPU/Vulkan | Code path | Code path | Experimental |
+| Apple | M4/M3/M2/M1 | Metal/MPS | Dev/sandbox | Dev/sandbox | No native appliance |
+| Any | CPU only | AVX2/AVX-512 | Yes | Yes (slow) | Supported fallback |
+
+“Hardware-dependent” becomes “Verified” only when a release publishes the
+exact hardware, firmware, driver, runtime, workload, duration, and result.
 
 ## Inference Engine
 
@@ -58,15 +61,17 @@ Last updated: 2026-05-14
 
 | Platform | Format | Status | Notes |
 |----------|--------|--------|-------|
-| VirtualBox | OVA | Supported | GPU passthrough requires compatible host |
-| VMware (Workstation/ESXi) | OVA | Supported | vGPU or passthrough for GPU acceleration |
-| KVM/QEMU | QCOW2 | Supported | VFIO passthrough for GPU acceleration |
-| Proxmox | QCOW2 | Supported | PCI passthrough for GPU acceleration |
+| VirtualBox | Local OVA build | Evaluation | GPU passthrough requires compatible host |
+| VMware (Workstation/ESXi) | Local OVA build | Evaluation | vGPU or passthrough for GPU acceleration |
+| KVM/QEMU | Local QCOW2 build | Evaluation | VFIO passthrough for GPU acceleration |
+| Proxmox | Local QCOW2 build | Evaluation | PCI passthrough for GPU acceleration |
 
 ### VM Notes
 
 - GPU passthrough is required for GPU-accelerated inference inside a VM.
 - CPU-only inference works in any VM without passthrough.
+- VM images are built locally so encrypted-boot credentials are user-specific;
+  generic QCOW2/OVA release artifacts are not published.
 - Allocate at least 16 GB RAM to the VM.
 - Nested virtualization is not required.
 - Secure Boot in VM requires the host to support UEFI boot for the guest.

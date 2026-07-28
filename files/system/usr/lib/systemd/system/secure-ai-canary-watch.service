@@ -1,45 +1,59 @@
 [Unit]
 Description=Secure AI Canary inotify Watcher (real-time tripwire)
-After=secure-ai-firstboot.service
+Requires=secure-ai-credentials.service
+Wants=secure-ai-incident-recorder.service
+After=secure-ai-firstboot.service secure-ai-credentials.service secure-ai-incident-recorder.service
 Wants=secure-ai-canary.timer
 
 [Service]
 Type=simple
 ExecStart=/usr/libexec/secure-ai/canary-check.sh watch
+Environment=CANARY_HMAC_KEY_PATH=%d/canary-hmac-key
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
+LoadCredential=canary-hmac-key:/var/lib/secure-ai/credentials/canary-hmac.key
+LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-canary.token
+UMask=0077
 Restart=on-failure
 RestartSec=30
 
-# Needs root for vault lock and process kill on trigger
 ProtectHome=yes
 PrivateTmp=yes
-PrivateNetwork=yes
+PrivateDevices=yes
+PrivateNetwork=no
 NoNewPrivileges=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/vault /var/lib/secure-ai/registry /var/lib/secure-ai/keys
+ReadWritePaths=/var/lib/secure-ai/state /var/lib/secure-ai/logs /run/secure-ai
 
-# Kernel protection
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
 
-# Capability bounding — root service, needs kill/vault ops
 CapabilityBoundingSet=
+AmbientCapabilities=
 
 LimitCORE=0
-
-ReadOnlyPaths=/etc/secure-ai
-ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
-
-# Syscall filtering — permissive for kill/vault operations
-SystemCallFilter=@system-service @signal
-SystemCallFilter=~@mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
-# Resource limits — lightweight watcher
-MemoryMax=64M
-TasksMax=16
+MemoryMax=96M
+TasksMax=24
 
 [Install]
 WantedBy=multi-user.target

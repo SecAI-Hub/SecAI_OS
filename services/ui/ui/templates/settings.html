@@ -32,14 +32,12 @@
     <div class="btn-group mt-md" id="runtime-mode-actions"></div>
 </div>
 
-<!-- Vault unlock form (shown when locked) -->
 <div class="card hidden" id="vault-unlock-card">
-    <div class="card-title mb-md">Unlock Vault</div>
-    <div class="form-group">
-        <label class="form-label" for="vault-pass">LUKS Passphrase</label>
-        <input class="form-input" type="password" id="vault-pass" placeholder="Enter LUKS passphrase" maxlength="256">
-    </div>
-    <button class="btn btn-primary" id="vault-unlock-btn" type="button">Unlock Vault</button>
+    <div class="card-title mb-md">Vault control requires the local console</div>
+    <p class="meta">
+        SecAI OS never accepts a LUKS passphrase through the web UI. Use the
+        authenticated local console workflow to unlock or re-lock the vault.
+    </p>
 </div>
 
 <!-- Session Section -->
@@ -68,12 +66,12 @@
         </div>
         <div class="form-group">
             <label class="form-label" for="new-pass">New Passphrase</label>
-            <input class="form-input" type="password" id="new-pass" required minlength="8" maxlength="256">
-            <p class="form-hint">Minimum 8 characters</p>
+            <input class="form-input" type="password" id="new-pass" required minlength="15" maxlength="256">
+            <p class="form-hint">Minimum 15 characters; common compromised passphrases are blocked.</p>
         </div>
         <div class="form-group">
             <label class="form-label" for="confirm-pass">Confirm New Passphrase</label>
-            <input class="form-input" type="password" id="confirm-pass" required minlength="8" maxlength="256">
+            <input class="form-input" type="password" id="confirm-pass" required minlength="15" maxlength="256">
         </div>
         <button type="submit" class="btn btn-primary">Change Passphrase</button>
     </form>
@@ -165,19 +163,17 @@
                 detail.style.color = 'var(--success)';
                 badge.className = 'badge badge-success';
                 badge.textContent = 'unlocked';
-                actions.innerHTML = '<button class="btn btn-danger btn-sm" type="button" data-vault-action="lock">Lock Vault Now</button>' +
-                    '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Keep Alive</button>';
+                actions.innerHTML = '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Keep Alive</button>';
                 unlockCard.classList.add('hidden');
             } else if (s === 'locking_soon') {
                 detail.textContent = 'Vault will lock soon due to inactivity.';
                 detail.style.color = 'var(--warning)';
                 badge.className = 'badge badge-warning';
                 badge.textContent = 'locking soon';
-                actions.innerHTML = '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Stay Unlocked</button>' +
-                    '<button class="btn btn-danger btn-sm" type="button" data-vault-action="lock">Lock Now</button>';
+                actions.innerHTML = '<button class="btn btn-sm" type="button" data-vault-action="keepalive">Stay Unlocked</button>';
                 unlockCard.classList.add('hidden');
             } else if (s === 'locked') {
-                detail.textContent = 'Vault is locked. Enter the LUKS passphrase to unlock.';
+                detail.textContent = 'Vault is locked. Unlocking is available only from the authenticated local console.';
                 detail.style.color = 'var(--danger)';
                 badge.className = 'badge badge-danger';
                 badge.textContent = 'locked';
@@ -213,7 +209,6 @@
             var statusResp = await fetch('/api/status');
             var profile = await profileResp.json();
             var status = await statusResp.json();
-            var active = profile.active || 'offline_private';
             var sandbox = status.deployment_mode === 'sandbox';
             var control = {};
             if (sandbox) {
@@ -239,6 +234,27 @@
                 research: '.\\secai-sandbox.cmd start --with-search',
                 full_lab: '.\\secai-sandbox.cmd start --with-search --with-diffusion',
             };
+            if (!profileResp.ok || !profile.active || !labels[profile.active]) {
+                badge.className = 'badge badge-muted';
+                badge.textContent = 'unknown';
+                detail.textContent = sandbox
+                    ? 'The sandbox generation is not health-verified. Retry the host sandbox launcher.'
+                    : 'The runtime profile is unavailable.';
+                if (sandbox) {
+                    actions.innerHTML = ['offline_private', 'research', 'full_lab'].map(function(key) {
+                        return '<button class="btn btn-sm" type="button" data-profile="' + key +
+                            '" title="' + esc('Repair by restarting into ' + labels[key]) + '">' +
+                            esc('Repair: ' + labels[key]) + '</button>';
+                    }).join('');
+                    actions.setAttribute('data-sandbox', 'true');
+                    actions.setAttribute('data-active', '');
+                    actions.setAttribute('data-control-available', 'false');
+                } else {
+                    actions.innerHTML = '';
+                }
+                return;
+            }
+            var active = profile.active;
 
             badge.className = active === 'offline_private' ? 'badge badge-success' : 'badge badge-warning';
             badge.textContent = labels[active] || active;
@@ -318,45 +334,17 @@
         }
     }
 
-    async function lockVault() {
-        var confirmed = await showConfirm('Lock Vault', 'This will stop all AI services. Are you sure?', 'Lock Vault');
-        if (!confirmed) return;
-        try {
-            var resp = await fetch('/api/vault/lock', { method: 'POST' });
-            var data = await resp.json();
-            if (data.success) { loadVault(); toast('Vault locked.', 'success'); }
-            else toast(data.error || 'Lock failed.', 'error');
-        } catch(e) { toast('Could not connect to server.', 'error'); }
-    }
-
-    async function unlockVault() {
-        var pass = document.getElementById('vault-pass').value;
-        if (!pass) return;
-        try {
-            var resp = await fetch('/api/vault/unlock', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({passphrase: pass}),
-            });
-            var data = await resp.json();
-            if (data.success) { loadVault(); toast('Vault unlocked.', 'success'); document.getElementById('vault-pass').value = ''; }
-            else toast(data.error || 'Unlock failed.', 'error');
-        } catch(e) { toast('Could not connect to server.', 'error'); }
-    }
-
     async function keepalive() {
         await fetch('/api/vault/keepalive', { method: 'POST' });
         loadVault();
         toast('Vault keep-alive sent.', 'info');
     }
 
-    document.getElementById('vault-unlock-btn').addEventListener('click', unlockVault);
     document.getElementById('logout-btn').addEventListener('click', doLogout);
     document.getElementById('change-passphrase-form').addEventListener('submit', changePassphrase);
     document.getElementById('vault-actions').addEventListener('click', function(e) {
         var target = e.target.closest('[data-vault-action]');
         if (!target) return;
-        if (target.getAttribute('data-vault-action') === 'lock') lockVault();
         if (target.getAttribute('data-vault-action') === 'keepalive') keepalive();
     });
     document.getElementById('runtime-mode-actions').addEventListener('click', function(e) {

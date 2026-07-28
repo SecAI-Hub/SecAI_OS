@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block title %}SecAI OS - Agent{% endblock %}
+{% block page_title %}Agent Tasks (Beta){% endblock %}
+{% block content_class %}content-wide{% endblock %}
+
+{% block extra_css %}
+<style nonce="{{ csp_nonce }}">
+    .agent-note { font-size: 0.8rem; line-height: 1.5; color: var(--text-secondary); }
+    .agent-task { border-left: 3px solid var(--border-active); }
+    .agent-task[data-status="completed"] { border-left-color: var(--success); }
+    .agent-task[data-status="failed"],
+    .agent-task[data-status="recovery_required"] { border-left-color: var(--danger); }
+    .agent-task[data-status="pending_approval"] { border-left-color: var(--warning); }
+    .agent-task-head { display:flex; gap:0.75rem; align-items:center; justify-content:space-between; }
+    .agent-task-intent { overflow-wrap:anywhere; font-size:0.9rem; }
+    .agent-task-meta { font-size:0.72rem; color:var(--text-muted); margin-top:0.35rem; }
+    .agent-steps { margin-top:0.75rem; display:grid; gap:0.4rem; }
+    .agent-step { padding:0.55rem 0.65rem; background:var(--bg-raised); border-radius:var(--radius); font-size:0.78rem; }
+    .agent-step-error { color:var(--danger); margin-top:0.25rem; overflow-wrap:anywhere; }
+    #agent-intent { min-height:100px; resize:vertical; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="alert alert-warning mb-lg">
+    <strong>Beta feature.</strong>
+    <span class="agent-note">Review the plan before approving actions. Interrupted tasks are not resumed after a service restart; they are marked recovery-required and must be resubmitted with a fresh capability.</span>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">New task</span>
+        <span class="badge badge-warning">Human approval enforced</span>
+    </div>
+    <form id="agent-form">
+        <div class="form-group">
+            <label class="form-label" for="agent-intent">What should the agent do?</label>
+            <textarea class="form-input" id="agent-intent" maxlength="2000" required placeholder="Summarize the documents in my workspace"></textarea>
+            <div class="form-hint">Do not paste passwords, API tokens, private keys, or other credentials.</div>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label class="form-label" for="agent-mode">Session mode</label>
+                <select class="form-input" id="agent-mode">
+                    <option value="offline_only">Offline Only</option>
+                    <option value="standard" selected>Standard / Autopilot</option>
+                    <option value="online_assisted">Online Assisted</option>
+                    <option value="sensitive">Sensitive</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="form-label" for="agent-workspace">Workspace</label>
+                <select class="form-input" id="agent-workspace">
+                    <option value="">No file workspace</option>
+                    <option value="user_docs">User documents (read)</option>
+                    <option value="outputs">Outputs</option>
+                </select>
+            </div>
+        </div>
+        <button class="btn btn-primary" id="agent-submit" type="submit">Plan task</button>
+    </form>
+</div>
+
+<div class="section-title">Task history</div>
+<div id="agent-empty" class="empty-state"><p>No agent tasks yet.</p></div>
+<div id="agent-tasks"></div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+    var agentTasks = document.getElementById('agent-tasks');
+    var agentEmpty = document.getElementById('agent-empty');
+    var agentSubmit = document.getElementById('agent-submit');
+
+    function badgeClass(status) {
+        if (status === 'completed') return 'badge-success';
+        if (status === 'pending_approval') return 'badge-warning';
+        if (status === 'failed' || status === 'cancelled' || status === 'recovery_required') return 'badge-danger';
+        return 'badge-accent';
+    }
+
+    function taskAction(taskId, action, body) {
+        return fetch('/api/agent/task/' + encodeURIComponent(taskId) + '/' + action, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body || {}),
+        }).then(async function(resp) {
+            var data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Agent request failed');
+            await loadAgentTasks();
+        }).catch(function(err) {
+            toast(err.message || 'Agent request failed', 'error');
+        });
+    }
+
+    function renderTask(task) {
+        var card = document.createElement('div');
+        card.className = 'card agent-task';
+        card.dataset.status = task.status || '';
+
+        var head = document.createElement('div');
+        head.className = 'agent-task-head';
+        var intent = document.createElement('div');
+        intent.className = 'agent-task-intent fw-600';
+        intent.textContent = task.intent || 'Untitled task';
+        var status = document.createElement('span');
+        status.className = 'badge ' + badgeClass(task.status);
+        status.textContent = String(task.status || 'unknown').replaceAll('_', ' ');
+        head.append(intent, status);
+        card.appendChild(head);
+
+        var meta = document.createElement('div');
+        meta.className = 'agent-task-meta';
+        meta.textContent = 'Mode: ' + (task.mode || 'unknown') + ' · Task ' + (task.task_id || '');
+        card.appendChild(meta);
+
+        var steps = document.createElement('div');
+        steps.className = 'agent-steps';
+        (Array.isArray(task.steps) ? task.steps : []).forEach(function(step) {
+            var item = document.createElement('div');
+            item.className = 'agent-step';
+            var summary = document.createElement('div');
+            summary.textContent = (step.description || step.action || 'Step') + ' — ' + (step.status || 'unknown');
+            item.appendChild(summary);
+            if (step.error) {
+                var error = document.createElement('div');
+                error.className = 'agent-step-error';
+                error.textContent = step.error;
+                item.appendChild(error);
+            }
+            steps.appendChild(item);
+        });
+        card.appendChild(steps);
+
+        var actions = document.createElement('div');
+        actions.className = 'btn-group mt-md';
+        if (task.status === 'pending_approval') {
+            var approve = document.createElement('button');
+            approve.className = 'btn btn-sm btn-success';
+            approve.type = 'button';
+            approve.textContent = 'Approve pending steps';
+            approve.addEventListener('click', function() {
+                taskAction(task.task_id, 'approve', {approve_all: true});
+            });
+            var deny = document.createElement('button');
+            deny.className = 'btn btn-sm btn-danger';
+            deny.type = 'button';
+            deny.textContent = 'Deny pending steps';
+            deny.addEventListener('click', function() {
+                taskAction(task.task_id, 'deny', {deny_all: true});
+            });
+            actions.append(approve, deny);
+        }
+        if (['planning', 'pending_approval', 'running'].includes(task.status)) {
+            var cancel = document.createElement('button');
+            cancel.className = 'btn btn-sm';
+            cancel.type = 'button';
+            cancel.textContent = 'Cancel';
+            cancel.addEventListener('click', function() {
+                taskAction(task.task_id, 'cancel', {});
+            });
+            actions.appendChild(cancel);
+        }
+        if (actions.childElementCount) card.appendChild(actions);
+        return card;
+    }
+
+    async function loadAgentTasks() {
+        try {
+            var resp = await fetch('/api/agent/tasks?limit=50', {cache: 'no-store'});
+            var data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Agent is unavailable');
+            var tasks = Array.isArray(data.tasks) ? data.tasks : [];
+            agentTasks.replaceChildren();
+            tasks.forEach(function(task) { agentTasks.appendChild(renderTask(task)); });
+            agentEmpty.classList.toggle('hidden', tasks.length > 0);
+        } catch (err) {
+            agentTasks.replaceChildren();
+            agentEmpty.classList.remove('hidden');
+            agentEmpty.querySelector('p').textContent = err.message || 'Agent is unavailable.';
+        }
+    }
+
+    document.getElementById('agent-form').addEventListener('submit', async function(event) {
+        event.preventDefault();
+        var intent = document.getElementById('agent-intent').value.trim();
+        if (!intent) return;
+        var workspace = document.getElementById('agent-workspace').value;
+        var payload = {
+            intent: intent,
+            mode: document.getElementById('agent-mode').value,
+            workspace: workspace ? [workspace] : [],
+        };
+        agentSubmit.disabled = true;
+        try {
+            var resp = await fetch('/api/agent/task', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            var data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Could not plan task');
+            document.getElementById('agent-intent').value = '';
+            toast('Agent task planned.', 'success');
+            await loadAgentTasks();
+        } catch (err) {
+            toast(err.message || 'Could not plan task', 'error');
+        } finally {
+            agentSubmit.disabled = false;
+        }
+    });
+
+    loadAgentTasks();
+    setInterval(loadAgentTasks, 5000);
+</script>
+{% endblock %}

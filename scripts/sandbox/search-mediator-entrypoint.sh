@@ -8,7 +8,7 @@ export PYTHONPATH="${PYTHONPATH:-/app/services}"
 exec gunicorn \
     --chdir /app/services/search-mediator \
     --bind "${BIND_ADDR:-0.0.0.0:8485}" \
-    --workers "${GUNICORN_WORKERS:-2}" \
+    --workers 1 \
     --threads "${GUNICORN_THREADS:-2}" \
     --timeout "${GUNICORN_TIMEOUT:-30}" \
     --graceful-timeout "${GUNICORN_GRACEFUL_TIMEOUT:-10}" \

@@ -339,12 +339,28 @@
             toast('Choose a trusted GGUF model first.', 'warning');
             return;
         }
-        var profile = 'offline_private';
+        var profile = '';
         try {
             var profileResp = await fetch('/api/profile');
             var profileData = await profileResp.json();
-            profile = profileData.active || profile;
-        } catch(e) {}
+            if (
+                !profileResp.ok ||
+                !['offline_private', 'research', 'full_lab'].includes(profileData.active)
+            ) {
+                toast(
+                    'The sandbox profile is unknown. Retry the host sandbox launcher before starting inference.',
+                    'warning'
+                );
+                return;
+            }
+            profile = profileData.active;
+        } catch(e) {
+            toast(
+                'Could not verify the sandbox profile. Retry the host sandbox launcher.',
+                'warning'
+            );
+            return;
+        }
         var confirmed = await showConfirm(
             'Start Inference',
             'Start the local inference worker with the selected model? The sandbox will restart to enable it.',

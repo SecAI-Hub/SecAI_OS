@@ -125,7 +125,7 @@ cp /mnt/usb/*.gguf /var/lib/secure-ai/quarantine/incoming/
 3. Monitor the pipeline:
 
 ```bash
-journalctl -u secure-ai-quarantine.service -f
+journalctl -u secure-ai-quarantine-watcher.service -f
 ```
 
 4. Once promoted, verify:
@@ -134,12 +134,15 @@ journalctl -u secure-ai-quarantine.service -f
 securectl list
 ```
 
-### Option C: Pre-Build into the Image
+### Option C: Signed Offline Import Bundle
 
-For fully air-gapped deployments, you can bake models into the OS image
-by adding them to `files/system/var/lib/secure-ai/registry/` and updating
-the `models.lock.yaml` file with their hashes. These models bypass
-quarantine since they are part of the signed image.
+Do not place model bytes directly in the registry or add a lock entry without
+an artifact. The trusted model store lives in the encrypted vault and registry
+metadata is committed only by the promotion transaction. For repeatable
+air-gapped provisioning, place the exact model plus its reviewed
+`models.lock.yaml` update in a signed offline release bundle, build and verify
+the OS image, then import the model from removable media through quarantine.
+The immutable lock supplies the trust anchor; it does not bypass scanning.
 
 ## Verifying Offline Integrity
 

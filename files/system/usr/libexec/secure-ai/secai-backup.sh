@@ -1,33 +1,19 @@
 #!/usr/bin/env bash
 #
-# SecAI OS — Backup Script (M50)
+# SecAI OS authenticated backup utility.
 #
-# Creates a timestamped, optionally encrypted backup of all critical
-# appliance state: configuration, incidents, audit logs, registry
-# manifest, signing keys, and the LUKS vault header.
-#
-# Model files (GGUF binaries) are NOT included due to their size.
-# The registry manifest IS backed up so you know what to re-download.
-#
-# Usage:
-#   secai-backup.sh full    [--encrypt] [--output DIR]  Full backup
-#   secai-backup.sh config  [--encrypt] [--output DIR]  Policy + config only
-#   secai-backup.sh logs    [--encrypt] [--output DIR]  Logs + incidents only
-#   secai-backup.sh keys    [--encrypt] [--output DIR]  Keys + LUKS header only
-#   secai-backup.sh verify  <backup-file>               Verify backup integrity
-#   secai-backup.sh list    [DIR]                        List available backups
-#   secai-backup.sh --help                               Show help
+# Every backup is encrypted with age before it leaves a root-only tmpfs.
+# Plain tar archives and unauthenticated restores are intentionally unsupported.
 #
 set -euo pipefail
+umask 077
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 SECURE_AI_ROOT="/var/lib/secure-ai"
 BACKUP_DIR="${BACKUP_DIR:-${SECURE_AI_ROOT}/backups}"
 AUDIT_LOG="${SECURE_AI_ROOT}/logs/backup-audit.jsonl"
+ARCHIVE_HELPER="${ARCHIVE_HELPER:-/usr/libexec/secure-ai/secure-backup-archive.py}"
+WORK_ROOT="${WORK_ROOT:-/run/secure-ai/backup-tmp}"
 
-# Paths by category
 CONFIG_PATHS=(
     /etc/secure-ai/policy
     /etc/secure-ai/config/appliance.yaml
@@ -37,400 +23,418 @@ LOG_PATHS=(
     "${SECURE_AI_ROOT}/data/incidents.jsonl"
     "${SECURE_AI_ROOT}/logs"
 )
-KEY_PATHS=(
-    "${SECURE_AI_ROOT}/keys"
-)
-REGISTRY_PATHS=(
-    "${SECURE_AI_ROOT}/registry/manifest.json"
-)
+KEY_PATHS=("${SECURE_AI_ROOT}/keys")
+REGISTRY_PATHS=("${SECURE_AI_ROOT}/registry/manifest.json")
 
-ENCRYPT=false
 OUTPUT_DIR=""
+AGE_RECIPIENT=""
+AGE_IDENTITY=""
+WORK_DIR=""
+LUKS_UUID=""
 
-# ---------------------------------------------------------------------------
-# Colors
-# ---------------------------------------------------------------------------
 if [ -t 1 ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
 else
-    RED='' GREEN='' YELLOW='' CYAN='' BOLD='' NC=''
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''
 fi
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-info()  { echo -e "${GREEN}[+]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-error() { echo -e "${RED}[x]${NC} $*" >&2; }
+info()  { printf '%s[+]%s %s\n' "$GREEN" "$NC" "$*"; }
+warn()  { printf '%s[!]%s %s\n' "$YELLOW" "$NC" "$*" >&2; }
+error() { printf '%s[x]%s %s\n' "$RED" "$NC" "$*" >&2; }
 fatal() { error "$*"; exit 1; }
-step()  { echo -e "\n${BOLD}${CYAN}=== $* ===${NC}"; }
+step()  { printf '\n%s%s=== %s ===%s\n' "$BOLD" "$CYAN" "$*" "$NC"; }
 
 usage() {
     cat <<'USAGE'
-SecAI OS — Backup Script
+SecAI OS — Authenticated Backup
 
 Usage:
-  secai-backup.sh <command> [options]
+  secai-backup.sh full   [--output DIR] [--recipient AGE_RECIPIENT]
+  secai-backup.sh config [--output DIR] [--recipient AGE_RECIPIENT]
+  secai-backup.sh logs   [--output DIR] [--recipient AGE_RECIPIENT]
+  secai-backup.sh keys   [--output DIR] [--recipient AGE_RECIPIENT]
+  secai-backup.sh verify FILE [--identity AGE_IDENTITY_FILE]
+  secai-backup.sh list [DIR]
 
-Commands:
-  full              Back up everything (config, logs, keys, manifest)
-  config            Back up policy and appliance configuration only
-  logs              Back up audit logs and incident store only
-  keys              Back up signing keys and LUKS vault header only
-  verify <file>     Verify a backup archive's integrity
-  list [dir]        List available backup archives
+All backup categories are encrypted and authenticated with age. Without
+--recipient, age prompts for a passphrase using its protected terminal input.
+The plaintext archive exists only in root-owned /run tmpfs and is removed when
+the command exits. The .sha256 sidecar is a transport-corruption check; archive
+authenticity is established by successful age decryption plus manifest checks.
 
 Options:
-  --encrypt         Encrypt the backup archive (uses age or gpg)
-  --output DIR      Output directory (default: /var/lib/secure-ai/backups)
-  --help            Show this help message
+  --recipient VALUE   Encrypt to an age recipient (recommended for automation)
+  --identity FILE     Identity used to decrypt during verify
+  --output DIR        Destination directory
+  --encrypt           Accepted for compatibility; encryption is always enabled
+  --help              Show this help
 USAGE
     exit 0
+}
+
+cleanup() {
+    if [ -n "$WORK_DIR" ] && [[ "$WORK_DIR" == "$WORK_ROOT/"* ]] && [ -d "$WORK_DIR" ]; then
+        rm -rf -- "$WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || fatal "This command must be run as root (sudo)"
+}
+
+require_tools() {
+    local tool
+    for tool in age python3 sha256sum; do
+        command -v "$tool" >/dev/null 2>&1 || fatal "Required command is missing: $tool"
+    done
+    [ -x "$ARCHIVE_HELPER" ] || fatal "Archive helper is missing or not executable: $ARCHIVE_HELPER"
+}
+
+prepare_work_dir() {
+    install -d -m 0700 -o root -g root -- "$WORK_ROOT"
+    [ ! -L "$WORK_ROOT" ] || fatal "Refusing symbolic-link work directory: $WORK_ROOT"
+    WORK_DIR=$(mktemp -d "${WORK_ROOT}/backup.XXXXXXXX")
+    chmod 0700 "$WORK_DIR"
 }
 
 audit_event() {
     local action="$1"
     local detail="$2"
-    mkdir -p "$(dirname "$AUDIT_LOG")" 2>/dev/null || true
-    python3 -c "
-import json, hashlib
+    install -d -m 2770 -o root -g secure-ai-logs -- "$(dirname "$AUDIT_LOG")"
+    python3 - "$AUDIT_LOG" "$action" "$detail" <<'PY'
+import fcntl
+import hashlib
+import json
+import os
+import sys
 from datetime import datetime, timezone
-entry = {
-    'timestamp': datetime.now(timezone.utc).isoformat(),
-    'event': 'backup',
-    'action': '${action}',
-    'detail': '${detail}'
-}
-entry['hash'] = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-print(json.dumps(entry))
-" >> "$AUDIT_LOG" 2>/dev/null || true
+
+path, action, detail = sys.argv[1:]
+timestamp = datetime.now(timezone.utc).isoformat()
+with open(path, "a+", encoding="utf-8") as handle:
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    handle.seek(0)
+    previous = ""
+    for raw_line in handle:
+        if raw_line.strip():
+            previous = json.loads(raw_line)["entry_hash"]
+    data = {"action": action, "detail": detail}
+    canonical = json.dumps(
+        {
+            "prev_hash": previous,
+            "event": "backup",
+            "data": data,
+            "timestamp": timestamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    entry = {
+        "timestamp": timestamp,
+        "event": "backup",
+        "data": data,
+        "prev_hash": previous,
+        "entry_hash": hashlib.sha256(canonical).hexdigest(),
+        "algorithm": "sha256",
+    }
+    handle.seek(0, os.SEEK_END)
+    handle.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.chmod(path, 0o640)
+PY
 }
 
-# ---------------------------------------------------------------------------
-# Collect files for a given category
-# ---------------------------------------------------------------------------
+copy_source() {
+    local source="$1"
+    local staging="$2"
+    [ ! -L "$source" ] || fatal "Refusing symbolic-link backup source: $source"
+    [ -e "$source" ] || return 1
+    local destination="${staging}${source}"
+    mkdir -p -- "$(dirname "$destination")"
+    cp -a --reflink=auto -- "$source" "$destination" \
+        || fatal "Failed to stage required backup source: $source"
+}
+
 collect_paths() {
     local category="$1"
     local staging="$2"
     local count=0
-
     local -a paths=()
     case "$category" in
-        config)   paths=("${CONFIG_PATHS[@]}") ;;
-        logs)     paths=("${LOG_PATHS[@]}") ;;
-        keys)     paths=("${KEY_PATHS[@]}") ;;
+        config) paths=("${CONFIG_PATHS[@]}") ;;
+        logs) paths=("${LOG_PATHS[@]}") ;;
+        keys) paths=("${KEY_PATHS[@]}") ;;
         registry) paths=("${REGISTRY_PATHS[@]}") ;;
+        *) fatal "Internal error: unknown collection category $category" ;;
     esac
-
-    for src in "${paths[@]}"; do
-        if [ -e "$src" ]; then
-            local dest="${staging}${src}"
-            mkdir -p "$(dirname "$dest")"
-            cp -a "$src" "$dest" 2>/dev/null || warn "Could not copy ${src}"
+    local source
+    for source in "${paths[@]}"; do
+        if copy_source "$source" "$staging"; then
             count=$((count + 1))
         fi
     done
-    echo "$count"
+    printf '%s\n' "$count"
 }
 
-# ---------------------------------------------------------------------------
-# LUKS header backup
-# ---------------------------------------------------------------------------
+resolve_luks_device() {
+    [ -f /etc/crypttab ] || return 1
+    local -a specifications=()
+    mapfile -t specifications < <(
+        awk '!/^[[:space:]]*#/ && $1 == "secure-ai-vault" { print $2 }' /etc/crypttab
+    )
+    [ "${#specifications[@]}" -le 1 ] \
+        || fatal "Multiple secure-ai-vault entries exist in /etc/crypttab"
+    [ "${#specifications[@]}" -eq 1 ] || return 1
+
+    local specification="${specifications[0]}"
+    local candidate="$specification"
+    case "$specification" in
+        UUID=*) candidate="/dev/disk/by-uuid/${specification#UUID=}" ;;
+        PARTUUID=*) candidate="/dev/disk/by-partuuid/${specification#PARTUUID=}" ;;
+    esac
+    candidate=$(readlink -f -- "$candidate") || return 1
+    [ -b "$candidate" ] || fatal "Configured vault source is not a block device: $candidate"
+    cryptsetup isLuks "$candidate" >/dev/null 2>&1 \
+        || fatal "Configured vault source is not a LUKS device: $candidate"
+    printf '%s\n' "$candidate"
+}
+
 backup_luks_header() {
     local staging="$1"
-    local vault_dev=""
-
-    if [ -f /etc/crypttab ]; then
-        vault_dev=$(awk '/secure-ai-vault/ {print $2}' /etc/crypttab 2>/dev/null || true)
-    fi
-
-    if [ -z "$vault_dev" ]; then
-        warn "Vault device not found in /etc/crypttab — skipping LUKS header backup"
+    command -v cryptsetup >/dev/null 2>&1 || fatal "cryptsetup is required for a key backup"
+    local device
+    if ! device=$(resolve_luks_device); then
+        warn "No secure-ai-vault LUKS device is configured; no header was included"
         return 0
     fi
-
-    # Resolve UUID= or PARTUUID= references
-    if [[ "$vault_dev" == UUID=* ]]; then
-        vault_dev="/dev/disk/by-uuid/${vault_dev#UUID=}"
-    elif [[ "$vault_dev" == PARTUUID=* ]]; then
-        vault_dev="/dev/disk/by-partuuid/${vault_dev#PARTUUID=}"
-    fi
-
-    if [ ! -e "$vault_dev" ]; then
-        warn "Vault device ${vault_dev} does not exist — skipping LUKS header backup"
-        return 0
-    fi
-
-    local dest="${staging}/luks-header-backup"
-    mkdir -p "$(dirname "$dest")"
-    if cryptsetup luksHeaderBackup "$vault_dev" --header-backup-file "$dest" 2>/dev/null; then
-        info "LUKS header backed up from ${vault_dev}"
-    else
-        warn "Failed to backup LUKS header (may require root)"
-    fi
+    LUKS_UUID=$(cryptsetup luksUUID "$device") \
+        || fatal "Could not read the configured vault UUID"
+    [[ "$LUKS_UUID" =~ ^[0-9a-fA-F-]{36}$ ]] \
+        || fatal "Configured vault returned an invalid LUKS UUID"
+    cryptsetup luksHeaderBackup "$device" \
+        --header-backup-file "${staging}/luks-header-backup" \
+        || fatal "LUKS header backup failed"
+    chmod 0600 "${staging}/luks-header-backup"
+    info "Included LUKS header for vault UUID ${LUKS_UUID}"
 }
 
-# ---------------------------------------------------------------------------
-# Generate manifest
-# ---------------------------------------------------------------------------
-generate_manifest() {
-    local staging="$1"
-    python3 -c "
-import json, hashlib, os
-from datetime import datetime, timezone
-manifest = {
-    'created': datetime.now(timezone.utc).isoformat(),
-    'hostname': os.uname().nodename,
-    'files': {}
-}
-for root, dirs, files in os.walk('${staging}'):
-    for f in files:
-        if f == 'manifest.json':
-            continue
-        full = os.path.join(root, f)
-        rel = os.path.relpath(full, '${staging}')
-        h = hashlib.sha256(open(full, 'rb').read()).hexdigest()
-        manifest['files'][rel] = {'sha256': h, 'size': os.path.getsize(full)}
-manifest['file_count'] = len(manifest['files'])
-with open(os.path.join('${staging}', 'manifest.json'), 'w') as out:
-    json.dump(manifest, out, indent=2)
-    out.write('\n')
-print(manifest['file_count'])
-" 2>/dev/null || echo "0"
+write_transport_checksum() {
+    local artifact="$1"
+    local sidecar="${artifact}.sha256"
+    [ ! -e "$sidecar" ] && [ ! -L "$sidecar" ] \
+        || fatal "Refusing to overwrite checksum sidecar: $sidecar"
+    local checksum
+    checksum=$(sha256sum -- "$artifact" | awk '{print $1}')
+    [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || fatal "Could not compute artifact SHA-256"
+    local temporary
+    temporary=$(mktemp "$(dirname "$artifact")/.checksum.XXXXXXXX")
+    printf '%s  %s\n' "$checksum" "$(basename "$artifact")" > "$temporary"
+    chmod 0600 "$temporary"
+    sync -f "$temporary"
+    mv -- "$temporary" "$sidecar"
 }
 
-# ---------------------------------------------------------------------------
-# Encrypt tarball
-# ---------------------------------------------------------------------------
-encrypt_file() {
-    local file="$1"
-    if command -v age &>/dev/null; then
-        info "Encrypting with age (passphrase)..."
-        age -p -o "${file}.age" "$file" || fatal "age encryption failed"
-        rm -f "$file"
-        echo "${file}.age"
-    elif command -v gpg &>/dev/null; then
-        info "Encrypting with gpg (symmetric)..."
-        gpg --symmetric --batch --yes --cipher-algo AES256 -o "${file}.gpg" "$file" \
-            || fatal "gpg encryption failed"
-        rm -f "$file"
-        echo "${file}.gpg"
-    else
-        fatal "Encryption requested but neither 'age' nor 'gpg' is installed"
+verify_transport_checksum() {
+    local artifact="$1"
+    local sidecar="${artifact}.sha256"
+    [ -f "$sidecar" ] && [ ! -L "$sidecar" ] \
+        || fatal "Required transport checksum is missing or unsafe: $sidecar"
+    local expected declared extra
+    IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
+    declared="${declared#\\*}"
+    [ -z "${extra:-}" ] || fatal "Checksum sidecar has unexpected fields"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fatal "Checksum sidecar has an invalid SHA-256"
+    [ "$declared" = "$(basename "$artifact")" ] \
+        || fatal "Checksum sidecar names a different artifact"
+    local actual
+    actual=$(sha256sum -- "$artifact" | awk '{print $1}')
+    [ "$expected" = "$actual" ] || fatal "Encrypted backup transport checksum mismatch"
+}
+
+decrypt_to_tmpfs() {
+    local artifact="$1"
+    local plaintext="$2"
+    local -a args=(-d)
+    if [ -n "$AGE_IDENTITY" ]; then
+        [ -f "$AGE_IDENTITY" ] && [ ! -L "$AGE_IDENTITY" ] \
+            || fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
+            || fatal "Age identity must be owned by root"
+        local identity_mode
+        identity_mode=$(stat -c '%a' "$AGE_IDENTITY")
+        (( (8#$identity_mode & 077) == 0 )) \
+            || fatal "Age identity must not be accessible by group or other users"
+        args+=(-i "$AGE_IDENTITY")
     fi
+    age "${args[@]}" -- "$artifact" > "$plaintext" || fatal "Age authentication/decryption failed"
+    chmod 0600 "$plaintext"
 }
 
-# ---------------------------------------------------------------------------
-# do_backup <category>
-# ---------------------------------------------------------------------------
 do_backup() {
     local category="$1"
-    local dest_dir="${OUTPUT_DIR:-$BACKUP_DIR}"
-    local timestamp
-    timestamp=$(date +%Y%m%d-%H%M%S)
-    local name="secai-backup-${category}-${timestamp}"
-    local staging
-    staging=$(mktemp -d "/tmp/${name}.XXXXXX")
+    require_root
+    require_tools
+    prepare_work_dir
 
-    trap 'rm -rf "$staging"' EXIT
+    local destination_dir="${OUTPUT_DIR:-$BACKUP_DIR}"
+    mkdir -p -- "$destination_dir"
+    [ -d "$destination_dir" ] && [ ! -L "$destination_dir" ] \
+        || fatal "Backup destination must be a real directory: $destination_dir"
 
-    [ "$(id -u)" -eq 0 ] || fatal "Backups must be run as root (sudo)"
+    local timestamp random_suffix name
+    timestamp=$(date -u +%Y%m%d-%H%M%S)
+    random_suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+    name="secai-backup-${category}-${timestamp}-${random_suffix}"
+    local staging="${WORK_DIR}/staging"
+    mkdir -m 0700 -- "$staging"
 
-    mkdir -p "$dest_dir"
-
-    step "Creating ${category} backup"
-
-    # Collect files by category
-    local total=0
+    step "Staging ${category} backup"
+    local total=0 collected
     case "$category" in
         full)
-            for cat in config logs keys registry; do
-                n=$(collect_paths "$cat" "$staging")
-                total=$((total + n))
+            local collection
+            for collection in config logs keys registry; do
+                collected=$(collect_paths "$collection" "$staging")
+                total=$((total + collected))
             done
             backup_luks_header "$staging"
             ;;
-        config)
-            total=$(collect_paths "config" "$staging")
-            ;;
-        logs)
-            total=$(collect_paths "logs" "$staging")
+        config|logs)
+            total=$(collect_paths "$category" "$staging")
             ;;
         keys)
             total=$(collect_paths "keys" "$staging")
             backup_luks_header "$staging"
             ;;
-        *)
-            fatal "Unknown backup category: ${category}"
-            ;;
+        *) fatal "Unknown backup category: $category" ;;
     esac
+    [ "$total" -gt 0 ] || [ -f "${staging}/luks-header-backup" ] \
+        || fatal "No files were available for the requested backup category"
 
-    if [ "$total" -eq 0 ]; then
-        warn "No files found to back up"
-        exit 0
+    step "Creating bounded manifest archive in tmpfs"
+    local plaintext="${WORK_DIR}/${name}.tar.gz"
+    local -a create_args=(
+        create --root "$staging" --output "$plaintext" --category "$category"
+    )
+    [ -z "$LUKS_UUID" ] || create_args+=(--luks-uuid "$LUKS_UUID")
+    "$ARCHIVE_HELPER" "${create_args[@]}" >/dev/null \
+        || fatal "Secure archive creation failed"
+
+    step "Encrypting and authenticating with age"
+    local final="${destination_dir}/${name}.tar.gz.age"
+    [ ! -e "$final" ] && [ ! -L "$final" ] \
+        || fatal "Refusing to overwrite existing backup: $final"
+    local partial
+    partial=$(mktemp "${destination_dir}/.${name}.partial.XXXXXXXX")
+    if [ -n "$AGE_RECIPIENT" ]; then
+        if ! age -r "$AGE_RECIPIENT" -- "$plaintext" > "$partial"; then
+            rm -f -- "$partial"
+            fatal "Age recipient encryption failed"
+        fi
+    else
+        if ! age -p -- "$plaintext" > "$partial"; then
+            rm -f -- "$partial"
+            fatal "Age passphrase encryption failed"
+        fi
     fi
+    [ -s "$partial" ] || fatal "Age produced an empty encrypted artifact"
+    chmod 0600 "$partial" 2>/dev/null \
+        || warn "Destination filesystem cannot enforce mode 0600; content remains encrypted"
+    sync -f "$partial"
+    mv -- "$partial" "$final"
+    write_transport_checksum "$final"
+    audit_event "$category" "encrypted backup created: $(basename "$final")" \
+        || fatal "Backup was created but could not be recorded in the audit chain"
 
-    # Generate manifest
-    step "Generating manifest"
-    file_count=$(generate_manifest "$staging")
-    info "${file_count} files inventoried"
-
-    # Create tarball
-    step "Creating archive"
-    local tarball="${dest_dir}/${name}.tar.gz"
-    tar czf "$tarball" -C "$staging" . || fatal "Failed to create archive"
-
-    # SHA256 sidecar
-    local checksum
-    checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
-    echo "${checksum}  $(basename "$tarball")" > "${tarball}.sha256"
-    info "Archive: ${tarball} ($(du -h "$tarball" | cut -f1))"
-    info "SHA256:  ${checksum}"
-
-    # Optional encryption
-    if [ "$ENCRYPT" = true ]; then
-        step "Encrypting archive"
-        tarball=$(encrypt_file "$tarball")
-        info "Encrypted: ${tarball}"
-    fi
-
-    # Audit
-    audit_event "$category" "backup created: $(basename "$tarball")"
-
-    echo ""
-    info "Backup complete: ${tarball}"
+    info "Backup complete: $final"
+    info "Plaintext staging was confined to tmpfs and will be removed on exit"
 }
 
-# ---------------------------------------------------------------------------
-# do_verify <file>
-# ---------------------------------------------------------------------------
 do_verify() {
-    local file="$1"
-    [ -f "$file" ] || fatal "File not found: ${file}"
-
-    step "Verifying backup integrity"
-
-    # Check sidecar SHA256
-    local sha_file="${file}.sha256"
-    if [ -f "$sha_file" ]; then
-        local expected actual
-        expected=$(cut -d' ' -f1 "$sha_file")
-        actual=$(sha256sum "$file" | cut -d' ' -f1)
-        if [ "$expected" = "$actual" ]; then
-            info "External checksum: PASS"
-        else
-            error "External checksum: FAIL"
-            error "  Expected: ${expected}"
-            error "  Actual:   ${actual}"
-            exit 1
-        fi
-    else
-        warn "No sidecar .sha256 file found — skipping external check"
-    fi
-
-    # Extract and verify internal manifest
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-
-    tar xzf "$file" -C "$tmp" 2>/dev/null || fatal "Cannot extract archive"
-
-    if [ -f "${tmp}/manifest.json" ]; then
-        local failures=0
-        while IFS='|' read -r rel expected_hash; do
-            local full="${tmp}/${rel}"
-            if [ -f "$full" ]; then
-                actual_hash=$(sha256sum "$full" | cut -d' ' -f1)
-                if [ "$expected_hash" = "$actual_hash" ]; then
-                    info "  ${rel}: OK"
-                else
-                    error "  ${rel}: MISMATCH"
-                    failures=$((failures + 1))
-                fi
-            else
-                warn "  ${rel}: missing from archive"
-                failures=$((failures + 1))
-            fi
-        done < <(python3 -c "
-import json
-with open('${tmp}/manifest.json') as f:
-    m = json.load(f)
-for rel, info in m.get('files', {}).items():
-    print(f\"{rel}|{info['sha256']}\")
-" 2>/dev/null)
-        echo ""
-        if [ "$failures" -eq 0 ]; then
-            info "All files verified OK"
-        else
-            error "${failures} file(s) failed verification"
-            exit 1
-        fi
-    else
-        warn "No manifest.json in archive — cannot verify internal integrity"
-    fi
+    local artifact="$1"
+    require_root
+    require_tools
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
+        || fatal "Backup must be a regular encrypted file: $artifact"
+    [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
+    prepare_work_dir
+    step "Checking encrypted artifact transport integrity"
+    verify_transport_checksum "$artifact"
+    local plaintext="${WORK_DIR}/verified.tar.gz"
+    step "Authenticating, decrypting, and validating bounded archive contents"
+    decrypt_to_tmpfs "$artifact" "$plaintext"
+    "$ARCHIVE_HELPER" verify --archive "$plaintext" \
+        || fatal "Backup manifest or archive validation failed"
+    info "Backup verification passed"
 }
 
-# ---------------------------------------------------------------------------
-# do_list [dir]
-# ---------------------------------------------------------------------------
 do_list() {
-    local dir="${1:-$BACKUP_DIR}"
-    [ -d "$dir" ] || fatal "Directory not found: ${dir}"
-
-    step "Backups in ${dir}"
+    local directory="${1:-$BACKUP_DIR}"
+    [ -d "$directory" ] && [ ! -L "$directory" ] \
+        || fatal "Backup directory must be a real directory: $directory"
+    step "Encrypted backups in $directory"
     local count=0
-    for f in "${dir}"/secai-backup-*.tar.gz*; do
-        [ -f "$f" ] || continue
-        local size
-        size=$(du -h "$f" | cut -f1)
-        local encrypted=""
-        if [[ "$f" == *.age ]] || [[ "$f" == *.gpg ]]; then
-            encrypted=" (encrypted)"
-        fi
-        echo "  ${size}  $(basename "$f")${encrypted}"
+    while IFS= read -r -d '' artifact; do
+        printf '  %10s  %s\n' "$(du -h "$artifact" | awk '{print $1}')" "$(basename "$artifact")"
         count=$((count + 1))
-    done
-    if [ "$count" -eq 0 ]; then
-        info "No backups found"
-    else
-        info "${count} backup(s) found"
-    fi
+    done < <(find "$directory" -maxdepth 1 -type f -name 'secai-backup-*.tar.gz.age' -print0 | sort -z)
+    info "$count encrypted backup(s) found"
 }
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-CMD=""
-CMD_ARG=""
-
-while [ $# -gt 0 ]; do
+COMMAND=""
+COMMAND_ARG=""
+while [ "$#" -gt 0 ]; do
     case "$1" in
         full|config|logs|keys)
-            CMD="backup"; CMD_ARG="$1"; shift ;;
+            [ -z "$COMMAND" ] || fatal "Only one command may be specified"
+            COMMAND="backup"; COMMAND_ARG="$1"; shift ;;
         verify)
-            CMD="verify"; shift
-            [ -z "${1:-}" ] && fatal "verify requires a file path"
-            CMD_ARG="$1"; shift ;;
+            [ -z "$COMMAND" ] || fatal "Only one command may be specified"
+            [ "$#" -ge 2 ] || fatal "verify requires an encrypted backup path"
+            COMMAND="verify"; COMMAND_ARG="$2"; shift 2 ;;
         list)
-            CMD="list"; shift
-            CMD_ARG="${1:-$BACKUP_DIR}"; [ "${1:-}" ] && shift ;;
-        --encrypt)
-            ENCRYPT=true; shift ;;
+            [ -z "$COMMAND" ] || fatal "Only one command may be specified"
+            COMMAND="list"; shift
+            if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then
+                COMMAND_ARG="$1"; shift
+            fi
+            ;;
+        --recipient)
+            [ "$#" -ge 2 ] || fatal "--recipient requires a value"
+            AGE_RECIPIENT="$2"; shift 2 ;;
+        --identity)
+            [ "$#" -ge 2 ] || fatal "--identity requires a file"
+            AGE_IDENTITY="$2"; shift 2 ;;
         --output)
-            [ -z "${2:-}" ] && fatal "--output requires a directory"
+            [ "$#" -ge 2 ] || fatal "--output requires a directory"
             OUTPUT_DIR="$2"; shift 2 ;;
+        --encrypt)
+            shift ;;
         --help|-h)
             usage ;;
         *)
-            fatal "Unknown argument: $1  (use --help for usage)" ;;
+            fatal "Unknown argument: $1 (use --help)" ;;
     esac
 done
 
-[ -z "$CMD" ] && usage
-
-case "$CMD" in
-    backup) do_backup "$CMD_ARG" ;;
-    verify) do_verify "$CMD_ARG" ;;
-    list)   do_list   "$CMD_ARG" ;;
+[ -n "$COMMAND" ] || usage
+case "$COMMAND" in
+    backup)
+        [ -z "$AGE_IDENTITY" ] || fatal "--identity is only valid with verify"
+        do_backup "$COMMAND_ARG"
+        ;;
+    verify)
+        [ -z "$OUTPUT_DIR" ] || fatal "--output is only valid with a backup command"
+        [ -z "$AGE_RECIPIENT" ] || fatal "--recipient is only valid with a backup command"
+        do_verify "$COMMAND_ARG"
+        ;;
+    list)
+        [ -z "$OUTPUT_DIR$AGE_RECIPIENT$AGE_IDENTITY" ] \
+            || fatal "Encryption/output options are not valid with list"
+        do_list "${COMMAND_ARG:-$BACKUP_DIR}"
+        ;;
 esac

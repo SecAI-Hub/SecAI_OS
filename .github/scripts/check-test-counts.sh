@@ -49,7 +49,7 @@ read_json() {
 # 1. Count Go tests per service
 ###############################################################################
 
-GO_SERVICES="airlock registry tool-firewall gpu-integrity-watch mcp-firewall policy-engine runtime-attestor integrity-monitor incident-recorder"
+GO_SERVICES="airlock registry tool-firewall gpu-integrity-watch mcp-firewall policy-engine runtime-attestor integrity-monitor incident-recorder ui-ingress"
 
 go_total_actual=0
 drift_found=0

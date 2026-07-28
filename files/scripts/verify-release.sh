@@ -9,7 +9,7 @@
 #   2. CycloneDX SBOM attestation
 #   3. SLSA3 provenance attestation
 #   4. SHA256 checksum of local release artifacts
-#   5. OpenVEX metadata sanity check (if present)
+#   5. Signed install media, release manifest, and readiness evidence
 #
 # Prerequisites:
 #   - cosign   (https://docs.sigstore.dev/cosign/overview/)
@@ -17,9 +17,9 @@
 #   - sha256sum (coreutils)
 #
 # Usage:
-#   ./verify-release.sh <image-ref>
-#   ./verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
-#   ./verify-release.sh --report report.txt ghcr.io/secai-hub/secai_os:v1.0.0
+#   ./verify-release.sh <image-ref@sha256:digest>
+#   ./verify-release.sh --json ghcr.io/secai-hub/secai_os@sha256:<digest>
+#   ./verify-release.sh --report report.txt ghcr.io/secai-hub/secai_os@sha256:<digest>
 #   ./verify-release.sh --help
 #
 # Configuration:
@@ -37,6 +37,8 @@ set -euo pipefail
 COSIGN_PUB_KEY="${COSIGN_PUB_KEY:-./cosign.pub}"
 COSIGN_PUB_KEYS_DIR="${COSIGN_PUB_KEYS_DIR:-./release-keys}"
 SHA256SUMS_FILE="${SHA256SUMS_FILE:-./SHA256SUMS}"
+RELEASE_MANIFEST_FILE="${RELEASE_MANIFEST_FILE:-./RELEASE_MANIFEST.json}"
+RELEASE_READINESS_FILE="${RELEASE_READINESS_FILE:-./RELEASE_READINESS.json}"
 
 # ---------------------------------------------------------------------------
 # Colour helpers (disabled when stdout is not a terminal)
@@ -79,13 +81,19 @@ record_check() {
 collect_key_files() {
     KEY_FILES=()
     if [[ -f "${COSIGN_PUB_KEY}" ]]; then
-        KEY_FILES+=("${COSIGN_PUB_KEY}")
+        KEY_FILES+=("$(
+            cd "$(dirname "${COSIGN_PUB_KEY}")"
+            printf '%s/%s\n' "$PWD" "$(basename "${COSIGN_PUB_KEY}")"
+        )")
     fi
 
     if [[ -d "${COSIGN_PUB_KEYS_DIR}" ]]; then
         while IFS= read -r -d '' key_path; do
             if [[ "${key_path}" != "${COSIGN_PUB_KEY}" ]]; then
-                KEY_FILES+=("${key_path}")
+                KEY_FILES+=("$(
+                    cd "$(dirname "${key_path}")"
+                    printf '%s/%s\n' "$PWD" "$(basename "${key_path}")"
+                )")
             fi
         done < <(find "${COSIGN_PUB_KEYS_DIR}" -maxdepth 1 -type f -name '*.pub' -print0 | sort -z)
     fi
@@ -143,8 +151,8 @@ Usage: verify-release.sh [OPTIONS] <image-ref>
 Verify the supply-chain integrity of a SecAI_OS release image.
 
 Arguments:
-  <image-ref>   Full container image reference
-                Example: ghcr.io/secai-hub/secai_os:v1.0.0
+  <image-ref>   Immutable container image reference
+                Example: ghcr.io/secai-hub/secai_os@sha256:<64 hex>
 
 Options:
   --help          Show this help message and exit
@@ -172,22 +180,22 @@ Exit codes:
 
 Examples:
   # Verify with default key location
-  ./verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+  ./verify-release.sh ghcr.io/secai-hub/secai_os@sha256:<digest>
 
   # Verify with a custom key path
   COSIGN_PUB_KEY=/path/to/release-key.pub \
-    ./verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+    ./verify-release.sh ghcr.io/secai-hub/secai_os@sha256:<digest>
 
   # Verify with custom SHA256SUMS location
   SHA256SUMS_FILE=./release-artifacts/SHA256SUMS \
-    ./verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+    ./verify-release.sh ghcr.io/secai-hub/secai_os@sha256:<digest>
 
   # Machine-readable JSON output
-  ./verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
+  ./verify-release.sh --json ghcr.io/secai-hub/secai_os@sha256:<digest>
 
   # Save a human-readable report
   ./verify-release.sh --report verification-report.txt \
-    ghcr.io/secai-hub/secai_os:v1.0.0
+    ghcr.io/secai-hub/secai_os@sha256:<digest>
 USAGE
 }
 
@@ -239,6 +247,11 @@ if [[ -z "${IMAGE}" ]]; then
     exit 2
 fi
 
+if [[ ! "${IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+    echo "Error: image reference must be immutable (repository@sha256:<64 hex>)." >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # Prerequisite checks
 # ---------------------------------------------------------------------------
@@ -271,7 +284,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 1: Verify cosign image signature
 # ---------------------------------------------------------------------------
-info "Step 1/4: Verifying cosign image signature..."
+info "Step 1/5: Verifying cosign image signature..."
 
 if verify_image_with_any_key; then
     pass "Cosign image signature is valid"
@@ -286,7 +299,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Step 2: Verify CycloneDX SBOM attestation
 # ---------------------------------------------------------------------------
-info "Step 2/4: Verifying CycloneDX SBOM attestation..."
+info "Step 2/5: Verifying CycloneDX SBOM attestation..."
 
 if verify_attestation_with_any_key "cyclonedx"; then
     pass "CycloneDX SBOM attestation is valid"
@@ -301,7 +314,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Step 3: Verify SLSA provenance attestation
 # ---------------------------------------------------------------------------
-info "Step 3/4: Verifying SLSA provenance attestation..."
+info "Step 3/5: Verifying SLSA provenance attestation..."
 
 if verify_attestation_with_any_key "slsaprovenance"; then
     pass "SLSA provenance attestation is valid"
@@ -316,13 +329,13 @@ echo ""
 # ---------------------------------------------------------------------------
 # Step 4: Verify SHA256 checksums and OpenVEX metadata
 # ---------------------------------------------------------------------------
-info "Step 4/4: Verifying SHA256 checksums and OpenVEX metadata..."
+info "Step 4/5: Verifying signed SHA256 checksums and release metadata..."
 
 if [[ -f "${SHA256SUMS_FILE}" ]]; then
     pushd "$(dirname "${SHA256SUMS_FILE}")" >/dev/null
     sums_file="$(basename "${SHA256SUMS_FILE}")"
 
-    # Also verify the signature on the SHA256SUMS file if .sig exists
+    # The checksum manifest is a trust boundary and must always be signed.
     if [[ -f "${sums_file}.sig" ]]; then
         if verify_blob_with_any_key "${sums_file}.sig" "${sums_file}"; then
             pass "SHA256SUMS signature is valid"
@@ -332,26 +345,39 @@ if [[ -f "${SHA256SUMS_FILE}" ]]; then
             record_check 4 "checksum_signature" "FAIL" "keys_checked=${#KEY_FILES[@]}"
         fi
     else
-        warn "SHA256SUMS.sig not found — skipping checksum file signature verification"
-        record_check 4 "checksum_signature" "SKIP" "SHA256SUMS.sig not found"
+        fail "SHA256SUMS.sig not found"
+        record_check 4 "checksum_signature" "FAIL" "SHA256SUMS.sig not found"
     fi
 
     # Verify individual file checksums
-    checksum_errors=0
     checksum_total=0
     while IFS= read -r line; do
-        hash_expected="$(echo "$line" | awk '{print $1}')"
-        file_name="$(echo "$line" | awk '{print $2}')"
+        [[ -n "$line" ]] || continue
+        if [[ ! "$line" =~ ^([0-9a-f]{64})[[:space:]][[:space:]]([^[:space:]]+)$ ]]; then
+            fail "Malformed SHA256SUMS entry"
+            record_check 4 "checksum_manifest_entry" "FAIL" "malformed entry"
+            continue
+        fi
+        hash_expected="${BASH_REMATCH[1]}"
+        file_name="${BASH_REMATCH[2]#./}"
 
         # Skip the SHA256SUMS file itself and its signature
         if [[ "${file_name}" == "SHA256SUMS" || "${file_name}" == "SHA256SUMS.sig" ]]; then
+            fail "SHA256SUMS contains a self-referential entry: ${file_name}"
+            record_check 4 "checksum_self_reference" "FAIL" "${file_name}"
+            continue
+        fi
+        if [[ "$file_name" == */* || "$file_name" == .* ]]; then
+            fail "Unsafe path in SHA256SUMS: ${file_name}"
+            record_check 4 "checksum_path_${checksum_total}" "FAIL" "unsafe path"
             continue
         fi
 
         checksum_total=$((checksum_total + 1))
 
         if [[ ! -f "${file_name}" ]]; then
-            warn "File listed in SHA256SUMS not found locally: ${file_name} (skipped)"
+            fail "File listed in SHA256SUMS not found locally: ${file_name}"
+            record_check 4 "checksum_${file_name}" "FAIL" "file missing"
             continue
         fi
 
@@ -363,13 +389,13 @@ if [[ -f "${SHA256SUMS_FILE}" ]]; then
             fail "Checksum MISMATCH: ${file_name}"
             echo "  Expected: ${hash_expected}" >&2
             echo "  Actual:   ${hash_actual}" >&2
-            checksum_errors=$((checksum_errors + 1))
             record_check 4 "checksum_${file_name}" "FAIL" "expected=${hash_expected} actual=${hash_actual}"
         fi
     done < "${sums_file}"
 
     if [[ $checksum_total -eq 0 ]]; then
-        warn "SHA256SUMS file is empty or contains no verifiable entries"
+        fail "SHA256SUMS file is empty or contains no verifiable entries"
+        record_check 4 "checksum_entries" "FAIL" "no artifact entries"
     fi
 
     if [[ -f "custom-python.vex.json" ]]; then
@@ -386,12 +412,83 @@ if [[ -f "${SHA256SUMS_FILE}" ]]; then
         record_check 4 "openvex_structure" "SKIP" "custom-python.vex.json not found"
     fi
 
+    manifest_name="$(basename "${RELEASE_MANIFEST_FILE}")"
+    readiness_name="$(basename "${RELEASE_READINESS_FILE}")"
+    image_repo="${IMAGE%@*}"
+    image_digest="${IMAGE##*@}"
+    manifest_commit=""
+
+    if [[ -f "$manifest_name" ]] &&
+       jq -e \
+         --arg image_repo "$image_repo" \
+         --arg image_digest "$image_digest" \
+         --arg image "$IMAGE" \
+         '.schema_version >= 2
+          and .image.ref == $image_repo
+          and .image.digest == $image_digest
+          and .image.ref_pinned == $image
+          and (.build.commit_sha | test("^[0-9a-f]{40}$"))
+          and .deployment.required_service_profile == "offline-private"' \
+         "$manifest_name" >/dev/null; then
+        manifest_commit="$(jq -r '.build.commit_sha' "$manifest_name")"
+        pass "Release manifest is bound to the verified image"
+        record_check 4 "release_manifest" "PASS"
+    else
+        fail "Release manifest is missing, invalid, or bound to another image"
+        record_check 4 "release_manifest" "FAIL"
+    fi
+
+    if [[ -n "$manifest_commit" && -f RELEASE_BASELINE.json ]]; then
+        baseline_expected="$(
+            jq -r '.image.release_baseline.sha256 // empty' "$manifest_name"
+        )"
+        baseline_actual="$(sha256sum RELEASE_BASELINE.json | awk '{print $1}')"
+        if [[ "$baseline_expected" == "$baseline_actual" ]] &&
+           jq -e --arg source_commit "$manifest_commit" \
+             '.source_commit == $source_commit
+              and (.files | type == "array" and length > 0)' \
+             RELEASE_BASELINE.json >/dev/null; then
+            pass "Release integrity baseline matches the manifest and source"
+            record_check 4 "release_baseline" "PASS"
+        else
+            fail "Release integrity baseline is missing or misbound"
+            record_check 4 "release_baseline" "FAIL"
+        fi
+    else
+        fail "RELEASE_BASELINE.json not found"
+        record_check 4 "release_baseline" "FAIL"
+    fi
+
+    if [[ -f "$manifest_name" && -f "$readiness_name" &&
+          -f "${readiness_name}.sig" ]]; then
+        if verify_blob_with_any_key "${readiness_name}.sig" "$readiness_name" &&
+           jq -e \
+             --arg image "$IMAGE" \
+             --arg source_commit "$manifest_commit" \
+             --arg manifest_sha "$(sha256sum "$manifest_name" | awk '{print $1}')" \
+             '.schema_version >= 2
+              and .image.ref_pinned == $image
+              and .source.commit == $source_commit
+              and .release_manifest.sha256 == $manifest_sha
+              and (
+                .release.designation != "stable"
+                or .release.mandatory_evidence_complete == true
+              )' "$readiness_name" >/dev/null; then
+            pass "Signed release-readiness evidence is valid"
+            record_check 4 "release_readiness" "PASS" "key=${LAST_SUCCESS_KEY}"
+        else
+            fail "Release-readiness evidence signature or binding is invalid"
+            record_check 4 "release_readiness" "FAIL"
+        fi
+    else
+        fail "Signed RELEASE_READINESS.json evidence is required"
+        record_check 4 "release_readiness" "FAIL" "file or signature missing"
+    fi
+
     popd >/dev/null
 else
-    warn "SHA256SUMS file not found: ${SHA256SUMS_FILE} — skipping checksum verification"
-    echo "  Set SHA256SUMS_FILE to the correct path if you have release artifacts." >&2
-    record_check 4 "checksum_file" "SKIP" "SHA256SUMS not found"
-    record_check 4 "openvex_structure" "SKIP" "SHA256SUMS not found"
+    fail "SHA256SUMS file not found: ${SHA256SUMS_FILE}"
+    record_check 4 "checksum_file" "FAIL" "SHA256SUMS not found"
 fi
 
 echo ""
@@ -399,8 +496,10 @@ echo ""
 # ---------------------------------------------------------------------------
 # Step 5: Verify install artifact signatures (optional)
 # ---------------------------------------------------------------------------
-info "Step 5: Verifying install artifact signatures (if present)..."
+info "Step 5/5: Verifying install artifact signatures (if present)..."
 
+install_artifact_dir="$(dirname "${SHA256SUMS_FILE}")"
+pushd "$install_artifact_dir" >/dev/null
 install_artifacts_found=0
 for pattern in "secai-os-*.iso" "secai-os-*-usb.raw.xz" "secai-os-*.qcow2" "secai-os-*.ova"; do
     for artifact in $pattern; do
@@ -416,8 +515,8 @@ for pattern in "secai-os-*.iso" "secai-os-*-usb.raw.xz" "secai-os-*.qcow2" "seca
                 record_check 5 "install_sig_${artifact}" "FAIL" "keys_checked=${#KEY_FILES[@]}"
             fi
         else
-            warn "No .sig file for ${artifact} — cannot verify signature"
-            record_check 5 "install_sig_${artifact}" "SKIP" "no .sig file"
+            fail "No .sig file for ${artifact}"
+            record_check 5 "install_sig_${artifact}" "FAIL" "no .sig file"
         fi
     done
 done
@@ -426,6 +525,7 @@ if [[ $install_artifacts_found -eq 0 ]]; then
     info "No install artifacts (ISO/USB/QCOW2/OVA) found — skipping Step 5"
     record_check 5 "install_artifacts" "SKIP" "no install artifacts present"
 fi
+popd >/dev/null
 
 echo ""
 

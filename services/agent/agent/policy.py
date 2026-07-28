@@ -64,6 +64,15 @@ _CONFIGURABLE: set[StepAction] = {
     StepAction.TOOL_INVOKE,
 }
 
+# Only advertise approval for actions with a real executor implementation.
+# Future control-plane actions remain in the enum for schema compatibility but
+# are denied until a separately reviewed handler exists.
+_EXECUTABLE_ACTIONS: set[StepAction] = (
+    _AUTO_ALLOW
+    | (_CONFIGURABLE - {StepAction.TOOL_INVOKE})
+    | {StepAction.OUTBOUND_REQUEST}
+)
+
 
 def classify_risk(action: StepAction) -> RiskLevel:
     """Classify the risk level of an action per the allow/deny matrix."""
@@ -123,9 +132,11 @@ class PolicyEngine:
         if cap.is_expired():
             return "deny", "capability token expired"
 
-        # 1. Hard deny for always-denied actions
-        if step.action in _ALWAYS_DENY:
-            return "deny", f"action '{step.action.value}' is always denied by policy"
+        # 1. Hard deny for unimplemented and always-denied actions.
+        if step.action not in _EXECUTABLE_ACTIONS:
+            return "deny", (
+                f"action '{step.action.value}' has no production executor and is denied"
+            )
 
         # 2. Session-mode restrictions
         decision, reason = self._check_session_mode(step, cap)

@@ -107,6 +107,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%STOP_SCRIPT%"
 exit /b %ERRORLEVEL%
 
 :status_stack
+set "SECAI_RUNTIME_GENERATION=0000000000000000000000000000000000000000000000000000000000000000"
 where docker >nul 2>nul
 if errorlevel 1 (
     echo Docker was not found in PATH.
@@ -116,6 +117,7 @@ docker compose -f "%COMPOSE_FILE%" --profile search --profile llm --profile diff
 exit /b %ERRORLEVEL%
 
 :logs_stack
+set "SECAI_RUNTIME_GENERATION=0000000000000000000000000000000000000000000000000000000000000000"
 where docker >nul 2>nul
 if errorlevel 1 (
     echo Docker was not found in PATH.

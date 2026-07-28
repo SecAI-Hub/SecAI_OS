@@ -57,25 +57,36 @@ const (
 type IncidentState string
 
 const (
-	StateOpen         IncidentState = "open"
-	StateContained    IncidentState = "contained"
-	StateResolved     IncidentState = "resolved"
-	StateAcknowledged IncidentState = "acknowledged"
+	StateOpen              IncidentState = "open"
+	StateContained         IncidentState = "contained"
+	StateContainmentFailed IncidentState = "containment_failed"
+	StateResolved          IncidentState = "resolved"
+	StateAcknowledged      IncidentState = "acknowledged"
 )
+
+// ContainmentResult records evidence for one mandatory containment action.
+// Incidents are never marked contained unless every listed action succeeded.
+type ContainmentResult struct {
+	Action      string `json:"action" yaml:"action"`
+	Success     bool   `json:"success" yaml:"success"`
+	Error       string `json:"error,omitempty" yaml:"error,omitempty"`
+	CompletedAt string `json:"completed_at" yaml:"completed_at"`
+}
 
 // Incident is a single security event record.
 type Incident struct {
-	ID                 string            `json:"id" yaml:"id"`
-	CreatedAt          string            `json:"created_at" yaml:"created_at"`
-	Class              IncidentClass     `json:"class" yaml:"class"`
-	Severity           IncidentSeverity  `json:"severity" yaml:"severity"`
-	State              IncidentState     `json:"state" yaml:"state"`
-	Source             string            `json:"source" yaml:"source"`
-	Description        string            `json:"description" yaml:"description"`
-	Evidence           map[string]string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	ContainmentActions []string          `json:"containment_actions,omitempty" yaml:"containment_actions,omitempty"`
-	ResolvedAt         string            `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
-	Hash               string            `json:"hash" yaml:"hash"`
+	ID                 string              `json:"id" yaml:"id"`
+	CreatedAt          string              `json:"created_at" yaml:"created_at"`
+	Class              IncidentClass       `json:"class" yaml:"class"`
+	Severity           IncidentSeverity    `json:"severity" yaml:"severity"`
+	State              IncidentState       `json:"state" yaml:"state"`
+	Source             string              `json:"source" yaml:"source"`
+	Description        string              `json:"description" yaml:"description"`
+	Evidence           map[string]string   `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	ContainmentActions []string            `json:"containment_actions,omitempty" yaml:"containment_actions,omitempty"`
+	ContainmentResults []ContainmentResult `json:"containment_results,omitempty" yaml:"containment_results,omitempty"`
+	ResolvedAt         string              `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
+	Hash               string              `json:"hash" yaml:"hash"`
 }
 
 // IncidentReport is the payload for creating a new incident.
@@ -116,12 +127,23 @@ var (
 	auditMu   sync.Mutex
 	auditPath string
 
-	serviceToken string
+	incidentPersistMu sync.Mutex
+
+	readToken              string
+	operatorToken          string
+	recoveryAdminToken     string
+	forensicToken          string
+	canaryReporterToken    string
+	gpuReporterToken       string
+	integrityReporterToken string
+	attestorReporterToken  string
 
 	incidentCount  atomic.Int64
 	containedCount atomic.Int64
 	resolvedCount  atomic.Int64
 	idCounter      atomic.Int64
+
+	containmentExecutor = executeContainment
 )
 
 const maxRequestBodySize = 64 * 1024
@@ -252,9 +274,7 @@ func createIncident(report IncidentReport) Incident {
 			severity = rule.Severity
 		}
 		if rule.AutoContain {
-			containmentActions = rule.Actions
-			state = StateContained
-			containedCount.Add(1)
+			containmentActions = append([]string(nil), rule.Actions...)
 		}
 	}
 	if severity == "" {
@@ -292,14 +312,41 @@ func createIncident(report IncidentReport) Incident {
 	log.Printf("incident created: id=%s class=%s severity=%s state=%s actions=%v",
 		inc.ID, inc.Class, inc.Severity, inc.State, containmentActions)
 
-	// Execute containment actions asynchronously (best-effort, non-blocking).
-	// Capture token and endpoints snapshot to avoid race conditions.
+	// Execute every mandatory action before claiming containment. Critical
+	// reporting may take longer while the fixed-function vault broker relocks
+	// storage, but the returned state and persisted evidence are authoritative.
 	if len(containmentActions) > 0 {
-		token := serviceToken
-		ep := endpoints
-		go executeContainment(inc, ep, token)
-		// Fire alerting webhooks for containment events
-		go fireWebhooks("containment", inc, containmentActions)
+		results, allSucceeded := containmentExecutor(inc, endpoints, "")
+		inc.ContainmentResults = results
+		if allSucceeded {
+			inc.State = StateContained
+			containedCount.Add(1)
+		} else {
+			inc.State = StateContainmentFailed
+		}
+		incidentsMu.Lock()
+		for i := range incidents {
+			if incidents[i].ID == inc.ID {
+				incidents[i] = inc
+				break
+			}
+		}
+		incidentsMu.Unlock()
+		persistIncidents()
+		writeAudit(inc)
+		if allSucceeded {
+			go fireWebhooks("containment", inc, containmentActions)
+		} else {
+			log.Printf("CONTAINMENT FAILED: incident=%s results=%v", inc.ID, results)
+		}
+	}
+	if incidentRequiresRecovery(inc) {
+		if err := recoveryMgr.RequireRecoveryForIncident(inc); err != nil {
+			// Lifecycle transitions independently fail closed when a required
+			// requirement is absent, so persistence failure cannot release the
+			// incident's containment gate.
+			log.Printf("recovery: failed to persist ceremony for incident %s: %v", inc.ID, err)
+		}
 	}
 
 	return inc
@@ -329,7 +376,7 @@ func getOpenIncidents() []Incident {
 	defer incidentsMu.RUnlock()
 	var open []Incident
 	for _, inc := range incidents {
-		if inc.State == StateOpen || inc.State == StateContained {
+		if inc.State == StateOpen || inc.State == StateContained || inc.State == StateContainmentFailed {
 			open = append(open, inc)
 		}
 	}
@@ -338,30 +385,50 @@ func getOpenIncidents() []Incident {
 
 func resolveIncident(id string) (Incident, bool) {
 	incidentsMu.Lock()
-	defer incidentsMu.Unlock()
+	var resolved Incident
+	found := false
 	for i := range incidents {
 		if incidents[i].ID == id {
+			if allowed, reason := recoveryMgr.CanReleaseIncident(incidents[i]); !allowed {
+				log.Printf("recovery: resolve blocked for incident %s: %s", id, reason)
+				break
+			}
 			incidents[i].State = StateResolved
 			incidents[i].ResolvedAt = time.Now().UTC().Format(time.RFC3339)
 			resolvedCount.Add(1)
-			go persistIncidents()
-			return incidents[i], true
+			resolved = incidents[i]
+			found = true
+			break
 		}
 	}
-	return Incident{}, false
+	incidentsMu.Unlock()
+	if found {
+		persistIncidents()
+	}
+	return resolved, found
 }
 
 func acknowledgeIncident(id string) (Incident, bool) {
 	incidentsMu.Lock()
-	defer incidentsMu.Unlock()
+	var acknowledged Incident
+	found := false
 	for i := range incidents {
 		if incidents[i].ID == id {
+			if allowed, reason := recoveryMgr.CanReleaseIncident(incidents[i]); !allowed {
+				log.Printf("recovery: acknowledge transition blocked for incident %s: %s", id, reason)
+				break
+			}
 			incidents[i].State = StateAcknowledged
-			go persistIncidents()
-			return incidents[i], true
+			acknowledged = incidents[i]
+			found = true
+			break
 		}
 	}
-	return Incident{}, false
+	incidentsMu.Unlock()
+	if found {
+		persistIncidents()
+	}
+	return acknowledged, found
 }
 
 func severityRank(s IncidentSeverity) int {
@@ -451,6 +518,9 @@ func initIncidentStore() {
 }
 
 func loadIncidentsFromDisk() {
+	if strings.TrimSpace(incidentStorePath) == "" {
+		return
+	}
 	f, err := os.Open(incidentStorePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -499,15 +569,29 @@ func loadIncidentsFromDisk() {
 }
 
 func persistIncidents() {
+	path := strings.TrimSpace(incidentStorePath)
+	if path == "" {
+		return
+	}
+	incidentPersistMu.Lock()
+	defer incidentPersistMu.Unlock()
+
 	incidentsMu.RLock()
 	snapshot := make([]Incident, len(incidents))
 	copy(snapshot, incidents)
 	incidentsMu.RUnlock()
 
-	tmp := incidentStorePath + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
+	dirPath := filepath.Dir(path)
+	f, err := os.CreateTemp(dirPath, ".incidents-*.jsonl")
 	if err != nil {
 		log.Printf("warning: cannot write incident store: %v", err)
+		return
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0640); err != nil {
+		f.Close()
+		log.Printf("warning: cannot secure incident store temporary file: %v", err)
 		return
 	}
 
@@ -515,58 +599,246 @@ func persistIncidents() {
 	for _, inc := range snapshot {
 		data, err := json.Marshal(inc)
 		if err != nil {
-			continue
+			f.Close()
+			log.Printf("warning: cannot encode incident store: %v", err)
+			return
 		}
-		w.Write(data)
-		w.WriteByte('\n')
+		if _, err := w.Write(data); err != nil {
+			f.Close()
+			log.Printf("warning: cannot write incident store: %v", err)
+			return
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			f.Close()
+			log.Printf("warning: cannot write incident store: %v", err)
+			return
+		}
 	}
-	w.Flush()
-	f.Sync() // Force to disk before rename — prevents data loss on power failure
-	f.Close()
-
-	if err := os.Rename(tmp, incidentStorePath); err != nil {
-		log.Printf("warning: cannot rename incident store: %v", err)
-	}
-}
-
-// =========================================================================
-// Service token auth
-// =========================================================================
-
-func loadServiceToken() {
-	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
-	if tokenPath == "" {
-		tokenPath = "/run/secure-ai/service-token"
-	}
-	data, err := os.ReadFile(tokenPath)
-	if err != nil {
-		log.Printf("warning: service token not loaded (%v) — running in dev mode", err)
+	if err := w.Flush(); err != nil {
+		f.Close()
+		log.Printf("warning: cannot flush incident store: %v", err)
 		return
 	}
-	serviceToken = strings.TrimSpace(string(data))
+	if err := f.Sync(); err != nil {
+		f.Close()
+		log.Printf("warning: cannot sync incident store: %v", err)
+		return
+	}
+	if err := f.Close(); err != nil {
+		log.Printf("warning: cannot close incident store: %v", err)
+		return
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("warning: cannot rename incident store: %v", err)
+		return
+	}
+	if dir, err := os.Open(dirPath); err == nil {
+		if err := dir.Sync(); err != nil {
+			log.Printf("warning: cannot sync incident store directory: %v", err)
+		}
+		dir.Close()
+	}
 }
 
-func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
+// =========================================================================
+// Scoped service authentication
+// =========================================================================
+
+type reporterIdentity struct {
+	Source  string
+	Classes map[IncidentClass]bool
+}
+
+type reporterIdentityContextKey struct{}
+
+func readRequiredAuthToken(pathEnv, label string) (string, error) {
+	tokenPath := strings.TrimSpace(os.Getenv(pathEnv))
+	if tokenPath == "" {
+		return "", fmt.Errorf("%s is not configured", pathEnv)
+	}
+	token, _, err := readCanonicalCredentialFile(tokenPath, label)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func loadAuthorizationTokens() error {
+	readToken, operatorToken = "", ""
+	recoveryAdminToken, forensicToken = "", ""
+	canaryReporterToken, gpuReporterToken = "", ""
+	integrityReporterToken, attestorReporterToken = "", ""
+
+	load := func(destination *string, pathEnv, label string) error {
+		token, err := readRequiredAuthToken(pathEnv, label)
+		if err != nil {
+			return err
+		}
+		*destination = token
+		return nil
+	}
+	for _, credential := range []struct {
+		destination *string
+		pathEnv     string
+		label       string
+	}{
+		{&readToken, "INCIDENT_READ_TOKEN_PATH", "incident read"},
+		{&operatorToken, "INCIDENT_OPERATOR_TOKEN_PATH", "incident operator"},
+		{&recoveryAdminToken, "INCIDENT_RECOVERY_ADMIN_TOKEN_PATH", "incident recovery administrator"},
+		{&forensicToken, "INCIDENT_FORENSIC_TOKEN_PATH", "incident forensic"},
+		{&canaryReporterToken, "INCIDENT_REPORTER_CANARY_TOKEN_PATH", "canary reporter"},
+		{&gpuReporterToken, "INCIDENT_REPORTER_GPU_INTEGRITY_TOKEN_PATH", "GPU integrity reporter"},
+		{&integrityReporterToken, "INCIDENT_REPORTER_INTEGRITY_MONITOR_TOKEN_PATH", "integrity monitor reporter"},
+		{&attestorReporterToken, "INCIDENT_REPORTER_RUNTIME_ATTESTOR_TOKEN_PATH", "runtime attestor reporter"},
+	} {
+		if err := load(credential.destination, credential.pathEnv, credential.label); err != nil {
+			return err
+		}
+	}
+
+	seen := make(map[string]struct{}, 8)
+	for _, token := range []string{
+		readToken,
+		operatorToken,
+		recoveryAdminToken,
+		forensicToken,
+		canaryReporterToken,
+		gpuReporterToken,
+		integrityReporterToken,
+		attestorReporterToken,
+	} {
+		if _, duplicate := seen[token]; duplicate {
+			return fmt.Errorf("incident authorization credentials must have distinct values")
+		}
+		seen[token] = struct{}{}
+	}
+	return nil
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return "", false
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	return token, token != ""
+}
+
+func requireBearerToken(tokenSource func() string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if serviceToken == "" {
-			next(w, r)
+		expected := tokenSource()
+		if expected == "" {
+			http.Error(w, `{"error":"service authentication unavailable"}`, http.StatusServiceUnavailable)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
-			return
-		}
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(serviceToken)) != 1 {
+		token, ok := bearerToken(r)
+		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
 			return
 		}
 		next(w, r)
+	}
+}
+
+func requireReadToken(next http.HandlerFunc) http.HandlerFunc {
+	return requireBearerToken(func() string { return readToken }, next)
+}
+
+func requireOperatorToken(next http.HandlerFunc) http.HandlerFunc {
+	return requireBearerToken(func() string { return operatorToken }, next)
+}
+
+func requireRecoveryAdminToken(next http.HandlerFunc) http.HandlerFunc {
+	return requireBearerToken(func() string { return recoveryAdminToken }, next)
+}
+
+func requireForensicToken(next http.HandlerFunc) http.HandlerFunc {
+	return requireBearerToken(func() string { return forensicToken }, next)
+}
+
+func configuredReporterIdentities() []struct {
+	Token    string
+	Identity reporterIdentity
+} {
+	return []struct {
+		Token    string
+		Identity reporterIdentity
+	}{
+		{
+			Token: canaryReporterToken,
+			Identity: reporterIdentity{
+				Source:  "canary-tripwire",
+				Classes: map[IncidentClass]bool{ClassIntegrityViolation: true},
+			},
+		},
+		{
+			Token: gpuReporterToken,
+			Identity: reporterIdentity{
+				Source: "gpu-integrity-watch",
+				Classes: map[IncidentClass]bool{
+					ClassModelAnomaly:       true,
+					ClassManifestMismatch:   true,
+					ClassIntegrityViolation: true,
+				},
+			},
+		},
+		{
+			Token: integrityReporterToken,
+			Identity: reporterIdentity{
+				Source: "integrity-monitor",
+				Classes: map[IncidentClass]bool{
+					ClassManifestMismatch:   true,
+					ClassIntegrityViolation: true,
+				},
+			},
+		},
+		{
+			Token: attestorReporterToken,
+			Identity: reporterIdentity{
+				Source:  "runtime-attestor",
+				Classes: map[IncidentClass]bool{ClassAttestationFailure: true},
+			},
+		},
+	}
+}
+
+func requireReporterToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+		configured := false
+		var identity reporterIdentity
+		matches := 0
+		for _, reporter := range configuredReporterIdentities() {
+			if reporter.Token == "" {
+				continue
+			}
+			configured = true
+			if subtle.ConstantTimeCompare([]byte(token), []byte(reporter.Token)) == 1 {
+				identity = reporter.Identity
+				matches++
+			}
+		}
+		if !configured {
+			http.Error(w, `{"error":"service authentication unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if matches != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+		ctx := context.WithValue(r.Context(), reporterIdentityContextKey{}, identity)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -617,19 +889,25 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
-	if err != nil {
-		http.Error(w, "cannot read body", http.StatusBadRequest)
-		return
-	}
-
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
 	var report IncidentReport
-	if err := json.Unmarshal(body, &report); err != nil {
+	if err := decoder.Decode(&report); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
 		return
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "request must contain exactly one JSON object"})
+		return
+	}
+	report.Source = strings.TrimSpace(report.Source)
+	report.Description = strings.TrimSpace(report.Description)
 
 	if report.Class == "" || report.Source == "" || report.Description == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -648,6 +926,16 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid severity"})
 		return
+	}
+	if identity, authenticated := r.Context().Value(reporterIdentityContextKey{}).(reporterIdentity); authenticated {
+		if report.Source != identity.Source || !identity.Classes[report.Class] {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "reporter is not authorized for the requested source or class",
+			})
+			return
+		}
 	}
 
 	inc := createIncident(report)
@@ -740,6 +1028,14 @@ func handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing, found := getIncidentByID(req.ID); found {
+		if allowed, reason := recoveryMgr.CanReleaseIncident(existing); !allowed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": reason})
+			return
+		}
+	}
 	inc, found := resolveIncident(req.ID)
 	if !found {
 		w.Header().Set("Content-Type", "application/json")
@@ -769,6 +1065,14 @@ func handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing, found := getIncidentByID(req.ID); found {
+		if allowed, reason := recoveryMgr.CanReleaseIncident(existing); !allowed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": reason})
+			return
+		}
+	}
 	inc, found := acknowledgeIncident(req.ID)
 	if !found {
 		w.Header().Set("Content-Type", "application/json")
@@ -822,6 +1126,23 @@ func handleReload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "reloaded"})
 }
 
+func newIncidentMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/api/v1/incidents", requireReadToken(handleList))
+	mux.HandleFunc("/api/v1/incidents/get", requireReadToken(handleGet))
+	mux.HandleFunc("/api/v1/stats", requireReadToken(handleStats))
+	mux.HandleFunc("/api/v1/incidents/report", requireReporterToken(handleReport))
+	mux.HandleFunc("/api/v1/incidents/resolve", requireOperatorToken(handleResolve))
+	mux.HandleFunc("/api/v1/incidents/acknowledge", requireOperatorToken(handleAcknowledge))
+	mux.HandleFunc("/api/v1/reload", requireOperatorToken(handleReload))
+	mux.HandleFunc("/api/v1/recovery/ack", requireRecoveryAdminToken(handleRecoveryAck))
+	mux.HandleFunc("/api/v1/recovery/reattest", requireRecoveryAdminToken(handleRecoveryReattest))
+	mux.HandleFunc("/api/v1/recovery/status", requireRecoveryAdminToken(handleRecoveryStatus))
+	mux.HandleFunc("/api/v1/forensic/export", requireForensicToken(handleForensicExport))
+	return mux
+}
+
 // =========================================================================
 // Main
 // =========================================================================
@@ -834,7 +1155,24 @@ func main() {
 	initAuditLog()
 	initIncidentStore()
 	loadIncidentsFromDisk()
-	loadServiceToken()
+	if err := initializeRecoveryState(); err != nil {
+		log.Fatalf("recovery state unavailable: %v", err)
+	}
+	if err := loadAuthorizationTokens(); err != nil {
+		log.Fatalf("service authentication unavailable: %v", err)
+	}
+	if err := loadRuntimeAttestorToken(); err != nil {
+		log.Fatalf("runtime-attestor authentication unavailable: %v", err)
+	}
+	if err := loadRuntimeAttestationHMACKey(); err != nil {
+		log.Fatalf("runtime attestation verification unavailable: %v", err)
+	}
+	if err := loadContainmentTokens(); err != nil {
+		log.Fatalf("containment authentication unavailable: %v", err)
+	}
+	if err := loadForensicHMACKey(); err != nil {
+		log.Fatalf("forensic signing unavailable: %v", err)
+	}
 	loadServiceEndpoints()
 
 	bind := os.Getenv("BIND_ADDR")
@@ -842,33 +1180,17 @@ func main() {
 		bind = "127.0.0.1:8515"
 	}
 
-	mux := http.NewServeMux()
-	// Read-only endpoints
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/api/v1/incidents", handleList)
-	mux.HandleFunc("/api/v1/incidents/get", handleGet)
-	mux.HandleFunc("/api/v1/stats", handleStats)
-	// Mutating endpoints
-	mux.HandleFunc("/api/v1/incidents/report", requireServiceToken(handleReport))
-	mux.HandleFunc("/api/v1/incidents/resolve", requireServiceToken(handleResolve))
-	mux.HandleFunc("/api/v1/incidents/acknowledge", requireServiceToken(handleAcknowledge))
-	mux.HandleFunc("/api/v1/reload", requireServiceToken(handleReload))
-	// Recovery ceremony endpoints (implemented in recovery.go)
-	mux.HandleFunc("/api/v1/recovery/ack", requireServiceToken(handleRecoveryAck))
-	mux.HandleFunc("/api/v1/recovery/reattest", requireServiceToken(handleRecoveryReattest))
-	mux.HandleFunc("/api/v1/recovery/status", handleRecoveryStatus)
-	// Forensic bundle export
-	mux.HandleFunc("/api/v1/forensic/export", requireServiceToken(handleForensicExport))
-
 	log.Printf("secure-ai-incident-recorder listening on %s", bind)
 	server := &http.Server{
 		Addr:              bind,
-		Handler:           mux,
+		Handler:           newIncidentMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		// A critical report can synchronously wait for the fixed-function vault
+		// relock broker. The action itself has a stricter 90-second deadline.
+		WriteTimeout:   100 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	// Graceful shutdown on SIGTERM/SIGINT

@@ -1,7 +1,27 @@
-# Log rotation for Secure AI OS audit logs.
-# Prevents unbounded disk growth from append-only JSONL audit trails.
+# Rotation for structured-only JSONL logs. These files make no cryptographic
+# tamper-evidence claim, so copytruncate does not invalidate a chain.
+#
+# The keyed Python audit chains (agent/quarantine/search/UI) rotate internally
+# while preserving linkage and their HMAC checkpoint. MCP's unkeyed chain is
+# also excluded from copytruncate; the explicit audit-format manifest reports
+# its weaker security class truthfully.
 
-/var/lib/secure-ai/logs/*.jsonl {
+/var/lib/secure-ai/logs/airlock-audit.jsonl
+/var/lib/secure-ai/logs/audit.jsonl
+/var/lib/secure-ai/logs/backup-audit.jsonl
+/var/lib/secure-ai/logs/canary-audit.jsonl
+/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl
+/var/lib/secure-ai/logs/incident-recorder-audit.jsonl
+/var/lib/secure-ai/logs/integrity-monitor-audit.jsonl
+/var/lib/secure-ai/logs/keystore-audit.jsonl
+/var/lib/secure-ai/logs/panic-audit.jsonl
+/var/lib/secure-ai/logs/policy-engine-audit.jsonl
+/var/lib/secure-ai/logs/registry-audit.jsonl
+/var/lib/secure-ai/logs/runtime-attestor-audit.jsonl
+/var/lib/secure-ai/logs/tool-firewall-audit.jsonl
+/var/lib/secure-ai/logs/tpm2-audit.jsonl
+/var/lib/secure-ai/logs/update-audit.jsonl
+/var/lib/secure-ai/logs/vault-audit.jsonl {
     daily
     rotate 30
     compress
@@ -10,17 +30,9 @@
     notifempty
     copytruncate
     maxsize 50M
-    su root root
+    su root secure-ai-logs
 }
 
-/var/lib/secure-ai/data/*.jsonl {
-    weekly
-    rotate 12
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-    maxsize 100M
-    su root root
-}
+# incidents.jsonl is a bounded, atomically rewritten state store, not an
+# append-only log. External rotation would race its transaction and is
+# intentionally disabled.

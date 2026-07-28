@@ -1,0 +1,108 @@
+version: 1
+
+# Immutable provenance pins for curated multi-file Hugging Face repositories.
+# manifest_sha256 covers the canonical JSON receipt (including every selected
+# path, size, Git/LFS object ID, revision, source, and variant). The quarantine
+# scanner independently compares an importer-supplied receipt to these
+# image-owned records before trusting any per-file digest from that receipt.
+
+directory_models:
+  - name: "Tiny Random SDXL"
+    filename: "image-tiny-sdxl-dg845"
+    source: "https://huggingface.co/dg845/tiny-random-stable-diffusion-xl"
+    repo_id: "dg845/tiny-random-stable-diffusion-xl"
+    revision: "7ae769dd7f63b06308f2f23881d329a0cb1c89d2"
+    variant: null
+    file_count: 18
+    total_size_bytes: 3373961
+    manifest_sha256: "e0123078fb614ddfe0b7b0346ad03e46d9083c6084aec2ed2635879b590713e6"
+
+  - name: "BK-SDM Tiny"
+    filename: "image-bk-sdm-tiny"
+    source: "https://huggingface.co/nota-ai/bk-sdm-tiny"
+    repo_id: "nota-ai/bk-sdm-tiny"
+    revision: "0364108e53b7f7f4d2585e817a0b7a83dc261cfa"
+    variant: "fp16"
+    file_count: 15
+    total_size_bytes: 1669906169
+    manifest_sha256: "a1f361875311fc21730eb6e8573864d4ee3666dd20a5206f46c7df9db7095aea"
+
+  - name: "BK-SDM Small"
+    filename: "image-bk-sdm-small"
+    source: "https://huggingface.co/nota-ai/bk-sdm-small"
+    repo_id: "nota-ai/bk-sdm-small"
+    revision: "572238db7ed3a10858900803f3fc8cca53e893e0"
+    variant: "fp16"
+    file_count: 15
+    total_size_bytes: 1987834232
+    manifest_sha256: "5bb2dcca00811e04c4769b4d0051f0004033fa26099498ff0d174d65e3c27a68"
+
+  - name: "BK-SDM Base"
+    filename: "image-bk-sdm-base"
+    source: "https://huggingface.co/nota-ai/bk-sdm-base"
+    repo_id: "nota-ai/bk-sdm-base"
+    revision: "0c03b7a0369b49f97d1acf7256d4ee55ced9b2e0"
+    variant: "fp16"
+    file_count: 15
+    total_size_bytes: 2181916172
+    manifest_sha256: "9737280ab316298e3026b021e3c3c78c1ceb943a577b73bc359e24cd88b5ac27"
+
+  - name: "Stable Diffusion 1.5"
+    filename: "image-sd15"
+    source: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
+    repo_id: "stable-diffusion-v1-5/stable-diffusion-v1-5"
+    revision: "451f4fe16113bff5a5d2269ed5ad43b0592e9a14"
+    variant: "fp16"
+    file_count: 15
+    total_size_bytes: 2742217630
+    manifest_sha256: "007714ef9c28cd3e97686d321f7ec5dc497031bef2d8e39034177ed975caf23e"
+
+  - name: "Tiny Stable Video Diffusion"
+    filename: "video-tiny-svd-seinpark"
+    source: "https://huggingface.co/seinpark/tiny-stable-video-diffusion-img2vid"
+    repo_id: "seinpark/tiny-stable-video-diffusion-img2vid"
+    revision: "701088dac555f81b9961077c99bc3527d6548cd3"
+    variant: null
+    file_count: 9
+    total_size_bytes: 10240860
+    manifest_sha256: "bf49b5c212bdce95473eecc87e12a4c934cdfe8527f0c276682158d869fce4ce"
+
+  - name: "Tiny Random LTX Video"
+    filename: "video-tiny-ltx-katuni4ka"
+    source: "https://huggingface.co/katuni4ka/tiny-random-ltx-video"
+    repo_id: "katuni4ka/tiny-random-ltx-video"
+    revision: "5a116fa316d6f98ef4ee4a50f8d2024d39beacdc"
+    variant: null
+    file_count: 11
+    total_size_bytes: 1141266
+    manifest_sha256: "c1da3d0051f7dc8217f9409f5ea10f11190887a6f3d934124ed5ec4bf2b7852d"
+
+  - name: "Stable Video Diffusion"
+    filename: "video-svd-img2vid"
+    source: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid"
+    repo_id: "stabilityai/stable-video-diffusion-img2vid"
+    revision: "9cf024d5bfa8f56622af86c884f26a52f6676f2e"
+    variant: "fp16"
+    file_count: 9
+    total_size_bytes: 4509188849
+    manifest_sha256: "3a5c50adeb6d07668cd2da7ca59ae14244f1125f32dc2d17fa900a1a7e3e403c"
+
+  - name: "Stable Video Diffusion XT"
+    filename: "video-svd-img2vid-xt"
+    source: "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt"
+    repo_id: "stabilityai/stable-video-diffusion-img2vid-xt"
+    revision: "9e43909513c6714f1bc78bcb44d96e733cd242aa"
+    variant: "fp16"
+    file_count: 9
+    total_size_bytes: 4509188841
+    manifest_sha256: "5108113b09d11fd2c9a3b47853cc106933584f316ddd14f3185aec10834e7724"
+
+  - name: "Stable Video Diffusion XT 1.1"
+    filename: "video-svd-xt-1-1-weights"
+    source: "https://huggingface.co/weights/stable-video-diffusion-img2vid-xt-1-1"
+    repo_id: "weights/stable-video-diffusion-img2vid-xt-1-1"
+    revision: "a423ba0d3e1a94a57ebc68e98691c43104198394"
+    variant: "fp16"
+    file_count: 9
+    total_size_bytes: 4509188809
+    manifest_sha256: "634f478b142fa65531d327fd79c2eb02a092edebbbde129a544813e77c0a2301"

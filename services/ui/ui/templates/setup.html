@@ -423,7 +423,7 @@
                         <label class="profile-card" data-profile-card="offline_private">
                             <div class="profile-title">
                                 <span>Maximum Privacy</span>
-                                <input type="radio" name="profile" value="offline_private" checked>
+                                <input type="radio" name="profile" value="offline_private">
                             </div>
                             <small>No outbound network by default. Best for local-only exploration.</small>
                         </label>
@@ -444,7 +444,7 @@
                     </div>
 
                     <div class="actions">
-                        <button class="primary" id="profile-button" type="button">Confirm Level</button>
+                        <button class="primary" id="profile-button" type="button" disabled>Confirm Level</button>
                     </div>
                     <div class="message" id="profile-message">Loading current profile...</div>
                 </section>
@@ -511,7 +511,7 @@
     <script nonce="{{ csp_nonce }}">
         var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         var isSandbox = false;
-        var activeProfile = 'offline_private';
+        var activeProfile = null;
         var profileSet = false;
         var servicesOk = false;
         var chatModelReady = false;
@@ -563,7 +563,9 @@
         }
 
         function updateReadyState() {
-            document.getElementById('summary-profile').textContent = profileSet ? profileLabels[activeProfile] : 'Pending';
+            document.getElementById('summary-profile').textContent = activeProfile
+                ? (profileSet ? profileLabels[activeProfile] : 'Pending')
+                : 'Unknown';
             document.getElementById('summary-services').textContent = servicesOk ? 'Healthy' : 'Checking';
             document.getElementById('summary-model').textContent = chatModelReady ? chatModelName : (diffusionModelReady ? 'Diffusion model only' : 'No GGUF model');
             document.getElementById('open-chat').disabled = !(profileSet && servicesOk && chatModelReady);
@@ -572,6 +574,14 @@
         function updateSandboxProfilePreview(profile) {
             selectProfileCard(profile);
             if (!isSandbox) return;
+            if (!activeProfile) {
+                setMessage(
+                    'profile-message',
+                    'err',
+                    'The running sandbox profile is unknown. Retry the host sandbox launcher before continuing.'
+                );
+                return;
+            }
             if (profile === activeProfile) {
                 setMessage('profile-message', 'ok', 'Using current sandbox profile: ' + profileLabels[activeProfile] + '.');
             } else {
@@ -592,9 +602,14 @@
             }
 
             try {
-                var profile = await fetch('/api/profile').then(function(resp) { return resp.json(); });
-                activeProfile = profile.active || 'offline_private';
+                var profileResp = await fetch('/api/profile');
+                var profile = await profileResp.json();
+                if (!profileResp.ok || !profileLabels[profile.active]) {
+                    throw new Error('profile unavailable');
+                }
+                activeProfile = profile.active;
                 selectProfileCard(activeProfile);
+                document.getElementById('profile-button').disabled = false;
 
                 if (profile.locked) {
                     document.getElementById('profile-copy').textContent = 'This profile is locked by operator policy.';
@@ -613,7 +628,27 @@
                     setMessage('profile-message', '', 'Choose a profile, then confirm it.');
                 }
             } catch(e) {
-                setMessage('profile-message', 'warn', 'Could not read the current profile. Maximum Privacy will be used.');
+                activeProfile = null;
+                profileSet = false;
+                selectProfileCard(null);
+                if (isSandbox) {
+                    document.getElementById('profile-button').disabled = false;
+                    document.getElementById('profile-button').textContent = 'Repair Sandbox Profile';
+                    document.querySelectorAll('input[name="profile"]').forEach(function(input) {
+                        input.disabled = false;
+                    });
+                } else {
+                    document.getElementById('profile-button').disabled = true;
+                    document.querySelectorAll('input[name="profile"]').forEach(function(input) {
+                        input.disabled = true;
+                    });
+                }
+                setChip('profile-chip', 'warn', 'profile unknown');
+                setMessage(
+                    'profile-message',
+                    'err',
+                    'Could not verify the running profile. Retry the host sandbox launcher; no privacy mode is being assumed.'
+                );
             }
             updateReadyState();
         }
@@ -624,6 +659,46 @@
             btn.disabled = true;
 
             if (isSandbox) {
+                if (!activeProfile) {
+                    if (!profileLabels[target]) {
+                        setMessage(
+                            'profile-message',
+                            'err',
+                            'Choose an explicit profile for sandbox recovery.'
+                        );
+                        btn.disabled = false;
+                        return;
+                    }
+                    var repairConfirmed = await showConfirm(
+                        'Repair Sandbox',
+                        'Restart into ' + profileLabels[target] + '? No current privacy profile is being assumed.',
+                        'Restart',
+                        false
+                    );
+                    if (!repairConfirmed) {
+                        btn.disabled = false;
+                        return;
+                    }
+                    btn.textContent = 'Restarting...';
+                    var repairResult = await applySandboxControl(
+                        {profile: target},
+                        'Sandbox recovery started for ' + profileLabels[target] + '.'
+                    );
+                    if (!repairResult.ok) {
+                        var repairDetail = repairResult.data && (
+                            repairResult.data.detail || repairResult.data.error
+                        );
+                        setMessage(
+                            'profile-message',
+                            'err',
+                            (repairDetail || 'Automatic recovery is unavailable.') +
+                                ' Fallback: ' + commandForProfile(target)
+                        );
+                        btn.textContent = 'Retry Repair';
+                        btn.disabled = false;
+                    }
+                    return;
+                }
                 if (target !== activeProfile) {
                     var confirmed = await showConfirm(
                         'Restart Sandbox',
@@ -649,7 +724,6 @@
                     }
                     return;
                 }
-                activeProfile = activeProfile || target;
                 profileSet = true;
                 markDone('profile-step');
                 setChip('profile-chip', 'ok', profileLabels[activeProfile]);

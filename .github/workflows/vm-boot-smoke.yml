@@ -3,8 +3,8 @@ name: VM Boot Smoke Test (Tier 2)
 # Tier 2: Real VM boot test on self-hosted KVM runner.
 # All checks run inside the guest via SSH (not host-side).
 #
-# REQUIRES: self-hosted runner with KVM, QEMU, libvirt/virt-install, cloud-utils,
-# and ssh-keygen.
+# REQUIRES: self-hosted runner with KVM, QEMU, libvirt/virt-install, expect,
+# OpenSSL, and ssh-keygen.
 # Gate: only runs when vars.HAS_KVM_RUNNER == 'true'.
 #
 # SECURITY: Never triggered by pull_request (fork safety for self-hosted runners).
@@ -32,10 +32,12 @@ jobs:
     name: Boot VM & Verify Services
     if: vars.HAS_KVM_RUNNER == 'true'
     runs-on: [self-hosted, linux, x64, kvm]
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Resolve image digest
         id: image
@@ -64,7 +66,7 @@ jobs:
               echo "ERROR: IMAGE_DIGEST file not found in downloaded artifact"
               exit 1
             fi
-            DIGEST=$(cat /tmp/image-digest/IMAGE_DIGEST | tr -d '[:space:]')
+            DIGEST=$(tr -d '[:space:]' < /tmp/image-digest/IMAGE_DIGEST)
             if [ -z "$DIGEST" ] || [ "$DIGEST" = "unknown" ]; then
               echo "ERROR: IMAGE_DIGEST artifact contains invalid digest: '${DIGEST}'"
               exit 1
@@ -73,55 +75,82 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Image under test: ${DIGEST}"
 
-      - name: Generate SSH key pair
+      - name: Generate ephemeral qualification credentials
         run: |
+          install -d -m 0700 /tmp/vm-smoke
           ssh-keygen -t ed25519 -f /tmp/vm-smoke-key -N "" -q
-          echo "SSH_KEY=$(cat /tmp/vm-smoke-key.pub)" >> "$GITHUB_ENV"
-
-      - name: Prepare cloud-init ISO
-        run: |
-          mkdir -p /tmp/vm-smoke
-          cat > /tmp/vm-smoke/user-data <<EOF
-          #cloud-config
-          ssh_authorized_keys:
-            - ${SSH_KEY}
-          runcmd:
-            - systemctl is-system-running --wait || true
-          EOF
-          cat > /tmp/vm-smoke/meta-data <<'METAEOF'
-          instance-id: secai-smoke-test
-          local-hostname: secai-smoke
-          METAEOF
-          cloud-localds /tmp/vm-smoke/cloud-init.iso /tmp/vm-smoke/user-data /tmp/vm-smoke/meta-data
+          vm_password=$(openssl rand -hex 32)
+          host_state_password=$(openssl rand -hex 32)
+          echo "::add-mask::${vm_password}"
+          echo "::add-mask::${host_state_password}"
+          (
+            umask 077
+            printf '%s\n' "$vm_password" > /tmp/vm-smoke/vm-password
+            printf '%s\n' "$host_state_password" > /tmp/vm-smoke/host-state-password
+          )
 
       - name: Build QCOW2 from image
         run: |
-          bash scripts/vm/build-qcow2.sh --ci \
+          SECAI_VM_PASSWORD=$(tr -d '\n' < /tmp/vm-smoke/vm-password) \
+          SECAI_HOST_STATE_PASSWORD=$(tr -d '\n' < /tmp/vm-smoke/host-state-password) \
+            bash scripts/vm/build-qcow2.sh --ci \
+            --qualification-ssh-key /tmp/vm-smoke-key.pub \
             --image-ref "ghcr.io/secai-hub/secai_os@${{ steps.image.outputs.digest }}" \
             /tmp/vm-smoke
+          rm -f -- /tmp/vm-smoke/vm-password
+          qemu-img check /tmp/vm-smoke/secai-os.qcow2
 
-      - name: Boot VM in QEMU/KVM
+      - name: Boot and unlock encrypted host state
         run: |
-          qemu-system-x86_64 -enable-kvm -m 4G -smp 2 \
+          command -v expect >/dev/null
+          cat > /tmp/vm-smoke/boot.expect <<'EXPECT'
+          #!/usr/bin/expect -f
+          log_user 0
+          set timeout 240
+          set pass_file "/tmp/vm-smoke/host-state-password"
+          set handle [open $pass_file r]
+          set passphrase [string trim [read $handle]]
+          close $handle
+          spawn qemu-system-x86_64 \
+            -enable-kvm -m 4G -smp 2 \
             -drive file=/tmp/vm-smoke/secai-os.qcow2,if=virtio,format=qcow2 \
-            -cdrom /tmp/vm-smoke/cloud-init.iso \
             -netdev user,id=net0,hostfwd=tcp::2222-:22 \
             -device virtio-net-pci,netdev=net0 \
-            -nographic &
-          echo $! > /tmp/vm-smoke/qemu.pid
-          echo "QEMU started (PID: $(cat /tmp/vm-smoke/qemu.pid))"
+            -pidfile /tmp/vm-smoke/qemu.pid \
+            -nographic
+          expect {
+            -re {(?i)passphrase for disk} {
+              send -- "$passphrase\r"
+              unset passphrase
+              file delete -force $pass_file
+            }
+            timeout { exit 124 }
+            eof { exit 125 }
+          }
+          set timeout -1
+          expect eof
+          EXPECT
+          chmod 0700 /tmp/vm-smoke/boot.expect
+          setsid /tmp/vm-smoke/boot.expect >/dev/null 2>&1 &
+          echo "$!" > /tmp/vm-smoke/expect.pid
 
       - name: Wait for SSH readiness
         run: |
           echo "Waiting for guest SSH (up to 5 minutes)..."
           SSH_OPTS=(-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/vm-smoke-key)
+          ready=false
           for i in $(seq 1 60); do
             if ssh "${SSH_OPTS[@]}" -p 2222 root@localhost echo "SSH ready" 2>/dev/null; then
               echo "Guest SSH is up after $((i * 5)) seconds"
+              ready=true
               break
             fi
             sleep 5
           done
+          if [ "$ready" != true ]; then
+            echo "FAIL: guest SSH did not become ready after encrypted boot"
+            exit 1
+          fi
 
       - name: "Check: systemd system state"
         run: |
@@ -205,5 +234,8 @@ jobs:
         run: |
           if [ -f /tmp/vm-smoke/qemu.pid ]; then
             kill "$(cat /tmp/vm-smoke/qemu.pid)" 2>/dev/null || true
+          fi
+          if [ -f /tmp/vm-smoke/expect.pid ]; then
+            kill "$(cat /tmp/vm-smoke/expect.pid)" 2>/dev/null || true
           fi
           rm -rf /tmp/vm-smoke /tmp/vm-smoke-key /tmp/vm-smoke-key.pub

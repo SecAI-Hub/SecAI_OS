@@ -7,9 +7,17 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/libexec/secure-ai/update-verify.sh check
 
-DynamicUser=yes
+User=root
+Group=root
+UMask=0077
+ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
 
 # Kernel protection
 ProtectKernelTunables=yes
@@ -31,3 +39,4 @@ SystemCallErrorNumber=EPERM
 LimitCORE=0
 
 ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/updates /etc/pki/containers

@@ -8,13 +8,16 @@ the airlock (if enabled) into quarantine for automatic scanning.
 
 # ruff: noqa: E402
 
+import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import posixpath
 import re
 import shutil
+import ctypes
 import errno
 import stat
 import subprocess
@@ -24,7 +27,7 @@ import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urlparse
 
 from markupsafe import escape as _html_escape
 from werkzeug.security import safe_join
@@ -34,7 +37,16 @@ import requests
 import yaml
 import secrets as _secrets_mod
 
-from flask import Flask, Response, g, jsonify, render_template, request, session
+from flask import (
+    Flask,
+    Response,
+    g,
+    has_request_context,
+    jsonify,
+    render_template,
+    request,
+    session,
+)
 
 # Add services/ to path so we can import common.audit_chain
 _services_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -42,7 +54,10 @@ if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
 from common.audit_chain import AuditChain
-from common.auth import AuthManager
+from common.auth import (
+    AuthManager,
+    validate_new_passphrase,
+)
 from ui.slo_tracker import SLOTracker
 
 log = logging.getLogger("ui")
@@ -52,19 +67,66 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # --- Security: Max input sizes ---
 MAX_PASSPHRASE_LENGTH = 256
 MAX_CHAT_BODY_BYTES = 1_048_576
+MAX_JSON_BODY_BYTES = 1_048_576
+MAX_AUTH_BODY_BYTES = 4_096
+MAX_GENERATION_BODY_BYTES = 24 * 1024 * 1024
 
-# --- Flask secret key (process-local unless explicitly injected) ---
+# --- Flask session signing key ---
 
 
-def _load_or_create_secret_key() -> str:
-    """Load the Flask secret key from env, or generate an ephemeral one."""
+def _load_secret_key() -> str | bytes:
+    """Load a stable Flask signing key, failing closed outside explicit dev mode."""
+    key_path = os.getenv("FLASK_SECRET_KEY_PATH", "").strip()
+    if key_path:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(key_path, flags)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or not 32 <= info.st_size <= 4096:
+                raise RuntimeError("Flask signing credential has an unsafe size or type")
+            stored = os.read(descriptor, 4097)
+            stripped = stored.strip(b" \t\r\n")
+            key = (
+                stripped
+                if stripped
+                and all(0x21 <= octet <= 0x7E for octet in stripped)
+                else stored
+            )
+        finally:
+            os.close(descriptor)
+        if len(key) < 32:
+            raise RuntimeError("Flask signing credential must contain at least 32 bytes")
+        return key
+
+    # Retained for secret-injection systems that cannot provide a credential
+    # file. File-backed systemd/Docker secrets are preferred.
     env_key = os.getenv("FLASK_SECRET_KEY")
     if env_key:
+        if len(env_key.encode("utf-8")) < 32:
+            raise RuntimeError("FLASK_SECRET_KEY must contain at least 32 bytes")
         return env_key
-    return _secrets_mod.token_urlsafe(32)
+
+    allow_ephemeral = os.getenv(
+        "SECAI_ALLOW_EPHEMERAL_FLASK_SECRET", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    bind = os.getenv("BIND_ADDR", "127.0.0.1:8480").strip().lower()
+    loopback_only = (
+        bind.startswith("127.0.0.1:")
+        or bind.startswith("localhost:")
+        or bind.startswith("[::1]:")
+        or bind.startswith("unix:")
+    )
+    if allow_ephemeral and loopback_only:
+        log.warning(
+            "using an ephemeral Flask signing key under explicit loopback development override"
+        )
+        return _secrets_mod.token_urlsafe(32)
+    raise RuntimeError(
+        "a persistent Flask signing credential is required; set FLASK_SECRET_KEY_PATH"
+    )
 
 
-app.secret_key = _load_or_create_secret_key()
+app.secret_key = _load_secret_key()
 
 # --- Cookie security (explicit modes, no auto/header-trust) ---
 # "false" = direct loopback HTTP (default for BIND_ADDR=127.0.0.1)
@@ -88,6 +150,43 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(seconds=_session_timeout)
 IMPORT_STAGING_DIR = Path(os.getenv(
     "IMPORT_STAGING_DIR", "/var/lib/secure-ai/import-staging"
 ))
+
+_PASSIVE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_LARGE_UPLOAD_PATHS = {"/api/models/import"}
+_GENERATION_PATHS = {
+    "/api/generate/image",
+    "/api/generate/video",
+    "/api/generate/img2img",
+}
+_AUTH_BODY_PATHS = {
+    "/api/auth/login",
+    "/api/auth/setup",
+    "/api/auth/change",
+}
+
+
+@app.before_request
+def enforce_route_body_limit():
+    """Set the route ceiling before any other hook consumes request data."""
+    if request.method in _PASSIVE_METHODS:
+        return None
+    if request.path in _LARGE_UPLOAD_PATHS:
+        limit = MAX_UPLOAD_SIZE
+    elif request.path in _GENERATION_PATHS:
+        limit = MAX_GENERATION_BODY_BYTES
+    elif request.path in _AUTH_BODY_PATHS:
+        limit = MAX_AUTH_BODY_BYTES
+    else:
+        limit = MAX_JSON_BODY_BYTES
+
+    # Werkzeug consults this value for fixed-length and chunked bodies. This
+    # hook must remain registered before CSRF protection, which may parse a
+    # form body while looking for a fallback token.
+    request.max_content_length = limit
+    if request.content_length is not None and request.content_length > limit:
+        return jsonify({"error": "request body too large"}), 413
+    return None
+
 
 # --- CSRF Protection (double-submit cookie pattern) ---
 
@@ -212,7 +311,9 @@ ATTESTOR_URL = os.getenv("ATTESTOR_URL", "http://127.0.0.1:8505")
 INTEGRITY_MONITOR_URL = os.getenv("INTEGRITY_MONITOR_URL", "http://127.0.0.1:8510")
 INCIDENT_RECORDER_URL = os.getenv("INCIDENT_RECORDER_URL", "http://127.0.0.1:8515")
 APPLIANCE_CONFIG = os.getenv("APPLIANCE_CONFIG", "/etc/secure-ai/config/appliance.yaml")
-QUARANTINE_DIR = Path(os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine"))
+QUARANTINE_DIR = Path(
+    os.getenv("QUARANTINE_DIR", "/var/lib/secure-ai/quarantine/incoming")
+)
 VAULT_ACTIVITY_FILE = Path(os.getenv("VAULT_ACTIVITY_FILE", "/run/secure-ai/last-activity"))
 VAULT_STATE_FILE = Path(os.getenv("VAULT_STATE_FILE", "/run/secure-ai/vault-state"))
 
@@ -281,21 +382,59 @@ def _sandbox_launch_command_for_profile(
 
 
 def _sandbox_control_config() -> tuple[str, str]:
-    """Return the host-side sandbox control URL and bearer token, if configured."""
+    """Return the host-side sandbox control URL and request-signing key."""
     url = os.getenv("SANDBOX_CONTROL_URL", "").strip().rstrip("/")
     token_path = os.getenv("SANDBOX_CONTROL_TOKEN_PATH", "").strip()
     if not url or not token_path:
         return "", ""
     try:
-        token = Path(token_path).read_text(encoding="utf-8").strip()
-    except OSError:
-        token = None
-    return url, token or ""
+        token = _read_stable_sandbox_file(
+            Path(token_path),
+            64,
+        ).decode("ascii")
+    except (OSError, UnicodeError):
+        token = ""
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        return "", ""
+    return url, token
 
 
 def _sandbox_control_configured() -> bool:
     url, token = _sandbox_control_config()
     return bool(url and token)
+
+
+def _sandbox_control_auth_headers(
+    token: str,
+    method: str,
+    path: str,
+    body: bytes,
+) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    nonce = os.urandom(32).hex()
+    body_sha256 = hashlib.sha256(body).hexdigest()
+    message = "\n".join(
+        (
+            "secai-sandbox-control-request:v3",
+            timestamp,
+            nonce,
+            method,
+            path,
+            body_sha256,
+        )
+    ).encode("ascii")
+    signature = hmac.new(
+        token.encode("ascii"),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-SecAI-Timestamp": timestamp,
+        "X-SecAI-Nonce": nonce,
+        "X-SecAI-Content-SHA256": body_sha256,
+        "X-SecAI-Signature": signature,
+    }
 
 
 def _sandbox_control_request(
@@ -316,12 +455,23 @@ def _sandbox_control_request(
                 "automation controller can be started and mounted into the UI."
             ),
         }, 503
+    method = method.upper()
+    body_bytes = (
+        json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if body is not None
+        else b""
+    )
     try:
         resp = requests.request(
             method,
             f"{url}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            json=body,
+            headers=_sandbox_control_auth_headers(
+                token,
+                method,
+                path,
+                body_bytes,
+            ),
+            data=body_bytes if body is not None else None,
             timeout=timeout,
         )
     except requests.RequestException as exc:
@@ -371,6 +521,10 @@ def _audit_unavailable(event: str, **data):
     _ui_audit.append(f"{event}_unavailable", {"status_code": 501, **data})
 
 AUTH_DATA_DIR = os.getenv("AUTH_DATA_DIR", "/var/lib/secure-ai/auth")
+SETUP_TOKEN_PATH = Path(os.getenv(
+    "SETUP_TOKEN_PATH",
+    "/run/secure-ai/credentials/ui-setup.token",
+))
 _auth = AuthManager(AUTH_DATA_DIR)
 
 # ---------------------------------------------------------------------------
@@ -394,11 +548,20 @@ _PUBLIC_ENDPOINTS = {
     "/api/auth/login", "/api/auth/setup", "/api/auth/status",
     "/login", "/health",
 }
-_PASSIVE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 ALLOWED_EXTENSIONS = {".gguf", ".safetensors"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024 * 1024  # 50 GB
+_CATALOG_MAX_SINGLE_FILE_BYTES = MAX_UPLOAD_SIZE
+_CATALOG_MAX_DIRECTORY_BYTES = 64 * 1024 * 1024 * 1024
+_CATALOG_MAX_DIRECTORY_FILES = 20_000
+_CATALOG_MAX_REPO_FILE_BYTES = MAX_UPLOAD_SIZE
+_CATALOG_MIN_FREE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
+_CATALOG_MAX_HF_MODEL_METADATA_BYTES = 1024 * 1024
+_CATALOG_MAX_HF_TREE_METADATA_BYTES = 32 * 1024 * 1024
 SECURE_AI_ROOT = Path(os.getenv("SECURE_AI_ROOT", "/var/lib/secure-ai"))
+SETUP_STATE_PATH = Path(os.getenv(
+    "SETUP_STATE_PATH", str(SECURE_AI_ROOT / "ui" / "setup.json")
+))
 
 # Set MAX_CONTENT_LENGTH at module level so it applies whether started
 # via gunicorn (production) or app.run() (dev mode).
@@ -412,74 +575,79 @@ _MODEL_CATALOG_PATH = os.getenv(
     "MODEL_CATALOG_PATH", "/etc/secure-ai/model-catalog.yaml"
 )
 
-# Hardcoded fallback catalog (used if YAML file is missing or malformed).
-# Keep this as an approved-only subset so a missing config cannot reintroduce
-# a model that failed quarantine.
+# Hardcoded fallback catalog (used if YAML is missing or malformed). Entries
+# are immutable-pinned acquisition candidates; they still require quarantine
+# on the current appliance before they can become trusted runtime models.
 _FALLBACK_CATALOG: list[dict] = [
     {
         "name": "Granite Guardian 3.1 2B (Q4_K_M)",
         "type": "llm",
         "category": "llm",
         "filename": "granite-guardian-3.1-2b-q4_k_m.gguf",
-        "url": "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/main/granite-guardian-3.1-2b-q4_k_m.gguf",
+        "url": "https://huggingface.co/Mungert/granite-guardian-3.1-2b-GGUF/resolve/01d30577cdd395fb65947d398f9e2b776c71355e/granite-guardian-3.1-2b-q4_k_m.gguf",
+        "expected_revision": "01d30577cdd395fb65947d398f9e2b776c71355e",
         "size_gb": 1.5,
         "vram_gb": 3,
-        "description": "Approved guard-focused LLM.",
+        "description": "Pinned guard-focused LLM candidate.",
         "expected_sha256": "2eaa7ed23bbd122fc654d9409f3076d35799b1cbc58f992b159d53cbaa51bed2",
         "expected_size_bytes": 1530557952,
-        "security_status": "approved",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "ShieldGemma 2B (Q4_K_M)",
         "type": "llm",
         "category": "llm",
         "filename": "shieldgemma-2b.Q4_K_M.gguf",
-        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q4_K_M.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/8755ece4b20dd84d7564131e385d9c205d03621a/shieldgemma-2b.Q4_K_M.gguf",
+        "expected_revision": "8755ece4b20dd84d7564131e385d9c205d03621a",
         "size_gb": 1.7,
         "vram_gb": 3,
-        "description": "Approved safety-tuned LLM.",
+        "description": "Pinned safety-tuned LLM candidate.",
         "expected_sha256": "47b0c3f4ec0bf93659ab2fc92cf2041374ef78bf1cb5b8c790421f463e7b7979",
         "expected_size_bytes": 1708583104,
-        "security_status": "approved",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "GA Guard Core (Q2_K)",
         "type": "llm",
         "category": "llm",
         "filename": "GA_Guard_Core.Q2_K.gguf",
-        "url": "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/main/GA_Guard_Core.Q2_K.gguf",
+        "url": "https://huggingface.co/prithivMLmods/GA-Guard-AIO-GGUF/resolve/7d7a73c98639749fc9d6bcacec97df9b621b9340/GA_Guard_Core.Q2_K.gguf",
+        "expected_revision": "7d7a73c98639749fc9d6bcacec97df9b621b9340",
         "size_gb": 1.7,
         "vram_gb": 3,
-        "description": "Approved guard-focused LLM.",
+        "description": "Pinned guard-focused LLM candidate.",
         "expected_sha256": "ff6087763f3886e3355058f34a8f9f6b3a8ba4a8f70a5795001bdaee1b3368b3",
         "expected_size_bytes": 1668960032,
-        "security_status": "approved",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "ShieldGemma 2B (Q5_K_M)",
         "type": "llm",
         "category": "llm",
         "filename": "shieldgemma-2b.Q5_K_M.gguf",
-        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/main/shieldgemma-2b.Q5_K_M.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-2b-GGUF/resolve/8755ece4b20dd84d7564131e385d9c205d03621a/shieldgemma-2b.Q5_K_M.gguf",
+        "expected_revision": "8755ece4b20dd84d7564131e385d9c205d03621a",
         "size_gb": 1.9,
         "vram_gb": 4,
-        "description": "Approved higher-quality safety-tuned LLM.",
+        "description": "Pinned higher-quality safety-tuned LLM candidate.",
         "expected_sha256": "265ec9c9c2b069aa8737fdb79bf56d561b48e165b76728d52dd82b1932069b0f",
         "expected_size_bytes": 1923279040,
-        "security_status": "approved",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "ShieldGemma 9B (Q2_K)",
         "type": "llm",
         "category": "llm",
         "filename": "shieldgemma-9b.Q2_K.gguf",
-        "url": "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/main/shieldgemma-9b.Q2_K.gguf",
+        "url": "https://huggingface.co/QuantFactory/shieldgemma-9b-GGUF/resolve/ee6d7475c96d0beaba677f3f9c9d4d3b03bc1d55/shieldgemma-9b.Q2_K.gguf",
+        "expected_revision": "ee6d7475c96d0beaba677f3f9c9d4d3b03bc1d55",
         "size_gb": 3.8,
         "vram_gb": 6,
-        "description": "Approved larger safety-tuned LLM.",
+        "description": "Pinned larger safety-tuned LLM candidate.",
         "expected_sha256": "3e86670d2abe5ce0be1c31582216dd6ae9731cc85cf3978e27f2d3b9238edf08",
         "expected_size_bytes": 3805398560,
-        "security_status": "approved",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Tiny Random SDXL",
@@ -487,10 +655,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "image",
         "filename": "image-tiny-sdxl-dg845",
         "url": "https://huggingface.co/dg845/tiny-random-stable-diffusion-xl",
+        "expected_revision": "7ae769dd7f63b06308f2f23881d329a0cb1c89d2",
+        "expected_manifest_sha256": "e0123078fb614ddfe0b7b0346ad03e46d9083c6084aec2ed2635879b590713e6",
+        "expected_size_bytes": 3373961,
         "size_gb": 0.01,
         "vram_gb": 2,
-        "description": "Approved tiny SDXL image pipeline.",
-        "security_status": "approved",
+        "description": "Pinned tiny SDXL image candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "BK-SDM Tiny",
@@ -498,10 +669,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "image",
         "filename": "image-bk-sdm-tiny",
         "url": "https://huggingface.co/nota-ai/bk-sdm-tiny",
+        "expected_revision": "0364108e53b7f7f4d2585e817a0b7a83dc261cfa",
+        "expected_manifest_sha256": "a1f361875311fc21730eb6e8573864d4ee3666dd20a5206f46c7df9db7095aea",
+        "expected_size_bytes": 1669906169,
         "size_gb": 1.7,
         "vram_gb": 4,
-        "description": "Approved compact Stable Diffusion image pipeline.",
-        "security_status": "approved",
+        "description": "Pinned compact Stable Diffusion candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "BK-SDM Small",
@@ -509,10 +683,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "image",
         "filename": "image-bk-sdm-small",
         "url": "https://huggingface.co/nota-ai/bk-sdm-small",
+        "expected_revision": "572238db7ed3a10858900803f3fc8cca53e893e0",
+        "expected_manifest_sha256": "5bb2dcca00811e04c4769b4d0051f0004033fa26099498ff0d174d65e3c27a68",
+        "expected_size_bytes": 1987834232,
         "size_gb": 2.0,
         "vram_gb": 5,
-        "description": "Approved small Stable Diffusion image pipeline.",
-        "security_status": "approved",
+        "description": "Pinned small Stable Diffusion candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "BK-SDM Base",
@@ -520,10 +697,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "image",
         "filename": "image-bk-sdm-base",
         "url": "https://huggingface.co/nota-ai/bk-sdm-base",
+        "expected_revision": "0c03b7a0369b49f97d1acf7256d4ee55ced9b2e0",
+        "expected_manifest_sha256": "9737280ab316298e3026b021e3c3c78c1ceb943a577b73bc359e24cd88b5ac27",
+        "expected_size_bytes": 2181916172,
         "size_gb": 2.2,
         "vram_gb": 6,
-        "description": "Approved base Stable Diffusion image pipeline.",
-        "security_status": "approved",
+        "description": "Pinned base Stable Diffusion candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Stable Diffusion 1.5",
@@ -531,10 +711,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "image",
         "filename": "image-sd15",
         "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "expected_revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+        "expected_manifest_sha256": "007714ef9c28cd3e97686d321f7ec5dc497031bef2d8e39034177ed975caf23e",
+        "expected_size_bytes": 2742217630,
         "size_gb": 2.7,
         "vram_gb": 4,
-        "description": "Approved Stable Diffusion 1.5 image pipeline.",
-        "security_status": "approved",
+        "description": "Pinned Stable Diffusion 1.5 candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Tiny Stable Video Diffusion",
@@ -542,10 +725,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "video",
         "filename": "video-tiny-svd-seinpark",
         "url": "https://huggingface.co/seinpark/tiny-stable-video-diffusion-img2vid",
+        "expected_revision": "701088dac555f81b9961077c99bc3527d6548cd3",
+        "expected_manifest_sha256": "bf49b5c212bdce95473eecc87e12a4c934cdfe8527f0c276682158d869fce4ce",
+        "expected_size_bytes": 10240860,
         "size_gb": 0.01,
         "vram_gb": 2,
-        "description": "Approved tiny image-to-video pipeline.",
-        "security_status": "approved",
+        "description": "Pinned tiny image-to-video candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Tiny Random LTX Video",
@@ -553,10 +739,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "video",
         "filename": "video-tiny-ltx-katuni4ka",
         "url": "https://huggingface.co/katuni4ka/tiny-random-ltx-video",
+        "expected_revision": "5a116fa316d6f98ef4ee4a50f8d2024d39beacdc",
+        "expected_manifest_sha256": "c1da3d0051f7dc8217f9409f5ea10f11190887a6f3d934124ed5ec4bf2b7852d",
+        "expected_size_bytes": 1141266,
         "size_gb": 0.01,
         "vram_gb": 2,
-        "description": "Approved tiny LTX video pipeline.",
-        "security_status": "approved",
+        "description": "Pinned tiny LTX video candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Stable Video Diffusion",
@@ -564,10 +753,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "video",
         "filename": "video-svd-img2vid",
         "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid",
+        "expected_revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
+        "expected_manifest_sha256": "3a5c50adeb6d07668cd2da7ca59ae14244f1125f32dc2d17fa900a1a7e3e403c",
+        "expected_size_bytes": 4509188849,
         "size_gb": 4.5,
         "vram_gb": 16,
-        "description": "Approved image-to-video pipeline.",
-        "security_status": "approved",
+        "description": "Pinned image-to-video candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Stable Video Diffusion XT",
@@ -575,10 +767,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "video",
         "filename": "video-svd-img2vid-xt",
         "url": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt",
+        "expected_revision": "9e43909513c6714f1bc78bcb44d96e733cd242aa",
+        "expected_manifest_sha256": "5108113b09d11fd2c9a3b47853cc106933584f316ddd14f3185aec10834e7724",
+        "expected_size_bytes": 4509188841,
         "size_gb": 4.5,
         "vram_gb": 16,
-        "description": "Approved image-to-video XT pipeline.",
-        "security_status": "approved",
+        "description": "Pinned image-to-video XT candidate.",
+        "security_status": "pinned-candidate",
     },
     {
         "name": "Stable Video Diffusion XT 1.1",
@@ -586,10 +781,13 @@ _FALLBACK_CATALOG: list[dict] = [
         "category": "video",
         "filename": "video-svd-xt-1-1-weights",
         "url": "https://huggingface.co/weights/stable-video-diffusion-img2vid-xt-1-1",
+        "expected_revision": "a423ba0d3e1a94a57ebc68e98691c43104198394",
+        "expected_manifest_sha256": "634f478b142fa65531d327fd79c2eb02a092edebbbde129a544813e77c0a2301",
+        "expected_size_bytes": 4509188809,
         "size_gb": 4.5,
         "vram_gb": 16,
-        "description": "Approved public XT 1.1 image-to-video pipeline mirror.",
-        "security_status": "approved",
+        "description": "Pinned public XT 1.1 image-to-video candidate mirror.",
+        "security_status": "pinned-candidate",
     },
 ]
 
@@ -597,8 +795,8 @@ _FALLBACK_CATALOG: list[dict] = [
 def load_model_catalog(path: str = _MODEL_CATALOG_PATH) -> list[dict]:
     """Load model catalog from YAML file, falling back to hardcoded defaults.
 
-    Each entry must have at minimum: name, type, filename, url.
-    Entries missing required fields are silently skipped.
+    Remote entries fail closed unless all immutable digest/size pins required by
+    their artifact type are present and well formed.
     """
     try:
         with open(path) as f:
@@ -610,21 +808,91 @@ def load_model_catalog(path: str = _MODEL_CATALOG_PATH) -> list[dict]:
         if not isinstance(models, list) or len(models) == 0:
             log.warning("model catalog %s: empty or invalid — using fallback", path)
             return list(_FALLBACK_CATALOG)
-        # Validate required fields
+        # Validate required fields and immutable acquisition pins.
         required = {"name", "type", "filename", "url"}
         valid: list[dict] = []
+        seen_filenames: set[str] = set()
         for entry in models:
             if not isinstance(entry, dict):
                 continue
             if not required.issubset(entry.keys()):
                 log.warning("model catalog: skipping entry missing fields: %s", entry.get("name", "?"))
                 continue
-            # Add computed fields for backward compat
-            if "expected_sha256" not in entry:
-                entry["expected_sha256"] = "pin-on-first-download"
-            if "expected_size_bytes" not in entry and "size_gb" in entry:
-                entry["expected_size_bytes"] = int(float(entry["size_gb"]) * 1024 * 1024 * 1024)
-            valid.append(entry)
+            candidate = dict(entry)
+            filename = candidate.get("filename")
+            model_type = candidate.get("type")
+            url = candidate.get("url")
+            expected_size = candidate.get("expected_size_bytes")
+            parsed = urlparse(url) if isinstance(url, str) else None
+            if (
+                not isinstance(filename, str)
+                or not filename
+                or filename in {".", ".."}
+                or filename.startswith(".")
+                or Path(filename).name != filename
+                or "/" in filename
+                or "\\" in filename
+                or filename in seen_filenames
+                or model_type not in {"llm", "diffusion"}
+                or parsed is None
+                or parsed.scheme != "https"
+                or parsed.hostname != "huggingface.co"
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or isinstance(expected_size, bool)
+                or not isinstance(expected_size, int)
+                or expected_size <= 0
+                or expected_size > (
+                    _CATALOG_MAX_SINGLE_FILE_BYTES
+                    if model_type == "llm"
+                    else _CATALOG_MAX_DIRECTORY_BYTES
+                )
+                or candidate.get("blocked")
+                or candidate.get("security_status") != "pinned-candidate"
+            ):
+                log.warning(
+                    "model catalog: skipping invalid or unpinned entry: %s",
+                    candidate.get("name", "?"),
+                )
+                continue
+            if model_type == "llm":
+                expected_revision = str(candidate.get("expected_revision", ""))
+                url_parts = parsed.path.strip("/").split("/")
+                if (
+                    not re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(candidate.get("expected_sha256", "")),
+                    )
+                    or not re.fullmatch(r"[0-9a-f]{40}", expected_revision)
+                    or len(url_parts) != 5
+                    or url_parts[2] != "resolve"
+                    or url_parts[3] != expected_revision
+                    or url_parts[4] != filename
+                ):
+                    log.warning(
+                        "model catalog: skipping unpinned LLM entry: %s",
+                        candidate.get("name", "?"),
+                    )
+                    continue
+            elif (
+                not re.fullmatch(
+                    r"[0-9a-f]{40}",
+                    str(candidate.get("expected_revision", "")),
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(candidate.get("expected_manifest_sha256", "")),
+                )
+            ):
+                log.warning(
+                    "model catalog: skipping unpinned diffusion entry: %s",
+                    candidate.get("name", "?"),
+                )
+                continue
+            seen_filenames.add(filename)
+            valid.append(candidate)
         if not valid:
             log.warning("model catalog %s: no valid entries — using fallback", path)
             return list(_FALLBACK_CATALOG)
@@ -684,29 +952,200 @@ def _quarantine_status_marker_path(name: str) -> Path:
 
 
 def _staged_import_path(raw_path: str) -> Path:
-    """Resolve a relative import path under IMPORT_STAGING_DIR only."""
+    """Return a lexical path under IMPORT_STAGING_DIR without following links."""
     raw_path = str(raw_path or "").strip()
     if not raw_path:
         raise ValueError("missing path")
 
-    staging_root = IMPORT_STAGING_DIR.resolve()
-    if Path(raw_path).is_absolute():
+    staging_root = IMPORT_STAGING_DIR.resolve(strict=False)
+    if Path(raw_path).is_absolute() or "\\" in raw_path:
         raise ValueError("absolute staging paths are not accepted")
 
     joined = safe_join(str(staging_root), raw_path)
     if joined is None:
         raise ValueError("outside staging directory")
-    resolved = Path(joined).resolve(strict=False)
+    candidate = Path(joined)
     try:
-        resolved.relative_to(staging_root)
+        candidate.relative_to(staging_root)
     except ValueError as exc:
         raise ValueError("outside staging directory") from exc
-    return resolved
+    return candidate
+
+
+def _open_staged_import(raw_path: str):
+    """Open one regular, single-link staged file through no-follow dir FDs.
+
+    The returned binary stream owns the final descriptor. Resolving every
+    component relative to an already-open directory prevents a symlink swap
+    between validation and use.
+    """
+    source_path = _staged_import_path(raw_path)
+    staging_root = IMPORT_STAGING_DIR.resolve(strict=True)
+    try:
+        relative = source_path.relative_to(staging_root)
+    except ValueError as exc:
+        raise ValueError("outside staging directory") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("invalid staging path")
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_fd = os.open(staging_root, directory_flags)
+    descriptor: int | None = None
+    try:
+        try:
+            for component in relative.parts[:-1]:
+                next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                os.close(directory_fd)
+                directory_fd = next_fd
+            descriptor = os.open(relative.parts[-1], file_flags, dir_fd=directory_fd)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise ValueError("staging path contains a link or non-directory") from exc
+            raise
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("path is not a regular file")
+        if info.st_nlink != 1:
+            raise ValueError("hard-linked staging files are not accepted")
+        if info.st_size > MAX_UPLOAD_SIZE:
+            raise OverflowError("model exceeds upload size limit")
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = None
+        return source_path, stream
+    finally:
+        os.close(directory_fd)
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _quarantine_partial_path(name: str) -> Path:
     """Return a hidden temporary path ignored by the quarantine watcher."""
     return _quarantine_path(f".{name}.{uuid.uuid4().hex}.part")
+
+
+def _publish_noreplace(source: Path, destination: Path) -> None:
+    """Atomically publish a staged artifact without replacing an existing one.
+
+    Fedora/glibc exposes renameat2(2), which gives us atomic RENAME_NOREPLACE
+    semantics and preserves a single link throughout publication. The
+    hard-link fallback is used only on development platforms lacking that API.
+    """
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is not None:
+            renameat2.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            renameat2.restype = ctypes.c_int
+            result = renameat2(
+                -100,  # AT_FDCWD
+                os.fsencode(source),
+                -100,
+                os.fsencode(destination),
+                1,  # RENAME_NOREPLACE
+            )
+            if result == 0:
+                return
+            error_number = ctypes.get_errno()
+            if error_number not in {errno.ENOSYS, errno.EINVAL}:
+                raise OSError(
+                    error_number,
+                    os.strerror(error_number),
+                    str(destination),
+                )
+
+    # Portable create-if-absent fallback. The production Fedora path above is
+    # a single rename; this fallback is retained for macOS developer testing.
+    os.link(source, destination, follow_symlinks=False)
+    try:
+        source.unlink()
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def _publish_directory_noreplace(source: Path, destination: Path) -> None:
+    """Publish a directory without replacement (atomic on production Fedora)."""
+    if sys.platform.startswith("linux"):
+        _publish_noreplace(source, destination)
+        return
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), destination)
+    # Development-only fallback for platforms that cannot link directories.
+    os.rename(source, destination)
+
+
+def _stage_quarantine_stream(source, destination_name: str) -> tuple[Path, int]:
+    """Copy a binary stream to a hidden file, fsync, then publish atomically."""
+    destination = _quarantine_path(destination_name)
+    temporary = _quarantine_partial_path(destination_name)
+    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor: int | None = None
+    published = False
+    total = 0
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o660,
+        )
+        os.fchmod(descriptor, 0o660)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            while True:
+                chunk = source.read(1 << 20)
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise ValueError("model source did not produce binary data")
+                total += len(chunk)
+                if total > MAX_UPLOAD_SIZE:
+                    raise OverflowError("model exceeds upload size limit")
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        _publish_noreplace(temporary, destination)
+        published = True
+        directory_fd = os.open(
+            QUARANTINE_DIR,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return destination, total
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if not published:
+            temporary.unlink(missing_ok=True)
 
 
 def _cleanup_orphaned_catalog_partials() -> None:
@@ -757,7 +1196,7 @@ def _airlock_check_egress(destination: str, method: str = "GET", body: str = "")
                 "method": method,
                 "body": body,
             },
-            headers=_service_headers(),
+            headers=_service_headers(target="airlock"),
             timeout=10,
         )
     except requests.ConnectionError:
@@ -798,45 +1237,61 @@ def _catalog_download_blocked_response(reason: str, status: int):
 
 
 def _catalog_download_response(url: str):
-    """Fetch a catalog artifact while validating every redirect hop via the airlock."""
-    current = url
-    seen = set()
-    auth_headers = _huggingface_headers()
+    """Stream an artifact through Airlock's enforced fetch endpoint.
 
-    for _ in range(_CATALOG_MAX_REDIRECTS + 1):
-        if current in seen:
-            raise ValueError("download redirect loop detected")
-        seen.add(current)
+    Redirect and DNS checks are performed in the process that owns the only
+    egress-capable network interface. The UI never opens an Internet socket.
+    """
+    headers = _huggingface_headers() if _is_huggingface_url(url) else {}
+    return _airlock_fetch_response(url, upstream_headers=headers, stream=True)
 
-        allowed, _, reason = _airlock_check_egress(current, method="GET")
-        if not allowed:
-            raise ValueError(reason or "airlock blocked download")
 
-        headers = auth_headers if _is_huggingface_url(current) else None
-        resp = requests.get(
-            current, stream=True, timeout=30, allow_redirects=False,
-            headers=headers,
+def _airlock_fetch_response(
+    destination: str,
+    *,
+    method: str = "GET",
+    body: str = "",
+    upstream_headers: dict | None = None,
+    stream: bool = False,
+    timeout: int = 30,
+):
+    """Ask Airlock to perform an outbound request and return its response."""
+    try:
+        resp = requests.post(
+            f"{AIRLOCK_URL}/v1/fetch",
+            json={
+                "destination": destination,
+                "method": method,
+                "body": body,
+                "headers": dict(upstream_headers or {}),
+            },
+            headers=_service_headers(
+                {"X-SecAI-Service": "ui"},
+                target="airlock",
+            ),
+            stream=stream,
+            timeout=timeout,
         )
-        if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("location")
-            close = getattr(resp, "close", None)
-            if callable(close):
-                close()
-            if not location:
-                raise ValueError("download redirect missing location")
-            current = urljoin(current, location)
-            if not current.startswith("https://"):
-                raise ValueError("download redirected to non-HTTPS URL")
-            continue
+    except requests.RequestException as exc:
+        raise ValueError("airlock unavailable") from exc
 
-        if resp.status_code in (401, 403):
-            raise ValueError(_huggingface_auth_error())
-        resp.raise_for_status()
-        if not resp.url.startswith("https://"):
-            raise ValueError("download redirected to non-HTTPS URL")
-        return resp
-
-    raise ValueError("download exceeded redirect limit")
+    if resp.status_code == 403:
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        reason = payload.get("reason") or payload.get("error") or "airlock blocked request"
+        raise ValueError(str(reason))
+    if resp.status_code in (401, 407):
+        raise ValueError(_huggingface_auth_error())
+    resp.raise_for_status()
+    final_url = resp.headers.get("X-SecAI-Upstream-URL", destination)
+    if not final_url.startswith("https://"):
+        raise ValueError("airlock returned an invalid upstream URL")
+    # Preserve the existing response interface for download verification and
+    # source provenance, but bind it to the upstream rather than /v1/fetch.
+    resp.url = final_url
+    return resp
 
 
 def _huggingface_token() -> str:
@@ -861,6 +1316,50 @@ def _huggingface_auth_error() -> str:
     )
 
 
+def _bounded_response_json(response, *, max_bytes: int):
+    """Decode a streamed metadata response without unbounded buffering."""
+    raw_content_length = str(response.headers.get("content-length", "")).strip()
+    try:
+        content_length = int(raw_content_length) if raw_content_length else 0
+    except ValueError as exc:
+        raise ValueError("metadata response has an invalid content length") from exc
+    if content_length < 0 or content_length > max_bytes:
+        raise ValueError("metadata response exceeds the safety limit")
+
+    raw = bytearray()
+    try:
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            if not isinstance(chunk, bytes):
+                raise ValueError("metadata response produced non-binary data")
+            raw.extend(chunk)
+            if len(raw) > max_bytes:
+                raise ValueError("metadata response exceeds the safety limit")
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    try:
+        def reject_duplicate_keys(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError(f"duplicate metadata JSON key: {key!r}")
+                value[key] = item
+            return value
+
+        return json.loads(
+            bytes(raw).decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {value}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("metadata response is not valid JSON") from exc
+
+
 def _is_huggingface_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme == "https" and parsed.netloc == "huggingface.co"
@@ -876,7 +1375,7 @@ def _huggingface_repo_id_from_url(url: str) -> str:
 
 
 _DIFFUSION_REPO_EXTENSIONS = {
-    ".json", ".safetensors", ".txt", ".md", ".model", ".vocab", ".merges",
+    ".json", ".safetensors", ".txt", ".model", ".vocab", ".merges",
 }
 _DIFFUSION_COMPONENT_WEIGHT_RE = re.compile(
     r"^(?P<prefix>.+/)(?P<stem>.+?)(?:\.fp16)?\.safetensors$"
@@ -887,12 +1386,20 @@ def _safe_hf_repo_file_path(raw_path: str) -> str | None:
     """Return a safe repo-relative file path or None when it should be skipped."""
     if not raw_path or "\x00" in raw_path or "\\" in raw_path:
         return None
+    try:
+        if len(raw_path.encode("utf-8")) > 4096:
+            return None
+    except UnicodeEncodeError:
+        return None
     normalized = posixpath.normpath(raw_path)
     if normalized in (".", "") or normalized.startswith("../") or normalized.startswith("/"):
         return None
     if normalized != raw_path:
         return None
-    if any(part in ("", ".", "..") for part in normalized.split("/")):
+    if any(
+        part in ("", ".", "..") or part.startswith(".")
+        for part in normalized.split("/")
+    ):
         return None
     suffix = Path(normalized).suffix.lower()
     if suffix not in _DIFFUSION_REPO_EXTENSIONS:
@@ -903,18 +1410,19 @@ def _safe_hf_repo_file_path(raw_path: str) -> str | None:
 def _huggingface_repo_revision(repo_id: str) -> str:
     """Resolve a Hugging Face repository to an immutable commit SHA."""
     api_url = "https://huggingface.co/api/models/" + quote(repo_id, safe="/")
-    allowed, _, reason = _airlock_check_egress(api_url, method="GET")
-    if not allowed:
-        raise ValueError(reason or "airlock blocked Hugging Face metadata request")
-
-    resp = requests.get(
-        api_url, timeout=30, allow_redirects=False,
-        headers=_huggingface_headers(),
+    resp = _airlock_fetch_response(
+        api_url,
+        upstream_headers=_huggingface_headers(),
+        stream=True,
+        timeout=30,
     )
     if resp.status_code in (401, 403):
         raise ValueError(_huggingface_auth_error())
     resp.raise_for_status()
-    payload = resp.json()
+    payload = _bounded_response_json(
+        resp,
+        max_bytes=_CATALOG_MAX_HF_MODEL_METADATA_BYTES,
+    )
     revision = str(payload.get("sha", "") if isinstance(payload, dict) else "").strip()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Hugging Face metadata did not include an immutable revision")
@@ -927,19 +1435,20 @@ def _huggingface_tree(repo_id: str, revision: str = "main") -> list[dict]:
         "https://huggingface.co/api/models/"
         f"{quote(repo_id, safe='/')}/tree/{quote(revision, safe='')}?recursive=1"
     )
-    allowed, _, reason = _airlock_check_egress(api_url, method="GET")
-    if not allowed:
-        raise ValueError(reason or "airlock blocked Hugging Face metadata request")
-
-    resp = requests.get(
-        api_url, timeout=30, allow_redirects=False,
-        headers=_huggingface_headers(),
+    resp = _airlock_fetch_response(
+        api_url,
+        upstream_headers=_huggingface_headers(),
+        stream=True,
+        timeout=30,
     )
     if resp.status_code in (401, 403):
         raise ValueError(_huggingface_auth_error())
     resp.raise_for_status()
-    payload = resp.json()
-    if not isinstance(payload, list):
+    payload = _bounded_response_json(
+        resp,
+        max_bytes=_CATALOG_MAX_HF_TREE_METADATA_BYTES,
+    )
+    if not isinstance(payload, list) or len(payload) > 100_000:
         raise ValueError("Hugging Face metadata response was not a file tree")
 
     files: list[dict] = []
@@ -952,13 +1461,30 @@ def _huggingface_tree(repo_id: str, revision: str = "main") -> list[dict]:
         raw_lfs = item.get("lfs")
         lfs = raw_lfs if isinstance(raw_lfs, dict) else {}
         lfs_oid = str(lfs.get("oid") or "")
+        raw_size = item.get("size")
+        if (
+            isinstance(raw_size, bool)
+            or not isinstance(raw_size, int)
+            or not 1 <= raw_size <= _CATALOG_MAX_REPO_FILE_BYTES
+        ):
+            raise ValueError(f"Hugging Face metadata has an invalid size for {safe_path}")
+        oid = lfs_oid or str(item.get("oid") or "")
+        if (
+            (lfs_oid and not re.fullmatch(r"[0-9a-f]{64}", oid))
+            or (not lfs_oid and not re.fullmatch(r"[0-9a-f]{40}", oid))
+        ):
+            raise ValueError(
+                f"Hugging Face metadata has an invalid object ID for {safe_path}"
+            )
         files.append({
             "path": safe_path,
-            "size": int(item.get("size") or 0),
-            "oid": lfs_oid or str(item.get("oid") or ""),
+            "size": raw_size,
+            "oid": oid,
             "oid_type": "sha256" if lfs_oid else "git-sha1",
             "revision": revision,
         })
+        if len(files) > _CATALOG_MAX_DIRECTORY_FILES:
+            raise ValueError("Hugging Face repo exposes too many diffusion files")
 
     if not files:
         raise ValueError("Hugging Face repo did not expose any safe diffusion files")
@@ -1004,23 +1530,24 @@ def _select_diffusion_repo_files(repo_files: list[dict]) -> tuple[list[dict], st
             component_variant = "fp16"
 
     selected.extend(component_weights.values())
-    selected.sort(key=lambda item: str(item.get("path", "")))
+    selected.sort(
+        key=lambda item: str(item.get("path", "")).encode("utf-8")
+    )
     if not any(str(item.get("path", "")).endswith(".safetensors") for item in selected):
         raise ValueError("Hugging Face repo did not expose diffusers component weights")
     return selected, component_variant
 
 
-def _write_huggingface_manifest(
-    path: Path,
+def _huggingface_manifest_payload(
     *,
     source_url: str,
     repo_id: str,
     revision: str,
     variant: str | None,
     files: list[dict],
-) -> None:
-    """Write immutable Hugging Face file metadata for quarantine verification."""
-    payload = {
+) -> dict:
+    """Build the deterministic receipt covered by an image-owned digest pin."""
+    return {
         "version": 1,
         "source": source_url,
         "repo_id": repo_id,
@@ -1036,7 +1563,53 @@ def _write_huggingface_manifest(
             for item in files
         ],
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _canonical_manifest_sha256(payload: dict) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _write_quarantine_metadata(path: Path, content: bytes) -> None:
+    """Publish one bounded metadata sidecar without following or replacing links."""
+    if len(content) > 16 * 1024 * 1024:
+        raise ValueError("quarantine metadata exceeds safety limit")
+    temporary = _quarantine_path(f".metadata.{uuid.uuid4().hex}.part")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o660,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _publish_noreplace(temporary, path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _write_huggingface_manifest(path: Path, payload: dict) -> None:
+    """Write a deterministic Hugging Face receipt for quarantine verification."""
+    encoded = (
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    _write_quarantine_metadata(path, encoded)
 
 
 def _download_progress_update(
@@ -1057,6 +1630,10 @@ def _download_progress_update(
     if message:
         payload["message"] = message
     with _download_lock:
+        existing = _active_downloads.get(filename, {})
+        reserved_bytes = existing.get("reserved_bytes")
+        if isinstance(reserved_bytes, int) and not isinstance(reserved_bytes, bool):
+            payload["reserved_bytes"] = reserved_bytes
         _active_downloads[filename] = payload
 
 
@@ -1071,12 +1648,79 @@ def _get_session_token():
 
 
 def _touch_vault_activity():
-    """Update the vault last-activity timestamp on authenticated requests."""
+    """Atomically update group-shared activity without following a target."""
+    temporary = None
     try:
-        VAULT_ACTIVITY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        VAULT_ACTIVITY_FILE.write_text(str(time.time()))
+        parent = VAULT_ACTIVITY_FILE.parent
+        if not parent.is_dir():
+            return False
+        temporary = parent / (
+            f".last-activity.{os.getpid()}.{_secrets_mod.token_hex(8)}"
+        )
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(temporary, flags, 0o660)
+        try:
+            os.fchmod(descriptor, 0o660)
+            with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+                descriptor = -1
+                handle.write(str(time.time()))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, VAULT_ACTIVITY_FILE)
+            temporary = None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return True
     except OSError:
-        pass
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _publish_runtime_request(path: Path, payload: bytes = b"") -> None:
+    """Publish a complete root-broker request without exposing a partial file."""
+    if len(payload) > 4096 or not path.is_absolute():
+        raise OSError("invalid runtime request")
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{_secrets_mod.token_hex(8)}"
+    )
+    descriptor = -1
+    try:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(temporary, flags, 0o640)
+        os.fchmod(descriptor, 0o640)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Hard-link publication is an atomic no-replace operation. The path
+        # unit cannot observe the temporary file or a partially written target.
+        os.link(temporary, path, follow_symlinks=False)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _storage_error_response(exc: OSError, *, action: str, filename: str) -> tuple:
@@ -1105,11 +1749,6 @@ def require_auth():
 
     # Skip auth for public endpoints
     if request.path in _PUBLIC_ENDPOINTS or request.path.startswith("/static/"):
-        return None
-
-    # Unit tests exercise many internal endpoints directly before test auth is
-    # configured. Production first boot must still route users through setup.
-    if app.config.get("TESTING") and not _auth.is_configured():
         return None
 
     # First boot requires passphrase setup before the UI or APIs are usable.
@@ -1145,6 +1784,7 @@ def auth_status():
     return jsonify({
         "configured": _auth.is_configured(),
         "authenticated": authenticated,
+        "setup_credential_required": not _auth.is_configured(),
         "session": _auth.get_session_info(token) if authenticated else {},
     })
 
@@ -1157,18 +1797,50 @@ def auth_setup():
 
     body = request.get_json()
     passphrase = body.get("passphrase", "") if body else ""
+    setup_token = body.get("setup_token", "") if body else ""
 
-    if len(passphrase) < 8:
-        return jsonify({"success": False, "error": "passphrase must be at least 8 characters"}), 400
-    if len(passphrase) > MAX_PASSPHRASE_LENGTH:
-        return jsonify({"success": False, "error": "passphrase too long"}), 400
+    try:
+        expected_setup_token = SETUP_TOKEN_PATH.read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        expected_setup_token = ""
+    if not expected_setup_token:
+        log.error("first-boot setup credential is unavailable")
+        return jsonify({
+            "success": False,
+            "error": "first-boot setup credential unavailable",
+        }), 503
+    if (
+        not isinstance(setup_token, str)
+        or len(setup_token) > 256
+        or not hmac.compare_digest(setup_token, expected_setup_token)
+    ):
+        _ui_audit.append("auth_setup_rejected", {"reason": "invalid_setup_credential"})
+        return jsonify({
+            "success": False,
+            "error": "invalid first-boot setup credential",
+        }), 403
+
+    policy_error = validate_new_passphrase(passphrase)
+    if policy_error:
+        return jsonify({"success": False, "error": policy_error}), 400
 
     if _auth.setup_passphrase(passphrase):
         _ui_audit.append("auth_setup", {"action": "passphrase_configured"})
+        # Sandbox credentials are writable and can be physically consumed.
+        # systemd LoadCredential files are read-only; atomic auth.json creation
+        # is the durable one-time-consumption marker in that deployment.
+        try:
+            SETUP_TOKEN_PATH.unlink()
+        except OSError:
+            pass
         # Session regeneration for setup flow
         session.clear()
         session["csrf_token"] = _generate_csrf_token()
         return jsonify({"success": True})
+    if _auth.is_configured():
+        return jsonify({"success": False, "error": "already configured"}), 409
     return jsonify({"success": False, "error": "setup failed"}), 500
 
 
@@ -1181,7 +1853,7 @@ def auth_login():
     if len(passphrase) > MAX_PASSPHRASE_LENGTH:
         return jsonify({"success": False, "error": "invalid credentials"}), 401
 
-    result = _auth.login(passphrase)
+    result = _auth.login(passphrase, client_id=request.remote_addr or "local")
 
     if result.get("success"):
         _ui_audit.append("login", {"success": True})
@@ -1236,11 +1908,13 @@ def auth_change_passphrase():
     if result.get("success"):
         _ui_audit.append("passphrase_changed", {})
 
-        # Rotate Flask's in-memory signing key to invalidate existing sessions.
-        app.secret_key = _secrets_mod.token_urlsafe(32)
-
-        # Give them a new session
-        login_result = _auth.login(new_pass)
+        # AuthManager invalidates all old bearer sessions. Keep the stable
+        # Flask signing key so every worker and future restart agrees on
+        # session-cookie verification, then issue only this caller a new token.
+        login_result = _auth.login(
+            new_pass,
+            client_id=request.remote_addr or "local",
+        )
         session.clear()
         session["csrf_token"] = _generate_csrf_token()
         resp = jsonify({"success": True})
@@ -1265,12 +1939,16 @@ def settings_page():
 
 
 def is_first_boot() -> bool:
-    return not (SECURE_AI_ROOT / ".initialized").exists()
+    return not SETUP_STATE_PATH.exists()
 
 
 def has_models() -> bool:
     try:
-        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=2)
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(target="registry"),
+            timeout=2,
+        )
         models = resp.json()
         return isinstance(models, list) and len(models) > 0
     except Exception:
@@ -1287,7 +1965,11 @@ def _is_gguf_model_record(model: object) -> bool:
 
 def has_chat_model() -> bool:
     try:
-        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=2)
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(target="registry"),
+            timeout=2,
+        )
         models = resp.json()
         return isinstance(models, list) and any(
             _is_gguf_model_record(model) for model in models
@@ -1298,21 +1980,33 @@ def has_chat_model() -> bool:
 
 def _write_setup_marker(profile: str) -> None:
     """Mark the first-run setup flow as complete."""
-    SECURE_AI_ROOT.mkdir(parents=True, exist_ok=True)
-    marker = SECURE_AI_ROOT / ".initialized"
-    tmp_marker = SECURE_AI_ROOT / f".initialized.{os.getpid()}.tmp"
+    SETUP_STATE_PATH.parent.mkdir(mode=0o770, parents=True, exist_ok=True)
+    marker = SETUP_STATE_PATH
+    tmp_marker = marker.with_name(
+        f".{marker.name}.{os.getpid()}.{_secrets_mod.token_hex(8)}.tmp"
+    )
     payload = {
         "completed_at": time.time(),
         "deployment_mode": _deployment_mode(),
         "profile": profile,
     }
-    with open(tmp_marker, "w", encoding="utf-8") as f:
-        json.dump(payload, f, sort_keys=True)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp_marker, 0o600)
-    os.replace(tmp_marker, marker)
+    fd = os.open(tmp_marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o660)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            json.dump(payload, f, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_marker, marker)
+        os.chmod(marker, 0o660)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp_marker.unlink()
+        except FileNotFoundError:
+            pass
 
 
 @app.route("/api/setup/complete", methods=["POST"])
@@ -1320,6 +2014,13 @@ def setup_complete():
     """Complete the first-run setup flow and route the user to chat."""
     data = request.get_json(silent=True) or {}
     active, locked = _read_active_profile()
+    if active == UNREADY_SANDBOX_PROFILE:
+        return jsonify({
+            "error": (
+                "Sandbox generation readiness is unknown; retry the host "
+                "sandbox launcher"
+            )
+        }), 503
     profile = data.get("profile") or active
     if profile not in VALID_PROFILES:
         return jsonify({"error": f"invalid profile: {profile}"}), 400
@@ -1371,6 +2072,11 @@ def models_page():
 @app.route("/generate")
 def generate_page():
     return render_template("generate.html", active_page="generate")
+
+
+@app.route("/agent")
+def agent_page():
+    return render_template("agent.html", active_page="agent")
 
 
 @app.route("/security")
@@ -1450,37 +2156,72 @@ def catalog_download():
         return _catalog_download_blocked_response(reason, status)
 
     model_type = catalog_entry.get("type", "llm")
+    expected_bytes = catalog_entry.get("expected_size_bytes")
+    if (
+        isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or expected_bytes <= 0
+        or expected_bytes > (
+            _CATALOG_MAX_DIRECTORY_BYTES
+            if model_type == "diffusion"
+            else _CATALOG_MAX_SINGLE_FILE_BYTES
+        )
+    ):
+        return jsonify({"error": "catalog entry has an invalid size pin"}), 503
 
-    with _download_lock:
-        existing = _active_downloads.get(filename)
-        if existing and existing.get("status") == "downloading":
-            return jsonify({"error": "download already in progress", "filename": filename}), 409
-        if existing and existing.get("status") in {"failed", "quarantined"}:
-            _active_downloads.pop(filename, None)
     try:
+        QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
         quarantine_target = _quarantine_path(filename)
-    except ValueError:
+        free_bytes = shutil.disk_usage(QUARANTINE_DIR).free
+    except (OSError, ValueError):
         return jsonify({"error": "invalid catalog filename"}), 400
     if quarantine_target.exists():
         return jsonify({
             "error": "artifact already exists in quarantine",
             "filename": filename,
         }), 409
-    for metadata_suffix in (".status.json", ".source", ".hf-manifest.json"):
-        _quarantine_metadata_path(filename, metadata_suffix).unlink(missing_ok=True)
-
     thread = threading.Thread(
         target=_background_download,
         args=(url, filename, model_type, catalog_entry),
         daemon=True,
     )
     with _download_lock:
+        existing = _active_downloads.get(filename)
+        if existing and existing.get("status") == "downloading":
+            return jsonify({
+                "error": "download already in progress",
+                "filename": filename,
+            }), 409
+        reserved_bytes = sum(
+            int(state.get("reserved_bytes", 0) or 0)
+            for state in _active_downloads.values()
+            if state.get("status") == "downloading"
+            and isinstance(state.get("reserved_bytes", 0), int)
+        )
+        usable_bytes = max(
+            0,
+            free_bytes - reserved_bytes - _CATALOG_MIN_FREE_RESERVE_BYTES,
+        )
+        if expected_bytes > usable_bytes:
+            return jsonify({
+                "error": "insufficient quarantine storage capacity",
+                "required_bytes": expected_bytes,
+                "available_bytes": usable_bytes,
+            }), 507
+        for metadata_suffix in (".status.json", ".source", ".hf-manifest.json"):
+            _quarantine_metadata_path(filename, metadata_suffix).unlink(missing_ok=True)
         _active_downloads[filename] = {
             "status": "downloading",
             "progress": 0,
             "updated_at": time.time(),
+            "reserved_bytes": expected_bytes,
         }
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        with _download_lock:
+            _active_downloads.pop(filename, None)
+        raise
 
     return jsonify({
         "status": "downloading",
@@ -1501,7 +2242,7 @@ def _catalog_registry_filenames() -> set[str]:
     try:
         resp = requests.get(
             f"{REGISTRY_URL}/v1/models",
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=2,
         )
         payload = resp.json()
@@ -1638,7 +2379,7 @@ def _background_download(url: str, filename: str, model_type: str,
         QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
         if model_type == "diffusion":
-            _download_diffusion_model(url, filename)
+            _download_diffusion_model(url, filename, catalog_entry=catalog_entry)
         else:
             _download_single_file(url, filename, catalog_entry=catalog_entry)
 
@@ -1664,8 +2405,8 @@ def _background_download(url: str, filename: str, model_type: str,
 def _download_single_file(url: str, filename: str, catalog_entry: dict | None = None):
     """Download a single file (LLM GGUF) into quarantine.
 
-    If a catalog_entry is provided, post-download verification checks the
-    file size (within 5% tolerance) and SHA-256 hash (if a real pin exists).
+    Catalog downloads are streamed into a no-follow exclusive inode and must
+    exactly match both their byte-count and SHA-256 pins before publication.
     """
     if not _is_safe_catalog_name(filename):
         raise ValueError("invalid catalog filename")
@@ -1676,66 +2417,143 @@ def _download_single_file(url: str, filename: str, catalog_entry: dict | None = 
     if dest.exists():
         raise ValueError("artifact already exists in quarantine")
 
+    expected_size: int | None = None
+    expected_hash = ""
+    if catalog_entry is not None:
+        raw_expected_size = catalog_entry.get("expected_size_bytes")
+        expected_hash = str(catalog_entry.get("expected_sha256", ""))
+        if (
+            isinstance(raw_expected_size, bool)
+            or not isinstance(raw_expected_size, int)
+            or not 1 <= raw_expected_size <= _CATALOG_MAX_SINGLE_FILE_BYTES
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+        ):
+            raise ValueError("catalog entry is missing an immutable file pin")
+        expected_size = raw_expected_size
+
+    descriptor: int | None = None
+    source_written = False
+    published = False
+    resp = None
     try:
         resp = _catalog_download_response(url)
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
+        raw_content_length = str(resp.headers.get("content-length", "")).strip()
+        try:
+            total = int(raw_content_length) if raw_content_length else 0
+        except ValueError as exc:
+            raise ValueError("download response has an invalid content length") from exc
+        if total < 0 or total > _CATALOG_MAX_SINGLE_FILE_BYTES:
+            raise ValueError("download response exceeds the catalog size limit")
+        if expected_size is not None and total and total != expected_size:
+            raise ValueError("download response does not match the catalog size pin")
 
-        with open(tmp_dest, "wb") as f:
+        downloaded = 0
+        digest = hashlib.sha256()
+        descriptor = os.open(
+            tmp_dest,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o660,
+        )
+        with os.fdopen(descriptor, "wb") as f:
+            descriptor = None
             for chunk in resp.iter_content(chunk_size=1 << 20):
                 if not chunk:
                     continue
-                f.write(chunk)
+                if not isinstance(chunk, bytes):
+                    raise ValueError("download response produced non-binary data")
                 downloaded += len(chunk)
+                hard_limit = expected_size or _CATALOG_MAX_SINGLE_FILE_BYTES
+                if downloaded > hard_limit:
+                    raise ValueError("download exceeded its immutable size limit")
+                f.write(chunk)
+                digest.update(chunk)
                 _download_progress_update(filename, downloaded=downloaded, total=total)
+            f.flush()
+            os.fsync(f.fileno())
 
-        # Post-download verification
-        if catalog_entry:
-            actual_size = tmp_dest.stat().st_size
-            expected_size = catalog_entry.get("expected_size_bytes")
-            if expected_size and expected_size > 0:
-                tolerance = 0.05
-                if abs(actual_size - expected_size) / expected_size > tolerance:
-                    raise ValueError(
-                        f"downloaded file size {actual_size} differs from expected "
-                        f"{expected_size} by more than 5%"
-                    )
+        if expected_size is not None and downloaded != expected_size:
+            raise ValueError("downloaded file does not match the catalog size pin")
+        actual_hash = digest.hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            raise ValueError(
+                f"SHA-256 mismatch: expected {expected_hash[:16]}..., "
+                f"got {actual_hash[:16]}..."
+            )
 
-            expected_hash = catalog_entry.get("expected_sha256", "")
-            if expected_hash and expected_hash != "pin-on-first-download":
-                import hashlib
-                h = hashlib.sha256()
-                with open(tmp_dest, "rb") as f:
-                    for chunk in iter(lambda: f.read(1 << 20), b""):
-                        h.update(chunk)
-                actual_hash = h.hexdigest()
-                if actual_hash != expected_hash:
-                    raise ValueError(
-                        f"SHA-256 mismatch: expected {expected_hash[:16]}..., "
-                        f"got {actual_hash[:16]}..."
-                    )
-
-        source_meta.write_text(resp.url)
-        os.replace(tmp_dest, dest)
+        encoded_source = url.encode("utf-8")
+        if len(encoded_source) > 4096 or any(
+            byte < 0x20 or byte == 0x7F for byte in encoded_source
+        ):
+            raise ValueError("catalog source URL is invalid")
+        _write_quarantine_metadata(source_meta, encoded_source)
+        source_written = True
+        _publish_noreplace(tmp_dest, dest)
+        published = True
     except Exception:
-        tmp_dest.unlink(missing_ok=True)
-        source_meta.unlink(missing_ok=True)
+        if source_written:
+            source_meta.unlink(missing_ok=True)
         raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if not published:
+            tmp_dest.unlink(missing_ok=True)
+        close = getattr(resp, "close", None)
+        if callable(close):
+            close()
 
 
-def _download_diffusion_model(url: str, dirname: str):
-    """Download a diffusion model repo into quarantine using HTTPS only."""
+def _download_diffusion_model(
+    url: str,
+    dirname: str,
+    *,
+    catalog_entry: dict | None = None,
+):
+    """Download an immutable, manifest-pinned diffusion repository."""
     if not _is_safe_catalog_name(dirname):
         raise ValueError("invalid catalog directory name")
+    if catalog_entry is None:
+        raise ValueError("diffusion downloads require an immutable catalog pin")
 
     allowed, _, reason = _airlock_check_egress(url, method="GET")
     if not allowed:
         raise ValueError(reason or "airlock blocked download")
     repo_id = _huggingface_repo_id_from_url(url)
-    revision = _huggingface_repo_revision(repo_id)
+    revision = str(catalog_entry.get("expected_revision", ""))
+    expected_manifest_sha256 = str(
+        catalog_entry.get("expected_manifest_sha256", "")
+    )
+    expected_total_size = catalog_entry.get("expected_size_bytes")
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", revision)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha256)
+        or isinstance(expected_total_size, bool)
+        or not isinstance(expected_total_size, int)
+        or not 1 <= expected_total_size <= _CATALOG_MAX_DIRECTORY_BYTES
+    ):
+        raise ValueError("diffusion catalog entry is missing immutable pins")
+
     repo_files, variant = _select_diffusion_repo_files(
         _huggingface_tree(repo_id, revision=revision)
     )
+    if not 1 <= len(repo_files) <= _CATALOG_MAX_DIRECTORY_FILES:
+        raise ValueError("diffusion repository has an unsafe file count")
+    total_bytes = sum(item["size"] for item in repo_files)
+    if total_bytes != expected_total_size:
+        raise ValueError("diffusion repository size does not match the catalog pin")
+    manifest_payload = _huggingface_manifest_payload(
+        source_url=url,
+        repo_id=repo_id,
+        revision=revision,
+        variant=variant,
+        files=repo_files,
+    )
+    if _canonical_manifest_sha256(manifest_payload) != expected_manifest_sha256:
+        raise ValueError("diffusion repository manifest does not match the catalog pin")
 
     dest = _quarantine_path(dirname)
     tmp_dest = _quarantine_partial_path(dirname)
@@ -1744,26 +2562,27 @@ def _download_diffusion_model(url: str, dirname: str):
     if dest.exists():
         raise ValueError("artifact already exists in quarantine")
 
-    if tmp_dest.exists():
-        shutil.rmtree(tmp_dest, ignore_errors=True)
-
     with _download_lock:
+        existing_state = _active_downloads.get(dirname, {})
         _active_downloads[dirname] = {
+            **existing_state,
             "status": "downloading",
             "progress": 0,
             "message": "Preparing Hugging Face repository download...",
             "updated_at": time.time(),
         }
 
+    source_written = False
+    manifest_written = False
+    published = False
     try:
-        tmp_dest.mkdir(parents=True, exist_ok=False)
-        total_bytes = sum(item["size"] for item in repo_files)
+        tmp_dest.mkdir(mode=0o750, parents=True, exist_ok=False)
         downloaded = 0
 
         for index, item in enumerate(repo_files, start=1):
             rel_path = item["path"]
             target_path = tmp_dest / Path(*rel_path.split("/"))
-            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
 
             file_url = (
                 "https://huggingface.co/"
@@ -1778,38 +2597,107 @@ def _download_diffusion_model(url: str, dirname: str):
             )
 
             resp = _catalog_download_response(file_url)
-            with open(target_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    if not chunk:
-                        continue
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    _download_progress_update(
-                        dirname,
-                        downloaded=downloaded,
-                        total=total_bytes,
-                        message=message,
+            descriptor: int | None = None
+            file_downloaded = 0
+            if item["oid_type"] == "sha256":
+                file_digest = hashlib.sha256()
+            else:
+                file_digest = hashlib.sha1()  # nosec B324 - Git blob identity
+                file_digest.update(f"blob {item['size']}\0".encode("ascii"))
+            try:
+                raw_content_length = str(
+                    resp.headers.get("content-length", "")
+                ).strip()
+                try:
+                    content_length = (
+                        int(raw_content_length) if raw_content_length else 0
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"invalid content length for {rel_path}"
+                    ) from exc
+                if content_length and content_length != item["size"]:
+                    raise ValueError(
+                        f"download response size mismatch for {rel_path}"
                     )
 
-            if item["size"] and target_path.stat().st_size != item["size"]:
-                raise ValueError(f"downloaded file size mismatch for {rel_path}")
+                descriptor = os.open(
+                    target_path,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o640,
+                )
+                with os.fdopen(descriptor, "wb") as f:
+                    descriptor = None
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if not chunk:
+                            continue
+                        if not isinstance(chunk, bytes):
+                            raise ValueError(
+                                f"download returned non-binary data for {rel_path}"
+                            )
+                        file_downloaded += len(chunk)
+                        downloaded += len(chunk)
+                        if (
+                            file_downloaded > item["size"]
+                            or downloaded > total_bytes
+                        ):
+                            raise ValueError(
+                                f"download exceeded immutable size for {rel_path}"
+                            )
+                        f.write(chunk)
+                        file_digest.update(chunk)
+                        _download_progress_update(
+                            dirname,
+                            downloaded=downloaded,
+                            total=total_bytes,
+                            message=message,
+                        )
+                    f.flush()
+                    os.fsync(f.fileno())
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                close = getattr(resp, "close", None)
+                if callable(close):
+                    close()
 
-        source_meta.write_text(url)
+            if file_downloaded != item["size"]:
+                raise ValueError(f"downloaded file size mismatch for {rel_path}")
+            if file_digest.hexdigest() != item["oid"]:
+                raise ValueError(f"downloaded file digest mismatch for {rel_path}")
+
+        if downloaded != total_bytes:
+            raise ValueError("diffusion download did not match its total size pin")
+        _write_quarantine_metadata(source_meta, url.encode("utf-8"))
+        source_written = True
         _write_huggingface_manifest(
             manifest_meta,
-            source_url=url,
-            repo_id=repo_id,
-            revision=revision,
-            variant=variant,
-            files=repo_files,
+            manifest_payload,
         )
-        os.replace(tmp_dest, dest)
+        manifest_written = True
+        _publish_directory_noreplace(tmp_dest, dest)
+        published = True
     except Exception:
-        if tmp_dest.exists():
-            shutil.rmtree(tmp_dest, ignore_errors=True)
-        source_meta.unlink(missing_ok=True)
-        manifest_meta.unlink(missing_ok=True)
+        if source_written:
+            source_meta.unlink(missing_ok=True)
+        if manifest_written:
+            manifest_meta.unlink(missing_ok=True)
         raise
+    finally:
+        if not published:
+            try:
+                metadata = tmp_dest.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(
+                    metadata.st_mode
+                ):
+                    shutil.rmtree(tmp_dest)
 
 
 # --- API: Models ---
@@ -1817,7 +2705,11 @@ def _download_diffusion_model(url: str, dirname: str):
 @app.route("/api/models")
 def list_models():
     try:
-        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=5)
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(target="registry"),
+            timeout=5,
+        )
         return jsonify(resp.json())
     except requests.ConnectionError:
         return jsonify([])
@@ -1829,7 +2721,7 @@ def inference_status():
     try:
         models_resp = requests.get(
             f"{REGISTRY_URL}/v1/models",
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=5,
         )
         registry_models = models_resp.json()
@@ -1909,7 +2801,11 @@ def catalog_auth_status():
 def model_fsverity_status():
     """Check fs-verity status of all trusted models."""
     try:
-        resp = requests.get(f"{REGISTRY_URL}/v1/models", timeout=5)
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/models",
+            headers=_service_headers(target="registry"),
+            timeout=5,
+        )
         models = resp.json()
         results = []
         sandbox = _is_sandbox_deployment()
@@ -1962,7 +2858,7 @@ def verify_model():
         resp = requests.post(
             f"{REGISTRY_URL}/v1/model/verify",
             params={"name": name},
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=30,
         )
         return _proxy_json_or_error(resp)
@@ -1979,7 +2875,7 @@ def verify_model_manifest():
         resp = requests.post(
             f"{REGISTRY_URL}/v1/model/verify-manifest",
             params={"name": name},
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=120,
         )
         return _proxy_json_or_error(resp)
@@ -1995,7 +2891,7 @@ def delete_model():
         resp = requests.delete(
             f"{REGISTRY_URL}/v1/model/delete",
             params={"name": name},
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=10,
         )
         return _proxy_json_or_error(resp)
@@ -2042,16 +2938,12 @@ def import_model():
             }), 400
 
         # UUID prefix prevents collision (secure_filename can collapse names)
-        dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-        dest = _quarantine_path(dest_name)
-        QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+        dest_name = f"{uuid.uuid4().hex}_{safe_name}"
         try:
-            uploaded.save(str(dest))
+            dest, _size = _stage_quarantine_stream(uploaded.stream, dest_name)
+        except OverflowError:
+            return jsonify({"error": "model exceeds upload size limit"}), 413
         except OSError as exc:
-            try:
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
             return _storage_error_response(exc, action="model_import", filename=raw_name)
         _ui_audit.append("model_imported", {
             "original_name": raw_name, "safe_name": dest_name,
@@ -2063,12 +2955,18 @@ def import_model():
             "message": "File is in quarantine. It will be automatically scanned and promoted.",
         }), 202
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON body must be an object"}), 400
+    if any(key != "path" for key in body):
+        return jsonify({"error": "unknown import field"}), 400
     local_path = body.get("path", "")
+    if not isinstance(local_path, str):
+        return jsonify({"error": "path must be a string"}), 400
     if local_path:
         try:
             src = _staged_import_path(local_path)
-        except ValueError:
+        except (OSError, ValueError):
             _ui_audit.append("import_rejected", {
                 "reason": "outside_staging_dir", "path": str(local_path),
             })
@@ -2076,15 +2974,6 @@ def import_model():
                 "error": "local imports restricted to staging directory",
                 "staging_dir": str(IMPORT_STAGING_DIR),
             }), 403
-
-        # Require regular file — reject symlinks, FIFOs, device nodes, sockets.
-        # Uses lstat (follow_symlinks=False) as the single check.
-        try:
-            st = os.lstat(str(src))
-        except OSError:
-            return jsonify({"error": "file not found"}), 404
-        if not stat.S_ISREG(st.st_mode):
-            return jsonify({"error": "path is not a regular file"}), 400
 
         ext = src.suffix.lower()
         if ext not in ALLOWED_EXTENSIONS:
@@ -2097,16 +2986,22 @@ def import_model():
         if not safe_name or safe_name in (".", ".."):
             return jsonify({"error": "invalid filename"}), 400
 
-        dest_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
-        dest = _quarantine_path(dest_name)
-        QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+        dest_name = f"{uuid.uuid4().hex}_{safe_name}"
         try:
-            shutil.copy2(str(src), str(dest))
+            src, source_stream = _open_staged_import(local_path)
+            with source_stream:
+                dest, _size = _stage_quarantine_stream(source_stream, dest_name)
+        except FileNotFoundError:
+            return jsonify({"error": "file not found"}), 404
+        except OverflowError:
+            return jsonify({"error": "model exceeds upload size limit"}), 413
+        except ValueError as exc:
+            _ui_audit.append("import_rejected", {
+                "reason": "unsafe_staging_file",
+                "path": str(local_path),
+            })
+            return jsonify({"error": str(exc)}), 400
         except OSError as exc:
-            try:
-                dest.unlink(missing_ok=True)
-            except OSError:
-                pass
             return _storage_error_response(exc, action="model_import", filename=src.name)
         _ui_audit.append("model_imported", {
             "original_name": src.name, "safe_name": dest_name,
@@ -2199,7 +3094,7 @@ def _verify_active_model(body: dict | None = None) -> dict:
         # Get promoted models from the registry.
         models_resp = requests.get(
             f"{REGISTRY_URL}/v1/models",
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=3,
         )
         models = models_resp.json()
@@ -2245,7 +3140,7 @@ def _verify_active_model(body: dict | None = None) -> dict:
         verify_resp = requests.post(
             f"{REGISTRY_URL}/v1/model/verify",
             params={"name": loaded_name},
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=30,
         )
         result = verify_resp.json()
@@ -2357,7 +3252,7 @@ def web_search():
         resp = requests.post(
             f"{SEARCH_MEDIATOR_URL}/v1/search",
             json=request.get_json(),
-            headers=_service_headers(),
+            headers=_service_headers(target="search-mediator"),
             timeout=45,
         )
         return jsonify(resp.json()), resp.status_code
@@ -2369,7 +3264,11 @@ def web_search():
 def search_status():
     """Check if Tor-routed search is available."""
     try:
-        resp = requests.get(f"{SEARCH_MEDIATOR_URL}/health", timeout=5)
+        resp = requests.get(
+            f"{SEARCH_MEDIATOR_URL}/health",
+            headers=_service_headers(target="search-mediator"),
+            timeout=5,
+        )
         data = resp.json()
         available = data.get("search_enabled") is not False and data.get("searxng_reachable") is not False
         data["search_available"] = available
@@ -2416,7 +3315,7 @@ def chat_with_search():
                 search_resp = requests.post(
                     f"{SEARCH_MEDIATOR_URL}/v1/search",
                     json={"query": last_user["content"]},
-                    headers=_service_headers(),
+                    headers=_service_headers(target="search-mediator"),
                     timeout=45,
                 )
                 if search_resp.status_code == 200:
@@ -2489,6 +3388,7 @@ def generate_image():
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/image",
             json=body,
+            headers=_service_headers(target="diffusion"),
             timeout=600,
         )
         return jsonify(resp.json()), resp.status_code
@@ -2506,6 +3406,7 @@ def generate_video():
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/video",
             json=body,
+            headers=_service_headers(target="diffusion"),
             timeout=1800,
         )
         return jsonify(resp.json()), resp.status_code
@@ -2523,6 +3424,7 @@ def generate_img2img():
         resp = requests.post(
             f"{DIFFUSION_URL}/v1/generate/img2img",
             json=body,
+            headers=_service_headers(target="diffusion"),
             timeout=600,
         )
         return jsonify(resp.json()), resp.status_code
@@ -2534,7 +3436,11 @@ def generate_img2img():
 def diffusion_models():
     """List available diffusion models from the diffusion worker."""
     try:
-        resp = requests.get(f"{DIFFUSION_URL}/v1/models", timeout=5)
+        resp = requests.get(
+            f"{DIFFUSION_URL}/v1/models",
+            headers=_service_headers(target="diffusion"),
+            timeout=5,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify({
@@ -2550,7 +3456,11 @@ def diffusion_models():
 def generation_outputs():
     """List recent generated outputs from the diffusion worker."""
     try:
-        resp = requests.get(f"{DIFFUSION_URL}/v1/outputs", timeout=5)
+        resp = requests.get(
+            f"{DIFFUSION_URL}/v1/outputs",
+            headers=_service_headers(target="diffusion"),
+            timeout=5,
+        )
         return jsonify(resp.json()), resp.status_code
     except requests.ConnectionError:
         return jsonify([])
@@ -2564,6 +3474,7 @@ def generation_output_file(filename: str):
     try:
         resp = requests.get(
             f"{DIFFUSION_URL}/v1/outputs/{quote(filename)}",
+            headers=_service_headers(target="diffusion"),
             stream=True,
             timeout=30,
         )
@@ -2659,6 +3570,443 @@ PROFILE_REQUEST_PATH = "/run/secure-ai-ui/profile-request"
 PROFILE_RESULT_PATH = "/run/secure-ai/profile-result.json"
 APPLIANCE_CONFIG_PATH = "/etc/secure-ai/config/appliance.yaml"
 VALID_PROFILES = {"offline_private", "research", "full_lab"}
+INVALID_PROFILE_OVERRIDE = "invalid_override"
+UNREADY_SANDBOX_PROFILE = "sandbox_generation_unready"
+SANDBOX_READY_GENERATION_PATH = (
+    "/run/secure-ai-generation-status/ready-generation"
+)
+SANDBOX_READY_SESSION_PATH = (
+    "/run/secure-ai-generation-status/ready-session"
+)
+SANDBOX_GENERATION_MANIFEST_PATH = (
+    "/var/lib/secure-ai/state/generation.json"
+)
+SANDBOX_GENERATION_PROFILE_PATH = (
+    "/var/lib/secure-ai/state/profile.json"
+)
+_SANDBOX_GENERATION_RE = re.compile(r"[0-9a-f]{64}")
+_WINDOWS_REPARSE_POINT = 0x400
+_SANDBOX_GENERATION_FORMAT = 1
+_MAX_SANDBOX_MANIFEST_BYTES = 262_144
+_MAX_SANDBOX_MANIFEST_ENTRIES = 256
+_MAX_SANDBOX_PROFILE_BYTES = 4096
+_MAX_SANDBOX_CONTROL_HEALTH_BYTES = 4096
+_SANDBOX_CONTROL_PROTOCOL_VERSION = 3
+
+
+def _read_stable_sandbox_file(path: Path, maximum_size: int) -> bytes:
+    """Read one bounded regular file without accepting a path race."""
+    if not path.is_absolute() or maximum_size < 1:
+        raise OSError("sandbox runtime file path is invalid")
+    parent = path.parent
+    descriptor = -1
+    try:
+        parent_before = os.lstat(parent)
+        metadata = os.lstat(path)
+        if (
+            not stat.S_ISDIR(parent_before.st_mode)
+            or getattr(parent_before, "st_file_attributes", 0)
+            & _WINDOWS_REPARSE_POINT
+            or parent_before.st_mode & 0o022
+            or not stat.S_ISREG(metadata.st_mode)
+            or getattr(metadata, "st_file_attributes", 0)
+            & _WINDOWS_REPARSE_POINT
+            or metadata.st_size > maximum_size
+            or metadata.st_nlink != 1
+            or metadata.st_mode & 0o022
+        ):
+            raise OSError("sandbox runtime file is unsafe")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or getattr(opened, "st_file_attributes", 0)
+            & _WINDOWS_REPARSE_POINT
+            or opened.st_size > maximum_size
+            or opened.st_nlink != 1
+            or opened.st_mode & 0o022
+            or (opened.st_dev, opened.st_ino)
+            != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise OSError("sandbox runtime file changed before reading")
+        payload = bytearray()
+        while len(payload) <= maximum_size:
+            chunk = os.read(
+                descriptor,
+                min(65_536, maximum_size + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > maximum_size:
+            raise OSError("sandbox runtime file exceeds its size limit")
+        opened_after = os.fstat(descriptor)
+        path_after = os.lstat(path)
+        parent_after = os.lstat(parent)
+        if (
+            (opened_after.st_dev, opened_after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or (path_after.st_dev, path_after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or not stat.S_ISREG(path_after.st_mode)
+            or getattr(path_after, "st_file_attributes", 0)
+            & _WINDOWS_REPARSE_POINT
+            or path_after.st_size > maximum_size
+            or path_after.st_nlink != 1
+            or path_after.st_mode & 0o022
+            or (parent_after.st_dev, parent_after.st_ino)
+            != (parent_before.st_dev, parent_before.st_ino)
+            or not stat.S_ISDIR(parent_after.st_mode)
+            or getattr(parent_after, "st_file_attributes", 0)
+            & _WINDOWS_REPARSE_POINT
+            or parent_after.st_mode & 0o022
+        ):
+            raise OSError("sandbox runtime file changed while being read")
+        return bytes(payload)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _read_ready_state_value(
+    environment_name: str,
+    default_path: str,
+) -> str | None:
+    marker_value = os.getenv(environment_name, default_path)
+    if not marker_value:
+        return None
+    try:
+        payload = _read_stable_sandbox_file(Path(marker_value), 64)
+        ready = payload.decode("ascii")
+    except (OSError, UnicodeError):
+        return None
+    if not _SANDBOX_GENERATION_RE.fullmatch(ready):
+        return None
+    return ready
+
+
+def _read_ready_state_markers() -> tuple[str, str] | None:
+    generation = _read_ready_state_value(
+        "SANDBOX_READY_GENERATION_PATH",
+        SANDBOX_READY_GENERATION_PATH,
+    )
+    session_id = _read_ready_state_value(
+        "SANDBOX_READY_SESSION_PATH",
+        SANDBOX_READY_SESSION_PATH,
+    )
+    if generation is None or session_id is None:
+        return None
+    # Re-read both after the pair is assembled. An invalidation or publication
+    # between reads never becomes an accepted mixed state.
+    if (
+        _read_ready_state_value(
+            "SANDBOX_READY_GENERATION_PATH",
+            SANDBOX_READY_GENERATION_PATH,
+        )
+        != generation
+        or _read_ready_state_value(
+            "SANDBOX_READY_SESSION_PATH",
+            SANDBOX_READY_SESSION_PATH,
+        )
+        != session_id
+    ):
+        return None
+    return generation, session_id
+
+
+def _unique_sandbox_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _load_strict_sandbox_json(payload: bytes):
+    return json.loads(
+        payload.decode("utf-8"),
+        object_pairs_hook=_unique_sandbox_json_object,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"invalid JSON constant: {value}")
+        ),
+    )
+
+
+def _profile_from_generation_manifest(
+    expected_generation: str,
+    profile_payload: bytes,
+    manifest_payload: bytes,
+) -> str | None:
+    try:
+        manifest = _load_strict_sandbox_json(manifest_payload)
+    except (UnicodeError, ValueError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"files", "generation", "version"}
+        or manifest.get("generation") != expected_generation
+        or manifest.get("version") != _SANDBOX_GENERATION_FORMAT
+        or isinstance(manifest.get("version"), bool)
+        or not isinstance(manifest.get("files"), list)
+        or not 1 <= len(manifest["files"]) <= _MAX_SANDBOX_MANIFEST_ENTRIES
+    ):
+        return None
+
+    seen_paths = set()
+    profile_entry = None
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "path",
+            "sha256",
+            "size",
+        }:
+            return None
+        relative_path = entry.get("path")
+        digest = entry.get("sha256")
+        size = entry.get("size")
+        if (
+            not isinstance(relative_path, str)
+            or not relative_path
+            or relative_path in seen_paths
+            or "\\" in relative_path
+            or Path(relative_path).is_absolute()
+            or Path(relative_path).as_posix() != relative_path
+            or any(
+                part in {"", ".", ".."}
+                for part in Path(relative_path).parts
+            )
+            or not isinstance(digest, str)
+            or not _SANDBOX_GENERATION_RE.fullmatch(digest)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            return None
+        seen_paths.add(relative_path)
+        if relative_path == "profile.json":
+            profile_entry = entry
+    if (
+        profile_entry is None
+        or profile_entry["size"] != len(profile_payload)
+        or not hmac.compare_digest(
+            profile_entry["sha256"],
+            hashlib.sha256(profile_payload).hexdigest(),
+        )
+    ):
+        return None
+    try:
+        profile_data = _load_strict_sandbox_json(profile_payload)
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(profile_data, dict) or set(profile_data) != {"active"}:
+        return None
+    profile = profile_data.get("active")
+    return (
+        profile
+        if isinstance(profile, str) and profile in VALID_PROFILES
+        else None
+    )
+
+
+def _sandbox_controller_proves_profile(
+    profile: str,
+    session_id: str,
+) -> bool:
+    url, token = _sandbox_control_config()
+    if (
+        not url
+        or not token
+        or not isinstance(profile, str)
+        or profile not in VALID_PROFILES
+        or not isinstance(session_id, str)
+        or not _SANDBOX_GENERATION_RE.fullmatch(session_id)
+    ):
+        return False
+    challenge = os.urandom(32).hex()
+    try:
+        response = requests.get(
+            f"{url}/health?challenge={challenge}",
+            headers={"Accept-Encoding": "identity"},
+            stream=True,
+            timeout=(1.0, 1.0),
+        )
+    except requests.RequestException:
+        return False
+    try:
+        if response.status_code != 200:
+            return False
+        content_length = response.headers.get("Content-Length", "")
+        if content_length:
+            try:
+                declared_length = int(content_length)
+            except (TypeError, ValueError):
+                return False
+            if not 0 <= declared_length <= _MAX_SANDBOX_CONTROL_HEALTH_BYTES:
+                return False
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=4096):
+            if not isinstance(chunk, bytes):
+                return False
+            total += len(chunk)
+            if total > _MAX_SANDBOX_CONTROL_HEALTH_BYTES:
+                return False
+            chunks.append(chunk)
+        payload = _load_strict_sandbox_json(b"".join(chunks))
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        requests.RequestException,
+    ):
+        return False
+    finally:
+        try:
+            response.close()
+        except requests.RequestException:
+            pass
+    if not isinstance(payload, dict):
+        return False
+    protocol_version = payload.get("protocol_version")
+    state_protocol_version = payload.get("state_protocol_version")
+    proof = payload.get("proof")
+    state_proof = payload.get("state_proof")
+    if (
+        set(payload) != {
+            "controller",
+            "profile",
+            "profile_state",
+            "proof",
+            "protocol_version",
+            "session_id",
+            "state_proof",
+            "state_protocol_version",
+            "status",
+        }
+        or payload.get("status") != "ok"
+        or payload.get("controller") != "secai-sandbox-control"
+        or type(protocol_version) is not int
+        or protocol_version != _SANDBOX_CONTROL_PROTOCOL_VERSION
+        or type(state_protocol_version) is not int
+        or state_protocol_version != 1
+        or payload.get("profile_state") != "active"
+        or payload.get("profile") != profile
+        or not isinstance(payload.get("session_id"), str)
+        or not hmac.compare_digest(
+            payload["session_id"],
+            session_id,
+        )
+        or not isinstance(proof, str)
+        or not _SANDBOX_GENERATION_RE.fullmatch(proof)
+        or not isinstance(state_proof, str)
+        or not _SANDBOX_GENERATION_RE.fullmatch(state_proof)
+    ):
+        return False
+    health_message = (
+        "secai-sandbox-control-health:"
+        f"v{_SANDBOX_CONTROL_PROTOCOL_VERSION}:{challenge}"
+    ).encode("ascii")
+    expected_health_proof = hmac.new(
+        token.encode("ascii"),
+        health_message,
+        hashlib.sha256,
+    ).hexdigest()
+    state_message = "\n".join((
+        "secai-sandbox-control-state:v1",
+        challenge,
+        session_id,
+        "ok",
+        "active",
+        profile,
+    )).encode("ascii")
+    expected_state_proof = hmac.new(
+        token.encode("ascii"),
+        state_message,
+        hashlib.sha256,
+    ).hexdigest()
+    return (
+        hmac.compare_digest(proof, expected_health_proof)
+        and hmac.compare_digest(state_proof, expected_state_proof)
+    )
+
+
+def _ready_sandbox_profile() -> str | None:
+    expected = os.getenv("SECAI_RUNTIME_GENERATION", "")
+    if not _SANDBOX_GENERATION_RE.fullmatch(expected):
+        return None
+    ready_before = _read_ready_state_markers()
+    if (
+        ready_before is None
+        or not hmac.compare_digest(ready_before[0], expected)
+    ):
+        return None
+    profile_path = Path(os.getenv(
+        "SANDBOX_GENERATION_PROFILE_PATH",
+        SANDBOX_GENERATION_PROFILE_PATH,
+    ))
+    manifest_path = Path(os.getenv(
+        "SANDBOX_GENERATION_MANIFEST_PATH",
+        SANDBOX_GENERATION_MANIFEST_PATH,
+    ))
+    try:
+        profile_payload = _read_stable_sandbox_file(
+            profile_path,
+            _MAX_SANDBOX_PROFILE_BYTES,
+        )
+        manifest_payload = _read_stable_sandbox_file(
+            manifest_path,
+            _MAX_SANDBOX_MANIFEST_BYTES,
+        )
+    except OSError:
+        return None
+    profile = _profile_from_generation_manifest(
+        expected,
+        profile_payload,
+        manifest_payload,
+    )
+    ready_after = _read_ready_state_markers()
+    if (
+        profile is None
+        or ready_after is None
+        or ready_after != ready_before
+        or not _sandbox_controller_proves_profile(
+            profile,
+            ready_before[1],
+        )
+    ):
+        return None
+    # The launcher invalidates the generation marker before stopping or
+    # replacing services. Re-check it after the network challenge so a stop
+    # racing the proof cannot leave this request with a stale active profile.
+    return (
+        profile
+        if _read_ready_state_markers() == ready_before
+        else None
+    )
+
+
+def _sandbox_generation_is_ready() -> bool:
+    """Verify local generation state and a live host-controller proof."""
+    return _ready_sandbox_profile() is not None
+
+
+def _sandbox_profile_unready_response():
+    return jsonify({
+        "active": None,
+        "locked": False,
+        "locked_by": "sandbox_generation_unready",
+        "error": (
+            "The sandbox generation has not completed launcher health "
+            "verification. Retry the host sandbox launcher."
+        ),
+        "definitions": {},
+    }), 503
 
 
 def _read_profile_definitions():
@@ -2666,23 +4014,43 @@ def _read_profile_definitions():
     try:
         with open(APPLIANCE_CONFIG_PATH) as f:
             config = yaml.safe_load(f)
-        return config.get("profile", {}).get("definitions", {})
+        definitions = config.get("profile", {}).get("definitions", {})
+        return definitions if isinstance(definitions, dict) else {}
     except Exception:
         return {}
 
 
 def _read_active_profile():
     """Read the active profile, respecting override precedence."""
+    sandbox_deployment = _is_sandbox_deployment()
+    if sandbox_deployment:
+        cache_name = "_secai_ready_sandbox_profile"
+        if has_request_context() and hasattr(g, cache_name):
+            ready_profile = getattr(g, cache_name)
+        else:
+            ready_profile = _ready_sandbox_profile()
+            if has_request_context():
+                setattr(g, cache_name, ready_profile)
+        return (
+            (ready_profile, False)
+            if ready_profile is not None
+            else (UNREADY_SANDBOX_PROFILE, False)
+        )
+
     # Operator override (hard lock)
     if os.path.exists(PROFILE_OVERRIDE_PATH):
         try:
             with open(PROFILE_OVERRIDE_PATH) as f:
                 data = yaml.safe_load(f)
-            name = data.get("profile", "")
+            name = data.get("profile", "") if isinstance(data, dict) else ""
             if name in VALID_PROFILES:
                 return name, True  # (profile_name, is_locked)
-        except Exception:
+        except (OSError, UnicodeError, yaml.YAMLError):
             pass
+        # An operator-created override is authoritative. If it is unreadable
+        # or invalid, never silently fall through to mutable runtime state.
+        log.error("profile override is present but invalid; profile changes are disabled")
+        return INVALID_PROFILE_OVERRIDE, True
 
     # Runtime state
     if os.path.exists(PROFILE_STATE_PATH):
@@ -2695,22 +4063,7 @@ def _read_active_profile():
         except Exception:
             pass
 
-    # Compose sandbox fallback: infer the closest profile from live service
-    # availability and the rendered appliance mode when no state file exists.
-    if _is_sandbox_deployment():
-        try:
-            resp = requests.get(f"{DIFFUSION_URL}/health", timeout=1)
-            if resp.status_code == 200:
-                return "full_lab", False
-        except Exception:
-            pass
-        try:
-            if load_appliance_config().get("appliance", {}).get("mode") == "online-augmented":
-                return "research", False
-        except Exception:
-            pass
-
-    # Fallback
+    # Native appliance fallback
     return "offline_private", False
 
 
@@ -2718,6 +4071,19 @@ def _read_active_profile():
 def get_profile():
     """Return active profile, definitions, and lock status."""
     active, locked = _read_active_profile()
+    if active == UNREADY_SANDBOX_PROFILE:
+        return _sandbox_profile_unready_response()
+    if active == INVALID_PROFILE_OVERRIDE:
+        return jsonify({
+            "active": None,
+            "locked": True,
+            "locked_by": "invalid_operator_override",
+            "error": (
+                "The operator profile override is invalid. Correct "
+                "/etc/secure-ai/local.d/profile.yaml from the local console."
+            ),
+            "definitions": {},
+        }), 503
     definitions = _read_profile_definitions()
 
     # Build a safe summary of each definition
@@ -2742,6 +4108,17 @@ def get_profile():
 def preview_profile():
     """Preview what would change if switching to a new profile."""
     active, locked = _read_active_profile()
+    if active == UNREADY_SANDBOX_PROFILE:
+        return jsonify({
+            "error": (
+                "Sandbox generation readiness is unknown; retry the host "
+                "sandbox launcher"
+            )
+        }), 503
+    if active == INVALID_PROFILE_OVERRIDE:
+        return jsonify({
+            "error": "Invalid operator profile override; local-console repair required"
+        }), 503
     if locked:
         return jsonify({
             "error": "Profile is locked by operator override at "
@@ -2800,6 +4177,10 @@ def select_profile():
             "The sandbox does not include the appliance profile path-unit controller. Change compose profiles outside the UI instead.",
         )
     active, locked = _read_active_profile()
+    if active == INVALID_PROFILE_OVERRIDE:
+        return jsonify({
+            "error": "Invalid operator profile override; local-console repair required"
+        }), 503
     if locked:
         return jsonify({
             "error": "Profile is locked by operator override at "
@@ -2818,15 +4199,13 @@ def select_profile():
     if os.path.exists(PROFILE_REQUEST_PATH):
         return jsonify({"status": "already_in_progress"}), 409
 
-    # Write request file atomically (same pattern as diffusion enable)
+    # Publish a complete request atomically; the path unit never sees a
+    # partially written profile name.
     try:
-        fd = os.open(
-            PROFILE_REQUEST_PATH,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            0o600,
+        _publish_runtime_request(
+            Path(PROFILE_REQUEST_PATH),
+            target.encode("utf-8"),
         )
-        os.write(fd, target.encode("utf-8"))
-        os.close(fd)
     except FileExistsError:
         return jsonify({"status": "already_in_progress"}), 409
     except OSError:
@@ -2839,6 +4218,18 @@ def select_profile():
 @app.route("/api/profile/status")
 def profile_status():
     """Read the result of the last profile change operation."""
+    active, locked = _read_active_profile()
+    if active == UNREADY_SANDBOX_PROFILE:
+        return jsonify({
+            "status": "unavailable",
+            "profile": None,
+            "locked": False,
+            "error": (
+                "Sandbox generation readiness is unknown; retry the host "
+                "sandbox launcher"
+            ),
+        }), 503
+
     if os.path.exists(PROFILE_RESULT_PATH):
         try:
             with open(PROFILE_RESULT_PATH) as f:
@@ -2851,7 +4242,12 @@ def profile_status():
     if os.path.exists(PROFILE_REQUEST_PATH):
         return jsonify({"status": "in_progress"})
 
-    active, locked = _read_active_profile()
+    if active == INVALID_PROFILE_OVERRIDE:
+        return jsonify({
+            "status": "configuration_error",
+            "locked": True,
+            "error": "Invalid operator profile override; local-console repair required",
+        }), 503
     return jsonify({"status": "idle", "profile": active, "locked": locked})
 
 
@@ -2863,10 +4259,40 @@ def sandbox_control_status():
             "sandbox_control",
             "Host-side sandbox automation is only used by the Docker sandbox.",
         )
+    active, _ = _read_active_profile()
+    if active == UNREADY_SANDBOX_PROFILE:
+        return jsonify({
+            "available": False,
+            "profile": None,
+            "error": (
+                "Sandbox generation readiness is unknown; retry the host "
+                "sandbox launcher"
+            ),
+        }), 503
     payload, status_code = _sandbox_control_request("GET", "/v1/status", timeout=2.0)
     payload.pop("output_tail", None)
-    active, _ = _read_active_profile()
-    payload.setdefault("profile", active)
+    protocol_version = payload.get("protocol_version")
+    state_protocol_version = payload.get("state_protocol_version")
+    if (
+        status_code != 200
+        or payload.get("available") is False
+        or payload.get("controller") != "secai-sandbox-control"
+        or type(protocol_version) is not int
+        or protocol_version != _SANDBOX_CONTROL_PROTOCOL_VERSION
+        or type(state_protocol_version) is not int
+        or state_protocol_version != 1
+        or payload.get("profile_state") != "active"
+        or payload.get("profile") != active
+    ):
+        payload.update({
+            "available": False,
+            "profile": None,
+            "error": (
+                "The sandbox controller is unavailable or no longer proves "
+                "the ready runtime state."
+            ),
+        })
+        return jsonify(payload), 503
     payload.setdefault("command", _sandbox_launch_command_for_profile(active))
     payload.setdefault("profiles", {
         name: {
@@ -2887,7 +4313,25 @@ def sandbox_control_apply():
 
     data = request.get_json(silent=True) or {}
     current, _ = _read_active_profile()
-    profile = str(data.get("profile") or current)
+    explicit_profile = data.get("profile")
+    if (
+        current == UNREADY_SANDBOX_PROFILE
+        and (
+            not isinstance(explicit_profile, str)
+            or explicit_profile not in VALID_PROFILES
+        )
+    ):
+        if "profile" in data:
+            return jsonify({
+                "error": f"invalid profile: {explicit_profile}"
+            }), 400
+        return jsonify({
+            "error": (
+                "Sandbox generation readiness is unknown; supply an explicit "
+                "valid profile to repair it"
+            )
+        }), 503
+    profile = str(explicit_profile or current)
     if profile not in VALID_PROFILES:
         return jsonify({"error": f"invalid profile: {profile}"}), 400
 
@@ -3040,14 +4484,9 @@ def diffusion_runtime_enable():
     if _diffusion_install_in_progress():
         return jsonify({"status": "already_installing"}), 409
 
-    # Atomically create the request marker
+    # Publish an empty, fully initialized marker atomically.
     try:
-        fd = os.open(
-            str(_DIFFUSION_REQUEST_MARKER),
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            0o600,
-        )
-        os.close(fd)
+        _publish_runtime_request(_DIFFUSION_REQUEST_MARKER)
     except FileExistsError:
         return jsonify({"status": "already_installing"}), 409
     except OSError as e:
@@ -3216,7 +4655,12 @@ def security_stats():
     stats = {}
     for name, url in [("tool_firewall", TOOL_FIREWALL_URL), ("airlock", AIRLOCK_URL)]:
         try:
-            resp = requests.get(f"{url}/v1/stats", timeout=2)
+            target = "tool-firewall" if name == "tool_firewall" else "airlock"
+            resp = requests.get(
+                f"{url}/v1/stats",
+                headers=_service_headers(target=target),
+                timeout=2,
+            )
             stats[name] = resp.json()
         except Exception:
             stats[name] = {"error": "unreachable"}
@@ -3236,10 +4680,13 @@ def appliance_state():
     else:
         try:
             r = _breakers["attestor"].call(
-                requests.get, f"{ATTESTOR_URL}/api/v1/attest", timeout=3
+                requests.get,
+                f"{ATTESTOR_URL}/api/v1/attest",
+                headers=_service_headers(target="attestor"),
+                timeout=3,
             )
             data = r.json()
-            subsystems["attestor"] = data.get("attestation_state", "unknown")
+            subsystems["attestor"] = data.get("state", data.get("attestation_state", "unknown"))
         except (CircuitOpenError, Exception):
             subsystems["attestor"] = "unknown"
 
@@ -3249,7 +4696,10 @@ def appliance_state():
     else:
         try:
             r = _breakers["integrity_monitor"].call(
-                requests.get, f"{INTEGRITY_MONITOR_URL}/api/v1/status", timeout=3
+                requests.get,
+                f"{INTEGRITY_MONITOR_URL}/api/v1/status",
+                headers=_service_headers(target="integrity-monitor"),
+                timeout=3,
             )
             data = r.json()
             subsystems["integrity_monitor"] = data.get("state", "unknown")
@@ -3257,19 +4707,35 @@ def appliance_state():
             subsystems["integrity_monitor"] = "unknown"
 
     # Incident Recorder — open incident counts
-    try:
-        r = _breakers["incident_recorder"].call(
-            requests.get, f"{INCIDENT_RECORDER_URL}/api/v1/stats", timeout=3
-        )
-        data = r.json()
-        open_sev = data.get("open_by_severity", {})
+    incident_recorder_available = _is_sandbox_deployment()
+    if _is_sandbox_deployment():
         subsystems["incidents"] = {
-            "open_critical": open_sev.get("critical", 0),
-            "open_high": open_sev.get("high", 0),
-            "total_open": data.get("open_incidents", 0),
+            "available": False,
+            "status": "not_available",
         }
-    except (CircuitOpenError, Exception):
-        subsystems["incidents"] = {"open_critical": 0, "open_high": 0, "total_open": 0}
+    else:
+        try:
+            r = _breakers["incident_recorder"].call(
+                requests.get,
+                f"{INCIDENT_RECORDER_URL}/api/v1/stats",
+                headers=_service_headers(target="incident-recorder"),
+                timeout=3,
+            )
+            r.raise_for_status()
+            data = r.json()
+            open_sev = data.get("open_by_severity", {})
+            subsystems["incidents"] = {
+                "available": True,
+                "open_critical": open_sev.get("critical", 0),
+                "open_high": open_sev.get("high", 0),
+                "total_open": data.get("open_incidents", 0),
+            }
+            incident_recorder_available = True
+        except (CircuitOpenError, Exception):
+            subsystems["incidents"] = {
+                "available": False,
+                "status": "unavailable",
+            }
 
     # Derive unified state
     inc = subsystems.get("incidents", {})
@@ -3281,6 +4747,7 @@ def appliance_state():
     degraded_triggers = [
         subsystems["attestor"] in ("degraded", "pending", "unknown"),
         subsystems["integrity_monitor"] in ("degraded", "unknown"),
+        not incident_recorder_available,
         isinstance(inc, dict) and inc.get("open_high", 0) > 0,
     ]
 
@@ -3322,44 +4789,58 @@ def slo_status():
 
 @app.route("/api/forensic/export")
 def forensic_export():
-    """Proxy forensic bundle download from the incident recorder."""
+    """Require the root-only local console workflow for forensic export."""
     if _is_sandbox_deployment():
         return _unsupported_feature(
             "forensic_export",
             "The sandbox bundle does not include the appliance incident-recorder service.",
         )
-    token = _read_service_token()
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        r = requests.get(
-            f"{INCIDENT_RECORDER_URL}/api/v1/forensic/export",
-            timeout=30, headers=headers,
+    return jsonify({
+        "error": "forensic export requires a root local-console session",
+        "command": "sudo secai-forensic export --output <path>",
+    }), 403
+
+
+_TARGET_TOKEN_ENV = {
+    "agent": "AGENT_TOKEN_PATH",
+    "airlock": "AIRLOCK_TOKEN_PATH",
+    "attestor": "ATTESTOR_TOKEN_PATH",
+    "diffusion": "DIFFUSION_TOKEN_PATH",
+    "incident-recorder": "INCIDENT_RECORDER_TOKEN_PATH",
+    "incident-operator": "INCIDENT_OPERATOR_TOKEN_PATH",
+    "integrity-monitor": "INTEGRITY_MONITOR_TOKEN_PATH",
+    "policy-engine": "POLICY_ENGINE_TOKEN_PATH",
+    "registry": "REGISTRY_TOKEN_PATH",
+    "search-mediator": "SEARCH_MEDIATOR_TOKEN_PATH",
+    "tool-firewall": "TOOL_FIREWALL_TOKEN_PATH",
+}
+
+
+def _read_service_token(target: str | None = None):
+    """Read the least-privilege credential for one target service."""
+    env_name = _TARGET_TOKEN_ENV.get(target or "", "SERVICE_TOKEN_PATH")
+    token_path = os.getenv(env_name, "").strip()
+    if not token_path and target is None:
+        token_path = os.getenv(
+            "SERVICE_TOKEN_PATH",
+            "/run/secure-ai/credentials/service-token",
         )
-        from flask import Response
-        resp = Response(r.content, status=r.status_code, content_type="application/json")
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        resp.headers["Content-Disposition"] = f"attachment; filename=forensic-bundle-{ts}.json"
-        return resp
-    except Exception:
-        log.exception("incident recorder unreachable")
-        return jsonify({"error": "incident recorder unreachable"}), 503
-
-
-def _read_service_token():
-    """Read the inter-service authentication token."""
-    token_path = os.getenv("SERVICE_TOKEN_PATH", "/run/secure-ai/service-token")
+    if not token_path:
+        return ""
     try:
         return Path(token_path).read_text().strip()
     except Exception:
         return ""
 
 
-def _service_headers(extra: dict | None = None) -> dict:
+def _service_headers(
+    extra: dict | None = None,
+    *,
+    target: str | None = None,
+) -> dict:
     """Return common headers for internal service-to-service requests."""
     headers = dict(extra or {})
-    token = _read_service_token()
+    token = _read_service_token(target)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -3371,7 +4852,11 @@ def _service_headers(extra: dict | None = None) -> dict:
 def integrity_status():
     """Return the last integrity check result and current verification state."""
     try:
-        resp = requests.get(f"{REGISTRY_URL}/v1/integrity/status", timeout=5)
+        resp = requests.get(
+            f"{REGISTRY_URL}/v1/integrity/status",
+            headers=_service_headers(target="registry"),
+            timeout=5,
+        )
         return jsonify(resp.json())
     except requests.ConnectionError:
         return jsonify({"status": "unknown", "detail": "registry unreachable"})
@@ -3383,7 +4868,7 @@ def integrity_verify_all():
     try:
         resp = requests.post(
             f"{REGISTRY_URL}/v1/models/verify-all",
-            headers=_service_headers(),
+            headers=_service_headers(target="registry"),
             timeout=120,
         )
         return jsonify(resp.json()), resp.status_code
@@ -3408,31 +4893,25 @@ def audit_status():
 
 @app.route("/api/audit/verify", methods=["POST"])
 def audit_verify_now():
-    """Trigger an immediate audit chain verification."""
-    verify_script = "/usr/libexec/secure-ai/verify-audit-chains.py"
+    """Require local root authority for cross-service audit verification."""
     if _is_sandbox_deployment():
         return _unsupported_feature(
             "audit_verify",
             "The sandbox bundle does not ship the appliance audit-chain verification helper.",
         )
-    if not Path(verify_script).exists():
-        return _missing_runtime_dependency("audit_verify", verify_script)
-    try:
-        result = subprocess.run(
-            ["/usr/bin/python3", verify_script],
-            capture_output=True, text=True, timeout=60,
-            env={**os.environ, "AUDIT_LOGS_DIR": str(SECURE_AI_ROOT / "logs")},
-        )
-        _ui_audit.append("audit_verify_triggered", {"exit_code": result.returncode})
-        # Read the fresh result
-        result_path = SECURE_AI_ROOT / "logs" / "audit-verify-last.json"
-        if result_path.exists():
-            return jsonify(json.loads(result_path.read_text()))
-        return jsonify({"status": "completed", "exit_code": result.returncode})
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "verification timed out"}), 504
-    except FileNotFoundError:
-        return _missing_runtime_dependency("audit_verify", verify_script)
+    _audit_unavailable("audit_verify", source="ui", reason="local_console_required")
+    return jsonify({
+        "status": "not_available",
+        "feature": "audit_verify",
+        "error": "audit verification requires a local root console",
+        "detail": (
+            "The DynamicUser web service is not given every service's audit "
+            "HMAC credential. Run the fixed verifier locally instead."
+        ),
+        "command": "sudo /usr/libexec/secure-ai/verify-audit-chains.py",
+        "local_console_only": True,
+        "supported": False,
+    }), 501
 
 
 # --- API: Boot Chain Integrity (M17) ---
@@ -3507,7 +4986,10 @@ def vault_status():
         }
     last_activity = 0.0
     try:
-        last_activity = float(VAULT_ACTIVITY_FILE.read_text().strip())
+        candidate = float(VAULT_ACTIVITY_FILE.read_text().strip())
+        now = time.time()
+        if math.isfinite(candidate) and 0 <= candidate <= now + 300:
+            last_activity = candidate
     except (OSError, ValueError):
         pass
 
@@ -3522,129 +5004,52 @@ def vault_status():
 
 @app.route("/api/vault/lock", methods=["POST"])
 def vault_lock():
-    """Manually lock the vault immediately."""
-    token = _get_session_token()
-    if not _auth.validate_session(token):
-        return jsonify({"error": "authentication required"}), 401
+    """Keep LUKS and service-control authority out of the web process."""
     if _is_sandbox_deployment():
         return _unsupported_feature(
             "vault_lock",
             "The sandbox does not manage a LUKS-backed vault or appliance systemd services.",
         )
-
-    _ui_audit.append("vault_manual_lock", {"user_initiated": True})
-
-    try:
-        result = subprocess.run(
-            ["/usr/bin/python3", "/usr/libexec/secure-ai/vault-watchdog.py"],
-            input="",  # not used, just need the module
-            capture_output=True, text=True, timeout=5,
-        )
-    except Exception:
-        pass
-
-    # Direct lock via systemctl — the watchdog will detect the state change
-    try:
-        # Stop services first
-        for svc in ["secure-ai-inference.service", "secure-ai-diffusion.service"]:
-            subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=30)
-
-        subprocess.run(["sync"], timeout=10)
-        subprocess.run(["umount", "/var/lib/secure-ai"], capture_output=True, timeout=30)
-        result = subprocess.run(
-            ["cryptsetup", "close", "secure-ai-vault"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            log.error("vault lock failed: %s", result.stderr.strip())
-            return jsonify({"success": False, "error": "vault lock failed"}), 500
-
-        # Update state file
-        VAULT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        VAULT_STATE_FILE.write_text(json.dumps({
-            "state": "locked",
-            "timestamp": time.time(),
-            "detail": "manual_lock",
-        }))
-        return jsonify({"success": True, "state": "locked"})
-    except Exception:
-        log.exception("vault lock failed")
-        return jsonify({"success": False, "error": "vault lock failed"}), 500
+    _audit_unavailable("vault_lock", source="ui", reason="local_console_required")
+    return jsonify({
+        "status": "not_available",
+        "feature": "vault_lock",
+        "error": "vault locking requires a local root console",
+        "command": (
+            "sudo /usr/bin/python3 "
+            "/usr/libexec/secure-ai/vault-watchdog.py "
+            "--lock-once --reason operator_request"
+        ),
+        "local_console_only": True,
+        "supported": False,
+    }), 501
 
 
 @app.route("/api/vault/unlock", methods=["POST"])
 def vault_unlock():
-    """Unlock the vault with the LUKS passphrase."""
+    """Reject web passphrases and require a trusted local console."""
     if _is_sandbox_deployment():
         return _unsupported_feature(
             "vault_unlock",
             "The sandbox does not manage a LUKS-backed vault or appliance systemd services.",
         )
-
-    body = request.get_json()
-    passphrase = body.get("passphrase", "") if body else ""
-
-    if not passphrase:
-        return jsonify({"success": False, "error": "passphrase required"}), 400
-    if len(passphrase) > MAX_PASSPHRASE_LENGTH:
-        return jsonify({"success": False, "error": "passphrase too long"}), 400
-
-    # Find partition from crypttab
-    partition = ""
-    try:
-        for line in Path("/etc/crypttab").read_text().splitlines():
-            line = line.strip()
-            if line.startswith("#") or not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] == "secure-ai-vault":
-                device = parts[1]
-                if device.startswith("UUID="):
-                    uuid_path = Path(f"/dev/disk/by-uuid/{device[5:]}")
-                    if uuid_path.exists():
-                        partition = str(uuid_path.resolve())
-                else:
-                    partition = device
-                break
-    except OSError:
-        pass
-
-    if not partition:
-        return jsonify({"success": False, "error": "cannot determine vault partition"}), 500
-
-    try:
-        proc = subprocess.run(
-            ["cryptsetup", "open", partition, "secure-ai-vault"],
-            input=passphrase, capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            _ui_audit.append("vault_unlock_failed", {})
-            return jsonify({"success": False, "error": "incorrect passphrase or device error"}), 401
-
-        Path("/var/lib/secure-ai").mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["mount", "/dev/mapper/secure-ai-vault", "/var/lib/secure-ai"],
-            capture_output=True, check=True, timeout=30,
-        )
-
-        _touch_vault_activity()
-
-        # Restart services
-        for svc in ["secure-ai-inference.service", "secure-ai-diffusion.service", "secure-ai-ui.service"]:
-            subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
-
-        VAULT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        VAULT_STATE_FILE.write_text(json.dumps({
-            "state": "unlocked",
-            "timestamp": time.time(),
-            "detail": "",
-        }))
-
-        _ui_audit.append("vault_unlock", {})
-        return jsonify({"success": True, "state": "unlocked"})
-    except Exception:
-        log.exception("vault unlock failed")
-        return jsonify({"success": False, "error": "vault unlock failed"}), 500
+    body = request.get_json(silent=True)
+    if isinstance(body, dict) and "passphrase" in body:
+        _audit_unavailable("vault_unlock", source="ui", reason="web_secret_rejected")
+    else:
+        _audit_unavailable("vault_unlock", source="ui", reason="local_console_required")
+    return jsonify({
+        "status": "not_available",
+        "feature": "vault_unlock",
+        "error": "vault unlocking requires a local root console",
+        "detail": "Vault passphrases are never accepted over the web API.",
+        "command": (
+            "sudo /usr/bin/python3 "
+            "/usr/libexec/secure-ai/vault-watchdog.py --unlock-once"
+        ),
+        "local_console_only": True,
+        "supported": False,
+    }), 501
 
 
 @app.route("/api/vault/keepalive", methods=["POST"])
@@ -3656,33 +5061,71 @@ def vault_keepalive():
 
 # --- API: VM Status and GPU Passthrough Toggle ---
 
-def _read_vm_env() -> dict:
-    """Read VM detection results."""
-    vm_env = SECURE_AI_ROOT / "vm.env"
-    result = {"is_vm": False, "hypervisor": "none", "gpu_passthrough": False, "vm_gpu_enabled": False}
-    if not vm_env.exists():
-        return result
+def _read_vm_state() -> dict:
+    """Read root-authored, typed VM detection state and fail conservatively."""
+    vm_state = SECURE_AI_ROOT / "state" / "vm.json"
+    fallback = {
+        "is_vm": True,
+        "hypervisor": "unknown",
+        "gpu_passthrough": False,
+        "vm_gpu_enabled": False,
+        "state_valid": False,
+        "warnings": ["hardware_state_unavailable"],
+    }
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        for line in vm_env.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            key = key.strip().lower()
-            val = val.strip()
-            if key == "is_vm":
-                result["is_vm"] = val.lower() == "true"
-            elif key == "hypervisor":
-                result["hypervisor"] = val
-            elif key == "gpu_passthrough":
-                result["gpu_passthrough"] = val.lower() == "true"
-            elif key == "vm_gpu_enabled":
-                result["vm_gpu_enabled"] = val.lower() == "true"
-            elif key == "vm_warnings":
-                result["warnings"] = [w.strip() for w in val.split("|") if w.strip()]
-    except Exception:
-        pass
-    return result
+        descriptor = os.open(vm_state, flags)
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != 0
+                or info.st_mode & 0o022
+                or info.st_size > 1024 * 1024
+            ):
+                raise ValueError("unsafe VM state")
+            raw = os.read(descriptor, 1024 * 1024 + 1)
+        finally:
+            os.close(descriptor)
+
+        def reject_duplicates(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError(f"duplicate VM state key: {key}")
+                value[key] = item
+            return value
+
+        state = json.loads(
+            raw,
+            object_pairs_hook=reject_duplicates,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {value}")
+            ),
+        )
+        if (
+            not isinstance(state, dict)
+            or state.get("schema_version") != 1
+            or not isinstance(state.get("is_vm"), bool)
+            or not isinstance(state.get("gpu_passthrough"), bool)
+            or not isinstance(state.get("gpu_enabled"), bool)
+            or not isinstance(state.get("hypervisor"), str)
+            or re.fullmatch(r"[a-z0-9_-]{1,64}", state["hypervisor"]) is None
+            or not isinstance(state.get("warnings"), list)
+            or not all(isinstance(item, str) for item in state["warnings"])
+        ):
+            raise ValueError("invalid VM state schema")
+        return {
+            "is_vm": state["is_vm"],
+            "hypervisor": state["hypervisor"],
+            "gpu_passthrough": state["gpu_passthrough"],
+            "vm_gpu_enabled": state["gpu_enabled"],
+            "warnings": state["warnings"],
+            "state_valid": True,
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        log.exception("VM hardware state validation failed")
+        return fallback
 
 
 def _read_deployment_env() -> dict:
@@ -3697,7 +5140,7 @@ def _read_deployment_env() -> dict:
 @app.route("/api/vm/status")
 def vm_status():
     """Return VM detection results and security warnings."""
-    info = _read_vm_env()
+    info = _read_vm_state()
     deployment = _read_deployment_env()
     info["deployment_mode"] = deployment["mode"]
     info["deployment_provider"] = deployment["provider"]
@@ -3745,7 +5188,10 @@ def vm_status():
                     "GPU DMA (Direct Memory Access) can bypass some VM memory isolation boundaries.",
                     "Only enable GPU passthrough if you trust the host machine and hypervisor.",
                 ],
-                "action": "Use POST /api/vm/gpu to enable or disable GPU acceleration.",
+                "action": (
+                    "Use the local root command shown by POST /api/vm/gpu; "
+                    "the web service cannot rewrite hardware policy."
+                ),
             }
         elif info["gpu_passthrough"] and info["vm_gpu_enabled"]:
             info["gpu_notice"] = {
@@ -3762,12 +5208,8 @@ def vm_status():
 
 @app.route("/api/vm/gpu", methods=["POST"])
 def toggle_vm_gpu():
-    """Enable or disable GPU passthrough in VM mode.
-
-    Body: {"enabled": true/false}
-    Requires restart of inference/diffusion services to take effect.
-    """
-    vm_info = _read_vm_env()
+    """Return the local root command for a typed VM GPU policy change."""
+    vm_info = _read_vm_state()
     if not vm_info["is_vm"]:
         return jsonify({"error": "not running in a VM"}), 400
 
@@ -3778,84 +5220,89 @@ def toggle_vm_gpu():
     if not body or "enabled" not in body:
         return jsonify({"error": "JSON body with 'enabled' (bool) required"}), 400
 
-    enabled = bool(body["enabled"])
-    vm_env_path = SECURE_AI_ROOT / "vm.env"
-
-    try:
-        content = vm_env_path.read_text()
-        new_lines = []
-        for line in content.splitlines():
-            if line.strip().startswith("VM_GPU_ENABLED="):
-                new_lines.append(f"VM_GPU_ENABLED={'true' if enabled else 'false'}")
-            else:
-                new_lines.append(line)
-        vm_env_path.write_text("\n".join(new_lines) + "\n")
-
-        # Rewrite inference.env based on new setting
-        if enabled:
-            # Re-run GPU detection to get real GPU info
-            try:
-                import subprocess
-                subprocess.run(
-                    ["/usr/libexec/secure-ai/detect-gpu.sh"],
-                    capture_output=True, timeout=30,
-                )
-            except Exception:
-                pass
-        else:
-            # Force CPU mode
-            inf_env = SECURE_AI_ROOT / "inference.env"
-            inf_env.write_text(
-                "GPU_BACKEND=cpu\n"
-                "GPU_NAME=CPU (VM mode - GPU disabled for security)\n"
-                "GPU_LAYERS=0\n"
-            )
-
-        action = "enabled" if enabled else "disabled"
-        log.info("VM GPU passthrough %s by user", action)
-        _ui_audit.append("vm_gpu_toggle", {"action": action})
-
-        return jsonify({
-            "status": "ok",
-            "vm_gpu_enabled": enabled,
-            "message": f"GPU passthrough {action}. Restart inference and diffusion services to apply.",
-            "warning": (
-                "GPU memory is now accessible to the host hypervisor. "
-                "Model weights and inference data in VRAM are visible to the host OS."
-            ) if enabled else None,
-        })
-
-    except Exception:
-        log.exception("failed to toggle VM GPU")
-        return jsonify({"error": "internal error"}), 500
+    if not isinstance(body["enabled"], bool):
+        return jsonify({"error": "'enabled' must be a JSON boolean"}), 400
+    enabled = body["enabled"]
+    action = "enable" if enabled else "disable"
+    _ui_audit.append("vm_gpu_local_console_required", {"action": action})
+    return jsonify({
+        "error": "VM GPU policy changes require a local root console",
+        "command": (
+            "sudo /usr/libexec/secure-ai/secure-hardware-detect.py "
+            f"vm-gpu {action}"
+        ),
+        "detail": (
+            "The UI DynamicUser cannot rewrite root hardware policy. "
+            "Restart inference services after applying the local command."
+        ),
+        "local_console_only": True,
+    }), 409
 
 
 # ---------------------------------------------------------------------------
 # Emergency panic (M23)
 # ---------------------------------------------------------------------------
 PANIC_STATE_FILE = Path(os.getenv("PANIC_STATE_FILE", "/run/secure-ai/panic-state.json"))
-SECURECTL = "/usr/libexec/secure-ai/securectl"
+MAX_PANIC_STATE_BYTES = 1024 * 1024
+
+
+def _load_panic_state() -> dict:
+    """Read root-authored panic state without following links or duplicates."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(PANIC_STATE_FILE, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PANIC_STATE_BYTES:
+            raise ValueError("panic state is not a bounded regular file")
+        raw = os.read(descriptor, MAX_PANIC_STATE_BYTES + 1)
+    finally:
+        os.close(descriptor)
+
+    def reject_duplicates(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate panic state key: {key}")
+            value[key] = item
+        return value
+
+    state = json.loads(
+        raw,
+        object_pairs_hook=reject_duplicates,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"invalid JSON constant: {value}")
+        ),
+    )
+    if (
+        not isinstance(state, dict)
+        or state.get("panic_active") is not True
+        or not isinstance(state.get("level"), int)
+        or state["level"] not in (1, 2, 3)
+        or not isinstance(state.get("status"), str)
+    ):
+        raise ValueError("panic state schema is invalid")
+    return state
 
 
 @app.route("/api/emergency/status")
 def emergency_status():
     """Return current panic state."""
-    if PANIC_STATE_FILE.exists():
-        try:
-            return jsonify(json.loads(PANIC_STATE_FILE.read_text()))
-        except Exception:
-            return jsonify({"panic_active": False, "error": "failed to read state"})
-    return jsonify({"panic_active": False})
+    try:
+        return jsonify(_load_panic_state())
+    except FileNotFoundError:
+        return jsonify({"panic_active": False})
+    except (OSError, ValueError, json.JSONDecodeError):
+        log.exception("panic state validation failed")
+        return jsonify({
+            "panic_active": True,
+            "status": "state_invalid",
+            "error": "panic state could not be authenticated",
+        }), 503
 
 
 @app.route("/api/emergency/panic", methods=["POST"])
 def emergency_panic():
-    """Trigger emergency panic at specified level.
-
-    Body: {"level": 1|2|3, "passphrase": "<passphrase>"}
-    Level 1 does not require passphrase.
-    Levels 2 and 3 require passphrase confirmation.
-    """
+    """Refuse web-triggered root containment and direct operators to console."""
     if _is_sandbox_deployment():
         return _unsupported_feature(
             "emergency_panic",
@@ -3869,48 +5316,30 @@ def emergency_panic():
     level = body["level"]
     if level not in (1, 2, 3):
         return jsonify({"error": "level must be 1, 2, or 3"}), 400
+    if "passphrase" in body:
+        _ui_audit.append("emergency_panic_web_secret_rejected", {
+            "level": level,
+            "source": "ui",
+        })
+        return jsonify({
+            "error": "vault passphrases are never accepted by this endpoint",
+            "local_console_only": True,
+        }), 400
 
-    passphrase = body.get("passphrase", "")
-
-    # Levels 2 and 3 require passphrase re-authentication
-    if level >= 2 and not passphrase:
-        return jsonify({"error": f"Level {level} requires passphrase confirmation"}), 400
-    if level >= 2 and not _auth._verify_stored(passphrase):
-        _ui_audit.append("emergency_panic_reauth_failed", {"level": level})
-        return jsonify({"error": "passphrase verification failed"}), 401
-    if not Path(SECURECTL).exists():
-        return _missing_runtime_dependency("emergency_panic", SECURECTL)
-
-    cmd = [SECURECTL, "panic", str(level), "--no-countdown"]
-    if level >= 2:
-        cmd.extend(["--confirm", "-"])  # read passphrase from stdin
-
-    log.warning("EMERGENCY PANIC LEVEL %d triggered via UI", level)
-    _ui_audit.append("emergency_panic", {
+    _ui_audit.append("emergency_panic_local_console_required", {
         "level": level,
         "source": "ui",
-        "severity": "CRITICAL",
     })
-
-    try:
-        result = subprocess.run(  # nosemgrep: python.lang.security.dangerous-subprocess-use.dangerous-subprocess-use
-            cmd, capture_output=True, text=True, timeout=60,  # nosemgrep: python.lang.security.dangerous-subprocess-use.dangerous-subprocess-use
-            input=passphrase if level >= 2 else None,
-        )
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() or result.stdout.strip()
-            return jsonify({"error": error_msg or "panic command failed"}), 500
-
-        return jsonify({
-            "status": "ok",
-            "level": level,
-            "message": f"Emergency panic level {level} executed successfully",
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "panic command timed out"}), 500
-    except Exception:
-        log.exception("emergency panic failed")
-        return jsonify({"error": "emergency panic failed"}), 500
+    return jsonify({
+        "error": "emergency panic requires a local root console",
+        "detail": (
+            "Run the fixed-function command locally so root authority and "
+            "destructive confirmations never cross the web-service boundary."
+        ),
+        "command": f"sudo securectl panic {level}",
+        "local_console_only": True,
+        "supported": False,
+    }), 409
 
 
 # ---------------------------------------------------------------------------
@@ -3956,6 +5385,27 @@ def _ensure_update_supported():
     return None
 
 
+def _update_local_console_response(action: str):
+    """Return a truthful boundary for root-only rpm-ostree mutations."""
+    _audit_unavailable(
+        f"update_{action}",
+        source="ui",
+        reason="local_console_required",
+    )
+    return jsonify({
+        "status": "not_available",
+        "feature": f"update_{action}",
+        "error": f"update {action} requires a local root console",
+        "detail": (
+            "The DynamicUser web service cannot run rpm-ostree, reboot the "
+            "host, or invoke the root update verifier."
+        ),
+        "command": f"sudo {UPDATE_VERIFY} {action}",
+        "local_console_only": True,
+        "supported": False,
+    }), 501
+
+
 @app.route("/api/update/status")
 def update_status():
     """Return current update state and deployment info."""
@@ -3984,112 +5434,33 @@ def update_status():
 
 @app.route("/api/update/check", methods=["POST"])
 def update_check():
-    """Check for available updates."""
+    """Direct operators to the privileged local update workflow."""
     unsupported = _ensure_update_supported()
     if unsupported:
         _audit_unavailable("update_check", source="ui")
         return unsupported
-    _ui_audit.append("update_check", {"source": "ui"})
-    try:
-        result = subprocess.run(
-            [UPDATE_VERIFY, "check"],
-            capture_output=True, text=True, timeout=120,
-        )
-        # The script outputs JSON on stdout
-        try:
-            return jsonify(json.loads(result.stdout.strip()))
-        except (json.JSONDecodeError, ValueError):
-            return jsonify({"status": "checked", "output": result.stdout.strip()})
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "update check timed out"}), 504
-    except Exception:
-        log.exception("update check failed")
-        return jsonify({"error": "internal error"}), 500
+    return _update_local_console_response("check")
 
 
 @app.route("/api/update/stage", methods=["POST"])
 def update_stage():
-    """Stage (download) an update without applying it."""
+    """Direct operators to the privileged local staging workflow."""
     unsupported = _ensure_update_supported()
     if unsupported:
         _audit_unavailable("update_stage", source="ui")
         return unsupported
-    _ui_audit.append("update_stage", {"source": "ui"})
-    try:
-        result = subprocess.run(
-            [UPDATE_VERIFY, "stage"],
-            capture_output=True, text=True, timeout=600,
-        )
-        if result.returncode != 0:
-            log.error("update stage failed: %s", result.stderr.strip() or result.stdout.strip())
-            return jsonify({"error": "staging failed"}), 500
-        try:
-            return jsonify(json.loads(result.stdout.strip()))
-        except (json.JSONDecodeError, ValueError):
-            return jsonify({"status": "staged", "output": result.stdout.strip()})
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "staging timed out"}), 504
-    except Exception:
-        log.exception("update stage failed")
-        return jsonify({"error": "internal error"}), 500
+    return _update_local_console_response("stage")
 
 
 @app.route("/api/update/apply", methods=["POST"])
 def update_apply():
-    """Apply a staged update and reboot."""
+    """Direct operators to the privileged local apply workflow."""
     unsupported = _ensure_update_supported()
     if unsupported:
         _audit_unavailable("update_apply", source="ui")
         return unsupported
 
-    body = request.get_json() or {}
-    if not body.get("confirm"):
-        return jsonify({"error": "must include {\"confirm\": true} to apply update"}), 400
-
-    _ui_audit.append("update_apply", {"source": "ui", "severity": "WARNING"})
-    try:
-        result = subprocess.run(
-            [UPDATE_VERIFY, "apply"],
-            capture_output=True, text=True, timeout=300,
-        )
-        if result.returncode != 0:
-            log.error("update apply failed: %s", result.stderr.strip() or result.stdout.strip())
-            return jsonify({"error": "apply failed"}), 500
-        return jsonify({"status": "applied", "message": "Update applied. System is rebooting."})
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "apply timed out"}), 504
-    except Exception:
-        log.exception("update apply failed")
-        return jsonify({"error": "internal error"}), 500
-
-
-@app.route("/api/update/rollback", methods=["POST"])
-def update_rollback():
-    """Roll back to the previous deployment."""
-    unsupported = _ensure_update_supported()
-    if unsupported:
-        _audit_unavailable("update_rollback", source="ui")
-        return unsupported
-
-    body = request.get_json() or {}
-    if not body.get("confirm"):
-        return jsonify({"error": "must include {\"confirm\": true} to rollback"}), 400
-
-    _ui_audit.append("update_rollback", {"source": "ui", "severity": "WARNING"})
-    try:
-        result = subprocess.run(
-            [UPDATE_VERIFY, "rollback"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            log.error("update rollback failed: %s", result.stderr.strip() or result.stdout.strip())
-            return jsonify({"error": "rollback failed"}), 500
-        return jsonify({"status": "rolled_back", "message": "Rollback applied. System is rebooting."})
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "rollback timed out"}), 504
-    except Exception:
-        log.exception("update rollback failed")
-        return jsonify({"error": "internal error"}), 500
+    return _update_local_console_response("apply")
 
 
 @app.route("/api/update/health")
@@ -4134,6 +5505,9 @@ def _agent_request(method: str, path: str, *, json_body=None, params=None, timeo
         conn.sock = sock
 
         headers = {"Host": "localhost"}
+        token = _read_service_token("agent")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         body = None
         if json_body is not None:
             body = _json.dumps(json_body).encode()
@@ -4144,16 +5518,52 @@ def _agent_request(method: str, path: str, *, json_body=None, params=None, timeo
 
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
-        data = resp.read()
+        declared_size = resp.getheader("Content-Length")
+        if declared_size and int(declared_size) > _AGENT_RESPONSE_MAX_BYTES:
+            conn.close()
+            raise ValueError("agent response exceeds size limit")
+        raw = resp.read(_AGENT_RESPONSE_MAX_BYTES + 1)
+        status = resp.status
         conn.close()
-        return _json.loads(data), resp.status
+        if len(raw) > _AGENT_RESPONSE_MAX_BYTES:
+            raise ValueError("agent response exceeds size limit")
+        return _decode_agent_payload(raw), status
     else:
         url = f"{AGENT_URL}{path}"
+        headers = _service_headers(target="agent")
         if method == "GET":
-            r = requests.get(url, params=params, timeout=timeout)
+            r = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                stream=True,
+                timeout=timeout,
+            )
         else:
-            r = requests.post(url, json=json_body, timeout=timeout)
-        return r.json(), r.status_code
+            r = requests.post(
+                url,
+                json=json_body,
+                headers=headers,
+                stream=True,
+                timeout=timeout,
+            )
+        declared_size = r.headers.get("Content-Length")
+        if declared_size and int(declared_size) > _AGENT_RESPONSE_MAX_BYTES:
+            r.close()
+            raise ValueError("agent response exceeds size limit")
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in r.iter_content(chunk_size=65_536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _AGENT_RESPONSE_MAX_BYTES:
+                r.close()
+                raise ValueError("agent response exceeds size limit")
+            chunks.append(chunk)
+        status = r.status_code
+        r.close()
+        return _decode_agent_payload(b"".join(chunks)), status
 
 
 def _validate_agent_task_id(task_id: str) -> str | None:
@@ -4167,24 +5577,78 @@ def _agent_task_path(task_id: str, suffix: str = "") -> str:
     return f"/v1/task/{encoded}{suffix}"
 
 
-def _json_safe(value):
+_AGENT_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
+_AGENT_JSON_MAX_DEPTH = 12
+_AGENT_JSON_MAX_ITEMS = 10_000
+_AGENT_JSON_MAX_STRING = 65_536
+
+
+def _bounded_agent_json(value, *, depth=0, budget=None, escape_strings=True):
+    if budget is None:
+        budget = [_AGENT_JSON_MAX_ITEMS]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _AGENT_JSON_MAX_DEPTH:
+        raise ValueError("agent response is too complex")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
     if isinstance(value, str):
-        return str(_html_escape(value))
+        if len(value) > _AGENT_JSON_MAX_STRING:
+            raise ValueError("agent response string exceeds size limit")
+        return str(_html_escape(value)) if escape_strings else value
     if isinstance(value, list):
-        return [_json_safe(item) for item in value]
+        return [
+            _bounded_agent_json(
+                item,
+                depth=depth + 1,
+                budget=budget,
+                escape_strings=escape_strings,
+            )
+            for item in value
+        ]
     if isinstance(value, dict):
-        return {str(_html_escape(str(key))): _json_safe(item) for key, item in value.items()}
-    return value
+        safe = {}
+        for key, item in value.items():
+            safe_key = str(key)
+            if len(safe_key) > 256:
+                raise ValueError("agent response key exceeds size limit")
+            output_key = str(_html_escape(safe_key)) if escape_strings else safe_key
+            safe[output_key] = _bounded_agent_json(
+                item,
+                depth=depth + 1,
+                budget=budget,
+                escape_strings=escape_strings,
+            )
+        return safe
+    raise ValueError("agent response contains an unsupported value")
 
 
-def _agent_status_response(status):
+def _decode_agent_payload(raw: bytes):
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("agent returned invalid JSON") from exc
+    return _bounded_agent_json(value, escape_strings=False)
+
+
+def _json_safe(value):
+    return _bounded_agent_json(value)
+
+
+def _agent_proxy_response(data, status):
     try:
         status_code = int(status)
     except (TypeError, ValueError):
         status_code = 502
     if status_code < 100 or status_code > 599:
         status_code = 502
-    return jsonify({"ok": 200 <= status_code < 300, "status_code": status_code}), status_code
+    try:
+        payload = _json_safe(data)
+    except ValueError:
+        payload = {"error": "agent returned an invalid response"}
+        status_code = 502
+    return jsonify(payload), status_code
 
 
 # ---------------------------------------------------------------------------
@@ -4216,8 +5680,8 @@ def agent_get_task(task_id):
     if task_id is None:
         return jsonify({"error": "invalid task id"}), 400
     try:
-        _, status = _agent_request("GET", _agent_task_path(task_id))
-        return _agent_status_response(status)
+        data, status = _agent_request("GET", _agent_task_path(task_id))
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -4231,10 +5695,10 @@ def agent_approve_steps(task_id):
         return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        _, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/approve"), json_body=body)
         event = "agent_steps_approved" if 200 <= status < 300 else "agent_steps_approve_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return _agent_status_response(status)
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -4248,10 +5712,10 @@ def agent_deny_steps(task_id):
         return jsonify({"error": "invalid task id"}), 400
     body = request.get_json(silent=True) or {}
     try:
-        _, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/deny"), json_body=body)
         event = "agent_steps_denied" if 200 <= status < 300 else "agent_steps_deny_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return _agent_status_response(status)
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -4264,10 +5728,10 @@ def agent_cancel_task(task_id):
     if task_id is None:
         return jsonify({"error": "invalid task id"}), 400
     try:
-        _, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
+        data, status = _agent_request("POST", _agent_task_path(task_id, "/cancel"), json_body={})
         event = "agent_task_cancelled" if 200 <= status < 300 else "agent_task_cancel_failed"
         _ui_audit.append(event, {"task_id": task_id, "status_code": status})
-        return _agent_status_response(status)
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -4284,7 +5748,7 @@ def agent_list_tasks():
         return jsonify({"error": "invalid limit"}), 400
     try:
         data, status = _agent_request("GET", "/v1/tasks", params={"limit": limit})
-        return jsonify(data), status
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503
@@ -4295,7 +5759,7 @@ def agent_list_modes():
     """List available agent operating modes."""
     try:
         data, status = _agent_request("GET", "/v1/modes", timeout=5)
-        return jsonify(data), status
+        return _agent_proxy_response(data, status)
     except Exception:
         log.exception("agent service unavailable")
         return jsonify({"error": "agent service unavailable"}), 503

@@ -29,7 +29,7 @@ func incidentRecorderURL() string {
 type incidentReportPayload struct {
 	Class       string            `json:"class"`
 	Source      string            `json:"source"`
-	Description string           `json:"description"`
+	Description string            `json:"description"`
 	Severity    string            `json:"severity,omitempty"`
 	Evidence    map[string]string `json:"evidence,omitempty"`
 }
@@ -75,10 +75,10 @@ func reportViolations(state IntegrityState, violations []IntegrityViolation, tok
 
 	// Build evidence.
 	evidence := map[string]string{
-		"state":            string(state),
-		"violation_count":  fmt.Sprintf("%d", len(violations)),
-		"scan_count":       fmt.Sprintf("%d", scanCount.Load()),
-		"violations":       strings.Join(violationDescs, "; "),
+		"state":           string(state),
+		"violation_count": fmt.Sprintf("%d", len(violations)),
+		"scan_count":      fmt.Sprintf("%d", scanCount.Load()),
+		"violations":      strings.Join(violationDescs, "; "),
 	}
 
 	// Add first few violation paths.

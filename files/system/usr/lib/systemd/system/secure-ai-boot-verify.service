@@ -1,8 +1,7 @@
 [Unit]
 Description=Secure AI Boot Chain Integrity Verification
 After=local-fs.target
-Before=secure-ai-registry.service secure-ai-ui.service
-DefaultDependencies=no
+Before=secure-ai-tpm-attestation-setup.service secure-ai-runtime-attestor.service secure-ai-registry.service secure-ai-ui.service
 
 [Service]
 Type=oneshot
@@ -14,6 +13,11 @@ ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
+PrivateDevices=no
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
 
 # Kernel protection
 ProtectKernelTunables=yes

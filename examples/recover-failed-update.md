@@ -67,27 +67,14 @@ not booted.
 If the system is running but unstable after an update, you can manually
 roll back without waiting for Greenboot.
 
-### Via Web UI
-
-1. Go to the **Updates** tab.
-2. Click **Rollback**.
-3. Confirm the action.
-4. The system will schedule a rollback and reboot.
-
-### Via API
-
-```bash
-curl -X POST http://127.0.0.1:8480/api/update/rollback \
-  -H "Authorization: Bearer <session-token>" \
-  -H "X-CSRF-Token: <csrf-token>"
-```
-
 ### Via Command Line
 
 ```bash
-sudo rpm-ostree rollback
-sudo systemctl reboot
+sudo /usr/libexec/secure-ai/update-verify.sh rollback
 ```
+
+Rollback is deliberately local-console-only; the UI and HTTP API do not
+expose a boot-deployment mutation endpoint.
 
 After reboot, verify the rollback:
 

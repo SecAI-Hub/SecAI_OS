@@ -8,8 +8,9 @@ This guide covers installing SecAI OS on physical hardware.
 
 - **CPU:** x86_64 processor with virtualization extensions (VT-x/AMD-V)
 - **RAM:** 16 GB minimum, 32 GB recommended
-- **Storage:** 100 GB SSD minimum (NVMe recommended)
-- **GPU:** NVIDIA GPU with CUDA support (RTX 3000 series or newer recommended) or Apple Silicon (M1 or newer, for Metal via llama.cpp)
+- **Storage:** 100 GB SSD minimum (NVMe recommended), with either a second
+  dedicated data device or space reserved for an unused vault partition
+- **GPU:** NVIDIA GPU with CUDA support (RTX 3000 series or newer recommended); other appliance backends require release-specific qualification
 - **Network:** Ethernet or WiFi (only needed for initial setup if downloading models)
 - **USB drive:** 8 GB or larger for installation media
 - **UEFI firmware:** Secure Boot supported (optional but recommended)
@@ -18,7 +19,7 @@ This guide covers installing SecAI OS on physical hardware.
 
 ## Step 1: Download the ISO
 
-Download the latest Fedora Silverblue 42 ISO from the official Fedora website:
+Download the latest Fedora Silverblue 44 ISO from the official Fedora website:
 
 ```
 https://fedoraproject.org/silverblue/download
@@ -34,13 +35,13 @@ Write the ISO to a USB drive using one of these tools:
 
 **Linux:**
 ```bash
-sudo dd if=Fedora-Silverblue-42-x86_64.iso of=/dev/sdX bs=4M status=progress
+sudo dd if=Fedora-Silverblue-44-x86_64.iso of=/dev/sdX bs=4M status=progress
 sync
 ```
 
 **macOS:**
 ```bash
-sudo dd if=Fedora-Silverblue-42-x86_64.iso of=/dev/rdiskN bs=4m
+sudo dd if=Fedora-Silverblue-44-x86_64.iso of=/dev/rdiskN bs=4m
 sync
 ```
 
@@ -56,8 +57,14 @@ Replace `/dev/sdX` or `/dev/rdiskN` with your actual USB device. Double-check th
 2. Select "Install Fedora" from the boot menu.
 3. Follow the Anaconda installer:
    - Set language and keyboard layout.
-   - Select the installation destination (use the full disk; automatic partitioning is fine).
-   - Enable disk encryption (LUKS) when prompted. Choose a strong passphrase.
+   - Select the installation destination. Use custom partitioning unless a
+     second dedicated data device is available.
+   - Enable disk encryption (LUKS) when prompted. This is mandatory: service
+     credentials and UI authentication state must remain encrypted even while
+     the independently lockable model/data vault is closed.
+   - Leave a dedicated partition or logical volume unmounted for the SecAI
+     data vault. Record its exact `/dev/...` path; the setup ceremony will
+     erase and reformat it only after exact confirmation.
    - Create a user account.
 4. Complete the installation and reboot. Remove the USB drive when prompted.
 
@@ -79,14 +86,16 @@ curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scrip
 # 2. Review the script before running (ALWAYS review downloaded scripts)
 less /tmp/secai-bootstrap.sh
 
-# 3. Run the bootstrap (use the digest from the latest release for production)
-sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
+# 3. Run the bootstrap with the release channel and its exact signed digest
+sudo bash /tmp/secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest sha256:RELEASE_DIGEST
 ```
 
 > **Where do I find the digest?** Check the
 > [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest)
-> for the `IMAGE_DIGEST` asset, or the build workflow summary.
-> For evaluation, you can omit `--digest` to use `:latest`.
+> for the signed `IMAGE_DIGEST` asset. A digest is mandatory; mutable
+> tag-only installation is intentionally unsupported.
 
 The script will:
 
@@ -105,22 +114,22 @@ sudo systemctl reboot
 
 ### Returning Users / Existing SecAI OS Installs
 
-If you are upgrading an existing SecAI OS installation (already on the
-signed transport), simply run:
+If you are upgrading an existing SecAI OS installation, use the appliance
+update gate. It verifies the candidate signature, binds the staged deployment
+to an exact digest, and enforces anti-rollback state:
 
 ```bash
-sudo rpm-ostree upgrade
-sudo systemctl reboot
+sudo /usr/libexec/secure-ai/update-verify.sh check
+sudo /usr/libexec/secure-ai/update-verify.sh stage
+sudo /usr/libexec/secure-ai/update-verify.sh apply
 ```
 
-All upgrades are automatically verified against the cosign signing key
-baked into the image.
+Do not bypass this gate with `rpm-ostree upgrade`.
 
-### Recovery / Development Install
+### Recovery Install
 
-> **WARNING**: The recovery path uses an unverified container transport.
-> Use it **only** when the signing policy is broken or for development/CI.
-> See [Recovery Bootstrap](recovery-bootstrap.md) for instructions.
+The recovery path remains digest-pinned and signature-verified even when the
+local policy needs repair. See [Recovery Bootstrap](recovery-bootstrap.md).
 
 ---
 
@@ -137,7 +146,7 @@ The wizard walks you through:
 1. **System identity** — OS version, deployment origin, Secure Boot + TPM2 status
 2. **Image integrity** — Cosign signature verification of the running image
 3. **Transport check** — Confirms you are on signed transport (offers to switch if not)
-4. **Vault setup** — Creates the encrypted LUKS volume for models and secrets
+4. **Vault setup** — Creates the independently lockable LUKS volume for models, user documents, and outputs
 5. **TPM2 sealing** (optional) — Seals the vault key to TPM2 PCRs for auto-unlock on trusted boots
 6. **Health check** — Validates all services are running and endpoints are reachable
 7. **Summary** — Security posture card and next steps

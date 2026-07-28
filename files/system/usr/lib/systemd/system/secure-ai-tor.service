@@ -5,15 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=/bin/mkdir -p /var/lib/secure-ai/tor /var/lib/secure-ai/logs
 ExecStart=/usr/bin/tor -f /etc/secure-ai/tor/torrc
 Restart=on-failure
 RestartSec=10
 
 # Sandboxing — Tor needs network but nothing else
 DynamicUser=yes
-StateDirectory=secure-ai/tor
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-tor secure-ai-logs
 ProtectSystem=strict
 ReadWritePaths=/var/lib/secure-ai/tor /var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai/tor

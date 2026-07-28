@@ -70,10 +70,10 @@ type GlobalRule struct {
 
 // Match conditions for a global rule.
 type Match struct {
-	Methods      []string `yaml:"methods,omitempty" json:"methods,omitempty"`
-	ServerTrust  []string `yaml:"server_trust,omitempty" json:"server_trust,omitempty"`
-	HasTaint     []string `yaml:"has_taint,omitempty" json:"has_taint,omitempty"`
-	ArgPatterns  []string `yaml:"arg_patterns,omitempty" json:"arg_patterns,omitempty"` // regex on serialized args
+	Methods     []string `yaml:"methods,omitempty" json:"methods,omitempty"`
+	ServerTrust []string `yaml:"server_trust,omitempty" json:"server_trust,omitempty"`
+	HasTaint    []string `yaml:"has_taint,omitempty" json:"has_taint,omitempty"`
+	ArgPatterns []string `yaml:"arg_patterns,omitempty" json:"arg_patterns,omitempty"` // regex on serialized args
 }
 
 // TaintRule restricts data flow based on taint labels.
@@ -100,10 +100,10 @@ type RedactionConfig struct {
 
 // AuditConfig controls audit logging.
 type AuditConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	LogPath    string `yaml:"log_path" json:"log_path"`
-	SignReports bool  `yaml:"sign_reports" json:"sign_reports"`
-	KeyPath    string `yaml:"key_path,omitempty" json:"key_path,omitempty"`
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	LogPath     string `yaml:"log_path" json:"log_path"`
+	SignReports bool   `yaml:"sign_reports" json:"sign_reports"`
+	KeyPath     string `yaml:"key_path,omitempty" json:"key_path,omitempty"`
 }
 
 // DaemonConfig for the HTTP server.
@@ -115,38 +115,38 @@ type DaemonConfig struct {
 
 // EvalRequest is an MCP operation submitted for policy evaluation.
 type EvalRequest struct {
-	Server       string            `json:"server"`
-	Method       string            `json:"method"`                  // tools/call, resources/read, etc.
-	Tool         string            `json:"tool,omitempty"`
-	Resource     string            `json:"resource,omitempty"`
-	Arguments    map[string]string `json:"arguments,omitempty"`
-	SessionID    string            `json:"session_id"`
-	RequestID    string            `json:"request_id,omitempty"`
+	Server    string            `json:"server"`
+	Method    string            `json:"method"` // tools/call, resources/read, etc.
+	Tool      string            `json:"tool,omitempty"`
+	Resource  string            `json:"resource,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+	SessionID string            `json:"session_id"`
+	RequestID string            `json:"request_id,omitempty"`
 }
 
 // Decision is the firewall's verdict on an MCP operation.
 type Decision struct {
-	Action         string            `json:"action"`                    // allow, deny, require-approval, redact
-	Server         string            `json:"server"`
-	Tool           string            `json:"tool,omitempty"`
-	Resource       string            `json:"resource,omitempty"`
-	Rule           string            `json:"rule"`                      // name of matching rule
-	Reason         string            `json:"reason"`
-	Evidence       []string          `json:"evidence"`
-	TaintApplied   []string          `json:"taint_applied,omitempty"`   // new taint labels from this call
-	TaintActive    []string          `json:"taint_active,omitempty"`    // session taint at eval time
-	RedactedArgs   map[string]string `json:"redacted_args,omitempty"`
-	SessionID      string            `json:"session_id"`
-	RequestID      string            `json:"request_id,omitempty"`
+	Action       string            `json:"action"` // allow, deny, require-approval, redact
+	Server       string            `json:"server"`
+	Tool         string            `json:"tool,omitempty"`
+	Resource     string            `json:"resource,omitempty"`
+	Rule         string            `json:"rule"` // name of matching rule
+	Reason       string            `json:"reason"`
+	Evidence     []string          `json:"evidence"`
+	TaintApplied []string          `json:"taint_applied,omitempty"` // new taint labels from this call
+	TaintActive  []string          `json:"taint_active,omitempty"`  // session taint at eval time
+	RedactedArgs map[string]string `json:"redacted_args,omitempty"`
+	SessionID    string            `json:"session_id"`
+	RequestID    string            `json:"request_id,omitempty"`
 }
 
 // ---------- policy engine ----------
 
 // PolicyEngine evaluates MCP requests against the loaded policy.
 type PolicyEngine struct {
-	policy       *FirewallPolicy
-	serverIndex  map[string]*ServerPolicy
-	toolIndex    map[string]map[string]*ToolPolicy // server -> tool -> policy
+	policy      *FirewallPolicy
+	serverIndex map[string]*ServerPolicy
+	toolIndex   map[string]map[string]*ToolPolicy // server -> tool -> policy
 }
 
 // NewPolicyEngine creates an engine from a policy.
@@ -294,9 +294,9 @@ func (pe *PolicyEngine) evalTaintRules(req EvalRequest, activeTaint []string) *D
 				continue
 			}
 			return &Decision{
-				Action:   rule.Action,
-				Rule:     rule.Name,
-				Reason:   rule.Reason,
+				Action: rule.Action,
+				Rule:   rule.Name,
+				Reason: rule.Reason,
 				Evidence: []string{
 					fmt.Sprintf("taint rule %q matched", rule.Name),
 					fmt.Sprintf("active taint: %v", activeTaint),

@@ -28,9 +28,103 @@ Treat the host OS, container runtime, and anyone with host admin access as fully
 
 ## Prerequisites
 
-- Docker Compose v2 or Podman with compose support
+- Docker Server 28+ with Docker Compose v2 on Linux, macOS, or Windows; or
+  rootful Podman Server 5.3+ with compose support on native Linux
 - 8+ GB RAM recommended for the control plane alone
 - 16+ GB RAM recommended if enabling inference or diffusion profiles
+
+The launcher rejects older or unreachable engines. `SECAI_CONTAINER_RUNTIME`
+defaults to `auto`, which prefers a supported rootful Podman service on native
+Linux and otherwise uses Docker. It records the selected engine in
+`deploy/sandbox/runtime/container-runtime` with owner-only permissions and
+uses that exact engine for later UI applies and teardown. An explicit engine
+change fails closed until the current stack is stopped successfully.
+
+Start, stop, and UI-driven profile applies also share the owner-only
+`deploy/sandbox/runtime/launcher.lock`. Launchers never reclaim an existing
+lock automatically: a PID that appears absent may belong to another process
+namespace, and an interrupted launcher may have left a Docker or Podman child
+running. If the launcher reports an unverifiable lock, first verify that no
+SecAI sandbox launcher, profile apply, `docker compose`, or `podman compose`
+operation is still active. Then inspect the lock path without following
+symlinks and remove only that lock entry manually before retrying. Do not
+remove the surrounding runtime directory, control key, or recorded container
+runtime as part of lock recovery.
+
+Rendered policy is published as an immutable, content-addressed generation
+under `deploy/sandbox/runtime/generations/<sha256>/`. The digest covers every
+canonical relative path and file payload for the policy, configuration, model
+catalog, and selected profile. A complete staged directory is renamed into the
+generation store before the owner-only `active-generation` pointer is replaced
+atomically. A crash before that pointer update leaves the previous generation
+selected; a crash after it can select only the complete new generation. This
+pointer commits an immutable **candidate**, not a claim that its services are
+running. Runtime controller status remains separate under `runtime/state/`
+and is never swapped with policy.
+
+Before stopping any service, the launchers remove both
+`runtime/generation-status/ready-generation` and `ready-session`; removing the
+generation marker first is the fail-closed invalidation commit. They then stop
+every Compose profile and query the container engine directly to verify that
+no running `secai-sandbox` project container remains. Candidate publication is
+not attempted if either check fails. They export the validated candidate ID
+and force Compose to recreate enabled services, so every restarted bind mount
+resolves to the same generation.
+
+Only after Docker `--wait` or the bounded Podman health loop succeeds (and the
+temporary Podman anchor is removed) does the launcher publish readiness. The
+controller creates a private random `control-server-session`; the launcher
+copies that exact ID to the public, non-secret `ready-session` marker and
+atomically installs `ready-generation` last as the readiness commit. The UI
+accepts a profile only when stable marker reads match its generation, the
+read-only `profile.json` matches the unique size/SHA-256 entry in that
+generation's read-only `generation.json`, and a live controller challenge
+returns valid HMAC proofs for the same session and profile. Missing, stale, or
+mismatched proof is shown as **Unknown** with HTTP 503—never as an offline
+privacy claim. Rerun the launcher to recover; do not create or edit readiness
+markers manually.
+
+This deliberately introduces profile-apply downtime: the UI/ingress
+disconnects and must reconnect after health checks and readiness publication
+complete.
+Old immutable generations remain on disk for audit/recovery rather than being
+modified in place. Direct `docker compose up` or `podman compose up` is
+unsupported and fails unless the generation variable is supplied; use the
+launchers so quiescing, rendering, credential validation, recreation, and
+health checks remain one locked operation. `scripts/sandbox/render_runtime.py`
+is likewise an internal launcher helper: direct or concurrent mutating
+invocation is unsupported because it bypasses the launcher's lock and
+quiescence checks. Its `--read-active` mode is read-only and may be used for
+inspection.
+
+Rootless Docker and rootless Podman are not supported by the UI-driven host
+controller route. Their default networking does not let this container reach a
+host-loopback listener, and the launcher does not weaken those defaults.
+Podman machines/remotes on macOS and Windows are also outside this path; use
+Docker Desktop there. On native Linux, rootful Docker or Podman binds the
+controller only to its verified RFC 1918 bridge gateway, and the launcher maps
+the relay hostname to that exact recorded address rather than trusting an
+engine heuristic. Docker Desktop binds it to host loopback. Explicit bind
+overrides accept IPv4 loopback only.
+
+For Podman, that gateway belongs only to the Compose project network
+`secai-sandbox_ingress`; the launcher never binds the controller to the
+default `podman` network or a LAN address. A digest-pinned, credentialless
+Alpine anchor briefly materializes the project bridge before the controller
+starts. The anchor has no mounts, secrets, ports, or capabilities; it uses a
+read-only filesystem, private namespaces, and tight process, memory, and CPU
+limits. Ownership is recorded in an owner-only runtime file and revalidated
+against the exact container image, command, labels, network, and hardening
+before removal. It remains only until the credentialless UI ingress is healthy.
+If all stack containers were stopped out of band, the stop launcher may
+recreate the same verified temporary anchor solely to reach and authenticate
+the controller shutdown, then removes it before Compose teardown. An ambiguous
+name, label, state file, network, or controller response fails closed.
+
+Fedora SELinux enforcing mode is supported and should remain enabled. Every
+repository bind mount is read-only and uses the shared `:z` relabel required
+when generated policy, configuration, and credential paths are mounted into
+multiple containers.
 
 ## Start The Stack
 
@@ -56,11 +150,31 @@ powershell -ExecutionPolicy Bypass -File scripts/sandbox/start.ps1
 The helper script will:
 
 1. Create `deploy/sandbox/.env` from the template if needed.
-2. Generate a per-stack service token in `deploy/sandbox/runtime/service-token`.
-3. Generate a separate host-control token in `deploy/sandbox/runtime/control-token`.
-4. Start a loopback-only host controller used by the UI for profile/service automation.
-5. Render a runtime policy/config overlay for the selected profiles.
-6. Build, harden, and wait for the sandbox services to become healthy.
+2. Generate scoped service credentials under
+   `deploy/sandbox/runtime/credentials/`.
+3. Generate a separate host-control request-signing key in
+   `deploy/sandbox/runtime/control-token`.
+4. Probe any recorded controller before mutating the stack. A signed legacy
+   protocol is retired through its authenticated shutdown path before startup
+   continues. An unverifiable or bearer-only baseline remains fail-closed: use
+   its matching legacy launcher, or manually verify the recorded PID's owner
+   and `control_server.py` command line, stop only that process, and confirm
+   that port `8498` has no listener before retrying. Never expose the control
+   token in a legacy Bearer request.
+5. Invalidate the prior ready-generation/session pair, stop all existing
+   sandbox services, and verify no project container remains running.
+6. Start a host-local controller used by the UI for profile/service automation.
+7. On native Podman, materialize and validate the project-scoped ingress
+   gateway with the temporary hardened anchor described above.
+8. Stage and atomically publish an immutable runtime policy/config/catalog/
+   profile generation for the selected profiles.
+9. Build a credentialless ingress sidecar that is the only container with a
+   host-published port. The UI and sensitive services remain on internal-only
+   networks; a dedicated internal link lets the sidecar reach only the UI.
+10. Build, harden, and wait for every enabled sandbox service to become
+   healthy (or running when it has no health check).
+11. Publish the exact controller session and generation readiness markers,
+    with `ready-generation` installed last.
 
 Then open:
 
@@ -74,10 +188,34 @@ The default stack starts the control plane only. Inference and diffusion are opt
 
 When the stack is started through `secai-sandbox.cmd` or `scripts/sandbox/start.*`,
 the UI can start these profiles for you from **Settings**, **Chat**, **Models**, or
-**Generate**. The UI does not receive the Docker socket; it calls a host-side
-controller on `127.0.0.1:${SECAI_CONTROL_PORT:-8498}` with a random bearer token
-mounted read-only into the UI container. The controller only accepts allowlisted
-profile actions.
+**Generate**. The UI does not receive the container-engine socket; it calls a
+host-side controller on fixed port `8498`. A random request-signing key is
+mounted read-only into the UI container.
+
+A fixed TCP relay carries the authenticated control request across the
+dedicated UI link. The relay has no credential mounted or persisted and has no
+container-engine socket. The reusable key never crosses the relay: each request
+contains an HMAC over the protocol, timestamp, one-time nonce, method, path, and
+body digest. The controller enforces a 30-second clock window and persists a
+bounded nonce cache atomically so replay remains blocked across restarts. It
+also verifies an existing controller and protocol with a fresh challenge-bound
+HMAC. Profile identity additionally requires a second challenge-bound state
+HMAC over the controller session, status, profile state, and profile. This
+prevents a container restart or stale on-disk marker from claiming a running
+profile without the matching live controller. Teardown is refused until the
+authenticated current controller confirms that any active apply process tree
+has stopped. Only allowlisted profile actions are accepted.
+
+The same relay publishes UI port 8480 on host loopback only. It has a read-only
+scratch image, runs as UID/GID 65534, drops all capabilities, mounts no files or
+credentials, and cannot resolve or reach registry, vault, quarantine, or policy
+services. Its external bridge exists only because Docker cannot publish a port
+from an `internal: true` network. Its health check requires both the UI route
+and the current host-controller protocol route to respond successfully. The
+relay has a 64 MiB memory limit, a 0.5 CPU limit, and a 64-process limit.
+Because the external bridge has egress and browser sessions traverse the relay,
+the sandbox remains a lower-assurance evaluation path even though sensitive
+service networks are not routable from it.
 
 **Enable local LLM inference**
 
@@ -180,6 +318,15 @@ bash scripts/sandbox/stop.sh
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/sandbox/stop.ps1
 ```
+
+The stop launcher first obtains authenticated confirmation that the controller
+and any active profile-apply process tree have stopped. It invalidates both
+readiness markers before attempting Compose teardown, so a failed `down` is
+still reported as Unknown rather than ready. It then validates the
+active-generation candidate pointer for Compose parsing. If that pointer is
+missing or corrupt, stop uses a fixed all-zero, non-authoritative interpolation
+value only for `compose down`; the start launcher never accepts that fallback
+for `compose up`.
 
 ## What Works Well Here
 

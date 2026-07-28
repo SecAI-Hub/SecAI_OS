@@ -1,214 +1,237 @@
-"""Tests for M17 — Secure Boot Chain + Measured Boot.
+"""Secure Boot and verified systemd TPM2 enrollment tests."""
 
-Validates:
-- MOK generation script exists and is well-formed
-- TPM2 seal/unseal script exists and handles all subcommands
-- Secure Boot enrollment script exists
-- Boot chain verification script exists and produces valid JSON output
-- Boot verify systemd service is properly configured
-- Firstboot includes TPM2/SB checks
-- recipe.yml includes required packages
-- appliance.yaml has secure_boot config section
-"""
+from __future__ import annotations
 
+import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
 SCRIPTS_DIR = REPO_ROOT / "files" / "system" / "usr" / "libexec" / "secure-ai"
 BUILD_SCRIPTS = REPO_ROOT / "files" / "scripts"
-SYSTEMD_DIR = REPO_ROOT / "files" / "system" / "usr" / "lib" / "systemd" / "system"
-CONFIG_PATH = REPO_ROOT / "files" / "system" / "etc" / "secure-ai" / "config" / "appliance.yaml"
+SYSTEMD_DIR = (
+    REPO_ROOT / "files" / "system" / "usr" / "lib" / "systemd" / "system"
+)
+CONFIG_PATH = (
+    REPO_ROOT
+    / "files"
+    / "system"
+    / "etc"
+    / "secure-ai"
+    / "config"
+    / "appliance.yaml"
+)
 RECIPE_PATH = REPO_ROOT / "recipes" / "recipe.yml"
+TPM_HELPER = SCRIPTS_DIR / "secure-tpm-vault.py"
+LUKS_HELPER = SCRIPTS_DIR / "secure_luks.py"
 
 
-class TestMOKGeneration:
-    def test_generate_mok_script_exists(self):
-        assert (BUILD_SCRIPTS / "generate-mok.sh").exists()
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
-    def test_generate_mok_creates_correct_files(self):
-        content = (BUILD_SCRIPTS / "generate-mok.sh").read_text()
-        assert "secureai-mok.key" in content
-        assert "secureai-mok.pem" in content
-        assert "secureai-mok.der" in content
 
-    def test_generate_mok_uses_rsa4096(self):
+@pytest.fixture
+def secure_luks():
+    return load_module("secure_luks", LUKS_HELPER)
+
+
+@pytest.fixture
+def secure_tpm(secure_luks):
+    del secure_luks
+    return load_module("secure_tpm_vault", TPM_HELPER)
+
+
+class TestMOKUtility:
+    def test_generation_is_an_operator_utility_not_a_shipped_key(self):
         content = (BUILD_SCRIPTS / "generate-mok.sh").read_text()
         assert "rsa:4096" in content
+        assert "chmod 600" in content
+        tracked = {
+            path.name
+            for path in REPO_ROOT.rglob("secureai-mok.key")
+            if ".git" not in path.parts
+        }
+        assert not tracked
 
-    def test_generate_mok_sets_permissions(self):
-        content = (BUILD_SCRIPTS / "generate-mok.sh").read_text()
-        assert "chmod 600" in content  # private key
-
-
-class TestTPM2SealScript:
-    def test_script_exists(self):
-        assert (SCRIPTS_DIR / "tpm2-seal-vault.sh").exists()
-
-    def test_supports_all_subcommands(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "cmd_seal" in content
-        assert "cmd_unseal" in content
-        assert "cmd_reseal" in content
-        assert "cmd_status" in content
-
-    def test_pcr_binding(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        # Should bind to PCR 0, 2, 4, 7
-        assert "sha256:0,2,4,7" in content
-
-    def test_checks_tpm2_device(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "/dev/tpmrm0" in content
-        assert "/dev/tpm0" in content
-
-    def test_checks_vtpm(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "vtpm" in content or "virtual" in content
-
-    def test_writes_audit_events(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "tpm2-audit.jsonl" in content
-
-    def test_passphrase_fallback(self):
-        """On unseal failure, should fall back to passphrase."""
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "passphrase" in content.lower()
-        assert "pcr_mismatch" in content
-
-    def test_securely_deletes_key(self):
-        content = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
-        assert "shred" in content
-
-
-class TestSecureBootEnrollment:
-    def test_script_exists(self):
-        assert (SCRIPTS_DIR / "enroll-secureboot.sh").exists()
-
-    def test_checks_secure_boot_state(self):
+    def test_enrollment_checks_secure_boot_and_mok_state(self):
         content = (SCRIPTS_DIR / "enroll-secureboot.sh").read_text()
         assert "mokutil --sb-state" in content
-
-    def test_checks_mok_enrollment(self):
-        content = (SCRIPTS_DIR / "enroll-secureboot.sh").read_text()
         assert "mokutil --list-enrolled" in content or "mokutil --import" in content
-
-    def test_supports_check_only(self):
-        content = (SCRIPTS_DIR / "enroll-secureboot.sh").read_text()
         assert "--check-only" in content
 
 
-class TestBootChainVerification:
-    def test_verify_script_exists(self):
-        assert (SCRIPTS_DIR / "verify-boot-chain.sh").exists()
+class TestLUKSConfiguration:
+    def test_duplicate_mapper_entries_fail_closed(
+        self, tmp_path: Path, secure_luks
+    ):
+        crypttab = tmp_path / "crypttab"
+        crypttab.write_text(
+            "secure-ai-vault UUID=11111111-1111 none luks\n"
+            "secure-ai-vault UUID=22222222-2222 none luks\n"
+        )
+        with pytest.raises(secure_luks.LUKSError, match="exactly one"):
+            secure_luks.parse_crypttab(crypttab)
 
-    def test_checks_all_components(self):
-        content = (SCRIPTS_DIR / "verify-boot-chain.sh").read_text()
-        assert "check_secure_boot" in content
-        assert "check_tpm2" in content
-        assert "check_kernel_signature" in content
-        assert "check_ostree_signature" in content
+    def test_tpm_options_are_updated_atomically(
+        self, tmp_path: Path, secure_luks
+    ):
+        crypttab = tmp_path / "crypttab"
+        crypttab.write_text(
+            "# vault\nsecure-ai-vault UUID=11111111-1111 none luks,nodev\n"
+        )
+        crypttab.chmod(0o600)
+        secure_luks.update_crypttab_tpm2(
+            enabled=True,
+            path=crypttab,
+            require_root_owner=False,
+        )
+        enabled = crypttab.read_text()
+        assert "tpm2-device=auto" in enabled
+        assert "tpm2-pcrs=0+2+4+7" in enabled
+        secure_luks.update_crypttab_tpm2(
+            enabled=False,
+            path=crypttab,
+            require_root_owner=False,
+        )
+        disabled = crypttab.read_text()
+        assert "tpm2-device=auto" not in disabled
+        assert "tpm2-pcrs=" not in disabled
+        assert stat_mode(crypttab) == 0o600
 
-    def test_writes_json_result(self):
+    def test_duplicate_luks_metadata_keys_are_rejected(self, secure_luks):
+        def runner(_args, **_kwargs):
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=b'{"keyslots":{},"keyslots":{},"tokens":{}}',
+                stderr=b"",
+            )
+
+        with pytest.raises(secure_luks.LUKSError, match="invalid JSON"):
+            secure_luks.luks_metadata(Path("/dev/fake"), runner=runner)
+
+    def test_tpm_token_count_is_exact(self, secure_luks):
+        metadata = {
+            "keyslots": {"0": {}, "1": {}},
+            "tokens": {
+                "0": {"type": "systemd-tpm2"},
+                "1": {"type": "other"},
+            },
+        }
+        assert secure_luks.keyslot_count(metadata) == 2
+        assert secure_luks.tpm2_token_count(metadata) == 1
+
+
+def stat_mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+class TestTPMEnrollment:
+    def test_entrypoint_and_helper_are_executable(self):
+        for path in (SCRIPTS_DIR / "tpm2-seal-vault.sh", TPM_HELPER, LUKS_HELPER):
+            assert path.exists()
+            assert os.access(path, os.X_OK)
+
+    def test_uses_native_luks2_systemd_token_enrollment(self):
+        content = TPM_HELPER.read_text()
+        assert "systemd-cryptenroll" in content
+        assert "--wipe-slot=tpm2" in content
+        assert "--tpm2-device=auto" in content
+        assert "0:sha256+2:sha256+4:sha256+7:sha256" in content
+        assert "tpm2_createprimary" not in content
+        assert "tpm2_evictcontrol" not in content
+        assert "/tmp/secai" not in content
+        assert "shred" not in content
+
+    def test_recovery_keyslot_is_verified_after_enrollment(self):
+        content = TPM_HELPER.read_text()
+        assert "keyslot_count(after) < 2" in content
+        assert "passphrase recovery slot" in content
+
+    def test_vtpm_requires_explicit_degraded_acknowledgement(
+        self, secure_tpm, monkeypatch
+    ):
+        monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+        monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "kvm")
+        with pytest.raises(secure_tpm.TPMError, match="--allow-vtpm"):
+            secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False)
+
+    def test_secure_boot_is_required_by_default(self, secure_tpm, monkeypatch):
+        monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+        monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "none")
+        monkeypatch.setattr(secure_tpm, "secure_boot_enabled", lambda: False)
+        with pytest.raises(secure_tpm.TPMError, match="Secure Boot"):
+            secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False)
+
+    def test_mutating_cli_defaults_are_fail_closed(self, secure_tpm):
+        seal = secure_tpm.parse_args(["seal"])
+        assert seal.allow_vtpm is False
+        assert seal.allow_insecure_boot is False
+        wipe = secure_tpm.parse_args(["wipe"])
+        assert wipe.destructive_confirmation is None
+
+    def test_no_shell_state_is_sourced(self):
+        content = TPM_HELPER.read_text()
+        wrapper = (SCRIPTS_DIR / "tpm2-seal-vault.sh").read_text()
+        assert "vm.env" not in content
+        assert "source " not in wrapper
+        assert "eval " not in wrapper
+
+
+class TestBootChainIntegration:
+    def test_boot_verifier_checks_all_components(self):
         content = (SCRIPTS_DIR / "verify-boot-chain.sh").read_text()
+        for check in (
+            "check_secure_boot",
+            "check_tpm2",
+            "check_kernel_signature",
+            "check_ostree_signature",
+        ):
+            assert check in content
         assert "boot-verify-last.json" in content
 
-    def test_result_includes_all_checks(self):
-        content = (SCRIPTS_DIR / "verify-boot-chain.sh").read_text()
-        assert '"secure_boot"' in content
-        assert '"tpm2"' in content
-        assert '"kernel_signature"' in content
-        assert '"ostree_signature"' in content
-
-
-class TestBootVerifyService:
-    def test_service_exists(self):
-        assert (SYSTEMD_DIR / "secure-ai-boot-verify.service").exists()
-
-    def test_runs_before_main_services(self):
+    def test_boot_verifier_is_hardened_and_ordered(self):
         content = (SYSTEMD_DIR / "secure-ai-boot-verify.service").read_text()
-        assert "Before=secure-ai-registry.service" in content
-
-    def test_is_oneshot(self):
-        content = (SYSTEMD_DIR / "secure-ai-boot-verify.service").read_text()
+        before = next(
+            line.removeprefix("Before=").split()
+            for line in content.splitlines()
+            if line.startswith("Before=")
+        )
+        assert "secure-ai-registry.service" in before
+        assert "secure-ai-tpm-attestation-setup.service" in before
+        assert "secure-ai-runtime-attestor.service" in before
         assert "Type=oneshot" in content
+        assert "NoNewPrivileges=yes" in content
+        assert "CapabilityBoundingSet=" in content
+        assert "PrivateNetwork=yes" in content
 
-    def test_has_sandboxing(self):
-        content = (SYSTEMD_DIR / "secure-ai-boot-verify.service").read_text()
-        assert "ProtectHome=yes" in content
-        # boot-verify needs privilege escalation for TPM2/EFI access,
-        # so NoNewPrivileges is intentionally absent. Check for other hardening.
-        assert "ProtectKernelTunables=yes" in content
-        assert "SystemCallFilter=" in content
-
-
-class TestFirstbootIntegration:
-    def test_firstboot_checks_secure_boot(self):
+    def test_firstboot_runs_secure_boot_tpm_and_chain_checks(self):
         content = (SCRIPTS_DIR / "firstboot.sh").read_text()
         assert "enroll-secureboot.sh" in content
-
-    def test_firstboot_checks_tpm2(self):
-        content = (SCRIPTS_DIR / "firstboot.sh").read_text()
         assert "tpm2-seal-vault.sh" in content
-
-    def test_firstboot_runs_boot_verify(self):
-        content = (SCRIPTS_DIR / "firstboot.sh").read_text()
         assert "verify-boot-chain.sh" in content
 
-    def test_firstboot_creates_tpm2_dir(self):
-        content = (SCRIPTS_DIR / "firstboot.sh").read_text()
-        assert "keys/tpm2" in content
-
-    def test_firstboot_service_keeps_needed_capabilities(self):
-        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
-        assert "CapabilityBoundingSet=CAP_CHOWN" in content
-        assert "CAP_SYS_ADMIN" in content
-        assert "CAP_NET_ADMIN" in content
-
-    def test_firstboot_service_can_write_kernel_tunables(self):
-        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
-        assert "ProtectKernelTunables=no" in content
-
-    def test_firstboot_service_allows_swapoff(self):
-        content = (SYSTEMD_DIR / "secure-ai-firstboot.service").read_text()
-        assert "@swap" not in content
-
-
-class TestRecipeIncludes:
-    def _rpm_ostree_packages(self):
+    def test_recipe_has_required_platform_tools(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
-        rpm_module = next(m for m in recipe["modules"] if m.get("type") == "rpm-ostree")
-        return rpm_module["install"]
+        rpm_module = next(
+            module
+            for module in recipe["modules"]
+            if module.get("type") == "rpm-ostree"
+        )
+        packages = rpm_module["install"]
+        assert {"mokutil", "sbsigntools", "tpm2-tools"} <= set(packages)
 
-    def test_recipe_includes_mokutil(self):
-        packages = self._rpm_ostree_packages()
-        assert "mokutil" in packages
-
-    def test_recipe_includes_sbsigntools(self):
-        packages = self._rpm_ostree_packages()
-        assert "sbsigntools" in packages
-
-    def test_recipe_includes_tpm2_tools(self):
-        packages = self._rpm_ostree_packages()
-        assert "tpm2-tools" in packages
-
-    def test_recipe_enables_boot_verify(self):
-        recipe = yaml.safe_load(RECIPE_PATH.read_text())
-        systemd_module = next(m for m in recipe["modules"] if m.get("type") == "systemd")
-        enabled = systemd_module["system"]["enabled"]
-        assert "secure-ai-boot-verify.service" in enabled
-
-
-class TestApplianceConfig:
-    def test_secure_boot_section_exists(self):
-        config = yaml.safe_load(CONFIG_PATH.read_text())
-        assert "secure_boot" in config
-
-    def test_tpm2_pcr_binding(self):
-        config = yaml.safe_load(CONFIG_PATH.read_text())
-        assert config["secure_boot"]["tpm2_pcr_binding"] == "sha256:0,2,4,7"
-
-    def test_passphrase_fallback_enabled(self):
-        config = yaml.safe_load(CONFIG_PATH.read_text())
-        assert config["secure_boot"]["passphrase_fallback"] is True
+    def test_configuration_preserves_passphrase_fallback(self):
+        config = yaml.safe_load(CONFIG_PATH.read_text())["secure_boot"]
+        assert config["tpm2_pcr_binding"] == "sha256:0,2,4,7"
+        assert config["passphrase_fallback"] is True

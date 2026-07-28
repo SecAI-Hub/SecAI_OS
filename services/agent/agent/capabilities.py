@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -37,6 +38,7 @@ _key_provider = None
 # Nonce replay cache: set of seen nonces (bounded by _MAX_NONCE_CACHE).
 _seen_nonces: set[str] = set()
 _MAX_NONCE_CACHE = 10_000
+_nonce_lock = threading.Lock()
 
 
 def _get_provider():
@@ -50,11 +52,9 @@ def _get_provider():
         config = load_config()
         _key_provider = create_provider(config)
         log.info("keystore provider: %s", _key_provider.provider_name())
-    except Exception as exc:
-        # Fallback to a minimal in-process provider
-        log.warning("keystore init failed (%s), using ephemeral keys", exc)
-        from .keystore import SoftwareKeyProvider
-        _key_provider = SoftwareKeyProvider()
+    except Exception:
+        log.exception("keystore initialization failed")
+        raise
 
     return _key_provider
 
@@ -114,6 +114,14 @@ def _compute_signature(token: CapabilityToken) -> str:
         "readable_paths": sorted(token.readable_paths),
         "writable_paths": sorted(token.writable_paths),
         "allowed_tools": sorted(token.allowed_tools),
+        "configurable_prefs": {
+            key: token.configurable_prefs[key]
+            for key in sorted(token.configurable_prefs)
+        },
+        "budget_limits": {
+            key: token.budget_limits[key]
+            for key in sorted(token.budget_limits)
+        },
     }, sort_keys=True, separators=(",", ":"))
     return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -138,8 +146,10 @@ def verify_token(
         return False, "token expired"
 
     # 2. Replay protection — reject reused nonces
-    if consume_nonce and token.nonce in _seen_nonces:
-        return False, "nonce already seen (replay)"
+    if consume_nonce:
+        with _nonce_lock:
+            if token.nonce in _seen_nonces:
+                return False, "nonce already seen (replay)"
 
     # 3. Verify HMAC signature
     if not token.signature:
@@ -151,16 +161,18 @@ def verify_token(
 
     # 4. Record nonce (bounded cache)
     if consume_nonce:
-        if len(_seen_nonces) >= _MAX_NONCE_CACHE:
-            _seen_nonces.clear()
-        _seen_nonces.add(token.nonce)
+        with _nonce_lock:
+            if len(_seen_nonces) >= _MAX_NONCE_CACHE:
+                _seen_nonces.clear()
+            _seen_nonces.add(token.nonce)
 
     return True, "valid"
 
 
 def clear_nonce_cache() -> None:
     """Clear the nonce replay cache (for testing only)."""
-    _seen_nonces.clear()
+    with _nonce_lock:
+        _seen_nonces.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +289,7 @@ def create_token(
         sensitivity_ceiling=defaults["sensitivity_ceiling"],
         session_mode=mode,
         configurable_prefs=configurable_prefs or {},
+        budget_limits=dict(custom_budgets or {}),
         task_id=task_id,
         intent_hash=hash_intent(intent) if intent else "",
         policy_digest=hash_policy_file(policy_path) if policy_path else "",

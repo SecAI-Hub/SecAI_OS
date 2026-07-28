@@ -1,4 +1,4 @@
-module github.com/sec_ai/SecAI_OS/services/registry
+module github.com/SecAI-Hub/registry
 
 go 1.25
 

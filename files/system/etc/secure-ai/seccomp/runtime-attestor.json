@@ -1,5 +1,5 @@
 {
-  "_comment": "Seccomp profile for runtime-attestor (Go binary). Localhost network for attestation API, read-only policy/binary/EFI access, exec for tpm2_pcrread/rpm-ostree, write to audit logs.",
+  "_comment": "Seccomp profile for runtime-attestor (Go binary). Localhost network for attestation API, read-only policy/binary/EFI access, bounded execution of TPM PCR/quote/checkquote and rpm-ostree tools, write to audit logs.",
   "defaultAction": "SCMP_ACT_ERRNO",
   "defaultErrnoRet": 1,
   "archMap": [
@@ -43,7 +43,7 @@
       "action": "SCMP_ACT_ALLOW"
     },
     {
-      "_comment": "Process execution (tpm2_pcrread, rpm-ostree)",
+      "_comment": "Process execution (tpm2_pcrread, tpm2_quote, tpm2_checkquote, rpm-ostree)",
       "names": [
         "execve", "execveat",
         "vfork", "fork"

@@ -1,65 +1,40 @@
 # Diffusion worker: image and video generation via diffusers library.
-# Build arg COMPUTE selects the GPU backend:
-#   cuda  - NVIDIA GPUs (CUDA 13.2)
-#   rocm  - AMD GPUs (ROCm 6.4)
-#   cpu   - CPU only (AVX2/AVX-512 optimized, works everywhere)
+#
+# Build from the repository root so the reviewed backend lockfiles are in the
+# Docker context:
+#   docker build -f services/diffusion-worker/Dockerfile \
+#     --build-arg COMPUTE=cpu .
+#
+# COMPUTE selects cuda (CUDA 12.9), rocm (ROCm 7.1), or cpu.
 ARG COMPUTE=cuda
-ARG TORCH_CUDA_VERSION=2.12.0+cu132
-ARG TORCH_ROCM_VERSION=2.9.1+rocm6.4
-ARG TORCH_CPU_VERSION=2.12.0+cpu
-ARG TORCHVISION_CUDA_VERSION=0.27.0+cu132
-ARG TORCHVISION_ROCM_VERSION=0.24.1+rocm6.4
-ARG TORCHVISION_CPU_VERSION=0.27.0+cpu
-ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu132
-ARG TORCH_ROCM_INDEX_URL=https://download.pytorch.org/whl/rocm6.4
-ARG TORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
-ARG IPEX_CPU_VERSION=2.6.0
+ARG TARGETARCH
 
 FROM docker.io/library/python:3.12-slim@sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461 AS base
 
 ARG COMPUTE
-ARG TORCH_CUDA_VERSION
-ARG TORCH_ROCM_VERSION
-ARG TORCH_CPU_VERSION
-ARG TORCHVISION_CUDA_VERSION
-ARG TORCHVISION_ROCM_VERSION
-ARG TORCHVISION_CPU_VERSION
-ARG TORCH_CUDA_INDEX_URL
-ARG TORCH_ROCM_INDEX_URL
-ARG TORCH_CPU_INDEX_URL
-ARG IPEX_CPU_VERSION
+ARG TARGETARCH
 
-RUN python -m pip install --no-cache-dir --upgrade pip==26.1.1 setuptools==82.0.1
+RUN test "$TARGETARCH" = "amd64" || \
+    { echo "diffusion locks support only linux/amd64 (got: ${TARGETARCH:-unknown})" >&2; exit 64; }
 
-# Install PyTorch with the appropriate compute backend
-RUN if [ "$COMPUTE" = "cuda" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_CUDA_VERSION}" "torchvision==${TORCHVISION_CUDA_VERSION}" --index-url "${TORCH_CUDA_INDEX_URL}"; \
-    elif [ "$COMPUTE" = "rocm" ]; then \
-        pip install --no-cache-dir "torch==${TORCH_ROCM_VERSION}" "torchvision==${TORCHVISION_ROCM_VERSION}" --index-url "${TORCH_ROCM_INDEX_URL}"; \
-    else \
-        pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" "torchvision==${TORCHVISION_CPU_VERSION}" --index-url "${TORCH_CPU_INDEX_URL}"; \
-    fi
+COPY files/scripts/diffusion-cpu.lock \
+     files/scripts/diffusion-cuda.lock \
+     files/scripts/diffusion-rocm.lock \
+     /tmp/diffusion-locks/
 
-RUN pip install --no-cache-dir \
-    "diffusers[torch]==0.38.0" \
-    transformers==5.6.2 \
-    accelerate==1.13.0 \
-    safetensors==0.8.0rc0 \
-    flask==3.1.3 \
-    gunicorn==23.0.0 \
-    imageio==2.37.3 \
-    imageio-ffmpeg==0.6.0 \
-    pyyaml==6.0.3 \
-    Pillow==12.2.0 \
-    urllib3==2.7.0
+# The lock itself carries the backend-specific PyTorch index. Every artifact,
+# including packaging tools used during the build, is exact-versioned and
+# hash-verified. Unsupported COMPUTE values fail closed.
+RUN case "$COMPUTE" in \
+        cpu|cuda|rocm) lock="/tmp/diffusion-locks/diffusion-${COMPUTE}.lock" ;; \
+        *) echo "unsupported COMPUTE backend: $COMPUTE" >&2; exit 64 ;; \
+    esac && \
+    python -m pip install --no-cache-dir --require-hashes -r "$lock" && \
+    python -m pip uninstall --yes pip setuptools wheel && \
+    rm -rf /tmp/diffusion-locks
 
-# Intel XPU support (install IPEX when building for CPU — it auto-detects Intel GPUs)
-RUN if [ "$COMPUTE" = "cpu" ]; then \
-        pip install --no-cache-dir "intel-extension-for-pytorch==${IPEX_CPU_VERSION}" 2>/dev/null || true; \
-    fi
-
-COPY app.py /app/app.py
-COPY entrypoint.sh /app/diffusion-entrypoint.sh
+COPY services/diffusion-worker/app.py /app/app.py
+COPY services/diffusion-worker/entrypoint.sh /app/diffusion-entrypoint.sh
 
 RUN chmod 0555 /app/diffusion-entrypoint.sh
 

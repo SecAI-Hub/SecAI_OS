@@ -96,7 +96,10 @@ Machine Owner Key. A user-enrolled key in the UEFI Secure Boot chain. SecAI OS u
 The Linux packet filtering framework (successor to iptables). SecAI OS uses nftables to enforce default-deny egress rules, blocking all outbound traffic except through the Airlock when enabled.
 
 **OVA**
-Open Virtual Appliance. A packaging format for virtual machines. SecAI OS may be distributed as an OVA for easy import into VirtualBox, VMware, or other hypervisors.
+Open Virtual Appliance. A packaging format for virtual machines. SecAI OS can be
+built as a user-specific OVA for local import into VirtualBox, VMware, or other
+hypervisors; generic prebuilt OVAs are not release artifacts because encrypted
+boot credentials must not be shared.
 
 **Pipeline**
 The quarantine pipeline: a 7-stage sequential process that verifies, scans, and scores every model before promotion. See Quarantine.

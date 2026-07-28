@@ -4,7 +4,7 @@ Security event capture and automated containment service.
 
 ## Overview
 
-The incident recorder provides a formal incident management workflow for SecAI_OS. When security events are detected by other services (runtime attestor, integrity monitor, tool firewall, airlock, policy engine), they report incidents to this service. The recorder captures full incident details, applies automatic containment actions per policy, and tracks the incident lifecycle from detection through resolution.
+The incident recorder provides a formal incident management workflow for SecAI_OS. Runtime attestation, file integrity, GPU integrity, and canary reporters each receive a source-bound credential with an incident-class allowlist. The recorder captures incident details, applies automatic containment actions per policy, and tracks the lifecycle from detection through resolution.
 
 ## Architecture
 
@@ -12,9 +12,8 @@ The incident recorder provides a formal incident management workflow for SecAI_O
                     +-----------------------+
    attestor ------->|                       |
    integrity ------>|   Incident Recorder   |---> Audit Log (JSONL)
-   policy-engine -->|       :8515           |
-   tool-firewall -->|                       |---> Containment Actions
-   airlock -------->|                       |     (freeze, disable, relock)
+   gpu integrity -->|       :8515           |
+   canary --------->|                       |---> Containment Actions
                     +-----------------------+
                               |
                     incident-containment.yaml
@@ -72,19 +71,21 @@ The incident recorder provides a formal incident management workflow for SecAI_O
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | No | Health check |
-| GET | `/api/v1/incidents` | No | List incidents (filtered by `?class=`, `?state=`, `?severity=`) |
-| GET | `/api/v1/incidents/get` | No | Get single incident by `?id=` |
-| GET | `/api/v1/stats` | No | Incident statistics (counts by state, class, severity) |
-| POST | `/api/v1/incidents/report` | Token | Report a new incident |
-| POST | `/api/v1/incidents/resolve` | Token | Mark incident as resolved |
-| POST | `/api/v1/incidents/acknowledge` | Token | Acknowledge incident |
-| POST | `/api/v1/reload` | Token | Reload containment policy |
+| GET | `/api/v1/incidents` | Read | List incidents (filtered by `?class=`, `?state=`, `?severity=`) |
+| GET | `/api/v1/incidents/get` | Read | Get single incident by `?id=` |
+| GET | `/api/v1/stats` | Read | Incident statistics (counts by state, class, severity) |
+| POST | `/api/v1/incidents/report` | Source-bound reporter | Report a new incident; token source and class must match the payload |
+| POST | `/api/v1/incidents/resolve` | Operator | Mark incident as resolved |
+| POST | `/api/v1/incidents/acknowledge` | Operator | Acknowledge incident |
+| POST | `/api/v1/reload` | Operator | Reload containment policy |
+| GET/POST | `/api/v1/recovery/*` | Recovery administrator | Run the local recovery ceremony |
+| GET | `/api/v1/forensic/export` | Forensic | Export a signed forensic bundle |
 
 ### Report Incident
 
 ```bash
 curl -X POST http://127.0.0.1:8515/api/v1/incidents/report \
-  -H "Authorization: Bearer $(cat /run/secure-ai/service-token)" \
+  -H "Authorization: Bearer $(sudo cat /var/lib/secure-ai/credentials/incident-reporter-runtime-attestor.token)" \
   -H "Content-Type: application/json" \
   -d '{
     "class": "attestation_failure",
@@ -98,17 +99,19 @@ curl -X POST http://127.0.0.1:8515/api/v1/incidents/report \
 
 ```bash
 # All open critical incidents
-curl "http://127.0.0.1:8515/api/v1/incidents?state=open&severity=critical"
+curl -H "Authorization: Bearer $(sudo cat /var/lib/secure-ai/credentials/incident-read.token)" \
+  "http://127.0.0.1:8515/api/v1/incidents?state=open&severity=critical"
 
 # All attestation failures
-curl "http://127.0.0.1:8515/api/v1/incidents?class=attestation_failure"
+curl -H "Authorization: Bearer $(sudo cat /var/lib/secure-ai/credentials/incident-read.token)" \
+  "http://127.0.0.1:8515/api/v1/incidents?class=attestation_failure"
 ```
 
 ### Resolve Incident
 
 ```bash
 curl -X POST http://127.0.0.1:8515/api/v1/incidents/resolve \
-  -H "Authorization: Bearer $(cat /run/secure-ai/service-token)" \
+  -H "Authorization: Bearer $(sudo cat /var/lib/secure-ai/credentials/incident-operator.token)" \
   -H "Content-Type: application/json" \
   -d '{"id": "INC-20260313-abc123"}'
 ```
@@ -144,7 +147,11 @@ rules:
 | `BIND_ADDR` | `127.0.0.1:8515` | Listen address |
 | `CONTAINMENT_POLICY_PATH` | `/etc/secure-ai/policy/incident-containment.yaml` | Containment policy file |
 | `AUDIT_LOG_PATH` | `/var/lib/secure-ai/logs/incident-recorder-audit.jsonl` | Audit log location |
-| `SERVICE_TOKEN_PATH` | `/run/secure-ai/service-token` | Service token for authenticated endpoints |
+| `INCIDENT_READ_TOKEN_PATH` | Required | Read-only incident API credential |
+| `INCIDENT_OPERATOR_TOKEN_PATH` | Required | Resolve, acknowledge, and policy-reload credential |
+| `INCIDENT_RECOVERY_ADMIN_TOKEN_PATH` | Required | Recovery-ceremony administrator credential |
+| `INCIDENT_FORENSIC_TOKEN_PATH` | Required | Root-only forensic-export credential |
+| `INCIDENT_REPORTER_*_TOKEN_PATH` | Required | Four source-bound reporter credentials |
 
 ## Containment Actions
 
@@ -154,7 +161,7 @@ Containment actions are recorded in the incident record. Integrating services ar
 |--------|---------------------|--------|
 | `freeze_agent` | Agent | Pause all agent task execution |
 | `disable_airlock` | Airlock | Block all outbound network requests |
-| `force_vault_relock` | UI / Vault Watchdog | Lock the encrypted vault immediately |
+| `force_vault_relock` | Root vault relock broker / Vault Watchdog | Lock the encrypted vault immediately |
 | `quarantine_model` | Registry | Move suspicious model to quarantine |
 | `log_alert` | Incident Recorder | Write critical alert to audit log |
 

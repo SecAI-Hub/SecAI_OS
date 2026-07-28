@@ -10,6 +10,8 @@ Covers:
 """
 
 import os
+import errno
+import stat
 import sys
 from pathlib import Path
 from unittest import mock
@@ -53,12 +55,25 @@ def ui_client(tmp_path):
         # Patch module-level vars since they are set at import time
         with mock.patch("ui.app.IMPORT_STAGING_DIR", staging_dir), \
              mock.patch("ui.app.QUARANTINE_DIR", quarantine_dir), \
-             mock.patch("ui.app.SECURE_AI_ROOT", tmp_path):
+             mock.patch("ui.app.SECURE_AI_ROOT", tmp_path), \
+             mock.patch("ui.app._auth.is_configured", return_value=True), \
+             mock.patch("ui.app._auth.validate_session", return_value=True):
             with app.test_client() as client:
+                client.environ_base["HTTP_AUTHORIZATION"] = "Bearer ui-file-test-session"
                 yield client, quarantine_dir, staging_dir
 
 
 # ── Upload filename sanitization ──
+
+
+def test_route_body_limit_runs_before_csrf_body_parsing(ui_client):
+    """CSRF form parsing must never run under the global 50 GiB upload ceiling."""
+    from ui import app as ui_app
+
+    hooks = ui_app.app.before_request_funcs[None]
+    assert hooks.index(ui_app.enforce_route_body_limit) < hooks.index(
+        ui_app.csrf_protect
+    )
 
 
 class TestUploadFilenameSanitization:
@@ -118,6 +133,73 @@ class TestUploadFilenameSanitization:
         data = {"file": (BytesIO(b"fake safetensors"), "model.safetensors")}
         resp = client.post("/api/models/import", data=data, content_type="multipart/form-data")
         assert resp.status_code != 400 or "format" not in resp.get_json().get("error", "")
+
+    def test_upload_is_hidden_until_fsynced_publication(self, ui_client):
+        """The watcher-visible name must not exist while bytes are copied."""
+        client, qdir, _ = ui_client
+        from io import BytesIO
+        import ui.app as ui_app
+
+        payload = b"complete model payload"
+        original_publish = ui_app._publish_noreplace
+
+        def observe_publication(source, destination):
+            assert source.parent == qdir
+            assert source.name.startswith(".")
+            assert source.name.endswith(".part")
+            assert source.read_bytes() == payload
+            assert not destination.exists()
+            original_publish(source, destination)
+
+        with mock.patch("ui.app._publish_noreplace", side_effect=observe_publication):
+            resp = client.post(
+                "/api/models/import",
+                data={"file": (BytesIO(payload), "atomic.gguf")},
+                content_type="multipart/form-data",
+            )
+
+        assert resp.status_code == 202
+        final = qdir / resp.get_json()["filename"]
+        assert final.read_bytes() == payload
+        assert stat.S_IMODE(final.stat().st_mode) == 0o660
+        assert final.stat().st_nlink == 1
+        assert not any(path.name.endswith(".part") for path in qdir.iterdir())
+
+    def test_failed_publication_removes_hidden_partial(self, ui_client):
+        client, qdir, _ = ui_client
+        from io import BytesIO
+
+        with mock.patch(
+            "ui.app._publish_noreplace",
+            side_effect=OSError(errno.ENOSPC, "full"),
+        ):
+            resp = client.post(
+                "/api/models/import",
+                data={"file": (BytesIO(b"payload"), "failure.gguf")},
+                content_type="multipart/form-data",
+            )
+
+        assert resp.status_code >= 500
+        assert list(qdir.iterdir()) == []
+
+    def test_publication_never_replaces_existing_artifact(self, ui_client):
+        client, qdir, _ = ui_client
+        from io import BytesIO
+
+        fixed_uuid = mock.Mock(hex="a" * 32)
+        existing = qdir / f"{fixed_uuid.hex}_collision.gguf"
+        existing.write_bytes(b"trusted existing data")
+
+        with mock.patch("ui.app.uuid.uuid4", return_value=fixed_uuid):
+            resp = client.post(
+                "/api/models/import",
+                data={"file": (BytesIO(b"attacker replacement"), "collision.gguf")},
+                content_type="multipart/form-data",
+            )
+
+        assert resp.status_code >= 400
+        assert existing.read_bytes() == b"trusted existing data"
+        assert not any(path.name.endswith(".part") for path in qdir.iterdir())
 
     def test_uuid_prefix_prevents_collision(self, ui_client):
         """Two uploads with the same name should produce different destination files."""
@@ -200,3 +282,37 @@ class TestLocalImportStagingRestriction:
         # Should be rejected because lstat reveals it's not a regular file,
         # or because resolved path is outside staging
         assert resp.status_code in (400, 403)
+
+    def test_symlinked_intermediate_directory_rejected(self, ui_client, tmp_path):
+        client, _, staging_dir = ui_client
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "model.gguf").write_bytes(b"secret")
+        link = staging_dir / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("Cannot create symlinks on this platform")
+
+        resp = client.post(
+            "/api/models/import",
+            json={"path": "linked/model.gguf"},
+        )
+
+        assert resp.status_code == 400
+        assert "link" in resp.get_json()["error"].lower()
+
+    def test_hard_linked_staging_file_rejected(self, ui_client):
+        client, _, staging_dir = ui_client
+        source = staging_dir / "source.gguf"
+        linked = staging_dir / "linked.gguf"
+        source.write_bytes(b"model")
+        try:
+            os.link(source, linked)
+        except OSError:
+            pytest.skip("Cannot create hard links on this platform")
+
+        resp = client.post("/api/models/import", json={"path": linked.name})
+
+        assert resp.status_code == 400
+        assert "hard-linked" in resp.get_json()["error"].lower()

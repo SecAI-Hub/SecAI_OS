@@ -13,36 +13,27 @@ Copy your model file to the quarantine incoming directory:
 cp my-model.gguf /var/lib/secure-ai/quarantine/incoming/
 ```
 
-The quarantine file watcher (a systemd path unit) detects the new file within
-seconds and triggers the pipeline service.
+The continuously running watcher claims the file into a private processing
+directory, creates a stable snapshot, and starts the pipeline. Direct local
+single-file imports are recorded as local/TOFU unless the filename and digest
+already exist in `models.lock.yaml`. Catalog downloads are preferred because
+they carry an immutable source revision and hash pin.
 
 ## Step 2: Watch the Pipeline Progress
 
 Follow the pipeline in real time:
 
 ```bash
-journalctl -u secure-ai-quarantine.service -f
+journalctl -u secure-ai-quarantine-watcher.service -f
 ```
 
-You will see log entries for each stage:
+The watcher records the artifact digest and terminal decision without copying
+model output or raw scanner output into the journal:
 
 ```
-[quarantine] Processing: my-model.gguf
-[quarantine] Stage 1/7: source_policy — checking origin...
-[quarantine] Stage 1/7: source_policy — PASS
-[quarantine] Stage 2/7: format_gate — validating format...
-[quarantine] Stage 2/7: format_gate — PASS (gguf)
-[quarantine] Stage 3/7: integrity_check — verifying hash...
-[quarantine] Stage 3/7: integrity_check — PASS (sha256=abc123...)
-[quarantine] Stage 4/7: provenance_check — verifying signature...
-[quarantine] Stage 4/7: provenance_check — PASS
-[quarantine] Stage 5/7: static_scan — running ModelScan + YARA + fickling + modelaudit + entropy + gguf-guard...
-[quarantine] Stage 5/7: static_scan — PASS (score=0.00, no anomalies)
-[quarantine] Stage 6/7: behavioral_test — running adversarial prompts...
-[quarantine] Stage 6/7: behavioral_test — PASS (0/50 flagged, 0 critical)
-[quarantine] Stage 7/7: diffusion_deep_scan — SKIP (not a diffusion model)
-[quarantine] All stages passed. Promoting my-model.gguf...
-[quarantine] PROMOTED: my-model (my-model.gguf) sha256=abc123...
+quarantine processing: 'my-model.gguf'
+quarantine sha256: abc123... size: ... source: local
+quarantine PROMOTED: 'my-model.gguf' (registered in manifest)
 ```
 
 ## Step 3: Understand Each Stage
@@ -56,13 +47,15 @@ Checks the model's origin against `sources.allowlist.yaml`:
 models:
   - name: "Hugging Face"
     url_prefix: "https://huggingface.co/"
-  - name: "Hugging Face CDN"
-    url_prefix: "https://cdn-lfs.huggingface.co/"
+  - name: "Hugging Face Xet CAS Bridge"
+    url_prefix: "https://cas-bridge.xethub.hf.co/"
 ```
 
 If the model was downloaded via the catalog, the origin URL is recorded.
-For manually placed files without a recorded origin, this stage checks
-whether source verification is required in policy.yaml.
+For manually placed single files without a recorded origin, the stage records
+`local-import`; it does not invent remote provenance. Diffusion directories
+must have the exact catalog-produced source and manifest sidecars and cannot
+use local/TOFU admission.
 
 **Failure example:**
 ```
@@ -87,9 +80,11 @@ Stage 2/7: format_gate — FAIL: format "pickle" is denied by policy
 
 ### Stage 3: Integrity Check
 
-Computes the SHA-256 hash of the file. If a pinned hash exists (from a previous
-download or from the catalog), it is compared. First-time downloads record
-the hash for future verification.
+Computes the SHA-256 hash of a file and compares it with
+`models.lock.yaml`. Every remote file must already have a matching immutable
+pin. A local single-file import may be recorded as first-install trust, but
+that record is not remote provenance. Every directory must match the canonical
+per-file receipt and exact commit in `diffusion-models.lock.yaml`.
 
 **Failure example:**
 ```
@@ -100,8 +95,10 @@ Stage 3/7: integrity_check — FAIL: hash mismatch
 
 ### Stage 4: Provenance Check
 
-Verifies cryptographic signatures if available. Uses cosign for container
-signatures or GPG for detached signatures.
+Records source-appropriate provenance. Cosign is used only for supported
+container-registry references. Hugging Face artifacts rely on exact revisions
+and image-owned hash/manifest pins; missing signatures are not described as
+verified.
 
 **Failure example:**
 ```
@@ -129,8 +126,9 @@ Stage 5/7: static_scan — FAIL: modelscan detected suspicious pattern
 
 ### Stage 6: Behavioral Test
 
-Loads the model temporarily and runs an adversarial prompt suite (50 prompts
-by default). Checks for:
+Loads a GGUF model temporarily, CPU-only and inside the credentialless
+no-routable-network scanner boundary, then runs the current 41-prompt
+adversarial suite. Checks for:
 
 - Jailbreak susceptibility
 - Harmful content generation
@@ -144,16 +142,19 @@ This stage only runs for LLM models, not diffusion models.
 
 **Failure example:**
 ```
-Stage 6/7: behavioral_test — FAIL: 18/50 prompts flagged (36% > 30% threshold)
+Stage 6/7: behavioral_test — FAIL: 15/41 prompts flagged (37% > 30% threshold)
            2 critical flags (> 1 max)
 ```
 
 ### Stage 7: Diffusion Deep Scan
 
 For diffusion models only (detected by `model_index.json`). Validates:
-- Config file integrity
-- Component file checksums
-- Scheduler configuration
+- Strict, duplicate-key-free configuration and allowed component imports
+- Safetensors tensor shapes, offsets, dtypes, and complete byte layout
+- Text tokenizer and SentencePiece structure
+- No links, special files, hidden paths, embedded code, or network URLs
+- Exact file sizes and Git/LFS object IDs from the immutable manifest
+- Exact repository, commit, variant, manifest digest, file count, and total size
 
 **Skipped for LLM models:**
 ```
@@ -164,95 +165,56 @@ Stage 7/7: diffusion_deep_scan — SKIP (not a diffusion model)
 
 When all stages pass:
 
-1. The model file is moved from `quarantine/scanning/` to the registry
-   directory (`/var/lib/secure-ai/registry/`).
-2. If gguf-guard is enabled, a per-tensor SHA-256 manifest is generated
-   and stored alongside the model.
-3. A structural fingerprint is generated for the model.
-4. The registry is updated via `POST /v1/model/promote` with the model's
-   metadata, scan results, scanner versions, and integrity data.
-5. The model appears in `securectl list` and the Web UI.
+1. The watcher copies the verified private snapshot into an untrusted
+   promotion inbox; it never writes the trusted registry directly.
+2. The registry independently copies, bounds, hashes, and validates the
+   artifact in a private transaction.
+3. For GGUF, the registry generates its own tensor manifest and structural
+   fingerprint. For a directory, it cross-checks typed provenance against the
+   image-owned diffusion lock.
+4. The registry atomically commits the artifact and manifest metadata, or
+   rolls both back.
+5. The model appears in `securectl list` and the Web UI only after commit.
 
 ## What Happens on Fail
 
 When any stage fails:
 
-1. The model file is moved to `quarantine/rejected/`.
-2. A rejection report is written to `quarantine/rejected/my-model.gguf.report.json`
-   containing:
-   - The stage that failed
-   - The failure reason
-   - Scan output details
-   - Timestamp
-3. The model does NOT appear in the registry and cannot be used for inference.
-4. A CRITICAL audit log entry is written.
+1. The private snapshot is removed after a terminal rejection.
+2. A bounded failure class and stage summary are written to the authenticated,
+   hash-chained quarantine audit log. Raw model output is not persisted.
+3. The model does not appear in the registry and cannot be used for inference.
+4. A failed registry transaction retains the private claim for retry while
+   discarding the untrusted promotion copy.
 
 ## Checking Rejection Reasons
 
-View the rejection report:
+Inspect authenticated watcher events and the service journal:
 
 ```bash
-cat /var/lib/secure-ai/quarantine/rejected/my-model.gguf.report.json | python3 -m json.tool
-```
-
-Example output:
-
-```json
-{
-  "filename": "my-model.gguf",
-  "rejected_at": "2026-03-08T14:30:00Z",
-  "failed_stage": "static_scan",
-  "reason": "modelscan detected suspicious pattern in tensor model.layers.0.attn.weight",
-  "scan_details": {
-    "scanner_versions": {
-      "modelscan": "0.8.8",
-      "yara-python": "4.5.4",
-      "fickling": "0.1.10",
-      "modelaudit": "0.2.42"
-    },
-    "findings": [
-      {
-        "tensor": "model.layers.0.attn.weight",
-        "type": "suspicious_pattern",
-        "confidence": 0.92
-      }
-    ]
-  }
-}
+journalctl -u secure-ai-quarantine-watcher.service --since today
+sudo /usr/libexec/secure-ai/verify-audit-chains.py
 ```
 
 ## Re-Scanning a Rejected Model
 
 If you believe a rejection was a false positive and want to re-scan:
 
-1. Move the model back to incoming:
+The watcher intentionally does not retain a rejected artifact as a convenient
+execution-ready copy. Correct the pin/policy/source problem, then import the
+original artifact again:
 
 ```bash
-mv /var/lib/secure-ai/quarantine/rejected/my-model.gguf \
-   /var/lib/secure-ai/quarantine/incoming/
+cp -- /trusted/import-source/my-model.gguf \
+  /var/lib/secure-ai/quarantine/incoming/
 ```
 
-2. The pipeline will run again automatically.
+The complete pipeline runs again automatically. Do not weaken a required stage
+to force a false positive through; update a reviewed image-owned lock or rule
+with the normal release process.
 
-## Disabling Individual Stages
+## Pipeline Stages Cannot Be Disabled
 
-If you need to skip a stage (for testing only -- not recommended for
-production), edit `policy.yaml`:
-
-```yaml
-quarantine:
-  stages:
-    source_policy: true
-    format_gate: true
-    integrity_check: true
-    provenance_check: false    # <-- disabled
-    static_scan: true
-    behavioral_test: true
-    diffusion_deep_scan: true
-```
-
-Then restart the quarantine service:
-
-```bash
-sudo systemctl restart secure-ai-quarantine.service
-```
+All seven admission stages are mandatory on the appliance. The behavioral
+thresholds may be tightened, but production policy and schema validation reject
+attempts to disable required scanners or weaken the compiled maximums.

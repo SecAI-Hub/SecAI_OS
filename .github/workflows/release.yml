@@ -15,21 +15,92 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
-  checks: read
-  statuses: read
+  contents: read
+
+env:
+  CANONICAL_IMAGE_REF: ghcr.io/secai-hub/secai_os
+  REQUIRED_SERVICE_PROFILE: offline-private
 
 jobs:
   preflight:
     name: Release Preflight Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+    outputs:
+      designation: ${{ steps.release.outputs.designation }}
+      checks_passed: ${{ steps.ci.outputs.checks_passed }}
+      checks_required: ${{ steps.ci.outputs.checks_required }}
+      hardware_evidence: ${{ steps.release.outputs.hardware_evidence }}
+      system_validation: ${{ steps.release.outputs.system_validation }}
+      signoff: ${{ steps.release.outputs.signoff }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine designation and mandatory evidence
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            designation=stable
+          elif [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-(rc|beta|alpha)\.[0-9]+$ ]]; then
+            designation=candidate
+          else
+            echo "::error::Release tag must be vMAJOR.MINOR.PATCH or a supported pre-release tag"
+            exit 1
+          fi
+
+          hardware_evidence="release-evidence/${RELEASE_TAG}/hardware-qualification.json"
+          system_validation="release-evidence/${RELEASE_TAG}/system-validation.json"
+          signoff="release-evidence/${RELEASE_TAG}/signoff.json"
+          if [ "$designation" = stable ]; then
+            for evidence in "$hardware_evidence" "$system_validation" "$signoff"; do
+              if [ ! -f "$evidence" ]; then
+                echo "::error::Stable releases require ${evidence}"
+                exit 1
+              fi
+              jq -e --arg source_commit "$GITHUB_SHA" \
+                '.source_commit == $source_commit
+                 and (.image_digest | test("^sha256:[0-9a-f]{64}$"))' \
+                "$evidence" >/dev/null
+            done
+            jq -e \
+              '.status == "qualified"
+               and (.tested_at | type == "string" and length > 0)
+               and (.hardware | type == "array" and length > 0)' \
+              "$hardware_evidence" >/dev/null
+            jq -e \
+              '.results.boot == "pass"
+               and .results.reboot == "pass"
+               and .results.update == "pass"
+               and .results.rollback == "pass"
+               and .results.negative_security == "pass"
+               and (.tested_at | type == "string" and length > 0)' \
+              "$system_validation" >/dev/null
+            jq -e \
+              '.status == "approved"
+               and .evidence_reviewed == true
+               and (.approver | type == "string" and length > 0)
+               and (.approved_at | type == "string" and length > 0)' \
+              "$signoff" >/dev/null
+          fi
+
+          {
+            echo "designation=$designation"
+            echo "hardware_evidence=$hardware_evidence"
+            echo "system_validation=$system_validation"
+            echo "signoff=$signoff"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release designation: ${designation}"
 
       - name: Verify CI passed on this commit
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,15 +118,52 @@ jobs:
             "Test Count Drift Check"
             "Documentation Validation"
             "Sandbox OpenVEX Smoke"
+            "Secret Scan (Current Tree + Git History)"
           )
+
+          gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs?per_page=100" \
+            > /tmp/release-check-runs.json
+          jq -n \
+            --arg source_commit "$SHA" \
+            --arg repository "${{ github.repository }}" \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              schema_version: 1,
+              source_commit: $source_commit,
+              repository: $repository,
+              generated_at: $generated_at,
+              required_checks: []
+            }' > CI_EVIDENCE.json
 
           PASS=0
           FAIL=0
           for check in "${REQUIRED_CHECKS[@]}"; do
-            # Use startswith to handle matrix jobs (e.g. "Go Build & Test (registry)")
-            RESULT=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
-              --jq "[.check_runs[] | select(.name | startswith(\"${check}\")) | .conclusion] | if length == 0 then [\"not_found\"] else . end | if all(. == \"success\") then \"success\" else .[0] end" \
-              2>/dev/null || echo "not_found")
+            # Keep the exact check-run URLs and head SHAs as release evidence.
+            runs=$(
+              jq -c --arg check "$check" \
+                '[.check_runs[]
+                  | select(.name | startswith($check))
+                  | {
+                      name,
+                      conclusion,
+                      details_url,
+                      head_sha
+                    }]' /tmp/release-check-runs.json
+            )
+            RESULT=$(
+              jq -r --arg sha "$SHA" \
+                'if length > 0
+                    and all(.[]; .conclusion == "success" and .head_sha == $sha)
+                 then "success"
+                 else "not_found_or_failed"
+                 end' <<<"$runs"
+            )
+            jq --arg requirement "$check" --argjson runs "$runs" \
+              '.required_checks += [{
+                requirement: $requirement,
+                check_runs: $runs
+              }]' CI_EVIDENCE.json > CI_EVIDENCE.json.tmp
+            mv CI_EVIDENCE.json.tmp CI_EVIDENCE.json
             if [ "$RESULT" = "success" ]; then
               echo "OK: ${check} = ${RESULT}"
               PASS=$((PASS + 1))
@@ -73,6 +181,128 @@ jobs:
             exit 1
           fi
           echo "Preflight complete: ${PASS}/${#REQUIRED_CHECKS[@]} checks confirmed passing"
+          echo "checks_passed=${PASS}" >> "$GITHUB_OUTPUT"
+          echo "checks_required=${#REQUIRED_CHECKS[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload exact-commit release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preflight-evidence
+          path: |
+            CI_EVIDENCE.json
+            release-evidence/${{ github.ref_name }}/*.json
+          if-no-files-found: error
+          retention-days: 90
+
+  resolve-image:
+    name: Resolve Immutable Release Image
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    # This job creates the immutable release-* package tag. Keep that registry
+    # mutation behind the same protected environment as signing and publishing.
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      pinned_ref: ${{ steps.image.outputs.pinned_ref }}
+      release_tag: ${{ steps.image.outputs.release_tag }}
+      baseline_sha256: ${{ steps.baseline.outputs.baseline_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install cosign from pinned installer
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Resolve, authenticate, and promote image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ env.CANONICAL_IMAGE_REF }}
+          RELEASE_TAG_INPUT: ${{ github.ref_name }}
+        run: |
+          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:latest")
+          digest=$(jq -er '.Digest' <<<"$inspect_json")
+          revision=$(jq -er '.Labels["org.opencontainers.image.revision"]' <<<"$inspect_json")
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Registry returned a non-canonical digest"
+            exit 1
+          fi
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::latest image revision ${revision} does not match release commit ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          pinned_ref="${IMAGE_REF}@${digest}"
+          cosign verify --key cosign.pub "$pinned_ref" >/dev/null
+          cosign verify-attestation --type cyclonedx --key cosign.pub \
+            "$pinned_ref" >/dev/null
+          cosign verify-attestation --type slsaprovenance --key cosign.pub \
+            "$pinned_ref" >/dev/null
+
+          release_tag="release-${RELEASE_TAG_INPUT}"
+          printf '%s' "$GH_TOKEN" |
+            skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          existing_digest=$(
+            skopeo inspect "docker://${IMAGE_REF}:${release_tag}" 2>/dev/null |
+              jq -r '.Digest // empty' || true
+          )
+          if [ -n "$existing_digest" ] && [ "$existing_digest" != "$digest" ]; then
+            echo "::error::Immutable release tag already points to ${existing_digest}"
+            exit 1
+          fi
+          if [ -z "$existing_digest" ]; then
+            skopeo copy --all --preserve-digests \
+              "docker://${pinned_ref}" \
+              "docker://${IMAGE_REF}:${release_tag}"
+          fi
+          promoted_digest=$(
+            skopeo inspect "docker://${IMAGE_REF}:${release_tag}" | jq -er '.Digest'
+          )
+          if [ "$promoted_digest" != "$digest" ]; then
+            echo "::error::Release image promotion changed the manifest digest"
+            exit 1
+          fi
+
+          {
+            echo "digest=$digest"
+            echo "pinned_ref=$pinned_ref"
+            echo "release_tag=$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract and validate release integrity baseline
+        id: baseline
+        env:
+          PINNED_REF: ${{ steps.image.outputs.pinned_ref }}
+        run: |
+          docker pull "$PINNED_REF"
+          container_id=$(docker create "$PINNED_REF")
+          cleanup() {
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker cp \
+            "${container_id}:/usr/share/secure-ai/integrity/release-baseline.json" \
+            RELEASE_BASELINE.json
+          jq -e \
+            --arg source_commit "$GITHUB_SHA" \
+            '.version == 1
+             and .source_commit == $source_commit
+             and (.files | type == "array" and length > 0)' \
+            RELEASE_BASELINE.json >/dev/null
+          baseline_sha256=$(sha256sum RELEASE_BASELINE.json | awk '{print $1}')
+          echo "baseline_sha256=$baseline_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified image metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-metadata
+          path: RELEASE_BASELINE.json
+          if-no-files-found: error
+          retention-days: 7
 
   build-go:
     name: Build Go Services
@@ -84,9 +314,11 @@ jobs:
         service: [airlock, registry, tool-firewall, gpu-integrity-watch, mcp-firewall, policy-engine, runtime-attestor, integrity-monitor, incident-recorder]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: "1.26.3"
+          go-version: "1.26.5"
           cache-dependency-path: services/${{ matrix.service }}/go.sum
 
       - name: Build (linux/amd64)
@@ -131,6 +363,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -138,53 +372,59 @@ jobs:
       - name: Prepare SBOM output directory
         run: mkdir -p dist
 
-      - name: Generate agent SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/agent
-          format: cyclonedx-json
-          output-file: dist/agent-sbom.cdx.json
-          upload-artifact: false
+      - name: Generate dependency-aware Python SBOMs
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          generator=.github/scripts/generate-python-sbom.py
+          python3 "$generator" \
+            --service-dir services/agent \
+            --requirements services/agent/requirements.lock \
+            --dependency-completeness locked \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/agent-sbom.cdx.json
+          python3 "$generator" \
+            --service-dir services/ui \
+            --requirements services/ui/requirements.lock \
+            --dependency-completeness locked \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/ui-sbom.cdx.json
+          python3 "$generator" \
+            --service-dir services/quarantine \
+            --requirements services/quarantine/requirements.lock \
+            --dependency-completeness locked \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/quarantine-sbom.cdx.json
+          python3 "$generator" \
+            --service-dir services/common \
+            --dependency-completeness none-required \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/common-sbom.cdx.json
+          python3 "$generator" \
+            --service-dir services/diffusion-worker \
+            --requirements files/scripts/diffusion-cpu.lock \
+            --dependency-completeness locked \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/diffusion-worker-sbom.cdx.json
+          python3 "$generator" \
+            --service-dir services/search-mediator \
+            --requirements services/search-mediator/requirements.lock \
+            --dependency-completeness locked \
+            --source-commit "$SOURCE_COMMIT" \
+            --output dist/search-mediator-sbom.cdx.json
 
-      - name: Generate ui SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/ui
-          format: cyclonedx-json
-          output-file: dist/ui-sbom.cdx.json
-          upload-artifact: false
-
-      - name: Generate quarantine SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/quarantine
-          format: cyclonedx-json
-          output-file: dist/quarantine-sbom.cdx.json
-          upload-artifact: false
-
-      - name: Generate common SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/common
-          format: cyclonedx-json
-          output-file: dist/common-sbom.cdx.json
-          upload-artifact: false
-
-      - name: Generate diffusion-worker SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/diffusion-worker
-          format: cyclonedx-json
-          output-file: dist/diffusion-worker-sbom.cdx.json
-          upload-artifact: false
-
-      - name: Generate search-mediator SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: services/search-mediator
-          format: cyclonedx-json
-          output-file: dist/search-mediator-sbom.cdx.json
-          upload-artifact: false
+      - name: Validate dependency and source counts
+        run: |
+          for sbom in dist/*-sbom.cdx.json; do
+            jq -e '
+              .bomFormat == "CycloneDX"
+              and (.metadata.component.name | length > 0)
+              and ([.metadata.component.properties[]
+                    | select(.name == "secai:dependencyCompleteness")]
+                   | length == 1)
+              and (.components | length > 0)
+            ' "$sbom" >/dev/null
+          done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -198,8 +438,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Build sandbox images required for VEX generation
+        env:
+          # Build parses generation-scoped bind mounts but never starts them.
+          SECAI_RUNTIME_GENERATION: "0000000000000000000000000000000000000000000000000000000000000000"
         run: |
           for attempt in 1 2 3; do
             if docker compose -f deploy/sandbox/compose.yaml --profile diffusion build ui agent search-mediator diffusion; then
@@ -235,56 +480,47 @@ jobs:
 
   build-iso:
     name: Build ISO
-    needs: [preflight]
+    needs: [preflight, resolve-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           sudo docker image prune -af
 
-      - name: Build ISO
-        uses: jasonn3/build-container-installer@207e927e28c92704c4cdbe10b980643b3771ef01 # main
-        id: isogen
-        with:
-          arch: x86_64
-          image_name: secai_os
-          image_repo: ghcr.io/secai-hub
-          # Use :latest since BlueBuild tags main pushes as :latest, not :vX.Y.Z.
-          # The release tag and main HEAD point to the same commit.
-          image_tag: latest
-          version: 42
-          variant: Silverblue
-          iso_name: secai-os-${{ github.ref_name }}-x86_64.iso
+      - name: Install cosign from pinned installer
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Install cosign
+      - name: Install image build dependencies
         run: |
-          COSIGN_VERSION="v2.4.3"
-          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
-            -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
+          sudo apt-get update
+          sudo apt-get install -y podman
 
-      - name: Sign ISO
+      - name: Build ISO from verified immutable image
+        env:
+          VERSION: ${{ github.ref_name }}
+          PINNED_IMAGE_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
         run: |
           mkdir -p dist
-          # Find the ISO — the action may output it in various locations
-          ISO_FILE=$(find . -maxdepth 2 -name "secai-os-*.iso" -type f | head -1)
+          sudo bash scripts/release/secai-os-build-iso.sh \
+            --image-ref "${PINNED_IMAGE_REF}" \
+            --output-dir ./dist \
+            --version "${VERSION}"
+
+      - name: Stage ISO
+        run: |
+          ISO_FILE=$(find dist -maxdepth 1 -name "secai-os-*.iso" -type f | head -1)
           if [ -z "$ISO_FILE" ]; then
             echo "ERROR: ISO file not found after build"
-            find . -maxdepth 3 -name "*.iso" -type f
+            find dist -maxdepth 2 -type f
             exit 1
           fi
           echo "Found ISO: $ISO_FILE"
-          mv "$ISO_FILE" "dist/"
-          ISO_BASENAME=$(basename "$ISO_FILE")
-          cosign sign-blob --yes \
-            --key env://COSIGN_PRIVATE_KEY \
-            --output-signature "dist/${ISO_BASENAME}.sig" \
-            "dist/${ISO_BASENAME}"
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          test -s "$ISO_FILE"
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -294,10 +530,12 @@ jobs:
 
   build-usb-image:
     name: Build Portable USB Image
-    needs: [preflight]
+    needs: [preflight, resolve-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Free disk space
         run: |
@@ -309,24 +547,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman xz-utils
 
-      - name: Build portable USB image
+      - name: Install cosign from pinned installer
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Build portable USB image from verified immutable image
         env:
           VERSION: ${{ github.ref_name }}
+          PINNED_IMAGE_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
         run: |
           mkdir -p dist
           sudo bash scripts/build-usb-image.sh \
-            --image-ref "ghcr.io/secai-hub/secai_os:latest" \
+            --image-ref "${PINNED_IMAGE_REF}" \
             --output-dir ./dist \
             --version "${VERSION}"
 
-      - name: Install cosign
-        run: |
-          COSIGN_VERSION="v2.4.3"
-          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
-            -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
-
-      - name: Sign portable USB image
+      - name: Validate portable USB image
         run: |
           USB_IMAGE=$(find dist -maxdepth 1 -name "secai-os-*-usb.raw.xz" -type f | head -1)
           if [ -z "$USB_IMAGE" ]; then
@@ -334,12 +569,7 @@ jobs:
             find dist -maxdepth 2 -type f
             exit 1
           fi
-          cosign sign-blob --yes \
-            --key env://COSIGN_PRIVATE_KEY \
-            --output-signature "${USB_IMAGE}.sig" \
-            "$USB_IMAGE"
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          test -s "$USB_IMAGE"
 
       - name: Upload portable USB artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -348,266 +578,506 @@ jobs:
           path: dist/secai-os-*-usb.raw.xz*
 
   build-vm-images:
-    name: Build VM Images (QCOW2 + OVA)
-    needs: [preflight]
+    name: Qualify Local VM Builders (Not Published)
+    needs: [preflight, resolve-image]
     if: vars.HAS_KVM_RUNNER == 'true'
     runs-on: [self-hosted, linux, x64, kvm]
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Build QCOW2
-        run: |
-          bash scripts/vm/build-qcow2.sh --ci \
-            --image-ref "ghcr.io/secai-hub/secai_os:latest"
-
-      - name: Build OVA from QCOW2
-        run: bash scripts/vm/build-ova.sh
-
-      - name: Install cosign
-        run: |
-          COSIGN_VERSION="v2.4.3"
-          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
-            -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
-
-      - name: Sign VM artifacts
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          mkdir -p dist
-          cp output/secai-os.qcow2 "dist/secai-os-${VERSION}.qcow2"
-          cp output/secai-os.ova "dist/secai-os-${VERSION}.ova"
-          for f in "dist/secai-os-${VERSION}.qcow2" "dist/secai-os-${VERSION}.ova"; do
-            cosign sign-blob --yes \
-              --key env://COSIGN_PRIVATE_KEY \
-              --output-signature "${f}.sig" \
-              "$f"
-          done
-
-      - name: Upload VM artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vm-images
-          path: dist/secai-os-*
+          persist-credentials: false
+
+      - name: Install cosign from pinned installer
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Build and validate ephemeral QCOW2 and OVA
+        env:
+          PINNED_IMAGE_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
+        run: |
+          work_dir=$(mktemp -d /tmp/secai-vm-qualification.XXXXXX)
+          cleanup() {
+            rm -rf -- "$work_dir"
+          }
+          trap cleanup EXIT
+          vm_password=$(openssl rand -hex 32)
+          host_state_password=$(openssl rand -hex 32)
+          echo "::add-mask::${vm_password}"
+          echo "::add-mask::${host_state_password}"
+          export SECAI_VM_PASSWORD="$vm_password"
+          export SECAI_HOST_STATE_PASSWORD="$host_state_password"
+          bash scripts/vm/build-qcow2.sh --ci \
+            --image-ref "${PINNED_IMAGE_REF}" \
+            "${work_dir}/qcow2"
+          qemu-img check "${work_dir}/qcow2/secai-os.qcow2"
+          test ! -e "${work_dir}/qcow2/secai-ks.cfg"
+          test ! -e "${work_dir}/qcow2/secai-first-boot-secrets.txt"
+          mkdir -p "${work_dir}/ova"
+          bash scripts/vm/build-ova.sh \
+            "${work_dir}/qcow2/secai-os.qcow2" "${work_dir}/ova"
+          test -s "${work_dir}/ova/secai-os.ova"
+          tar -tf "${work_dir}/ova/secai-os.ova" | grep -qx 'secai-os.ovf'
+          tar -tf "${work_dir}/ova/secai-os.ova" | grep -qx 'secai-os-disk1.vmdk'
+          echo "VM builders qualified; ephemeral images will now be destroyed."
 
   provenance:
-    name: SLSA Provenance & Attestation
+    name: Final Release Evidence, Signing & Publication
+    needs:
+      - preflight
+      - resolve-image
+      - build-go
+      - build-python
+      - build-sandbox-vex
+      - build-iso
+      - build-usb-image
+      - build-vm-images
+    if: >-
+      always()
+      && needs.preflight.result == 'success'
+      && needs.resolve-image.result == 'success'
+      && needs.build-go.result == 'success'
+      && needs.build-python.result == 'success'
+      && needs.build-sandbox-vex.result == 'success'
+      && needs.build-iso.result == 'success'
+      && needs.build-usb-image.result == 'success'
+      && (needs.build-vm-images.result == 'success'
+          || needs.build-vm-images.result == 'skipped')
     runs-on: ubuntu-latest
-    needs: [build-go, build-python, build-sandbox-vex, build-iso, build-usb-image]
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - name: Install cosign
-        run: |
-          COSIGN_VERSION="v2.4.3"
-          curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
-            -o /usr/local/bin/cosign
-          chmod +x /usr/local/bin/cosign
-          cosign version
+      - name: Install cosign from pinned installer
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Download all artifacts
+      - name: Download all release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist/
           merge-multiple: true
 
-      - name: Stage release helper scripts
-        run: |
-          install -m 0755 scripts/release/secai-os-build-iso.sh dist/secai-os-build-iso.sh
-          install -m 0755 scripts/release/secai-os-build-usb.sh dist/secai-os-build-usb.sh
-          install -m 0755 scripts/release/secai-os-run-docker.sh dist/secai-os-run-docker.sh
-          install -m 0644 scripts/release/secai-os-run-docker.ps1 dist/secai-os-run-docker.ps1
-
-      - name: Record release image digest
+      - name: Stage immutable metadata and release helpers
         env:
-          IMAGE_REF: ghcr.io/${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.digest }}
+          PINNED_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
+          BASELINE_SHA256: ${{ needs.resolve-image.outputs.baseline_sha256 }}
         run: |
-          DIGEST=$(skopeo inspect "docker://${IMAGE_REF}:${TAG}" 2>/dev/null | jq -r '.Digest' || echo "")
-          if [ -n "$DIGEST" ] && [ "$DIGEST" != "null" ]; then
-            echo "${DIGEST}" > dist/IMAGE_DIGEST
-            echo "${IMAGE_REF}@${DIGEST}" > dist/IMAGE_REF_PINNED
-            {
-              echo "## Install with digest pinning"
-              echo '```bash'
-              echo "sudo bash secai-bootstrap.sh --digest ${DIGEST}"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "WARNING: Could not extract image digest for tag ${TAG}"
-            echo "unknown" > dist/IMAGE_DIGEST
+          printf '%s\n' "$IMAGE_DIGEST" > dist/IMAGE_DIGEST
+          printf '%s\n' "$PINNED_REF" > dist/IMAGE_REF_PINNED
+          test "$(sha256sum dist/RELEASE_BASELINE.json | awk '{print $1}')" = \
+            "$BASELINE_SHA256"
+          install -m 0755 scripts/release/secai-os-build-iso.sh \
+            dist/secai-os-build-iso.sh
+          install -m 0755 scripts/release/secai-os-build-usb.sh \
+            dist/secai-os-build-usb.sh
+          install -m 0644 cosign.pub dist/cosign.pub
+          install -m 0755 scripts/release/secai-os-run-docker.sh \
+            dist/secai-os-run-docker.sh
+          install -m 0644 scripts/release/secai-os-run-docker.ps1 \
+            dist/secai-os-run-docker.ps1
+
+          evidence_root="dist/release-evidence/${{ github.ref_name }}"
+          [ ! -f "${evidence_root}/hardware-qualification.json" ] ||
+            cp "${evidence_root}/hardware-qualification.json" \
+              dist/HARDWARE_QUALIFICATION.json
+          [ ! -f "${evidence_root}/system-validation.json" ] ||
+            cp "${evidence_root}/system-validation.json" \
+              dist/SYSTEM_VALIDATION.json
+          [ ! -f "${evidence_root}/signoff.json" ] ||
+            cp "${evidence_root}/signoff.json" dist/HUMAN_SIGNOFF.json
+
+      - name: Validate service SBOMs
+        run: |
+          mapfile -t sboms < <(find dist -maxdepth 1 -type f \
+            -name '*-sbom.cdx.json' -print | sort)
+          if [ "${#sboms[@]}" -ne 15 ]; then
+            echo "::error::Expected 15 service SBOMs, found ${#sboms[@]}"
+            exit 1
           fi
+          for sbom in "${sboms[@]}"; do
+            jq -e '
+              .bomFormat == "CycloneDX"
+              and (.metadata.component.name | type == "string" and length > 0)
+              and (.components | type == "array" and length > 0)
+            ' "$sbom" >/dev/null
+          done
+
+      - name: Verify exact image signature and attestations
+        env:
+          PINNED_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.digest }}
+        run: |
+          cosign verify --key cosign.pub "$PINNED_REF" >/dev/null
+          cosign verify-attestation --type cyclonedx --key cosign.pub \
+            "$PINNED_REF" >/dev/null
+          cosign verify-attestation --type slsaprovenance --key cosign.pub \
+            "$PINNED_REF" >/dev/null
+          jq -n \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg image_ref "$PINNED_REF" \
+            '{
+              schema_version: 1,
+              source_commit: $source_commit,
+              image_digest: $image_digest,
+              image_ref: $image_ref,
+              signature_verified: true,
+              cyclonedx_attestation_verified: true,
+              slsa_attestation_verified: true
+            }' > dist/IMAGE_VERIFICATION.json
+
+      - name: Sign and verify all install media
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          shopt -s nullglob
+          media=(
+            dist/secai-os-*.iso
+            dist/secai-os-*-usb.raw.xz
+          )
+          if [ "${#media[@]}" -lt 2 ]; then
+            echo "::error::ISO and portable USB media are mandatory"
+            exit 1
+          fi
+          for artifact in "${media[@]}"; do
+            cosign sign-blob --yes \
+              --key env://COSIGN_PRIVATE_KEY \
+              --output-signature "${artifact}.sig" \
+              "$artifact"
+            cosign verify-blob --key cosign.pub \
+              --signature "${artifact}.sig" "$artifact" >/dev/null
+          done
+
+      - name: Publish stable media to durable storage
+        env:
+          DESIGNATION: ${{ needs.preflight.outputs.designation }}
+          MEDIA_S3_URI: ${{ vars.RELEASE_MEDIA_S3_URI }}
+          MEDIA_BASE_URL: ${{ vars.RELEASE_MEDIA_BASE_URL }}
+          MEDIA_S3_ENDPOINT: ${{ vars.RELEASE_MEDIA_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_MEDIA_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_MEDIA_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_MEDIA_AWS_REGION || 'us-east-1' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [ "$DESIGNATION" = stable ]; then
+            for required in MEDIA_S3_URI MEDIA_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+              if [ -z "${!required:-}" ]; then
+                echo "::error::Stable release storage setting ${required} is missing"
+                exit 1
+              fi
+            done
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = sorted([
+              *Path("dist").glob("secai-os-*.iso"),
+              *Path("dist").glob("secai-os-*-usb.raw.xz"),
+          ])
+          Path("dist/MEDIA_LOCATIONS.json").write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "artifacts": [
+                          {"name": path.name, "url": None} for path in files
+                      ],
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+          if [ "$DESIGNATION" != stable ]; then
+            exit 0
+          fi
+          endpoint_args=()
+          if [ -n "$MEDIA_S3_ENDPOINT" ]; then
+            endpoint_args=(--endpoint-url "$MEDIA_S3_ENDPOINT")
+          fi
+          for artifact in dist/secai-os-*.iso \
+                          dist/secai-os-*-usb.raw.xz; do
+            [ -f "$artifact" ] || continue
+            name=$(basename "$artifact")
+            aws "${endpoint_args[@]}" s3 cp --only-show-errors \
+              "$artifact" "${MEDIA_S3_URI%/}/${RELEASE_TAG}/${name}"
+            url="${MEDIA_BASE_URL%/}/${RELEASE_TAG}/${name}"
+            jq --arg name "$name" --arg url "$url" \
+              '(.artifacts[] | select(.name == $name)).url = $url' \
+              dist/MEDIA_LOCATIONS.json > dist/MEDIA_LOCATIONS.json.tmp
+            mv dist/MEDIA_LOCATIONS.json.tmp dist/MEDIA_LOCATIONS.json
+          done
+          jq -e 'all(.artifacts[]; (.url | type == "string" and length > 0))' \
+            dist/MEDIA_LOCATIONS.json >/dev/null
 
       - name: Generate release manifest
         env:
-          COMMIT_SHA: ${{ github.sha }}
-          IMAGE_REF: ghcr.io/${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          WORKFLOW_RUN: ${{ github.run_id }}
+          IMAGE_REF: ${{ env.CANONICAL_IMAGE_REF }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.digest }}
+          PINNED_REF: ${{ needs.resolve-image.outputs.pinned_ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          DESIGNATION: ${{ needs.preflight.outputs.designation }}
+          REQUIRED_PROFILE: ${{ env.REQUIRED_SERVICE_PROFILE }}
         run: |
-          cd dist
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
 
-          # Collect binary names + SHA256 hashes
-          BINARIES_JSON="[]"
-          for bin in *-linux-*; do
-            [ -f "$bin" ] || continue
-            HASH=$(sha256sum "$bin" | awk '{print $1}')
-            BINARIES_JSON=$(echo "$BINARIES_JSON" | jq \
-              --arg name "$bin" --arg sha256 "$HASH" \
-              '. + [{"name": $name, "sha256": $sha256}]')
-          done
+          dist = Path("dist")
 
-          # Collect SBOM filenames
-          SBOMS_JSON="[]"
-          for sbom in *-sbom.cdx.json; do
-            [ -f "$sbom" ] || continue
-            SBOMS_JSON=$(echo "$SBOMS_JSON" | jq \
-              --arg name "$sbom" \
-              '. + [$name]')
-          done
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          # Collect OpenVEX filenames
-          VEX_JSON="[]"
-          for vex in *.vex.json; do
-            [ -f "$vex" ] || continue
-            VEX_JSON=$(echo "$VEX_JSON" | jq \
-              --arg name "$vex" \
-              '. + [$name]')
-          done
-
-          # Collect release helper scripts
-          RELEASE_SCRIPTS_JSON="[]"
-          for helper in secai-os-build-iso.sh secai-os-build-usb.sh secai-os-run-docker.sh secai-os-run-docker.ps1; do
-            [ -f "$helper" ] || continue
-            HASH=$(sha256sum "$helper" | awk '{print $1}')
-            RELEASE_SCRIPTS_JSON=$(echo "$RELEASE_SCRIPTS_JSON" | jq \
-              --arg name "$helper" --arg sha256 "$HASH" \
-              '. + [{"name": $name, "sha256": $sha256}]')
-          done
-
-          # Read image digest
-          IMAGE_DIGEST="unknown"
-          if [ -f IMAGE_DIGEST ]; then
-            IMAGE_DIGEST=$(cat IMAGE_DIGEST)
-          fi
-          IMAGE_REF_PINNED=""
-          if [ -f IMAGE_REF_PINNED ]; then
-            IMAGE_REF_PINNED=$(cat IMAGE_REF_PINNED)
-          fi
-
-          # Build manifest JSON
-          jq -n \
-            --arg schema_version "1" \
-            --arg tag "${TAG}" \
-            --arg image_ref "${IMAGE_REF}" \
-            --arg image_digest "$IMAGE_DIGEST" \
-            --arg image_ref_pinned "$IMAGE_REF_PINNED" \
-            --argjson binaries "$BINARIES_JSON" \
-            --argjson sboms "$SBOMS_JSON" \
-            --argjson vex "$VEX_JSON" \
-            --argjson release_scripts "$RELEASE_SCRIPTS_JSON" \
-            --arg provenance_type "https://slsa.dev/provenance/v1" \
-            --arg checksum_file "SHA256SUMS" \
-            --arg signature_file "SHA256SUMS.sig" \
-            --arg commit_sha "${COMMIT_SHA}" \
-            --arg workflow_run "${WORKFLOW_RUN}" \
-            --arg workflow_ref "${WORKFLOW_REF}" \
-            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{
-              schema_version: $schema_version,
-              tag: $tag,
-              image: {
-                ref: $image_ref,
-                digest: $image_digest,
-                ref_pinned: $image_ref_pinned
-              },
-              binaries: $binaries,
-              sboms: $sboms,
-              vex: $vex,
-              release_scripts: $release_scripts,
-              provenance: {
-                type: $provenance_type,
-                attested: true
-              },
-              checksums: {
-                file: $checksum_file,
-                signature: $signature_file
-              },
-              build: {
-                commit_sha: $commit_sha,
-                workflow_run: $workflow_run,
-                workflow_ref: $workflow_ref,
-                timestamp: $timestamp
+          locations = json.loads(
+              (dist / "MEDIA_LOCATIONS.json").read_text(encoding="utf-8")
+          )
+          urls = {item["name"]: item["url"] for item in locations["artifacts"]}
+          helpers = [
+              "secai-os-build-iso.sh",
+              "secai-os-build-usb.sh",
+              "secai-os-run-docker.sh",
+              "secai-os-run-docker.ps1",
+          ]
+          media = sorted([
+              *dist.glob("secai-os-*.iso"),
+              *dist.glob("secai-os-*-usb.raw.xz"),
+          ])
+          install_artifacts = {}
+          for path in media:
+              if path.name.endswith(".raw.xz"):
+                  kind = "usb_raw_xz"
+              else:
+                  kind = path.suffix.removeprefix(".")
+              install_artifacts[kind] = {
+                  "name": path.name,
+                  "sha256": digest(path),
+                  "size_bytes": path.stat().st_size,
+                  "signature": f"{path.name}.sig",
+                  "url": urls.get(path.name),
               }
-            }' > RELEASE_MANIFEST.json
 
-          # Add install artifacts (conditionally present)
-          INSTALL_JSON="{}"
-          for artifact in secai-os-*.iso secai-os-*.qcow2 secai-os-*.ova secai-os-*-usb.raw.xz; do
-            [ -f "$artifact" ] || continue
-            HASH=$(sha256sum "$artifact" | awk '{print $1}')
-            SIZE=$(stat -c%s "$artifact" 2>/dev/null || stat -f%z "$artifact" 2>/dev/null || echo 0)
-            TYPE="${artifact##*.}"
-            if [[ "$artifact" == *.raw.xz ]]; then
-              TYPE="usb_raw_xz"
-            fi
-            INSTALL_JSON=$(echo "$INSTALL_JSON" | jq \
-              --arg type "$TYPE" --arg name "$artifact" \
-              --arg sha256 "$HASH" --arg size "$SIZE" \
-              --arg sig "${artifact}.sig" \
-              '. + {($type): {"name": $name, "sha256": $sha256, "size_bytes": ($size | tonumber), "signature": $sig}}')
-          done
-          # Merge install_artifacts into manifest
-          jq --argjson install "$INSTALL_JSON" \
-            '. + {install_artifacts: $install}' RELEASE_MANIFEST.json > RELEASE_MANIFEST.json.tmp
-          mv RELEASE_MANIFEST.json.tmp RELEASE_MANIFEST.json
+          document = {
+              "schema_version": 2,
+              "tag": os.environ["RELEASE_TAG"],
+              "designation": os.environ["DESIGNATION"],
+              "image": {
+                  "ref": os.environ["IMAGE_REF"],
+                  "digest": os.environ["IMAGE_DIGEST"],
+                  "ref_pinned": os.environ["PINNED_REF"],
+                  "release_baseline": {
+                      "file": "RELEASE_BASELINE.json",
+                      "sha256": digest(dist / "RELEASE_BASELINE.json"),
+                  },
+              },
+              "deployment": {
+                  "required_service_profile": os.environ["REQUIRED_PROFILE"]
+              },
+              "binaries": [
+                  {"name": path.name, "sha256": digest(path)}
+                  for path in sorted(dist.glob("*-linux-*"))
+              ],
+              "sboms": [
+                  {"name": path.name, "sha256": digest(path)}
+                  for path in sorted(dist.glob("*-sbom.cdx.json"))
+              ],
+              "vex": [
+                  {"name": path.name, "sha256": digest(path)}
+                  for path in sorted(dist.glob("*.vex.json"))
+              ],
+              "release_scripts": [
+                  {"name": name, "sha256": digest(dist / name)} for name in helpers
+              ],
+              "trust_root": {
+                  "name": "cosign.pub",
+                  "sha256": digest(dist / "cosign.pub"),
+              },
+              "install_artifacts": install_artifacts,
+              "provenance": {
+                  "type": "https://slsa.dev/provenance/v1",
+                  "image_verification": "IMAGE_VERIFICATION.json",
+                  "service_binary_attestation": "GitHub artifact attestation",
+              },
+              "checksums": {
+                  "file": "SHA256SUMS",
+                  "signature": "SHA256SUMS.sig",
+              },
+              "readiness": {
+                  "file": "RELEASE_READINESS.json",
+                  "signature": "RELEASE_READINESS.json.sig",
+              },
+              "build": {
+                  "commit_sha": os.environ["GITHUB_SHA"],
+                  "workflow_run": os.environ["GITHUB_RUN_ID"],
+                  "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+                  "timestamp": datetime.now(timezone.utc).replace(
+                      microsecond=0
+                  ).isoformat(),
+              },
+          }
+          (dist / "RELEASE_MANIFEST.json").write_text(
+              json.dumps(document, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
 
-          echo "--- RELEASE_MANIFEST.json ---"
-          cat RELEASE_MANIFEST.json
-
-      - name: Generate SHA256 checksums
+      - name: Generate explicit SHA256 allowlist
         run: |
-          cd dist
-          rm -f SHA256SUMS
-          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-          cat SHA256SUMS
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
 
-      - name: Sign checksums with cosign
+          dist = Path("dist")
+          exact = {
+              "CI_EVIDENCE.json",
+              "HARDWARE_QUALIFICATION.json",
+              "HUMAN_SIGNOFF.json",
+              "IMAGE_DIGEST",
+              "IMAGE_REF_PINNED",
+              "IMAGE_VERIFICATION.json",
+              "MEDIA_LOCATIONS.json",
+              "RELEASE_BASELINE.json",
+              "RELEASE_MANIFEST.json",
+              "SYSTEM_VALIDATION.json",
+              "custom-python.vex.json",
+              "cosign.pub",
+              "secai-os-build-iso.sh",
+              "secai-os-build-usb.sh",
+              "secai-os-run-docker.ps1",
+              "secai-os-run-docker.sh",
+          }
+          selected = {
+              path
+              for path in dist.iterdir()
+              if path.is_file()
+              and (
+                  path.name in exact
+                  or "-linux-" in path.name
+                  or path.name.endswith("-sbom.cdx.json")
+                  or path.name.endswith(
+                      (".iso", ".iso.sig", ".raw.xz", ".raw.xz.sig")
+                  )
+              )
+          }
+          if not selected:
+              raise SystemExit("release checksum allowlist is empty")
+          forbidden = {"SHA256SUMS", "SHA256SUMS.sig", "RELEASE_READINESS.json",
+                       "RELEASE_READINESS.json.sig"}
+          if any(path.name in forbidden for path in selected):
+              raise SystemExit("self-referential checksum input selected")
+          lines = [
+              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+              for path in sorted(selected, key=lambda item: item.name)
+          ]
+          (dist / "SHA256SUMS").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          PY
+          if grep -Eq '  (SHA256SUMS|SHA256SUMS.sig)$' dist/SHA256SUMS; then
+            echo "::error::Checksum manifest includes itself" >&2
+            exit 1
+          fi
+          (
+            cd dist
+            sha256sum --check --strict SHA256SUMS
+          )
+
+      - name: Sign and verify checksum manifest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
         run: |
           cosign sign-blob --yes \
             --key env://COSIGN_PRIVATE_KEY \
             --output-signature dist/SHA256SUMS.sig \
             dist/SHA256SUMS
+          cosign verify-blob --key cosign.pub \
+            --signature dist/SHA256SUMS.sig dist/SHA256SUMS >/dev/null
+          jq -n \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg image_digest "${{ needs.resolve-image.outputs.digest }}" \
+            --arg checksum_sha256 "$(sha256sum dist/SHA256SUMS | awk '{print $1}')" \
+            --arg signature_sha256 "$(sha256sum dist/SHA256SUMS.sig | awk '{print $1}')" \
+            '{
+              schema_version: 1,
+              source_commit: $source_commit,
+              image_digest: $image_digest,
+              checksum_sha256: $checksum_sha256,
+              signature_sha256: $signature_sha256,
+              result: "pass"
+            }' > dist/ARTIFACT_VERIFICATION.json
+
+      - name: Generate and enforce release readiness
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          DESIGNATION: ${{ needs.preflight.outputs.designation }}
+          IMAGE_DIGEST: ${{ needs.resolve-image.outputs.digest }}
+        run: |
+          args=(
+            --tag "$RELEASE_TAG"
+            --designation "$DESIGNATION"
+            --source-commit "$GITHUB_SHA"
+            --image-ref "$CANONICAL_IMAGE_REF"
+            --image-digest "$IMAGE_DIGEST"
+            --required-profile "$REQUIRED_SERVICE_PROFILE"
+            --ci-evidence dist/CI_EVIDENCE.json
+            --release-manifest dist/RELEASE_MANIFEST.json
+            --artifact-verification dist/ARTIFACT_VERIFICATION.json
+            --provenance-evidence dist/IMAGE_VERIFICATION.json
+            --output dist/RELEASE_READINESS.json
+          )
+          for sbom in dist/*-sbom.cdx.json; do
+            args+=(--sbom "$sbom")
+          done
+          [ ! -f dist/HARDWARE_QUALIFICATION.json ] ||
+            args+=(--hardware-evidence dist/HARDWARE_QUALIFICATION.json)
+          [ ! -f dist/SYSTEM_VALIDATION.json ] ||
+            args+=(--system-validation dist/SYSTEM_VALIDATION.json)
+          [ ! -f dist/HUMAN_SIGNOFF.json ] ||
+            args+=(--signoff dist/HUMAN_SIGNOFF.json)
+          python3 .github/scripts/generate-release-readiness.py "${args[@]}"
+          if [ "$DESIGNATION" = stable ]; then
+            jq -e '.release.mandatory_evidence_complete == true' \
+              dist/RELEASE_READINESS.json >/dev/null
+          fi
+
+      - name: Sign release readiness
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          cosign sign-blob --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --output-signature dist/RELEASE_READINESS.json.sig \
+            dist/RELEASE_READINESS.json
+          cosign verify-blob --key cosign.pub \
+            --signature dist/RELEASE_READINESS.json.sig \
+            dist/RELEASE_READINESS.json >/dev/null
 
-      - name: Attest build provenance
+      - name: Attest service binaries
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: "dist/*-linux-*"
 
-      - name: Attest SBOMs
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          IMAGE_REF: ghcr.io/${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          for sbom in dist/*-sbom.cdx.json; do
-            service=$(basename "$sbom" -sbom.cdx.json)
-            image_ref="${IMAGE_REF}:${TAG}-${service}"
-            cosign attest --yes --type cyclonedx \
-              --predicate "$sbom" \
-              --key env://COSIGN_PRIVATE_KEY \
-              "$image_ref" || \
-              echo "WARN: cosign attest skipped for ${service} (no matching image)"
-          done
+      - name: Retain complete release bundle for 90 days
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
 
-      - name: Create GitHub Release (binaries + SBOMs + checksums)
+      - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
+          prerelease: ${{ needs.preflight.outputs.designation == 'candidate' }}
           files: |
             dist/*-linux-*
             dist/*-sbom.cdx.json
@@ -616,34 +1086,38 @@ jobs:
             dist/SHA256SUMS.sig
             dist/IMAGE_DIGEST
             dist/IMAGE_REF_PINNED
+            dist/IMAGE_VERIFICATION.json
+            dist/RELEASE_BASELINE.json
             dist/RELEASE_MANIFEST.json
+            dist/RELEASE_READINESS.json
+            dist/RELEASE_READINESS.json.sig
+            dist/ARTIFACT_VERIFICATION.json
+            dist/MEDIA_LOCATIONS.json
+            dist/CI_EVIDENCE.json
+            dist/HARDWARE_QUALIFICATION.json
+            dist/SYSTEM_VALIDATION.json
+            dist/HUMAN_SIGNOFF.json
             dist/secai-os-build-iso.sh
             dist/secai-os-build-usb.sh
+            dist/cosign.pub
             dist/secai-os-run-docker.sh
             dist/secai-os-run-docker.ps1
             dist/secai-os-*.iso.sig
             dist/secai-os-*-usb.raw.xz.sig
-            dist/secai-os-*.qcow2.sig
-            dist/secai-os-*.ova.sig
           generate_release_notes: true
           fail_on_unmatched_files: false
 
-      # Install media files are too large for GitHub Releases (>2GB limit).
-      # Upload signatures only (above). The full images are available as
-      # workflow artifacts or should be hosted on external storage.
-      - name: Note on large artifacts
-        if: ${{ !inputs.dry_run }}
+      - name: Summarize immutable release
         run: |
           {
-            echo "## Large Artifacts"
+            echo "## Immutable release evidence"
             echo ""
-            echo "Install media files can exceed GitHub Releases' 2GB limit."
-            echo "Their cosign signatures (.sig) are included in the release."
-            echo "Full images are available as workflow artifacts (90-day retention)."
-            for f in dist/secai-os-*.iso dist/secai-os-*-usb.raw.xz dist/secai-os-*.qcow2 dist/secai-os-*.ova; do
-              [ -f "$f" ] || continue
-              SIZE=$(stat -c%s "$f" 2>/dev/null || echo 0)
-              SIZE_MB=$((SIZE / 1048576))
-              echo "  - $(basename "$f"): ${SIZE_MB} MB"
-            done
+            echo "Source commit: \`${GITHUB_SHA}\`"
+            echo "Image: \`${{ needs.resolve-image.outputs.pinned_ref }}\`"
+            echo "Designation: \`${{ needs.preflight.outputs.designation }}\`"
+            echo "Readiness: \`$(jq -r '.release.mandatory_evidence_complete' dist/RELEASE_READINESS.json)\`"
+            echo ""
+            echo "Install media locations:"
+            jq -r '.artifacts[] | \"- \\(.name): \\(.url // \"90-day workflow artifact\")\"' \
+              dist/MEDIA_LOCATIONS.json
           } >> "$GITHUB_STEP_SUMMARY"

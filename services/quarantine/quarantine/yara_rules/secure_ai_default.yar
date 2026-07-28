@@ -34,7 +34,7 @@ rule SecAI_Embedded_Private_Key
         description = "Detects embedded private key material inside imported artifacts"
         severity = "high"
     strings:
-        $rsa = "-----BEGIN RSA PRIVATE KEY-----" ascii
+        $rsa = "-----BEGIN RSA PRIVATE KEY-----" ascii  // gitleaks:allow -- detection signature, not key material
         $ec = "-----BEGIN EC PRIVATE KEY-----" ascii
         $generic = "-----BEGIN PRIVATE KEY-----" ascii
         $openssh = "-----BEGIN OPENSSH PRIVATE KEY-----" ascii

@@ -1,24 +1,27 @@
 [Unit]
 Description=Secure AI Policy Engine (unified OPA-style decision point)
 Before=secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-airlock.service secure-ai-mcp-firewall.service
-After=network.target
+Requires=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-runtime-attestor.service
+After=network.target secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-runtime-attestor.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/policy-engine
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require policy_engine -- /usr/libexec/secure-ai/policy-engine
 Environment=BIND_ADDR=127.0.0.1:8500
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AGENT_POLICY_PATH=/etc/secure-ai/policy/agent.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/policy-engine-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/policy-engine.token
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
-PrivateNetwork=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -47,10 +50,11 @@ AmbientCapabilities=
 
 # Namespace restrictions
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21)
-PrivateUsers=yes
+# Policy engine is a loopback-only control-plane service.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering
 SystemCallFilter=@system-service
@@ -68,9 +72,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

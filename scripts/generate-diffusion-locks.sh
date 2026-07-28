@@ -1,178 +1,167 @@
 #!/usr/bin/env bash
 #
-# Generate real diffusion lockfiles and populate the runtime manifest.
+# Rebuild Linux/x86_64 diffusion locks for CPython 3.12.13/3.14.5 and
+# the CPython 3.12 on-demand wheel manifest.
 #
-# This script must run on Linux with Python 3.12 and network access.
-# It creates backend-specific pip lockfiles with --generate-hashes and
-# fills in the wheel manifest entries with real filenames and SHA256 hashes.
+# The resolver is pinned because changes in resolver/index behavior can change
+# both the selected graph and the set of artifact hashes. All outputs are
+# staged first; checked-in files are replaced only after every backend succeeds.
 #
 # Usage:
-#   bash scripts/generate-diffusion-locks.sh
+#   scripts/generate-diffusion-locks.sh
+#   scripts/generate-diffusion-locks.sh --locks-only
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS_DIR="${REPO_ROOT}/files/scripts"
 MANIFEST="${SCRIPTS_DIR}/diffusion-runtime-manifest.yaml"
-WORK="/tmp/secai-diffusion-locks"
+UV_VERSION="0.11.21"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+LOCKS_ONLY=false
 
-echo "=== SecAI Diffusion Lockfile Generator ==="
-echo "  Repo:    ${REPO_ROOT}"
-echo "  Python:  $(python3 --version)"
-echo "  Arch:    $(uname -m)"
+case "${1:-}" in
+    "") ;;
+    --locks-only) LOCKS_ONLY=true ;;
+    *)
+        echo "usage: $0 [--locks-only]" >&2
+        exit 64
+        ;;
+esac
 
-# Create isolated venv for pip-compile
-rm -rf "${WORK}"
-python3 -m venv "${WORK}/venv"
-# shellcheck disable=SC1091
-source "${WORK}/venv/bin/activate"
-pip install --quiet pip-tools pyyaml
+if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: uv ${UV_VERSION} is required to regenerate diffusion locks" >&2
+    exit 69
+fi
+if [ "$(uv --version | awk '{print $2}')" != "$UV_VERSION" ]; then
+    echo "ERROR: expected uv ${UV_VERSION}, found: $(uv --version)" >&2
+    exit 69
+fi
 
-# Write the input requirements file (the packages we need)
-cat > "${WORK}/diffusion-in.txt" <<'EOF'
-torch
-diffusers==0.38.0
-transformers
-safetensors==0.8.0rc0
-accelerate
-urllib3==2.7.0
-EOF
+# Stage beside the checked-in artifacts so each final rename is guaranteed to
+# be atomic (not a cross-filesystem copy). Nothing is published until every
+# requested lock and the manifest have passed generation.
+WORK_DIR="$(mktemp -d "${SCRIPTS_DIR}/.diffusion-locks.XXXXXX")"
+trap 'rm -rf -- "$WORK_DIR"' EXIT
+UV_CACHE_DIR="${UV_CACHE_DIR:-${WORK_DIR}/uv-cache}"
+mkdir -p "${WORK_DIR}/locks" "${WORK_DIR}/pylocks" "$UV_CACHE_DIR"
 
-# Generate lockfiles for each backend
-declare -A TORCH_INDEXES=(
-    ["cpu"]="https://download.pytorch.org/whl/cpu"
-    ["cuda"]="https://download.pytorch.org/whl/cu121"
-    ["rocm"]="https://download.pytorch.org/whl/rocm6.0"
-)
+backend_config() {
+    case "$1" in
+        cpu)
+            index="https://download.pytorch.org/whl/cpu"
+            uv_torch_backend="cpu"
+            ;;
+        cuda)
+            index="https://download.pytorch.org/whl/cu129"
+            uv_torch_backend="cu129"
+            ;;
+        rocm)
+            index="https://download.pytorch.org/whl/rocm7.1"
+            uv_torch_backend="rocm7.1"
+            ;;
+        *)
+            echo "ERROR: unsupported diffusion backend: $1" >&2
+            exit 64
+            ;;
+    esac
+}
 
-for backend in cpu cuda rocm; do
-    echo ""
-    echo "=== Generating lockfile: diffusion-${backend}.lock ==="
-    LOCKFILE="${SCRIPTS_DIR}/diffusion-${backend}.lock"
-    INDEX="${TORCH_INDEXES[$backend]}"
+echo "=== SecAI diffusion lock generator ==="
+echo "  resolver: uv ${UV_VERSION}"
+echo "  targets:  CPython 3.12.13 and 3.14.5, x86_64-manylinux_2_28"
 
-    pip-compile \
-        --allow-unsafe \
-        --generate-hashes \
-        --extra-index-url "${INDEX}" \
-        --output-file "${LOCKFILE}" \
-        "${WORK}/diffusion-in.txt" \
-    || {
-        echo "ERROR: pip-compile failed for ${backend}" >&2
-        echo "  This may be a network issue or a missing compatible wheel."
-        echo "  Continuing with other backends..."
-        continue
-    }
+for python_version in 3.12.13 3.14.5; do
+    python_suffix=""
+    if [ "$python_version" = "3.14.5" ]; then
+        python_suffix="-py314"
+    fi
+    for backend in cpu cuda rocm; do
+        input="${SCRIPTS_DIR}/diffusion-${backend}.in"
+        output="${WORK_DIR}/locks/diffusion-${backend}${python_suffix}.lock"
+        backend_config "$backend"
+        echo "  resolving ${backend} for Python ${python_version}"
+        uv pip compile "$input" \
+            --python-version "$python_version" \
+            --python-platform x86_64-manylinux_2_28 \
+            --extra-index-url "$index" \
+            --index-strategy unsafe-best-match \
+            --generate-hashes \
+            --only-binary=:all: \
+            --emit-index-url \
+            --cache-dir "$UV_CACHE_DIR" \
+            --upgrade \
+            --output-file "$output" \
+            --custom-compile-command "scripts/generate-diffusion-locks.sh --locks-only" \
+            >/dev/null
 
-    echo "  -> ${LOCKFILE} ($(wc -l < "${LOCKFILE}") lines)"
+        # pip does not provide per-package index selection. Leaving PyTorch as
+        # an extra index allows mirrored packages such as MarkupSafe to win
+        # over PyPI, which breaks reviewed hashes and creates dependency-
+        # confusion risk. Restrict secondary locations to package listings.
+        source_rewrite="${output}.sources"
+        awk -v baseurl="$index" -v backend="$backend" '
+            /^--extra-index-url / {
+                print "--find-links " baseurl "/torch/"
+                print "--find-links " baseurl "/torchvision/"
+                if (backend == "cuda") {
+                    print "--find-links " baseurl "/triton/"
+                } else if (backend == "rocm") {
+                    print "--find-links " baseurl "/triton-rocm/"
+                }
+                next
+            }
+            { print }
+        ' "$output" > "$source_rewrite"
+        mv "$source_rewrite" "$output"
+    done
 done
 
-# Now generate the wheel manifest entries from the lockfiles
-echo ""
-echo "=== Generating wheel manifest entries ==="
+if [ "$LOCKS_ONLY" = false ]; then
+    if ! "$PYTHON_BIN" -c 'import sys, tomllib, yaml; assert sys.version_info >= (3, 11)' >/dev/null 2>&1; then
+        echo "ERROR: ${PYTHON_BIN} must be Python 3.11+ with PyYAML installed" >&2
+        exit 69
+    fi
 
-python3 << 'MANIFEST_SCRIPT'
-import hashlib
-import json
-import os
-import re
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
+    # PEP 751 output records the exact compatible Linux wheel URL. The
+    # PyTorch backend option keeps non-PyTorch packages on PyPI instead of
+    # selecting duplicate packages mirrored by the PyTorch index.
+    for backend in cpu cuda rocm; do
+        backend_config "$backend"
+        uv pip compile "${SCRIPTS_DIR}/diffusion-${backend}.in" \
+            --python-version 3.12.13 \
+            --python-platform x86_64-manylinux_2_28 \
+            --torch-backend "$uv_torch_backend" \
+            --generate-hashes \
+            --only-binary=:all: \
+            --cache-dir "$UV_CACHE_DIR" \
+            --upgrade \
+            --format pylock.toml \
+            --output-file "${WORK_DIR}/pylocks/pylock.${backend}.toml" \
+            --custom-compile-command "scripts/generate-diffusion-locks.sh" \
+            >/dev/null
+    done
 
-import yaml
+    "$PYTHON_BIN" "${REPO_ROOT}/scripts/generate-diffusion-manifest.py" \
+        --template "$MANIFEST" \
+        --lock-dir "${WORK_DIR}/locks" \
+        --pylock-dir "${WORK_DIR}/pylocks" \
+        --output "${WORK_DIR}/diffusion-runtime-manifest.yaml"
+fi
 
-SCRIPTS_DIR = os.environ.get("SCRIPTS_DIR", "files/scripts")
-MANIFEST_PATH = os.path.join(SCRIPTS_DIR, "diffusion-runtime-manifest.yaml")
+# Publish only after all requested outputs have been generated and validated.
+chmod 0644 "${WORK_DIR}/locks/"*.lock
+if [ "$LOCKS_ONLY" = false ]; then
+    chmod 0644 "${WORK_DIR}/diffusion-runtime-manifest.yaml"
+fi
+for python_suffix in "" "-py314"; do
+    for backend in cpu cuda rocm; do
+        mv "${WORK_DIR}/locks/diffusion-${backend}${python_suffix}.lock" \
+           "${SCRIPTS_DIR}/diffusion-${backend}${python_suffix}.lock"
+    done
+done
+if [ "$LOCKS_ONLY" = false ]; then
+    mv "${WORK_DIR}/diffusion-runtime-manifest.yaml" "$MANIFEST"
+fi
 
-with open(MANIFEST_PATH) as f:
-    manifest = yaml.safe_load(f)
-
-backends = manifest.get("backends", {})
-all_populated = True
-
-for backend_name, cfg in backends.items():
-    lockfile_path = os.path.join(SCRIPTS_DIR, cfg["lockfile"])
-    if not os.path.exists(lockfile_path):
-        print(f"  SKIP {backend_name}: lockfile not found at {lockfile_path}")
-        all_populated = False
-        continue
-
-    content = Path(lockfile_path).read_text()
-
-    # Check if lockfile is actually populated (has package entries)
-    pkg_pattern = re.compile(r"^(\S+)==(\S+)\s*\\", re.MULTILINE)
-    packages = pkg_pattern.findall(content)
-    if not packages:
-        print(f"  SKIP {backend_name}: lockfile is empty (pip-compile may have failed)")
-        all_populated = False
-        continue
-
-    # Download all wheels to a temp directory to get filenames and hashes
-    print(f"  Downloading wheels for {backend_name} ({len(packages)} packages)...")
-    tmpdir = tempfile.mkdtemp(prefix=f"secai-{backend_name}-")
-    torch_index = cfg["torch_index"]
-
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "pip", "download",
-            "--no-deps",
-            "--only-binary=:all:",
-            "--require-hashes",
-            "--dest", tmpdir,
-            "--extra-index-url", torch_index,
-            "-r", lockfile_path,
-        ],
-        capture_output=True, text=True,
-    )
-
-    if result.returncode != 0:
-        print(f"  ERROR downloading wheels for {backend_name}:")
-        print(result.stderr[-500:] if len(result.stderr) > 500 else result.stderr)
-        all_populated = False
-        continue
-
-    # Build wheel entries from downloaded files
-    wheels = []
-    for whl_file in sorted(Path(tmpdir).glob("*.whl")):
-        sha256 = hashlib.sha256(whl_file.read_bytes()).hexdigest()
-        # Determine source pattern based on filename
-        if "torch" in whl_file.name.lower() and ("cpu" in whl_file.name or "cu1" in whl_file.name or "rocm" in whl_file.name):
-            source = f"{torch_index}/*"
-        else:
-            source = "https://files.pythonhosted.org/packages/*"
-        wheels.append({
-            "filename": whl_file.name,
-            "sha256": sha256,
-            "source": source,
-        })
-
-    cfg["wheels"] = wheels
-    print(f"  {backend_name}: {len(wheels)} wheels")
-
-# Update populated flag
-manifest["populated"] = all_populated
-manifest["backends"] = backends
-
-# Write back the manifest
-with open(MANIFEST_PATH, "w") as f:
-    yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, width=120)
-
-if all_populated:
-    print(f"\n=== SUCCESS: manifest populated with real hashes ===")
-else:
-    print(f"\n=== PARTIAL: some backends failed — manifest NOT marked as populated ===")
-
-sys.exit(0 if all_populated else 1)
-MANIFEST_SCRIPT
-
-echo ""
-echo "=== Done ==="
-echo "  Lockfiles:  ${SCRIPTS_DIR}/diffusion-{cpu,cuda,rocm}.lock"
-echo "  Manifest:   ${MANIFEST}"
-echo ""
-echo "Next steps:"
-echo "  1. Review the generated files"
-echo "  2. git add files/scripts/diffusion-*.lock files/scripts/diffusion-runtime-manifest.yaml"
-echo "  3. git commit -m 'Populate diffusion runtime manifests with real hashes'"
+echo "=== Diffusion dependency artifacts regenerated successfully ==="

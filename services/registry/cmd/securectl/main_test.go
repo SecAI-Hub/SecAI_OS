@@ -29,7 +29,7 @@ func TestAPIRequestAddsServiceToken(t *testing.T) {
 		t.Fatalf("close token file: %v", err)
 	}
 
-	t.Setenv("SERVICE_TOKEN_PATH", tokenFile.Name())
+	t.Setenv("REGISTRY_ADMIN_TOKEN_PATH", tokenFile.Name())
 
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +52,7 @@ func TestAPIRequestAddsServiceToken(t *testing.T) {
 }
 
 func TestAPIRequestOmitsEmptyServiceToken(t *testing.T) {
-	t.Setenv("SERVICE_TOKEN_PATH", t.TempDir()+"/missing-token")
+	t.Setenv("REGISTRY_ADMIN_TOKEN_PATH", t.TempDir()+"/missing-token")
 
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

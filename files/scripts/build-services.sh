@@ -8,7 +8,7 @@
 #
 # HERMETIC BUILD: When HERMETIC_BUILD=true (set by CI stage 2), all network
 # access is blocked. Source comes from vendored subtrees (upstreams/), Go vendor
-# dirs (services/*/vendor/), the committed Python wheelhouse (vendor/wheels/),
+# dirs (services/*/vendor/), the checksummed staged Python wheelhouse,
 # and the pre-staged llama.cpp tarball. The shell-function overrides below are
 # human-readable diagnostics -- the real proof of hermeticity is the
 # network-disabled container/namespace that stage 2 runs in.
@@ -19,6 +19,12 @@ INSTALL_DIR="/usr/libexec/secure-ai"
 SRC_DIR="/tmp/secure-ai-build"
 SOURCE_DIR=""  # Set by locate_source
 
+# Fatal error -- abort the build.
+fail_build() {
+    echo "FATAL: $1" >&2
+    exit 1
+}
+
 echo "=== Building Secure AI services ==="
 
 # ---------------------------------------------------------------------------
@@ -27,38 +33,99 @@ echo "=== Building Secure AI services ==="
 if [ "${HERMETIC_BUILD:-}" = "true" ]; then
     echo "HERMETIC BUILD MODE -- all network access is blocked"
 
-    # Verify SOURCE_PREP_MANIFEST.json if present
-    if [ -f "/tmp/SOURCE_PREP_MANIFEST.json" ]; then
-        echo "Verifying source-prep manifest..."
-        python3 -c "
-import json, hashlib, sys
+    if [ ! -f "/tmp/SOURCE_PREP_MANIFEST.json" ]; then
+        fail_build "SOURCE_PREP_MANIFEST.json is required in hermetic mode"
+    fi
+    if [ ! -s "/tmp/wheels/SHA256SUMS" ]; then
+        fail_build "verified Python wheelhouse is required in hermetic mode"
+    fi
+
+    echo "Verifying source-prep manifest..."
+    python3 -c "
+import json, hashlib, re, sys
 
 with open('/tmp/SOURCE_PREP_MANIFEST.json') as f:
     manifest = json.load(f)
 
+required = {
+    'schema_version',
+    'commit_sha',
+    'llama_cpp_version',
+    'llama_cpp_tarball_sha256',
+    'wheelhouse_sha256sums_digest',
+    'application_requirements_lock_digest',
+    'upstreams_lock_digest',
+    'wheel_count',
+    'application_dependency_mode',
+}
+missing = sorted(required - manifest.keys())
+if missing:
+    print(f'FATAL: source-prep manifest is missing fields: {missing}')
+    sys.exit(1)
+
 # Verify wheelhouse digest
-if 'wheelhouse_sha256sums_digest' in manifest:
-    with open('vendor/wheels/SHA256SUMS', 'rb') as f:
-        actual = hashlib.sha256(f.read()).hexdigest()
-    expected = manifest['wheelhouse_sha256sums_digest']
-    if actual != expected:
-        print(f'FATAL: wheelhouse SHA256SUMS digest mismatch: {actual} != {expected}')
-        sys.exit(1)
-    print('OK: wheelhouse SHA256SUMS digest verified')
+with open('/tmp/wheels/SHA256SUMS', 'rb') as f:
+    actual = hashlib.sha256(f.read()).hexdigest()
+expected = manifest['wheelhouse_sha256sums_digest']
+if actual != expected:
+    print(f'FATAL: wheelhouse SHA256SUMS digest mismatch: {actual} != {expected}')
+    sys.exit(1)
+print('OK: wheelhouse SHA256SUMS digest verified')
+checksum_lines = [
+    line
+    for line in open('/tmp/wheels/SHA256SUMS', encoding='utf-8')
+    if line.strip()
+]
+wheel_count = manifest['wheel_count']
+if wheel_count != len(checksum_lines):
+    print(
+        'FATAL: wheel count mismatch: '
+        f'{len(checksum_lines)} != {wheel_count}'
+    )
+    sys.exit(1)
+if manifest['application_dependency_mode'] != 'staged-offline':
+    print('FATAL: application dependency mode is not staged-offline')
+    sys.exit(1)
+
+# Verify the complete, hash-locked application dependency graph
+with open('/tmp/application-requirements.lock', 'rb') as f:
+    actual = hashlib.sha256(f.read()).hexdigest()
+expected = manifest['application_requirements_lock_digest']
+if actual != expected:
+    print(f'FATAL: application dependency lock digest mismatch: {actual} != {expected}')
+    sys.exit(1)
+if not isinstance(manifest['wheel_count'], int) or manifest['wheel_count'] < 1:
+    print('FATAL: source-prep manifest records an empty wheelhouse')
+    sys.exit(1)
+print('OK: application dependency lock digest verified')
 
 # Verify lock manifest digest
-if 'upstreams_lock_digest' in manifest:
-    with open('.upstreams.lock.yaml', 'rb') as f:
-        actual = hashlib.sha256(f.read()).hexdigest()
-    expected = manifest['upstreams_lock_digest']
-    if actual != expected:
-        print(f'FATAL: .upstreams.lock.yaml digest mismatch: {actual} != {expected}')
-        sys.exit(1)
-    print('OK: .upstreams.lock.yaml digest verified')
+with open('/tmp/.upstreams.lock.yaml', 'rb') as f:
+    actual = hashlib.sha256(f.read()).hexdigest()
+expected = manifest['upstreams_lock_digest']
+if actual != expected:
+    print(f'FATAL: .upstreams.lock.yaml digest mismatch: {actual} != {expected}')
+    sys.exit(1)
+print('OK: .upstreams.lock.yaml digest verified')
+
+# Verify the staged inference source itself, not only its manifest field.
+with open('/tmp/llama-cpp-staged.tar.gz', 'rb') as f:
+    actual = hashlib.sha256(f.read()).hexdigest()
+expected = manifest['llama_cpp_tarball_sha256']
+if actual != expected:
+    print(f'FATAL: llama.cpp source digest mismatch: {actual} != {expected}')
+    sys.exit(1)
+if not re.fullmatch(r'[0-9a-f]{40}', manifest['commit_sha']):
+    print('FATAL: source-prep commit is not an immutable Git commit')
+    sys.exit(1)
 
 print('Source-prep manifest verification passed')
 " || fail_build "SOURCE_PREP_MANIFEST.json verification failed"
-    fi
+
+    (
+        cd /tmp/wheels
+        sha256sum --check --strict SHA256SUMS
+    ) || fail_build "Python wheelhouse checksum verification failed"
 
     # Override network commands to fail with clear diagnostics
     git() {
@@ -84,12 +151,6 @@ fi
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-# Fatal error -- abort the build
-fail_build() {
-    echo "FATAL: $1" >&2
-    exit 1
-}
 
 # Locate service source from local paths only.
 # Usage: locate_source <name> <local-path...>
@@ -249,7 +310,7 @@ LLAMA_CPP_SHA256="${LLAMA_CPP_SHA256:-d823b3a8976743a83eaaf25451b6b3ed99d113d7c6
 cd "$SRC_DIR"
 
 # In hermetic mode, the tarball must be pre-staged by the source-prep job
-LLAMA_TARBALL="/tmp/llama-cpp-${LLAMA_CPP_VERSION}.tar.gz"
+LLAMA_TARBALL="/tmp/llama-cpp-staged.tar.gz"
 if [ "${HERMETIC_BUILD:-}" = "true" ]; then
     if [ ! -f "$LLAMA_TARBALL" ]; then
         fail_build "llama.cpp tarball not pre-staged at ${LLAMA_TARBALL} (required in hermetic mode)"
@@ -300,80 +361,92 @@ echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
 # Python Services (required -- build failures are fatal)
 # ===========================================================================
 
+# Install the complete reviewed application graph exactly once. The source-prep
+# job materializes every hash-locked wheel, and the image build remains
+# network-independent even when this script is run outside the CI namespace.
+echo "Installing: hash-locked Python application dependency graph"
+if [ ! -s /tmp/application-requirements.lock ] || [ ! -d /tmp/wheels ]; then
+    fail_build "application dependency lock or wheelhouse is missing"
+fi
+if ! pip3 install \
+    --prefix=/usr \
+    --no-cache-dir \
+    --no-index \
+    --find-links=/tmp/wheels \
+    --require-hashes \
+    -r /tmp/application-requirements.lock; then
+    pip3 install \
+        --prefix=/usr \
+        --break-system-packages \
+        --no-cache-dir \
+        --no-index \
+        --find-links=/tmp/wheels \
+        --require-hashes \
+        -r /tmp/application-requirements.lock \
+        || fail_build "hash-locked Python application dependency install failed"
+fi
+
 # --- ai-quarantine (seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
 if locate_source ai-quarantine \
     /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine; then
-    pip3 install --prefix=/usr --no-cache-dir "${SOURCE_DIR}" 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir "${SOURCE_DIR}"
+    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
+        "${SOURCE_DIR}" 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
+            --no-build-isolation --no-deps "${SOURCE_DIR}"
     cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
 #!/usr/bin/env python3
 from quarantine.watcher import main
 main()
 WRAPPER
-    chmod +x "${INSTALL_DIR}/quarantine-watcher"
+    cat > "${INSTALL_DIR}/quarantine-scanner" <<'WRAPPER'
+#!/usr/bin/env python3
+from quarantine.scanner_worker import main
+main()
+WRAPPER
+    # Import every scanner-boundary module now so a partial package assembly
+    # cannot produce an image whose native quarantine unit only fails at boot.
+    python3 -c "import quarantine.scanner_broker, quarantine.scanner_stage, quarantine.scanner_worker"
+    chmod 0755 \
+        "${INSTALL_DIR}/quarantine-watcher" \
+        "${INSTALL_DIR}/quarantine-scanner"
     track_binary "${INSTALL_DIR}/quarantine-watcher"
+    track_binary "${INSTALL_DIR}/quarantine-scanner"
 else
     fail_build "quarantine source not available"
 fi
 
-# Quarantine scanning tools are part of the admission-control boundary.
-echo "Installing: quarantine scanning tools"
-SCANNER_FAILURES=0
-SCANNER_ROOT="/opt/secure-ai/scanners"
-mkdir -p "${SCANNER_ROOT}" /usr/local/bin
-SCANNERS="modelscan fickling modelaudit"
-if [ "${ENABLE_GARAK_SCANNER:-}" = "true" ]; then
-    SCANNERS="${SCANNERS} garak"
-else
-    echo "Skipping optional garak scanner by default"
-fi
-scanner_package_spec() {
-    case "$1" in
-        modelscan) printf '%s\n' "${MODELSCAN_PACKAGE:-modelscan==0.8.8}" ;;
-        fickling) printf '%s\n' "${FICKLING_PACKAGE:-fickling==0.1.10}" ;;
-        modelaudit) printf '%s\n' "${MODELAUDIT_PACKAGE:-modelaudit==0.2.40}" ;;
-        garak) printf '%s\n' "${GARAK_PACKAGE:-garak==0.14.1}" ;;
-        *) fail_build "unknown quarantine scanner: $1" ;;
-    esac
+# Quarantine scanning tools are mandatory members of the application lock.
+echo "Verifying: hash-locked quarantine scanning tools"
+python3 - <<'PY' || fail_build "quarantine scanner dependency verification failed"
+from importlib.metadata import version
+
+expected = {
+    "modelscan": "0.8.8",
+    "fickling": "0.1.12",
+    "modelaudit": "0.2.42",
 }
-for scanner in ${SCANNERS}; do
-    echo "  Installing: ${scanner}"
-    scanner_venv="${SCANNER_ROOT}/${scanner}"
-    scanner_package="$(scanner_package_spec "${scanner}")"
-    scanner_python="${SCANNER_PYTHON:-python3}"
-    if [ "${scanner}" = "modelscan" ]; then
-        # Upstream modelscan 0.8.x currently declares Python <3.13. Keep it
-        # isolated on Fedora's still-supported Python 3.12 until the audited
-        # fork is intentionally integrated.
-        scanner_python="${MODELSCAN_PYTHON:-python3.12}"
-    fi
-    if command -v "${scanner_python}" >/dev/null 2>&1 && \
-        "${scanner_python}" -m venv "${scanner_venv}" && \
-        "${scanner_venv}/bin/python" -m pip install --no-cache-dir --upgrade \
-            pip==26.1.1 setuptools==82.0.1 wheel==0.46.2 && \
-        "${scanner_venv}/bin/python" -m pip install --no-cache-dir "${scanner_package}" && \
-        "${scanner_venv}/bin/python" -m pip check && \
-        ln -sf "${scanner_venv}/bin/${scanner}" "/usr/local/bin/${scanner}"; then
-        :
-    else
-        echo "  ERROR: ${scanner} install failed"
-        SCANNER_FAILURES=$((SCANNER_FAILURES + 1))
-    fi
+for package, wanted in expected.items():
+    actual = version(package)
+    if actual != wanted:
+        raise SystemExit(f"{package}: expected {wanted}, got {actual}")
+    print(f"  {package}=={actual}")
+PY
+for scanner in modelscan fickling modelaudit; do
+    command -v "$scanner" >/dev/null \
+        || fail_build "hash-locked scanner executable is missing: $scanner"
 done
-if [ "$SCANNER_FAILURES" -gt 0 ]; then
-    if [ "${ALLOW_MISSING_QUARANTINE_SCANNERS:-}" = "true" ]; then
-        echo "WARNING: ${SCANNER_FAILURES} scanner(s) missing under ALLOW_MISSING_QUARANTINE_SCANNERS=true"
-    else
-        fail_build "${SCANNER_FAILURES} quarantine scanner(s) failed to install"
-    fi
+if [ "${ENABLE_GARAK_SCANNER:-}" = "true" ]; then
+    fail_build "garak is not present in the reviewed default application lock"
 fi
 
 # --- Agent service (policy-bound local autopilot) ---
 echo "Building: agent"
 if [ -d "/tmp/services/agent" ]; then
-    pip3 install --prefix=/usr --no-cache-dir /tmp/services/agent 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/agent
+    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
+        /tmp/services/agent 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
+            --no-build-isolation --no-deps /tmp/services/agent
     cat > "${INSTALL_DIR}/agent" <<'WRAPPER'
 #!/usr/bin/env python3
 from agent.app import main
@@ -388,8 +461,10 @@ fi
 # --- Web UI (production: gunicorn via wrapper; dev: Flask built-in) ---
 echo "Building: ui"
 if [ -d "/tmp/services/ui" ]; then
-    pip3 install --prefix=/usr --no-cache-dir /tmp/services/ui 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir /tmp/services/ui
+    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
+        /tmp/services/ui 2>/dev/null || \
+        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
+            --no-build-isolation --no-deps /tmp/services/ui
     cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn with env-driven config.
@@ -476,21 +551,15 @@ if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
     elif [ -f "${SRC_DIR}/llm-search-mediator/app.py" ]; then
         cp "${SRC_DIR}/llm-search-mediator/app.py" "$SEARCH_DIR/app.py"
     fi
-    # Install requirements if present
-    if [ -f "${SRC_DIR}/llm-search-mediator/requirements.txt" ]; then
-        pip3 install --prefix=/usr --no-cache-dir \
-            -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
-            pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-                -r "${SRC_DIR}/llm-search-mediator/requirements.txt" 2>/dev/null || \
-            fail_build "search-mediator requirements install failed"
-    fi
+    python3 -c "import flask, gunicorn, requests, yaml" \
+        || fail_build "search-mediator locked dependencies are unavailable"
     cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn for search mediator.
 export PYTHONPATH="/opt/secure-ai/services/search-mediator:${PYTHONPATH:-}"
 exec gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8485}" \
-    --workers "${GUNICORN_WORKERS:-2}" \
+    --workers 1 \
     --threads "${GUNICORN_THREADS:-4}" \
     --timeout "${GUNICORN_TIMEOUT:-30}" \
     --graceful-timeout 10 \
@@ -502,17 +571,25 @@ WRAPPER
     echo "  -> ${INSTALL_DIR}/search-mediator"
 fi
 
-# HuggingFace CLI (optional -- for model downloads)
-echo "Installing: huggingface-hub"
-pip3 install --prefix=/usr --no-cache-dir huggingface-hub 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir huggingface-hub 2>/dev/null || \
-    echo "WARNING: huggingface-hub install failed -- model downloads will use git clone fallback"
+# Hugging Face is a required, hash-locked runtime dependency.
+python3 -c "import huggingface_hub" \
+    || fail_build "hash-locked huggingface-hub dependency is unavailable"
 
-# SearXNG (optional -- privacy search engine)
-echo "Installing: searxng"
-pip3 install --prefix=/usr --no-cache-dir searxng 2>/dev/null || \
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir searxng 2>/dev/null || \
-    echo "WARNING: searxng pip install failed -- SearXNG search will not be available"
+# SearXNG is absent from PyPI. Source prep stages the exact commit and archive
+# digest from .upstreams.lock.yaml; dependencies come only from the wheel lock.
+echo "Installing: commit-pinned SearXNG"
+SEARXNG_SOURCE="/tmp/upstreams/searxng"
+if [ ! -f "${SEARXNG_SOURCE}/setup.py" ]; then
+    fail_build "commit-pinned SearXNG source is unavailable"
+fi
+if ! pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
+    "${SEARXNG_SOURCE}"; then
+    pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
+        --no-build-isolation --no-deps "${SEARXNG_SOURCE}" \
+        || fail_build "commit-pinned SearXNG install failed"
+fi
+python3 -c "import searx.webapp" \
+    || fail_build "commit-pinned SearXNG runtime import failed"
 
 # ===========================================================================
 # Staging directory for local model imports (M54 hardening)
@@ -538,9 +615,12 @@ REQUIRED_BINARIES=(
     "${INSTALL_DIR}/integrity-monitor"
     "${INSTALL_DIR}/incident-recorder"
     "${INSTALL_DIR}/quarantine-watcher"
+    "${INSTALL_DIR}/quarantine-scanner"
     "${INSTALL_DIR}/agent"
     "${INSTALL_DIR}/ui"
     "/usr/local/bin/securectl"
+    "/usr/bin/searxng-run"
+    "/usr/bin/bwrap"
     "/usr/bin/llama-server"
 )
 
@@ -617,6 +697,38 @@ print('  -> policy.json updated: sigstoreSigned entry for ghcr.io/secai-hub/seca
 else
     fail_build "signing policy files missing from image"
 fi
+
+# ---------------------------------------------------------------------------
+# Release-bound expected measurements
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Installing operator and optional-runtime helpers ==="
+install -m 0755 /tmp/files/scripts/first-boot-check.sh \
+    "${INSTALL_DIR}/first-boot-check.sh"
+install -m 0755 /tmp/files/scripts/secai-setup-wizard.sh \
+    "${INSTALL_DIR}/secai-setup-wizard.sh"
+install -m 0755 /tmp/files/scripts/secai-enable-diffusion.sh \
+    "${INSTALL_DIR}/secai-enable-diffusion.sh"
+install -m 0644 /tmp/files/scripts/diffusion-runtime-manifest.yaml \
+    "${INSTALL_DIR}/diffusion-runtime-manifest.yaml"
+for backend in cpu cuda rocm; do
+    install -m 0644 "/tmp/files/scripts/diffusion-${backend}.lock" \
+        "${INSTALL_DIR}/diffusion-${backend}.lock"
+done
+
+if [ ! -f /tmp/SOURCE_PREP_MANIFEST.json ]; then
+    fail_build "SOURCE_PREP_MANIFEST.json is required to bind integrity measurements"
+fi
+SOURCE_COMMIT="$(
+    python3 -c "
+import json
+with open('/tmp/SOURCE_PREP_MANIFEST.json', encoding='utf-8') as handle:
+    print(json.load(handle)['commit_sha'])
+"
+)"
+python3 /tmp/files/scripts/generate-release-baseline.py \
+    --source-commit "$SOURCE_COMMIT" || \
+    fail_build "release integrity baseline generation failed"
 
 # Cleanup build artifacts (but not build tools -- they come from the recipe)
 rm -rf "$SRC_DIR"

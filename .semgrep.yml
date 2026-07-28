@@ -60,3 +60,16 @@ rules:
     pattern-either:
       - pattern: $APP.run(..., host="0.0.0.0", ...)
       - pattern: $APP.run(..., host="::", ...)
+
+  - id: secai.go.empty-service-token-allows-request
+    languages: [go]
+    severity: ERROR
+    message: Missing service credentials must fail closed; never call the protected handler when the token is empty.
+    paths:
+      include:
+        - /services/**/*.go
+    pattern: |
+      if $TOKEN == "" {
+        $NEXT($W, $R)
+        return
+      }

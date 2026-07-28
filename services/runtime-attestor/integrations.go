@@ -29,7 +29,7 @@ func incidentRecorderURL() string {
 type incidentReportPayload struct {
 	Class       string            `json:"class"`
 	Source      string            `json:"source"`
-	Description string           `json:"description"`
+	Description string            `json:"description"`
 	Severity    string            `json:"severity,omitempty"`
 	Evidence    map[string]string `json:"evidence,omitempty"`
 }
@@ -60,14 +60,15 @@ func reportAttestationFailure(bundle RuntimeStateBundle, token string) {
 	}
 
 	evidence := map[string]string{
-		"state":              string(bundle.State),
-		"failure_count":      fmt.Sprintf("%d", len(bundle.Failures)),
-		"tpm_available":      fmt.Sprintf("%t", bundle.TPMAvailable),
-		"tpm_quote_verified": fmt.Sprintf("%t", bundle.TPMQuoteVerified),
-		"secure_boot":        fmt.Sprintf("%t", bundle.BootMeasurements.SecureBootEnabled),
-		"deployment_digest":  bundle.DeploymentDigest,
-		"policy_digest":      bundle.PolicyDigest,
-		"bundle_hmac":        bundle.BundleHMAC,
+		"state":                     string(bundle.State),
+		"failure_count":             fmt.Sprintf("%d", len(bundle.Failures)),
+		"tpm_available":             fmt.Sprintf("%t", bundle.TPMAvailable),
+		"tpm_measurements_verified": fmt.Sprintf("%t", bundle.TPMMeasurementsVerified),
+		"tpm_quote_verified":        fmt.Sprintf("%t", bundle.TPMQuoteVerified),
+		"secure_boot":               fmt.Sprintf("%t", bundle.BootMeasurements.SecureBootEnabled),
+		"deployment_digest":         bundle.DeploymentDigest,
+		"policy_digest":             bundle.PolicyDigest,
+		"bundle_hmac":               bundle.BundleHMAC,
 	}
 
 	// Include all failures in evidence.

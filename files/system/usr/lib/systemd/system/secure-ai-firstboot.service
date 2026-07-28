@@ -1,15 +1,21 @@
 [Unit]
 Description=Secure AI Appliance first-boot setup
-ConditionPathExists=!/var/lib/secure-ai/.initialized
-After=local-fs.target
-Before=secure-ai-registry.service
+ConditionPathExists=!/var/lib/secure-ai/state/firstboot-complete
+Requires=secure-ai-credentials.service
+After=local-fs.target secure-ai-credentials.service
+Before=secure-ai-tpm-attestation-setup.service secure-ai-runtime-attestor.service secure-ai-registry.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/secure-ai/firstboot.sh
 RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
 
 # Filesystem isolation
+ProtectSystem=strict
+ReadWritePaths=/var/lib/secure-ai /run/secure-ai /etc/secure-ai
 ProtectHome=yes
 PrivateTmp=yes
 
@@ -22,15 +28,27 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 
 # Capability bounding — firstboot performs host setup (sysctl, swapoff, nft)
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_NET_ADMIN CAP_SETGID CAP_SETUID CAP_SYS_ADMIN CAP_SYS_RESOURCE
+AmbientCapabilities=
 
-# Syscall filtering
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @mount @clock @debug @reboot @module @cpu-emulation @obsolete
-SystemCallArchitectures=native
-SystemCallErrorNumber=EPERM
+# This trusted one-shot intentionally invokes swapoff, nft, sysctl, and
+# hardware-discovery tools.  A generic @system-service allow-list omits
+# syscalls those tools require, so capabilities and the remaining namespaces
+# are the enforceable boundary here.
+MemoryMax=1G
+CPUQuota=50%
+TasksMax=256
+LimitNOFILE=4096
+LimitCORE=0
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target

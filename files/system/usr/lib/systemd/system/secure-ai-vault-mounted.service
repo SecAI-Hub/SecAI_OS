@@ -1,0 +1,42 @@
+[Unit]
+Description=Verify the exact encrypted Secure AI vault mount
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=local-fs.target
+Before=secure-ai-registry.service secure-ai-quarantine-watcher.service
+Before=secure-ai-inference.service secure-ai-diffusion.service secure-ai-agent.service
+Before=secure-ai-tool-firewall.service secure-ai-mcp-firewall.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/verify-vault-mount.py
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+
+ProtectSystem=strict
+ReadOnlyPaths=/etc/crypttab /var/lib/secure-ai/vault
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=32
+LimitNOFILE=128
+LimitCORE=0
+TimeoutStartSec=30

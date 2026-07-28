@@ -1,13 +1,12 @@
-FROM docker.io/library/python:3.14-alpine3.23@sha256:dd4d2bd5b53d9b25a51da13addf2be586beebd5387e289e798e4083d94ca837a
+FROM docker.io/library/python:3.14-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4
 
 WORKDIR /app
-COPY requirements.txt .
+COPY requirements.lock .
 COPY setup.py .
 COPY agent/ agent/
 
-RUN python -m pip install --no-cache-dir --upgrade pip==26.1.1 && \
-    python -m pip install --no-cache-dir -r requirements.txt && \
-    python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
+    python -m pip install --no-cache-dir --no-deps .
 
 USER 65534:65534
 EXPOSE 8476

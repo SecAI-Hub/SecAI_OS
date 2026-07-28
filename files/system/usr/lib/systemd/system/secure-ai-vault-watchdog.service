@@ -1,21 +1,33 @@
 [Unit]
 Description=Secure AI Vault Auto-Lock Watchdog
-After=local-fs.target
+After=local-fs.target secure-ai-ui.service
 Wants=local-fs.target
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py
+Environment=VAULT_ACTIVITY_FILE=/run/secure-ai-ui/last-activity
 Restart=on-failure
 RestartSec=10
+UMask=0077
 
 # Sandboxing
 ProtectSystem=strict
-ReadWritePaths=/var/lib/secure-ai /run/secure-ai /dev/mapper
+ReadWritePaths=/var/lib/secure-ai/logs /var/lib/secure-ai/vault
+ReadWritePaths=/run/secure-ai /dev/mapper
+ReadWritePaths=-/run/secure-ai-ui
 ProtectHome=yes
-NoNewPrivileges=no
+NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateNetwork=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
 
 # Kernel protection
 ProtectKernelTunables=yes
@@ -27,12 +39,13 @@ ProtectHostname=yes
 
 # Needs root for cryptsetup and umount
 User=root
+SupplementaryGroups=secure-ai-ui-control
 
 # Capability bounding — needs mount/unmount for cryptsetup
 CapabilityBoundingSet=CAP_SYS_ADMIN
 
 # Syscall filtering — needs @mount for cryptsetup operations
-SystemCallFilter=@system-service @mount
+SystemCallFilter=@system-service @mount @sync
 SystemCallFilter=~@privileged @clock @debug @swap @reboot @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
@@ -43,6 +56,9 @@ TimeoutStopSec=30
 # Resource limits
 MemoryMax=64M
 CPUQuota=5%
+TasksMax=64
+LimitNOFILE=256
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

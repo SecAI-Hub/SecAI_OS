@@ -203,7 +203,8 @@ Top-level structure:
 - vault: Auto-lock timeout (minutes), watchdog check interval (seconds)
 - auth: Session timeout, max failed attempts, lockout duration, escalated lockout
 - secure_boot: TPM2 PCR binding, passphrase fallback, auto-reseal on update
-- sandbox: Seccomp, Landlock, core dump toggles
+- Process isolation is enforced by systemd unit policy and fail-closed
+  Landlock launch wrappers; it is not a mutable appliance configuration toggle.
 - memory_protection: Swap, zswap, core dumps, mlock, TEE detection toggles
 - clipboard: VM clipboard isolation, auto-clear interval, private users for non-UI services
 - canary: Check interval, inotify toggle, monitored locations

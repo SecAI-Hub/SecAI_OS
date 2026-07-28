@@ -1,12 +1,12 @@
-* @sec_ai
+* @SecAI-Hub
 
 # Build and supply chain
-upstreams/                              @sec_ai
-vendor/                                 @sec_ai
-.upstreams.lock.yaml                    @sec_ai
-.github/workflows/                      @sec_ai
-files/scripts/                          @sec_ai
-recipes/                                @sec_ai
+upstreams/                              @SecAI-Hub
+vendor/                                 @SecAI-Hub
+.upstreams.lock.yaml                    @SecAI-Hub
+.github/workflows/                      @SecAI-Hub
+files/scripts/                          @SecAI-Hub
+recipes/                                @SecAI-Hub
 
 # Security policy
-files/system/etc/secure-ai/policy/      @sec_ai
+files/system/etc/secure-ai/policy/      @SecAI-Hub

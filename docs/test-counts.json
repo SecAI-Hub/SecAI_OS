@@ -1,17 +1,18 @@
 {
-  "generated": "2026-05-14",
+  "generated": "2026-07-28",
   "go": {
-    "airlock": 11,
-    "registry": 22,
-    "tool-firewall": 15,
+    "airlock": 27,
+    "registry": 36,
+    "tool-firewall": 16,
     "gpu-integrity-watch": 63,
     "mcp-firewall": 71,
     "policy-engine": 45,
-    "runtime-attestor": 55,
-    "integrity-monitor": 50,
-    "incident-recorder": 97
+    "runtime-attestor": 64,
+    "integrity-monitor": 54,
+    "incident-recorder": 108,
+    "ui-ingress": 6
   },
-  "go_total": 429,
-  "python_total": 1154,
-  "grand_total": 1583
+  "go_total": 490,
+  "python_total": 1559,
+  "grand_total": 2049
 }

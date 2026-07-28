@@ -12,17 +12,27 @@ Get SecAI OS running in the fewest steps possible. Choose the path that fits you
 | **Sandbox Stack** | ~10 min | Easy | Evaluate the control plane on an existing workstation |
 | **Development** | ~10 min | Easy | Service development only (no OS features) |
 
-> **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). Pre-built VM images (OVA/QCOW2) are optional release artifacts and only appear when the repository has a self-hosted KVM runner configured. The bootstrap path remains the recommended production install, but the portable USB artifact is the right choice when you want to boot and evaluate directly from removable media. See [Artifact Availability](#artifact-availability) for details.
+> **Note on release media:** The release pipeline builds both an installer ISO and a portable USB image (`*-usb.raw.xz`). It does not distribute pre-built VM images: an encrypted VM needs user-specific boot credentials, which must not be shared in a public artifact. Build QCOW2/OVA images locally instead. The bootstrap path remains the recommended production install, while the portable USB artifact is appropriate for direct evaluation from removable media. See [Artifact Availability](#artifact-availability) for details.
 
 ---
 
 ## Path A: Bootstrap Install (Real PC or VM)
 
-This is the recommended path. It installs Fedora Silverblue, then rebases to SecAI OS with full signature verification. You get the complete security stack: Secure Boot, TPM2, encrypted vault, and all 25+ defense layers.
+This is the intended appliance path. It installs Fedora Silverblue, then
+rebases to SecAI OS with signature verification. Secure Boot and TPM2 assurance
+remain hardware-dependent and must be confirmed by the setup checks and the
+release qualification evidence.
 
 **1. Install Fedora Silverblue**
 
-Download [Fedora Silverblue 42](https://fedoraproject.org/silverblue/) and install it on your hardware or in a VM. A minimal install is fine — SecAI OS replaces the desktop.
+Download [Fedora Silverblue 44](https://fedoraproject.org/silverblue/) and
+install it on your hardware or in a VM. Enable LUKS disk encryption in
+Anaconda: SecAI OS refuses to generate persistent service credentials unless
+`/var/lib/secure-ai/credentials` is demonstrably backed by dm-crypt/LUKS. A
+minimal install is otherwise fine—SecAI OS replaces the desktop. Reserve an
+unmounted partition/logical volume (or a second device) for the separately
+lockable data vault; automatic full-disk allocation leaves no valid vault
+target.
 
 **2. Run the bootstrap script**
 
@@ -34,15 +44,13 @@ curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scrip
   -o /tmp/secai-bootstrap.sh
 less /tmp/secai-bootstrap.sh
 
-# Run the bootstrap
-sudo bash /tmp/secai-bootstrap.sh
+# Use the release channel and exact digest from the signed release bundle
+sudo bash /tmp/secai-bootstrap.sh \
+  --tag release-vMAJOR.MINOR.PATCH \
+  --digest sha256:RELEASE_DIGEST
 ```
 
-For production, pin to an exact image digest from the [latest release](https://github.com/SecAI-Hub/SecAI_OS/releases/latest):
-
-```bash
-sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
-```
+Digest pinning is mandatory, including for evaluation.
 
 **3. Reboot**
 
@@ -50,14 +58,27 @@ sudo bash /tmp/secai-bootstrap.sh --digest sha256:RELEASE_DIGEST
 sudo systemctl reboot
 ```
 
-**4. Open the UI**
+**4. Complete the encrypted-vault setup at the local console**
 
-After reboot, open a browser to:
+```bash
+sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
+```
+
+The image may report `setup_required` before this ceremony. That is an
+explicitly constrained installation state—not production readiness. The
+wizard requires an unused dedicated partition and asks for an exact,
+destructive confirmation before creating LUKS2 storage.
+
+**5. Open the UI**
+
+After the console wizard and its readiness check succeed, open a browser to:
 ```
 http://127.0.0.1:8480
 ```
 
-**What you should see:** The SecAI OS setup wizard. It asks you to choose a privacy profile, verifies system health, and walks you through importing your first AI model.
+**What you should see:** The unprivileged SecAI OS onboarding flow. It asks you
+to create the local UI credential, choose a privacy profile, and import your
+first model. It cannot create, unlock, or administer the LUKS vault.
 
 ---
 
@@ -129,16 +150,23 @@ cd SecAI_OS
 
 # Create the QCOW2 disk and a signed-first kickstart.
 # The script prints the virt-install command to complete the install.
-bash scripts/vm/build-qcow2.sh
-
-# On a self-hosted KVM runner, run the install unattended.
-bash scripts/vm/build-qcow2.sh --ci
+bash scripts/vm/build-qcow2.sh \
+  --image-ref ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # After the QCOW2 install completes, optionally convert to OVA for VirtualBox/VMware.
 bash scripts/vm/build-ova.sh
 ```
 
-The QCOW2 builder installs the SecAI signing policy in the kickstart before the first image pull and rebases with `ostree-image-signed:docker://`. It creates root + encrypted vault partitions, writes the temporary kickstart with mode `0600`, and randomly generates temporary VM/vault credentials that are printed at build time. Change those credentials immediately after first boot.
+The QCOW2 builder verifies the exact digest with cosign, installs the SecAI
+signing policy in the kickstart before the first image pull, and rebases with
+`ostree-image-signed:docker://`. It creates an encrypted host-state partition
+plus a separate unused vault partition. For a local build, randomly generated
+temporary login/host-state credentials are written to
+`output/secai-first-boot-secrets.txt` with mode `0600`; they are never printed
+to build logs. Change them immediately, then run the console wizard against
+`/dev/sda5` to create the independent data vault and choose its passphrase.
+After both temporary credentials are rotated, delete the local kickstart and
+first-boot secrets files.
 
 **2. Start the VM**
 
@@ -150,7 +178,7 @@ virt-install \
   --vcpus 4 \
   --disk path=output/secai-os.qcow2,format=qcow2 \
   --import \
-  --os-variant fedora42 \
+  --os-variant fedora44 \
   --network default \
   --noautoconsole
 
@@ -161,10 +189,18 @@ virt-install \
 
 ```bash
 virsh domifaddr secai-os
-# Open http://<vm-ip>:8480 in your browser
+ssh -L 8480:127.0.0.1:8480 secai@<vm-ip>
+# Keep the SSH session open, then browse to http://127.0.0.1:8480
 ```
 
-> **Security note:** VM installs cannot use TPM2 vault key sealing and the host hypervisor has visibility into guest memory. VMs are suitable for evaluation, not sensitive workloads. See [support-lifecycle.md](../support-lifecycle.md) for the full support matrix.
+The appliance UI remains loopback-only inside the guest. Do not add a public
+8480 listener or firewall exception; use an authenticated SSH local forward.
+
+> **Security note:** VM installs cannot claim bare-metal TPM assurance and the
+> host hypervisor has visibility into guest memory. SecAI OS intentionally does
+> not publish generic VM media; use a local, user-specific build and rotate its temporary
+> credentials before handling sensitive data. See
+> [support-lifecycle.md](../support-lifecycle.md) for the full support matrix.
 
 ---
 
@@ -180,10 +216,26 @@ Common flags:
 - `--with-airlock` / `-WithAirlock` turns on airlock-mediated outbound downloads in the sandbox runtime policy.
 - `--with-inference` / `-WithInference` and `--with-diffusion` / `-WithDiffusion` enable the heavier model-serving profiles.
 
-The sandbox launcher now starts a loopback-only, token-authenticated host
-controller so the UI can apply these same profile changes from Settings and
-service-specific buttons without mounting the Docker socket into the UI
-container.
+The sandbox requires Docker Server 28+ with Compose v2, or rootful Podman
+Server 5.3+ with compose support on native Linux. The launcher starts a
+host-local, HMAC-authenticated controller so the UI can apply profile changes
+without mounting the container-engine socket. Docker Desktop uses loopback;
+rootful native-Linux engines use a verified RFC 1918 bridge gateway. Native
+Podman uses only the project-scoped `secai-sandbox_ingress` bridge, never the
+default `podman` network or a LAN listener. A digest-pinned, no-mount,
+no-secret, capability-free anchor materializes that bridge only until the UI
+ingress is healthy; safe stop recovery can briefly recreate it if every stack
+container was stopped out of band. Rootless
+Docker, rootless Podman, and non-Linux Podman remotes fail closed because their
+default routing cannot reach the protected host listener. The selected engine
+is pinned until a successful stop, and every enabled service must become
+healthy (or running when it has no health check).
+
+Sandbox launchers serialize start, stop, and UI profile operations with an
+owner-only operation lock. They deliberately do not auto-delete an apparently
+stale lock because its owner or engine child may be running in another process
+namespace. Follow the manual verification guidance in
+[sandbox.md](sandbox.md) rather than deleting the runtime directory.
 
 > **Security note:** This is a lower-assurance path than the full OS or VM image. The host kernel and container runtime can inspect container memory, mounted files, and network activity. Use it for evaluation and workflow testing, not sensitive workloads.
 
@@ -199,12 +251,16 @@ See [dev.md](dev.md) for setup instructions.
 
 ## After Boot: First-Time Setup
 
-Regardless of install path, the setup wizard guides you through:
+For native OS and VM installs, first run the local-console wizard:
 
-1. **Choose your privacy level** — Maximum Privacy (default), Web-Assisted Research, or Full Lab
-2. **System check** — verifies core services are running
-3. **Import a model** — upload a `.gguf` model file (it passes through the 7-stage quarantine pipeline automatically)
-4. **Start chatting** — once the model is promoted, you're ready
+1. **Verify deployment identity and signed transport**
+2. **Create and verify the LUKS2 encrypted vault**
+3. **Optionally enroll TPM2 with a retained passphrase recovery slot**
+4. **Run the production readiness check**
+
+Then use the web onboarding flow to choose a privacy profile, import a model
+through quarantine, and start chatting. The Docker development/sandbox paths
+do not provide a LUKS vault and must not claim native-appliance assurance.
 
 ---
 
@@ -213,7 +269,8 @@ Regardless of install path, the setup wizard guides you through:
 After running the bootstrap, you can verify the image signature:
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+cosign verify --key cosign.pub \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 To verify release artifacts (Go binaries, SBOMs, checksums):
@@ -247,7 +304,7 @@ make verify-release
 | **ISO signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.iso.sig` file for verification |
 | **Portable USB image** | Release workflow artifact (90-day retention) | Built in CI as `secai-os-*-usb.raw.xz`; flash directly to removable media |
 | **Portable USB signature** | [GitHub Releases](https://github.com/SecAI-Hub/SecAI_OS/releases/latest) | `.raw.xz.sig` file for verification |
-| **QCOW2 / OVA** | Release workflow artifact when `HAS_KVM_RUNNER=true`, or `scripts/vm/build-qcow2.sh` / `build-ova.sh` locally | Optional; CI build requires self-hosted KVM runner |
+| **QCOW2 / OVA** | `scripts/vm/build-qcow2.sh` / `build-ova.sh` locally | Local-only, user-specific encrypted build; never a release artifact |
 
 The installer ISO and portable USB image are produced by every tagged release and are available as [workflow artifacts](https://github.com/SecAI-Hub/SecAI_OS/actions/workflows/release.yml) with 90-day retention. Their cosign signatures are published to GitHub Releases for verification. For permanent hosting, an external storage solution is still needed.
 

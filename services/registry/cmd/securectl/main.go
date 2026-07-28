@@ -33,16 +33,20 @@ Usage:
   securectl status                   Show registry service health
 
 Environment:
-  REGISTRY_URL         Registry endpoint (default: http://127.0.0.1:8470)
-  SERVICE_TOKEN_PATH   Registry service token path (default: /run/secure-ai/service-token)
+  REGISTRY_URL               Registry endpoint (default: http://127.0.0.1:8470)
+  REGISTRY_ADMIN_TOKEN_PATH  Registry administrator credential path
+                             (default: /var/lib/secure-ai/credentials/registry-admin.token)
 `)
 	os.Exit(1)
 }
 
 func readServiceToken() string {
-	tokenPath := os.Getenv("SERVICE_TOKEN_PATH")
+	tokenPath := os.Getenv("REGISTRY_ADMIN_TOKEN_PATH")
 	if tokenPath == "" {
-		tokenPath = "/run/secure-ai/service-token"
+		tokenPath = os.Getenv("REGISTRY_TOKEN_PATH")
+	}
+	if tokenPath == "" {
+		tokenPath = "/var/lib/secure-ai/credentials/registry-admin.token"
 	}
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {

@@ -2,7 +2,7 @@
 
 All production services bind to loopback or a Unix socket. The Docker sandbox binds service ports inside the compose network and only publishes the UI to the host by default.
 
-Mutating service-to-service endpoints require the shared bearer token when the token file is present. Development mode may run without that token for local tests.
+Production control-plane endpoints fail closed when their configured bearer credential is unavailable. Registry and incident-recorder authorities are action-scoped; containment credentials are independent. The Docker sandbox may use a shared compatibility credential only when explicitly started in `SECURE_AI_DEPLOYMENT_MODE=sandbox`.
 
 ---
 
@@ -11,15 +11,16 @@ Mutating service-to-service endpoints require the shared bearer token when the t
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | No | Liveness and model count. |
-| GET | `/v1/models` | No | List registered model artifacts. |
-| GET | `/v1/model?name=<name>` | No | Retrieve one artifact by name. |
-| GET | `/v1/model/path?name=<name>` | No | Return the model file path for a registered artifact. |
-| POST | `/v1/model/verify?name=<name>` | No | Recompute and compare one model's SHA-256 hash. |
-| POST | `/v1/models/verify-all` | No | Verify every registered model. |
-| GET | `/v1/integrity/status` | No | Return aggregate registry integrity state. |
-| POST | `/v1/model/verify-manifest?name=<name>` | No | Verify the gguf-guard per-tensor manifest for one GGUF model. |
-| POST | `/v1/model/promote` | Token | Promote a quarantined artifact into the registry. |
-| DELETE | `/v1/model/delete?name=<name>` | Token | Remove an artifact from the registry manifest. |
+| GET | `/v1/models` | Read or admin | List registered model artifacts. |
+| GET | `/v1/model?name=<name>` | Read or admin | Retrieve one artifact by name. |
+| GET | `/v1/model/path?name=<name>` | Read or admin | Return the model file path for a registered artifact. |
+| POST | `/v1/model/verify?name=<name>` | Verify or admin | Recompute and compare one model's SHA-256 hash. |
+| POST | `/v1/models/verify-all` | Verify or admin | Verify every registered model. |
+| GET | `/v1/integrity/status` | Verify or admin | Return aggregate registry integrity state. |
+| POST | `/v1/model/verify-manifest?name=<name>` | Verify or admin | Verify the gguf-guard per-tensor manifest for one GGUF model. |
+| POST | `/v1/model/promote` | Promote | Promote a quarantined artifact into the registry. |
+| DELETE | `/v1/model/delete?name=<name>` | Admin | Remove an artifact from the registry manifest. |
+| POST | `/api/v1/quarantine` | Containment | Remove one exact enrolled artifact from service. |
 
 Promotion body:
 
@@ -123,9 +124,9 @@ Responses use `allowed: true|false` and include `reason` when blocked. Disabled 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | No | Liveness and attestation state. |
-| GET | `/api/v1/attest` | No | Current attestation bundle. |
-| GET | `/api/v1/verify` | No | Startup-gating verification result. |
-| GET | `/api/security/status` | No | UI-friendly security status. |
+| GET | `/api/v1/attest` | Service token | Current full HMAC-authenticated attestation bundle. |
+| GET | `/api/v1/verify` | Service token | `verified` hardware evidence and distinct `policy_satisfied` startup decision. |
+| GET | `/api/security/status` | Service token | Assurance mode, evidence status, and counters. |
 | POST | `/api/v1/refresh` | Token | Refresh attestation state. |
 
 ### Integrity Monitor (port 8510)
@@ -145,17 +146,17 @@ Responses use `allowed: true|false` and include `reason` when blocked. Disabled 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | No | Liveness and incident counts. |
-| GET | `/api/v1/incidents` | No | List incidents, filterable by `class`, `state`, and `severity`. |
-| GET | `/api/v1/incidents/get?id=<id>` | No | Fetch one incident. |
-| GET | `/api/v1/stats` | No | Incident statistics. |
-| GET | `/api/v1/recovery/status` | No | Pending recovery ceremonies. |
-| POST | `/api/v1/incidents/report` | Token | Report a new incident. |
-| POST | `/api/v1/incidents/resolve` | Token | Mark an incident resolved. |
-| POST | `/api/v1/incidents/acknowledge` | Token | Acknowledge an incident. |
-| POST | `/api/v1/recovery/ack` | Token | Acknowledge recovery requirements. |
-| POST | `/api/v1/recovery/reattest` | Token | Submit recovery re-attestation. |
-| GET | `/api/v1/forensic/export` | Token | Export a signed forensic bundle. |
-| POST | `/api/v1/reload` | Token | Reload containment policy. |
+| GET | `/api/v1/incidents` | Read | List incidents, filterable by `class`, `state`, and `severity`. |
+| GET | `/api/v1/incidents/get?id=<id>` | Read | Fetch one incident. |
+| GET | `/api/v1/stats` | Read | Incident statistics. |
+| GET | `/api/v1/recovery/status` | Recovery admin | Pending recovery ceremonies. |
+| POST | `/api/v1/incidents/report` | Source-bound reporter | Report a new incident. |
+| POST | `/api/v1/incidents/resolve` | Operator | Mark an incident resolved. |
+| POST | `/api/v1/incidents/acknowledge` | Operator | Acknowledge an incident. |
+| POST | `/api/v1/recovery/ack` | Recovery admin | Acknowledge recovery requirements. |
+| POST | `/api/v1/recovery/reattest` | Recovery admin | Submit recovery re-attestation. |
+| GET | `/api/v1/forensic/export` | Forensic | Export a signed forensic bundle. |
+| POST | `/api/v1/reload` | Operator | Reload containment policy. |
 
 ### GPU Integrity Watch (port 8495)
 
@@ -265,15 +266,15 @@ The UI exposes authenticated proxy routes under `/api/agent/*` with the same tas
 | GET | `/api/security/stats` | Security statistics. |
 | GET | `/api/observability/appliance-state` | Appliance trust/degraded/recovery state. |
 | GET | `/api/observability/slos` | Live SLO compliance metrics. |
-| GET | `/api/forensic/export` | Download forensic bundle through the UI. |
+| GET | `/api/forensic/export` | Returns local-console instructions; the UI does not hold forensic authority. |
 | GET | `/api/audit/status` | Audit-chain status. |
 | POST | `/api/audit/verify` | Verify audit-chain integrity. |
 | GET | `/api/boot/status` | Boot security summary. |
 | GET | `/api/boot/tpm2/status` | TPM2 status. |
 | GET | `/api/boot/secureboot/status` | Secure Boot status. |
 | GET | `/api/vault/status` | Vault state. |
-| POST | `/api/vault/lock` | Lock the vault. |
-| POST | `/api/vault/unlock` | Unlock the vault. |
+| POST | `/api/vault/lock` | Always returns `501` with local-console lock instructions; the UI has no root service-control authority. |
+| POST | `/api/vault/unlock` | Always returns `501`; web passphrases are rejected and unlock requires the local console. |
 | POST | `/api/vault/keepalive` | Reset vault idle timer. |
 | GET | `/api/vm/status` | VM/hypervisor status. |
 | POST | `/api/vm/gpu` | GPU status. |
@@ -283,8 +284,11 @@ The UI exposes authenticated proxy routes under `/api/agent/*` with the same tas
 | POST | `/api/update/check` | Check for updates. |
 | POST | `/api/update/stage` | Stage an update. |
 | POST | `/api/update/apply` | Apply staged update. |
-| POST | `/api/update/rollback` | Roll back to previous deployment. |
 | GET | `/api/update/health` | Update subsystem health. |
+
+Rollback is deliberately not exposed through the web API. Run
+`sudo /usr/libexec/secure-ai/update-verify.sh rollback` from a local root
+console.
 
 ---
 

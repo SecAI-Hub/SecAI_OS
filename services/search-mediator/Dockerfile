@@ -1,4 +1,4 @@
-FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS build
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS build
 
 # hadolint ignore=DL3002
 USER root
@@ -15,17 +15,12 @@ COPY build/cpython-patches/ /build/cpython-patches/
 RUN chmod 0555 /build/install-cpython.sh && /build/install-cpython.sh
 RUN python3 -m venv "${VIRTUAL_ENV}"
 
-COPY services/search-mediator/requirements.txt /app/requirements.txt
+COPY services/search-mediator/requirements.lock /app/requirements.lock
 COPY services/common/ /app/services/common/
 COPY services/search-mediator/ /app/services/search-mediator/
 COPY services/search-mediator/entrypoint.py /app/entrypoint.py
 
-RUN pip install --no-cache-dir --upgrade \
-        pip==26.1.1 \
-        setuptools==82.0.1 \
-        wheel==0.46.2 && \
-    pip install --no-cache-dir -r /app/requirements.txt && \
-    pip install --no-cache-dir gunicorn==23.0.0 && \
+RUN pip install --no-cache-dir --require-hashes -r /app/requirements.lock && \
     BASE_SITE_PACKAGES="$("${PREFIX}/bin/python3" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
     VENV_SITE_PACKAGES="$("${VIRTUAL_ENV}/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")" && \
     rm -rf \
@@ -49,7 +44,7 @@ RUN pip install --no-cache-dir --upgrade \
     chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app "${VIRTUAL_ENV}" "${PREFIX}"
 
-FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11 AS runtime-base
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS runtime-base
 
 RUN apk add --no-cache \
         bzip2 \
@@ -76,8 +71,8 @@ ENV PYTHONPATH=/app/services
 
 WORKDIR /app
 COPY --from=runtime-base /etc/ssl /etc/ssl
-COPY --from=runtime-base /lib/ld-musl-x86_64.so.1 /lib/
-COPY --from=runtime-base /lib/libc.musl-x86_64.so.1 /lib/
+COPY --from=runtime-base /lib/ld-musl-*.so.1 /lib/
+COPY --from=runtime-base /lib/libc.musl-*.so.1 /lib/
 COPY --from=build /usr/lib/libbz2.so* /usr/lib/
 COPY --from=runtime-base /usr/lib/engines-3 /usr/lib/engines-3
 COPY --from=runtime-base /usr/lib/ossl-modules /usr/lib/ossl-modules

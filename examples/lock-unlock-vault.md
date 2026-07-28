@@ -1,8 +1,10 @@
 # Vault Management
 
-The Secure AI Appliance stores all sensitive data (models, outputs, keys,
-auth state) on a LUKS-encrypted partition called the vault. The vault
-auto-locks after inactivity and can be manually locked or unlocked.
+The Secure AI Appliance stores models, user documents, and outputs on a
+LUKS-encrypted partition called the vault. The vault auto-locks after
+inactivity and can be manually locked or unlocked only from a trusted local
+root console. Service credentials and authentication state remain in
+separately permissioned host state so the UI can report a locked vault.
 
 ---
 
@@ -34,43 +36,32 @@ Fields:
 
 ### Via Web UI
 
-Open the **Security** tab in the Web UI. The vault status is shown at the
-top with a lock/unlock indicator and the idle timer.
+Open the **Security** tab in the Web UI. The vault status and idle timer are
+shown there. The page provides local-console instructions; it does not accept
+the LUKS passphrase or control system services.
 
 ---
 
 ## Lock the Vault Manually
 
-### Via API
+### Via Local Console
 
 ```bash
-curl -X POST http://127.0.0.1:8480/api/vault/lock \
-  -H "Authorization: Bearer <session-token>" \
-  -H "X-CSRF-Token: <csrf-token>"
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py \
+  --lock-once --reason operator_request
 ```
 
 This will:
 1. Stop all AI services (inference, diffusion).
 2. Sync filesystem buffers.
-3. Unmount `/var/lib/secure-ai`.
+3. Unmount `/var/lib/secure-ai/vault`.
 4. Close the LUKS device (`cryptsetup close secure-ai-vault`).
 5. Update the vault state file to `locked`.
 
-Response on success:
-
-```json
-{
-  "success": true,
-  "state": "locked"
-}
-```
-
 ### Via Web UI
 
-1. Go to the **Security** tab.
-2. Click **Lock Vault**.
-3. Confirm the action. The UI will show a "Vault Locked" state and all
-   AI features will be unavailable until unlocked.
+The Web UI reports vault state but deliberately cannot lock it. A request to
+`POST /api/vault/lock` returns `501` and the local-console command above.
 
 ### What Gets Locked
 
@@ -78,56 +69,34 @@ When the vault locks:
 - All model files become inaccessible (they are on the encrypted partition).
 - Inference and diffusion services stop.
 - The Web UI remains accessible (it runs from the immutable OS partition)
-  but can only show the unlock form.
+  but can only show status and local-console recovery instructions.
 - Auth state remains in memory briefly but the session is invalidated.
-- Outputs, logs, and keys on the vault are inaccessible.
+- Outputs and user documents on the vault are inaccessible.
 
 ---
 
 ## Unlock the Vault
 
-### Via API
+### Via Local Console
 
 ```bash
-curl -X POST http://127.0.0.1:8480/api/vault/unlock \
-  -H "Content-Type: application/json" \
-  -d '{"passphrase": "your-luks-passphrase"}'
+sudo /usr/bin/python3 /usr/libexec/secure-ai/vault-watchdog.py --unlock-once
 ```
 
 This will:
 1. Open the LUKS device with the provided passphrase
-   (`cryptsetup open <partition> secure-ai-vault`).
-2. Mount the vault at `/var/lib/secure-ai`.
+   (`cryptsetup open <partition> secure-ai-vault`). The passphrase is read by
+   `getpass` from the local terminal and is never placed in argv.
+2. Mount the vault at `/var/lib/secure-ai/vault`.
 3. Reset the activity timer.
-4. Restart AI services (inference, diffusion, UI).
+4. Restart enabled vault-consuming services after exact mount verification.
 5. Update the vault state to `unlocked`.
-
-Response on success:
-
-```json
-{
-  "success": true,
-  "state": "unlocked"
-}
-```
-
-Response on wrong passphrase:
-
-```json
-{
-  "success": false,
-  "error": "incorrect passphrase or device error"
-}
-```
 
 ### Via Web UI
 
-When the vault is locked, the UI shows an unlock form:
-
-1. Enter the LUKS passphrase.
-2. Click **Unlock**.
-3. Wait for services to restart (10-30 seconds).
-4. The UI returns to normal operation.
+The Web UI never shows a LUKS passphrase form. `POST /api/vault/unlock`
+returns `501`, rejects any supplied `passphrase` field, and points the operator
+to the local-console command.
 
 ### TPM2 Auto-Unlock (at Boot)
 

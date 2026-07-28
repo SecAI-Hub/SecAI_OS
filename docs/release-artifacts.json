@@ -52,6 +52,10 @@
         "files": ["IMAGE_DIGEST"],
         "description": "OCI image digest for this release"
       },
+      "trust_root": {
+        "files": ["cosign.pub"],
+        "description": "Cosign public key; authenticate its published fingerprint out of band before use"
+      },
       "release_scripts": {
         "files": [
           "secai-os-build-iso.sh",
@@ -66,7 +70,7 @@
       "iso": {
         "pattern": "secai-os-{version}-x86_64.iso",
         "signature": "secai-os-{version}-x86_64.iso.sig",
-        "description": "Bootable ISO (requires isogenerator)",
+        "description": "Bootable ISO built from the verified immutable bootc image",
         "required_when": "always (standard runner)"
       },
       "portable_usb": {
@@ -75,23 +79,21 @@
         "description": "Direct-flash portable USB image built from bootc-image-builder raw output",
         "required_when": "always (standard runner)"
       },
-      "qcow2": {
-        "pattern": "secai-os-{version}.qcow2",
-        "signature": "secai-os-{version}.qcow2.sig",
-        "description": "QCOW2 disk image for KVM/QEMU/Proxmox",
-        "required_when": "vars.HAS_KVM_RUNNER == 'true'"
-      },
-      "ova": {
-        "pattern": "secai-os-{version}.ova",
-        "signature": "secai-os-{version}.ova.sig",
-        "description": "OVA appliance for VirtualBox/VMware",
-        "required_when": "vars.HAS_KVM_RUNNER == 'true'"
-      },
       "bootc_iso": {
         "pattern": "secai-os-{version}-x86_64-bootc.iso",
         "signature": "secai-os-{version}-x86_64-bootc.iso.sig",
         "description": "Experimental bootc-image-builder ISO",
         "required_when": "vars.ENABLE_BOOTC_ISO == 'true'"
+      }
+    },
+    "local_only": {
+      "qcow2": {
+        "pattern": "secai-os.qcow2",
+        "description": "User-specific encrypted QCOW2 built locally; CI outputs are destroyed and never published"
+      },
+      "ova": {
+        "pattern": "secai-os.ova",
+        "description": "User-specific OVA converted from a local encrypted QCOW2; never a release artifact"
       }
     }
   }

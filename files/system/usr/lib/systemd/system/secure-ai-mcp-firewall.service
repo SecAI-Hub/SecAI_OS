@@ -1,24 +1,28 @@
 [Unit]
 Description=Secure AI MCP Firewall (Model Context Protocol policy gateway)
-After=secure-ai-tool-firewall.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=secure-ai-vault-mounted.service secure-ai-tool-firewall.service secure-ai-credentials.service
+Requires=secure-ai-vault-mounted.service secure-ai-credentials.service
 Wants=secure-ai-tool-firewall.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/mcp-firewall
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require mcp_firewall -- /usr/libexec/secure-ai/mcp-firewall serve
 Environment=BIND_ADDR=127.0.0.1:8496
-Environment=POLICY_PATH=/etc/secure-ai/mcp-firewall/default-policy.yaml
-Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/mcp-firewall-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=MCP_FIREWALL_POLICY=/etc/secure-ai/mcp-firewall/default-policy.yaml
+Environment=AUDIT_LOG=/var/lib/secure-ai/logs/mcp-firewall-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/mcp-firewall.token
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-vault-read
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadOnlyPaths=/var/lib/secure-ai/vault
 ReadWritePaths=/var/lib/secure-ai/logs
-PrivateNetwork=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -47,10 +51,11 @@ AmbientCapabilities=
 
 # Namespace restrictions
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21)
-PrivateUsers=yes
+# MCP firewall is reachable only by local control-plane peers.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering
 SystemCallFilter=@system-service
@@ -73,9 +78,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 

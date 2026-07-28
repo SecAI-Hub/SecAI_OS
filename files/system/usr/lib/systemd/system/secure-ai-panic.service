@@ -1,34 +1,48 @@
 [Unit]
 Description=Secure AI Emergency Panic (securectl)
-After=secure-ai-firstboot.service
+Requires=secure-ai-credentials.service
+After=secure-ai-firstboot.service secure-ai-credentials.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/secure-ai/securectl panic 1 --no-countdown
-RemainAfterExit=yes
+Environment=PANIC_AUDIT_HMAC_KEY_PATH=%d/panic-audit-hmac-key
+LoadCredential=panic-audit-hmac-key:/var/lib/secure-ai/credentials/panic-audit-hmac.key
+UMask=0077
 
-# Needs root for vault lock, process kill, key shred
-ProtectHome=yes
-PrivateTmp=yes
-PrivateNetwork=yes
+# This fixed-function unit performs reversible level-1 containment only.
+User=root
+# Do not add ProtectSystem/ProtectHome/PrivateTmp/Read*Paths/PrivateDevices:
+# those directives create a private mount namespace, where an apparently
+# successful umount would leave the host vault mounted.
+DevicePolicy=closed
+DeviceAllow=/dev/mapper/control rw
 
-# Kernel protection
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
 ProtectKernelLogs=yes
-ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
 
-# Capability bounding — root oneshot, needs kill/vault ops
-CapabilityBoundingSet=
+# Unmounting and closing the single mapper requires CAP_SYS_ADMIN. Service
+# cgroups are stopped by PID 1; the helper never scans or pkills processes.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
 
-# Syscall filtering — permissive for kill/vault/shred operations
-SystemCallFilter=@system-service @signal
-SystemCallFilter=~@mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@clock @debug @swap @reboot @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
 LimitCORE=0
+TimeoutStartSec=180
+TasksMax=32
+MemoryMax=128M
 
-ReadWritePaths=/var/lib/secure-ai /run/secure-ai /etc/secure-ai
+# The executable is signed by the appliance integrity baseline and accepts no
+# caller-selected path, unit, device, or command. That fixed-function boundary
+# is the filesystem control because host-namespace unmount must remain real.

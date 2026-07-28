@@ -10,7 +10,9 @@ general:
 server:
   bind_address: "127.0.0.1"
   port: 8888
-  secret_key: "secai-local-only-key"
+  # start-searxng.sh fails closed unless systemd supplies SEARXNG_SECRET from
+  # a private, persistent credential. SearXNG overrides this public marker.
+  secret_key: "required-runtime-credential"
   # No public access — localhost only
   limiter: false
   # Disable public image proxy (no need, we strip images)

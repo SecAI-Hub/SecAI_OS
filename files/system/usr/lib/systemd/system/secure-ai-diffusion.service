@@ -1,7 +1,9 @@
 [Unit]
 Description=Secure AI Appliance - Diffusion Worker (Image/Video Generation)
-After=secure-ai-registry.service
-Wants=secure-ai-registry.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+RequiresMountsFor=/var/lib/secure-ai/vault/models /var/lib/secure-ai/vault/outputs
+After=secure-ai-vault-mounted.service secure-ai-registry.service
+Requires=secure-ai-vault-mounted.service secure-ai-registry.service
 
 [Service]
 Type=simple
@@ -13,18 +15,20 @@ Restart=on-failure
 RestartSec=5
 
 Environment=BIND_ADDR=127.0.0.1:8455
-Environment=REGISTRY_DIR=/var/lib/secure-ai/registry
+Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models
 Environment=OUTPUTS_DIR=/var/lib/secure-ai/vault/outputs
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
 Environment=MAX_RESOLUTION=2048
 Environment=MAX_STEPS=100
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/diffusion.token
 EnvironmentFile=-/var/lib/secure-ai/inference.env
 
 # Filesystem isolation — needs GPU access, no network
 DynamicUser=yes
+SupplementaryGroups=video render secure-ai-registry secure-ai-vault-write
 ReadWritePaths=/var/lib/secure-ai/vault/outputs
-ReadOnlyPaths=/var/lib/secure-ai/registry /etc/secure-ai
-PrivateNetwork=yes
+ReadOnlyPaths=/var/lib/secure-ai/vault/models /etc/secure-ai
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -54,8 +58,9 @@ AmbientCapabilities=
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
+# Diffusion API is local-only; model downloads remain outside this worker.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering — needs GPU ioctls for CUDA/ROCm, image write
 SystemCallFilter=@system-service @io-event
@@ -70,8 +75,6 @@ DeviceAllow=/dev/nvidia-uvm rw
 DeviceAllow=/dev/nvidia-uvm-tools rw
 DeviceAllow=/dev/dri/* rw
 DeviceAllow=/dev/kfd rw
-SupplementaryGroups=video render
-
 # Resource limits — generous for image/video generation
 MemoryMax=32G
 CPUQuota=200%

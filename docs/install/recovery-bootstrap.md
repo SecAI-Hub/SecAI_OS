@@ -1,133 +1,96 @@
-# Recovery Bootstrap (Unverified Transport)
+# Recovery Bootstrap (Verified, Immutable Image)
 
-> **WARNING**: This procedure uses an **unverified** container transport.
-> It does NOT verify image signatures during the pull. Use this **only** when:
->
-> - The container signing policy is broken or misconfigured
-> - You are in a development or CI environment
-> - The bootstrap script (`secai-bootstrap.sh`) fails and you need a manual fallback
->
-> For production installs, use the [signed bootstrap script](bare-metal.md#production-install-recommended).
+This recovery path never permits an unverified container transport. If the
+local signing policy is missing or damaged, restore it and rebase only to the
+exact digest published in a signed SecAI OS release.
 
----
+## Before You Start
 
-## When to Use This Path
+Obtain these files from the same GitHub release:
 
-| Scenario | Recommended Path |
-|----------|-----------------|
-| Fresh production install | `secai-bootstrap.sh` (signed) |
-| Existing install upgrade | `rpm-ostree upgrade` (auto-verified) |
-| Broken signing policy | **This page** (recovery) |
-| Development / CI testing | **This page** (recovery) |
-| Evaluating without digest | `secai-bootstrap.sh` without `--digest` |
+- `IMAGE_DIGEST`
+- `SHA256SUMS` and `SHA256SUMS.sig`
+- `secai-os-build-*.sh` only if you are rebuilding media
 
----
+Obtain `cosign.pub` through a trusted channel and confirm its SHA-256
+fingerprint is:
 
-## Procedure
-
-### 1. Verify Image Signature Out-of-Band (Mandatory)
-
-Before performing the unverified pull, verify the image signature using
-cosign. **Do not skip this step** — it is the only integrity guarantee
-when using the unverified transport.
-
-```bash
-# Install cosign (if not already present)
-sudo dnf install -y cosign
-
-# Fetch the project's public key
-curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/cosign.pub \
-  -o /tmp/cosign.pub
-
-# Verify the image signature — STOP if this fails
-cosign verify --key /tmp/cosign.pub ghcr.io/secai-hub/secai_os:latest
+```text
+de6a17ed1cd444a2671798f14d6bf98c1658259dc443a130eba9f40855a7d310
 ```
 
-You must see a successful verification result. **Do not proceed if verification fails.**
+Stop if the fingerprint, checksum signature, image signature, or digest format
+does not verify.
 
-### 2. Perform the Unverified Rebase
+## 1. Verify Release Metadata
 
 ```bash
-# One-time unverified pull (safe ONLY because you verified the signature above)
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/secai-hub/secai_os:latest
+sha256sum cosign.pub
+cosign verify-blob --key cosign.pub \
+  --signature SHA256SUMS.sig SHA256SUMS
+sha256sum --check --strict SHA256SUMS
+
+IMAGE_DIGEST="$(tr -d '\r\n' < IMAGE_DIGEST)"
+printf '%s\n' "$IMAGE_DIGEST" |
+  grep -Eq '^sha256:[0-9a-f]{64}$' ||
+  { echo "Invalid release digest" >&2; exit 1; }
+IMAGE_REF="ghcr.io/secai-hub/secai_os@${IMAGE_DIGEST}"
+cosign verify --key cosign.pub "$IMAGE_REF" >/dev/null
+```
+
+The format guard prevents ambiguous references; `cosign verify` is the
+authoritative signature and digest check.
+
+## 2. Restore Policy and Rebase Through Signed Transport
+
+Use a locally reviewed copy of `secai-bootstrap.sh` from the same source
+revision as the release. Bind the deployment to both the immutable digest and
+the reviewed release channel:
+
+```bash
+sudo bash ./secai-bootstrap.sh \
+  --tag "release-vMAJOR.MINOR.PATCH" \
+  --digest "$IMAGE_DIGEST"
 sudo systemctl reboot
 ```
 
-> **Why unverified?** The system's `/etc/containers/policy.json` does not
-> have a sigstore verification entry for SecAI images. Normally, the
-> bootstrap script installs this policy before the rebase. If that script
-> failed or is unavailable, this unverified pull bypasses the policy check.
-> The out-of-band cosign verification in step 1 provides equivalent
-> assurance for this single pull.
+The bootstrap script verifies the pinned public-key fingerprint, verifies the
+exact `repository:tag@sha256` image with cosign, installs a fail-closed
+container policy, and uses only:
 
-### 3. Lock to Signed Transport (Mandatory)
-
-**Immediately after rebooting**, switch to the signed transport. This step
-is not optional — it ensures all future updates are cryptographically
-verified by rpm-ostree.
-
-```bash
-# Lock to signed transport — all future updates verified automatically
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest
-sudo systemctl reboot
+```text
+ostree-image-signed:docker://
 ```
 
-After this reboot, the system is running SecAI OS with full signature
-verification enabled. The signing policy files are baked into the OS
-image, so the `ostree-image-signed:` transport works without additional
-configuration.
+There is no `ostree-unverified-registry:` fallback. If signed transport still
+fails, remain on the prior deployment and repair the trust configuration
+instead of bypassing it.
 
-### 4. Run the Setup Wizard
-
-```bash
-sudo /usr/libexec/secure-ai/secai-setup-wizard.sh
-```
-
----
-
-## Returning to Signed Transport
-
-If your system is currently on the unverified transport (check with
-`rpm-ostree status`), switch to signed transport:
+## 3. Verify the Booted Deployment
 
 ```bash
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/secai-hub/secai_os:latest
-sudo systemctl reboot
+rpm-ostree status
+sudo /usr/libexec/secure-ai/update-verify.sh status
+sudo /usr/libexec/secure-ai/verify-boot-chain.sh
 ```
 
-After rebooting, verify the transport:
+The booted origin must contain the expected repository, release channel, and
+exact `@sha256:` digest.
+
+## Future Updates
+
+Never use `rpm-ostree upgrade` directly for SecAI OS. The appliance update
+gate resolves the configured channel, verifies the candidate signature,
+enforces anti-rollback state, and stages the exact digest:
 
 ```bash
-rpm-ostree status | grep -i "image-signed"
+sudo /usr/libexec/secure-ai/update-verify.sh check
+sudo /usr/libexec/secure-ai/update-verify.sh stage
+sudo /usr/libexec/secure-ai/update-verify.sh apply
 ```
 
----
+For an approved rollback:
 
-## Fixing a Broken Signing Policy
-
-If `rpm-ostree upgrade` fails with a signature verification error:
-
-1. Check that the signing policy is intact:
-   ```bash
-   cat /etc/containers/policy.json | python3 -m json.tool
-   # Should contain a "sigstoreSigned" entry for ghcr.io/secai-hub/secai_os
-   ```
-
-2. Check the registries config:
-   ```bash
-   cat /etc/containers/registries.d/secai-os.yaml
-   # Should contain use-sigstore-attachments: true
-   ```
-
-3. Check the public key:
-   ```bash
-   ls -la /etc/pki/containers/secai-cosign.pub
-   ```
-
-4. If any of these are missing or corrupted, re-run the bootstrap script:
-   ```bash
-   curl -sSfL https://raw.githubusercontent.com/SecAI-Hub/SecAI_OS/main/files/scripts/secai-bootstrap.sh \
-     -o /tmp/secai-bootstrap.sh
-   sudo bash /tmp/secai-bootstrap.sh --dry-run  # verify first
-   sudo bash /tmp/secai-bootstrap.sh             # apply
-   ```
+```bash
+sudo /usr/libexec/secure-ai/update-verify.sh rollback
+```

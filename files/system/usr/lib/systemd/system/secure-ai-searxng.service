@@ -1,12 +1,17 @@
 [Unit]
 Description=Secure AI Appliance - SearXNG Metasearch Engine (Tor-Routed)
-After=secure-ai-tor.service
+After=secure-ai-tor.service secure-ai-credentials.service
 Wants=secure-ai-tor.service
+Requires=secure-ai-credentials.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 Environment=SEARXNG_SETTINGS_PATH=/etc/secure-ai/searxng/settings.yml
-ExecStart=/usr/bin/python3 -m searx.webapp
+Environment=SEARXNG_SECRET_PATH=%d/searxng-secret
+LoadCredential=searxng-secret:/var/lib/secure-ai/credentials/searxng-secret.key
+ExecStart=/usr/libexec/secure-ai/start-searxng.sh
 Restart=on-failure
 RestartSec=5
 
@@ -14,10 +19,17 @@ RestartSec=5
 DynamicUser=yes
 ProtectSystem=strict
 ReadOnlyPaths=/etc/secure-ai/searxng
+ReadOnlyPaths=/run/secure-ai
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
 
 # Kernel protection
 ProtectKernelTunables=yes
@@ -30,26 +42,36 @@ ProtectHostname=yes
 # Capability bounding — non-root
 CapabilityBoundingSet=
 
-# SearXNG connects to Tor on localhost, which connects to the internet
+# SearXNG may reach only the Tor SOCKS proxy on loopback. Even if a search
+# engine or configuration is compromised, direct clearnet egress is denied.
+PrivateNetwork=no
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 
 # Clipboard isolation (M21) — no access to user clipboard
 PrivateUsers=yes
 
-# No GPU, no devices
-PrivateDevices=yes
+# No GPU or device access
+DevicePolicy=closed
+DeviceAllow=
 
 # Syscall filtering
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
 # Resource limits
 MemoryMax=512M
+CPUQuota=25%
 TasksMax=128
+LimitNOFILE=1024
+LimitCORE=0
 
 # Production timeouts
+TimeoutStartSec=30
 TimeoutStopSec=15
 
 [Install]

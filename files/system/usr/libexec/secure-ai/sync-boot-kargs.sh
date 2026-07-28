@@ -64,20 +64,20 @@ delete_karg() {
 for stale in \
     "iommu=force" \
     "amdgpu.dc=1"; do
-    delete_karg "$stale" || true
+    delete_karg "$stale"
 done
 
 if [ "$needs_nvidia_kargs" = "true" ]; then
-    append_karg "rd.driver.blacklist=nouveau" || true
-    append_karg "modprobe.blacklist=nouveau" || true
-    append_karg "nvidia-drm.modeset=1" || true
+    append_karg "rd.driver.blacklist=nouveau"
+    append_karg "modprobe.blacklist=nouveau"
+    append_karg "nvidia-drm.modeset=1"
     log "NVIDIA GPU detected; ensured NVIDIA-specific boot arguments are present."
 else
     for stale in \
         "rd.driver.blacklist=nouveau" \
         "modprobe.blacklist=nouveau" \
         "nvidia-drm.modeset=1"; do
-        delete_karg "$stale" || true
+        delete_karg "$stale"
     done
 fi
 

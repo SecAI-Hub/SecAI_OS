@@ -1,6 +1,9 @@
 """Tests for the Secure AI web UI Flask app."""
 
 import errno
+import hashlib
+import hmac
+import io
 import json
 import os
 import sys
@@ -18,10 +21,433 @@ from ui.app import app, load_model_catalog, _FALLBACK_CATALOG, _slo_tracker
 
 
 @pytest.fixture
-def client():
+def client(tmp_path):
+    import ui.app as ui_app
+
     app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c
+    old_audit = ui_app._ui_audit
+    ui_app._ui_audit = ui_app.AuditChain(tmp_path / "ui-audit.jsonl")
+    with patch.object(ui_app._auth, "is_configured", return_value=True), \
+         patch.object(ui_app._auth, "validate_session", return_value=True):
+        with app.test_client() as c:
+            c.environ_base["HTTP_AUTHORIZATION"] = "Bearer ui-unit-test-session"
+            yield c
+    ui_app._ui_audit = old_audit
+
+
+def _write_ready_sandbox_state(
+    tmp_path,
+    monkeypatch,
+    *,
+    profile_data=None,
+):
+    generation = "a" * 64
+    session_id = "b" * 64
+    token = "c" * 64
+    status_dir = tmp_path / "generation-status"
+    status_dir.mkdir(mode=0o755)
+    generation_marker = status_dir / "ready-generation"
+    session_marker = status_dir / "ready-session"
+    generation_marker.write_text(generation, encoding="ascii")
+    session_marker.write_text(session_id, encoding="ascii")
+    generation_marker.chmod(0o644)
+    session_marker.chmod(0o644)
+
+    mounted_generation = tmp_path / "mounted-generation"
+    mounted_generation.mkdir(mode=0o755)
+    profile_payload = (
+        json.dumps(
+            profile_data
+            if profile_data is not None
+            else {"active": "research"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    profile_path = mounted_generation / "profile.json"
+    profile_path.write_bytes(profile_payload)
+    manifest = {
+        "files": [{
+            "path": "profile.json",
+            "sha256": hashlib.sha256(profile_payload).hexdigest(),
+            "size": len(profile_payload),
+        }],
+        "generation": generation,
+        "version": 1,
+    }
+    manifest_path = mounted_generation / "generation.json"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    profile_path.chmod(0o444)
+    manifest_path.chmod(0o444)
+
+    token_path = tmp_path / "control-token"
+    token_path.write_text(token, encoding="ascii")
+    token_path.chmod(0o604)
+    monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+    monkeypatch.setenv("SECAI_RUNTIME_GENERATION", generation)
+    monkeypatch.setenv(
+        "SANDBOX_READY_GENERATION_PATH",
+        str(generation_marker),
+    )
+    monkeypatch.setenv(
+        "SANDBOX_READY_SESSION_PATH",
+        str(session_marker),
+    )
+    monkeypatch.setenv(
+        "SANDBOX_GENERATION_PROFILE_PATH",
+        str(profile_path),
+    )
+    monkeypatch.setenv(
+        "SANDBOX_GENERATION_MANIFEST_PATH",
+        str(manifest_path),
+    )
+    monkeypatch.setenv("SANDBOX_CONTROL_URL", "http://controller.test")
+    monkeypatch.setenv("SANDBOX_CONTROL_TOKEN_PATH", str(token_path))
+    return {
+        "generation": generation,
+        "generation_marker": generation_marker,
+        "manifest_path": manifest_path,
+        "profile_path": profile_path,
+        "session_id": session_id,
+        "session_marker": session_marker,
+        "token": token,
+    }
+
+
+def test_flask_binary_secret_boundary_whitespace_is_not_trimmed(
+    tmp_path,
+    monkeypatch,
+):
+    import ui.app as ui_app
+
+    key = b"\x20" + b"\x00" * 30 + b"\x0a"
+    key_path = tmp_path / "flask.key"
+    key_path.write_bytes(key)
+    monkeypatch.setenv("FLASK_SECRET_KEY_PATH", str(key_path))
+
+    assert ui_app._load_secret_key() == key
+
+
+def test_sandbox_control_config_requires_exact_lowercase_hex_token(
+    tmp_path,
+    monkeypatch,
+):
+    import ui.app as ui_app
+
+    token_path = tmp_path / "control-token"
+    monkeypatch.setenv("SANDBOX_CONTROL_URL", "http://ui-ingress:8498")
+    monkeypatch.setenv("SANDBOX_CONTROL_TOKEN_PATH", str(token_path))
+
+    for value in (
+        "a" * 63,
+        "A" * 64,
+        ("a" * 63) + "g",
+        ("a" * 64) + "\n",
+    ):
+        token_path.write_text(value, encoding="utf-8")
+        assert ui_app._sandbox_control_config() == ("", "")
+
+    token_path.write_text("a" * 64, encoding="utf-8")
+    assert ui_app._sandbox_control_config() == (
+        "http://ui-ingress:8498",
+        "a" * 64,
+    )
+    body = b'{"profile":"research"}'
+    headers = ui_app._sandbox_control_auth_headers(
+        "a" * 64,
+        "POST",
+        "/v1/apply",
+        body,
+    )
+    assert "Authorization" not in headers
+    assert len(headers["X-SecAI-Nonce"]) == 64
+    assert headers["X-SecAI-Content-SHA256"] == hashlib.sha256(body).hexdigest()
+    assert len(headers["X-SecAI-Signature"]) == 64
+
+
+def test_ready_sandbox_profile_requires_marker_manifest_and_live_proof(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+    with patch(
+        "ui.app._sandbox_controller_proves_profile",
+        return_value=True,
+    ) as proof:
+        response = client.get("/api/profile")
+
+    assert response.status_code == 200
+    assert response.get_json()["active"] == "research"
+    proof.assert_called_once_with("research", state["session_id"])
+
+
+def test_ready_sandbox_profile_rejects_generation_mismatch(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+    state["generation_marker"].chmod(0o644)
+    state["generation_marker"].write_text("d" * 64, encoding="ascii")
+    state["generation_marker"].chmod(0o644)
+    with patch(
+        "ui.app._sandbox_controller_proves_profile",
+    ) as proof:
+        response = client.get("/api/profile")
+
+    assert response.status_code == 503
+    assert response.get_json()["active"] is None
+    proof.assert_not_called()
+
+
+def test_ready_sandbox_profile_rejects_invalidation_racing_live_proof(
+    tmp_path,
+    monkeypatch,
+):
+    import ui.app as ui_app
+
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+    ready = (state["generation"], state["session_id"])
+    with patch(
+        "ui.app._read_ready_state_markers",
+        side_effect=(ready, ready, None),
+    ) as markers, patch(
+        "ui.app._sandbox_controller_proves_profile",
+        return_value=True,
+    ) as proof:
+        assert ui_app._ready_sandbox_profile() is None
+
+    assert markers.call_count == 3
+    proof.assert_called_once_with("research", state["session_id"])
+
+
+@pytest.mark.parametrize(
+    "invalid_active",
+    [
+        ["research"],
+        {"name": "research"},
+        1,
+        None,
+    ],
+)
+def test_ready_sandbox_profile_rejects_non_string_profile_without_500(
+    client,
+    tmp_path,
+    monkeypatch,
+    invalid_active,
+):
+    _write_ready_sandbox_state(
+        tmp_path,
+        monkeypatch,
+        profile_data={"active": invalid_active},
+    )
+    with patch(
+        "ui.app._sandbox_controller_proves_profile",
+    ) as proof:
+        response = client.get("/api/profile")
+
+    assert response.status_code == 503
+    assert response.get_json()["active"] is None
+    proof.assert_not_called()
+
+
+def test_ready_sandbox_profile_rejects_duplicate_manifest_profile_entry(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+    profile_payload = state["profile_path"].read_bytes()
+    profile_entry = {
+        "path": "profile.json",
+        "sha256": hashlib.sha256(profile_payload).hexdigest(),
+        "size": len(profile_payload),
+    }
+    duplicate_manifest = {
+        "files": [profile_entry, profile_entry],
+        "generation": state["generation"],
+        "version": 1,
+    }
+    state["manifest_path"].chmod(0o644)
+    state["manifest_path"].write_text(
+        json.dumps(
+            duplicate_manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state["manifest_path"].chmod(0o444)
+
+    response = client.get("/api/profile")
+
+    assert response.status_code == 503
+    assert response.get_json()["active"] is None
+
+
+class _SandboxHealthResponse:
+    def __init__(self, payload):
+        self.status_code = 200
+        self._payload = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.headers = {"Content-Length": str(len(self._payload))}
+        self.raw = io.BytesIO(self._payload)
+        self.closed = False
+
+    def iter_content(self, chunk_size=4096):
+        while True:
+            chunk = self.raw.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
+def test_sandbox_controller_profile_proof_binds_live_session(
+    tmp_path,
+    monkeypatch,
+):
+    import ui.app as ui_app
+
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+
+    def health_response(url, **_kwargs):
+        challenge = url.rsplit("challenge=", 1)[1]
+        health_message = (
+            f"secai-sandbox-control-health:v3:{challenge}"
+        ).encode("ascii")
+        state_message = "\n".join((
+            "secai-sandbox-control-state:v1",
+            challenge,
+            state["session_id"],
+            "ok",
+            "active",
+            "research",
+        )).encode("ascii")
+        return _SandboxHealthResponse({
+            "controller": "secai-sandbox-control",
+            "profile": "research",
+            "profile_state": "active",
+            "proof": hmac.new(
+                state["token"].encode("ascii"),
+                health_message,
+                hashlib.sha256,
+            ).hexdigest(),
+            "protocol_version": 3,
+            "session_id": state["session_id"],
+            "state_proof": hmac.new(
+                state["token"].encode("ascii"),
+                state_message,
+                hashlib.sha256,
+            ).hexdigest(),
+            "state_protocol_version": 1,
+            "status": "ok",
+        })
+
+    monkeypatch.setattr(ui_app.requests, "get", health_response)
+
+    assert ui_app._sandbox_controller_proves_profile(
+        "research",
+        state["session_id"],
+    )
+    assert not ui_app._sandbox_controller_proves_profile(
+        "research",
+        "d" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("protocol_version", 3.0),
+        ("state_protocol_version", 1.0),
+    ],
+)
+def test_sandbox_controller_profile_proof_requires_integer_protocols(
+    tmp_path,
+    monkeypatch,
+    field,
+    invalid_value,
+):
+    import ui.app as ui_app
+
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+
+    def health_response(url, **_kwargs):
+        challenge = url.rsplit("challenge=", 1)[1]
+        health_message = (
+            f"secai-sandbox-control-health:v3:{challenge}"
+        ).encode("ascii")
+        state_message = "\n".join((
+            "secai-sandbox-control-state:v1",
+            challenge,
+            state["session_id"],
+            "ok",
+            "active",
+            "research",
+        )).encode("ascii")
+        payload = {
+            "controller": "secai-sandbox-control",
+            "profile": "research",
+            "profile_state": "active",
+            "proof": hmac.new(
+                state["token"].encode("ascii"),
+                health_message,
+                hashlib.sha256,
+            ).hexdigest(),
+            "protocol_version": 3,
+            "session_id": state["session_id"],
+            "state_proof": hmac.new(
+                state["token"].encode("ascii"),
+                state_message,
+                hashlib.sha256,
+            ).hexdigest(),
+            "state_protocol_version": 1,
+            "status": "ok",
+        }
+        payload[field] = invalid_value
+        return _SandboxHealthResponse(payload)
+
+    monkeypatch.setattr(ui_app.requests, "get", health_response)
+
+    assert not ui_app._sandbox_controller_proves_profile(
+        "research",
+        state["session_id"],
+    )
+
+
+@pytest.mark.parametrize("malformed_payload", [[], 1, None, "invalid"])
+def test_sandbox_controller_profile_proof_rejects_non_object_json(
+    tmp_path,
+    monkeypatch,
+    malformed_payload,
+):
+    import ui.app as ui_app
+
+    state = _write_ready_sandbox_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        ui_app.requests,
+        "get",
+        lambda *_args, **_kwargs: _SandboxHealthResponse(
+            malformed_payload
+        ),
+    )
+
+    assert not ui_app._sandbox_controller_proves_profile(
+        "research",
+        state["session_id"],
+    )
 
 
 class TestHealthAndStatus:
@@ -76,7 +502,7 @@ class TestHealthAndStatus:
         assert data["search_available"] is False
         assert "start --with-search" in data["command"]
 
-    def test_profile_status_infers_full_lab_in_sandbox_when_diffusion_is_live(self, client):
+    def test_profile_status_never_infers_full_lab_from_diffusion(self, client):
         class HealthyResp:
             status_code = 200
 
@@ -85,10 +511,10 @@ class TestHealthAndStatus:
              patch("ui.app.requests.get", return_value=HealthyResp()):
             resp = client.get("/api/profile/status")
 
-        assert resp.status_code == 200
-        assert resp.get_json()["profile"] == "full_lab"
+        assert resp.status_code == 503
+        assert resp.get_json()["profile"] is None
 
-    def test_profile_status_infers_research_in_sandbox_when_online_mode_is_rendered(self, client):
+    def test_profile_status_never_infers_research_from_rendered_mode(self, client):
         import requests as req_lib
 
         with patch("ui.app._is_sandbox_deployment", return_value=True), \
@@ -97,14 +523,30 @@ class TestHealthAndStatus:
              patch("ui.app.load_appliance_config", return_value={"appliance": {"mode": "online-augmented"}}):
             resp = client.get("/api/profile/status")
 
-        assert resp.status_code == 200
-        assert resp.get_json()["profile"] == "research"
+        assert resp.status_code == 503
+        assert resp.get_json()["profile"] is None
+
+    def test_invalid_operator_profile_override_fails_closed(self, client, tmp_path, monkeypatch):
+        import ui.app as ui_app
+
+        override = tmp_path / "profile.yaml"
+        override.write_text("profile: unrestricted\\n", encoding="utf-8")
+        monkeypatch.setattr(ui_app, "PROFILE_OVERRIDE_PATH", str(override))
+
+        response = client.get("/api/profile")
+
+        assert response.status_code == 503
+        payload = response.get_json()
+        assert payload["active"] is None
+        assert payload["locked"] is True
+        assert payload["locked_by"] == "invalid_operator_override"
 
     def test_setup_complete_writes_initialized_marker(self, client, tmp_path, monkeypatch):
         import json
         import ui.app as ui_app
 
-        monkeypatch.setattr(ui_app, "SECURE_AI_ROOT", tmp_path)
+        marker = tmp_path / "ui" / "setup.json"
+        monkeypatch.setattr(ui_app, "SETUP_STATE_PATH", marker)
         with patch("ui.app._read_active_profile", return_value=("offline_private", False)), \
              patch("ui.app.has_chat_model", return_value=True), \
              patch("ui.app._ui_audit.append") as mock_audit:
@@ -112,7 +554,6 @@ class TestHealthAndStatus:
 
         assert resp.status_code == 200
         assert resp.get_json()["redirect"] == "/chat"
-        marker = tmp_path / ".initialized"
         assert marker.exists()
         data = json.loads(marker.read_text(encoding="utf-8"))
         assert data["profile"] == "offline_private"
@@ -121,18 +562,19 @@ class TestHealthAndStatus:
     def test_setup_complete_rejects_invalid_profile(self, client, tmp_path, monkeypatch):
         import ui.app as ui_app
 
-        monkeypatch.setattr(ui_app, "SECURE_AI_ROOT", tmp_path)
+        marker = tmp_path / "ui" / "setup.json"
+        monkeypatch.setattr(ui_app, "SETUP_STATE_PATH", marker)
         resp = client.post("/api/setup/complete", json={"profile": "unknown"})
 
         assert resp.status_code == 400
-        assert not (tmp_path / ".initialized").exists()
+        assert not marker.exists()
 
         with patch("ui.app._read_active_profile", return_value=("offline_private", False)), \
              patch("ui.app.has_chat_model", return_value=False):
             resp = client.post("/api/setup/complete", json={"profile": "offline_private"})
 
         assert resp.status_code == 409
-        assert not (tmp_path / ".initialized").exists()
+        assert not marker.exists()
 
     def test_setup_template_uses_explicit_completion_flow(self):
         templates_dir = Path(__file__).parent.parent / "services" / "ui" / "ui" / "templates"
@@ -149,6 +591,31 @@ class TestHealthAndStatus:
             assert "onsubmit=" not in text
             if "<style" in text:
                 assert "<style nonce=\"{{ csp_nonce }}\"" in text
+
+    def test_sandbox_templates_never_default_unknown_to_offline(self):
+        templates_dir = (
+            Path(__file__).parent.parent
+            / "services"
+            / "ui"
+            / "ui"
+            / "templates"
+        )
+        setup = (templates_dir / "setup.html").read_text(encoding="utf-8")
+        settings = (templates_dir / "settings.html").read_text(
+            encoding="utf-8"
+        )
+        index = (templates_dir / "index.html").read_text(encoding="utf-8")
+
+        assert "var activeProfile = null;" in setup
+        assert 'value="offline_private" checked' not in setup
+        assert "Maximum Privacy will be used" not in setup
+        assert "profile.active || 'offline_private'" not in settings
+        assert "var profile = 'offline_private';" not in index
+        assert "profile is unknown" in setup
+        assert "Repair Sandbox Profile" in setup
+        assert "{profile: target}" in setup
+        assert "badge.textContent = 'unknown'" in settings
+        assert "Repair: " in settings
 
 
 class TestProxyErrorHandling:
@@ -200,7 +667,7 @@ class TestModelImport:
         with patch("ui.app._ui_audit.append") as mock_append, \
              patch("ui.app.QUARANTINE_DIR", tmp_path / "quarantine"), \
              patch(
-                 "werkzeug.datastructures.file_storage.FileStorage.save",
+                 "ui.app._stage_quarantine_stream",
                  side_effect=OSError(errno.ENOSPC, "No space left on device"),
              ):
             resp = client.post("/api/models/import", data=data, content_type="multipart/form-data")
@@ -366,7 +833,7 @@ class TestCatalogDownloads:
                 yield b"def"
 
         with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
-             patch("ui.app.requests.get", return_value=MockResp()), \
+             patch("ui.app._catalog_download_response", return_value=MockResp()), \
              patch("ui.app.QUARANTINE_DIR", tmp_path), \
              patch.dict("ui.app._active_downloads", {}, clear=True):
             ui_app._download_single_file("https://example.com/model.gguf", "model.gguf")
@@ -400,11 +867,10 @@ class TestCatalogDownloads:
             def close(self):
                 return None
 
-        with patch("ui.app._airlock_check_egress", side_effect=[
-            (True, 200, ""),
-            (False, 403, "destination not in allowlist"),
-        ]), \
-             patch("ui.app.requests.get", return_value=RedirectResp()), \
+        with patch(
+             "ui.app._catalog_download_response",
+             side_effect=ValueError("destination not in allowlist"),
+             ), \
              patch("ui.app.QUARANTINE_DIR", tmp_path), \
              patch.dict("ui.app._active_downloads", {}, clear=True):
             with pytest.raises(ValueError, match="allowlist"):
@@ -426,10 +892,11 @@ class TestCatalogDownloads:
 
         class TreeResp:
             status_code = 200
+            headers = {}
 
             def json(self):
                 return [
-                    {"type": "file", "path": "model_index.json", "size": 2, "oid": "418c9b7a22a3c0ebd446fedb702a434b0dd3da99"},
+                    {"type": "file", "path": "model_index.json", "size": 2, "oid": "9e26dfeeb6e641a33dae4961196235bdb965b21b"},
                     {"type": "file", "path": "unet/diffusion_pytorch_model.safetensors", "size": 3, "lfs": {"oid": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}},
                     {"type": "file", "path": "unsafe/pytorch_model.bin", "size": 999},
                     {"type": "file", "path": "../escape.safetensors", "size": 5},
@@ -438,6 +905,9 @@ class TestCatalogDownloads:
 
             def raise_for_status(self):
                 return None
+
+            def iter_content(self, chunk_size=0):
+                yield json.dumps(self.json()).encode("utf-8")
 
         class FileResp:
             status_code = 200
@@ -453,23 +923,54 @@ class TestCatalogDownloads:
             def iter_content(self, chunk_size=0):
                 yield self.payload
 
-        def fake_get(url, *args, **kwargs):
+        def fake_fetch(url, *args, **kwargs):
             if "/api/models/example/diffusion/tree/" in url:
                 return TreeResp()
-            if url.endswith("/api/models/example/diffusion"):
-                return MetaResp()
             if url.endswith("model_index.json"):
                 return FileResp(url, b"{}")
             if url.endswith("unet/diffusion_pytorch_model.safetensors"):
                 return FileResp(url, b"abc")
             raise AssertionError(f"unexpected URL: {url}")
 
+        manifest_payload = ui_app._huggingface_manifest_payload(
+            source_url="https://huggingface.co/example/diffusion",
+            repo_id="example/diffusion",
+            revision="a" * 40,
+            variant=None,
+            files=[
+                {
+                    "path": "model_index.json",
+                    "size": 2,
+                    "oid": "9e26dfeeb6e641a33dae4961196235bdb965b21b",
+                    "oid_type": "git-sha1",
+                    "revision": "a" * 40,
+                },
+                {
+                    "path": "unet/diffusion_pytorch_model.safetensors",
+                    "size": 3,
+                    "oid": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                    "oid_type": "sha256",
+                    "revision": "a" * 40,
+                },
+            ],
+        )
+        catalog_entry = {
+            "expected_revision": "a" * 40,
+            "expected_manifest_sha256": ui_app._canonical_manifest_sha256(
+                manifest_payload
+            ),
+            "expected_size_bytes": 5,
+        }
         with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
-             patch("ui.app.requests.get", side_effect=fake_get), \
+             patch("ui.app._airlock_fetch_response", side_effect=fake_fetch), \
              patch("ui.app.QUARANTINE_DIR", tmp_path), \
              patch.dict("ui.app._active_downloads", {}, clear=True), \
              patch("ui.app.subprocess.run") as mock_run:
-            ui_app._download_diffusion_model("https://huggingface.co/example/diffusion", "diffusion")
+            ui_app._download_diffusion_model(
+                "https://huggingface.co/example/diffusion",
+                "diffusion",
+                catalog_entry=catalog_entry,
+            )
 
         assert (tmp_path / "diffusion" / "model_index.json").read_bytes() == b"{}"
         assert (tmp_path / "diffusion" / "unet" / "diffusion_pytorch_model.safetensors").read_bytes() == b"abc"
@@ -915,7 +1416,22 @@ class TestSandboxUnsupportedFeatures:
 
     def test_sandbox_control_status_proxies_allowlisted_controller(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
-        with patch("ui.app._sandbox_control_request", return_value=({"status": "idle"}, 200)) as mock_control:
+        controller_status = {
+            "available": True,
+            "controller": "secai-sandbox-control",
+            "profile": "research",
+            "profile_state": "active",
+            "protocol_version": 3,
+            "state_protocol_version": 1,
+            "status": "idle",
+        }
+        with patch(
+            "ui.app._read_active_profile",
+            return_value=("research", False),
+        ), patch(
+            "ui.app._sandbox_control_request",
+            return_value=(controller_status, 200),
+        ) as mock_control:
             resp = client.get("/api/sandbox/control/status")
 
         assert resp.status_code == 200
@@ -923,6 +1439,115 @@ class TestSandboxUnsupportedFeatures:
         assert data["status"] == "idle"
         assert "profiles" in data
         mock_control.assert_called_once_with("GET", "/v1/status", timeout=2.0)
+
+    def test_sandbox_control_status_rejects_degraded_controller(
+        self,
+        client,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        degraded = {
+            "available": True,
+            "controller": "secai-sandbox-control",
+            "profile": "unknown",
+            "profile_state": "degraded",
+            "protocol_version": 3,
+            "status": "idle",
+        }
+        with patch(
+            "ui.app._read_active_profile",
+            return_value=("research", False),
+        ), patch(
+            "ui.app._sandbox_control_request",
+            return_value=(degraded, 200),
+        ):
+            response = client.get("/api/sandbox/control/status")
+
+        assert response.status_code == 503
+        assert response.get_json()["available"] is False
+        assert response.get_json()["profile"] is None
+
+    @pytest.mark.parametrize(
+        "protocol_fields",
+        [
+            {
+                "protocol_version": 3.0,
+                "state_protocol_version": 1,
+            },
+            {
+                "protocol_version": 3,
+                "state_protocol_version": 1.0,
+            },
+            {"protocol_version": 3},
+        ],
+    )
+    def test_sandbox_control_status_rejects_inexact_protocol(
+        self,
+        client,
+        monkeypatch,
+        protocol_fields,
+    ):
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        controller_status = {
+            "available": True,
+            "controller": "secai-sandbox-control",
+            "profile": "research",
+            "profile_state": "active",
+            "status": "idle",
+            **protocol_fields,
+        }
+        with patch(
+            "ui.app._read_active_profile",
+            return_value=("research", False),
+        ), patch(
+            "ui.app._sandbox_control_request",
+            return_value=(controller_status, 200),
+        ):
+            response = client.get("/api/sandbox/control/status")
+
+        assert response.status_code == 503
+        assert response.get_json()["available"] is False
+        assert response.get_json()["profile"] is None
+
+    def test_sandbox_control_apply_unknown_requires_explicit_profile(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import ui.app as ui_app
+
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        with patch(
+            "ui.app._read_active_profile",
+            return_value=(ui_app.UNREADY_SANDBOX_PROFILE, False),
+        ), patch("ui.app._sandbox_control_request") as mock_control:
+            response = client.post("/api/sandbox/control/apply", json={})
+
+        assert response.status_code == 503
+        mock_control.assert_not_called()
+
+    def test_sandbox_control_apply_explicit_profile_can_repair_unknown(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import ui.app as ui_app
+
+        monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
+        with patch(
+            "ui.app._read_active_profile",
+            return_value=(ui_app.UNREADY_SANDBOX_PROFILE, False),
+        ), patch(
+            "ui.app._sandbox_control_request",
+            return_value=({"status": "accepted"}, 202),
+        ) as mock_control:
+            response = client.post(
+                "/api/sandbox/control/apply",
+                json={"profile": "research"},
+            )
+
+        assert response.status_code == 202
+        assert mock_control.call_args.kwargs["body"]["profile"] == "research"
 
     def test_sandbox_control_apply_rejects_invalid_profile(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
@@ -1038,7 +1663,10 @@ class TestSandboxUnsupportedFeatures:
             resp = client.post("/api/agent/task/task-123/approve", json={"approve_all": True})
 
         assert resp.status_code == 409
-        assert resp.get_json() == {"ok": False, "status_code": 409}
+        assert resp.get_json() == {
+            "error": "&lt;script&gt;alert(1)&lt;/script&gt;",
+            "task_id": "task-123",
+        }
         assert "<script>" not in resp.get_data(as_text=True)
         mock_append.assert_called_once_with(
             "agent_steps_approve_failed",
@@ -1077,21 +1705,54 @@ class TestModelCatalog:
         lock_path = Path(__file__).parent.parent / "files" / "system" / "etc" / "secure-ai" / "policy" / "models.lock.yaml"
         catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))["models"]
         lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))["models"]
-        lock_hashes = {entry["filename"]: entry["sha256"] for entry in lock}
+        locks_by_filename = {entry["filename"]: entry for entry in lock}
 
         for entry in catalog:
             if entry["type"] != "llm":
                 continue
-            assert entry["expected_sha256"] == lock_hashes[entry["filename"]]
+            trusted = locks_by_filename[entry["filename"]]
+            assert entry["expected_sha256"] == trusted["sha256"]
+            assert entry["expected_revision"] == trusted["source_revision"]
             assert len(entry["expected_sha256"]) == 64
 
-    def test_catalog_ships_only_approved_entries(self):
+    def test_diffusion_catalog_entries_are_pinned_in_directory_lock(self):
+        policy_dir = (
+            Path(__file__).parent.parent
+            / "files"
+            / "system"
+            / "etc"
+            / "secure-ai"
+            / "policy"
+        )
+        catalog = yaml.safe_load(
+            (policy_dir.parent / "model-catalog.yaml").read_text(encoding="utf-8")
+        )["models"]
+        locks = yaml.safe_load(
+            (policy_dir / "diffusion-models.lock.yaml").read_text(
+                encoding="utf-8"
+            )
+        )["directory_models"]
+        locks_by_filename = {entry["filename"]: entry for entry in locks}
+
+        for entry in catalog:
+            if entry["type"] != "diffusion":
+                continue
+            trusted = locks_by_filename[entry["filename"]]
+            assert entry["url"] == trusted["source"]
+            assert entry["expected_revision"] == trusted["revision"]
+            assert (
+                entry["expected_manifest_sha256"]
+                == trusted["manifest_sha256"]
+            )
+            assert entry["expected_size_bytes"] == trusted["total_size_bytes"]
+
+    def test_catalog_ships_only_immutable_pinned_candidates(self):
         catalog_path = Path(__file__).parent.parent / "files" / "system" / "etc" / "secure-ai" / "model-catalog.yaml"
         catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))["models"]
         counts = {"llm": 0, "image": 0, "video": 0}
 
         for entry in catalog:
-            assert entry.get("security_status") == "approved"
+            assert entry.get("security_status") == "pinned-candidate"
             assert not entry.get("blocked")
             category = entry.get("category")
             if category in counts:
@@ -1108,7 +1769,11 @@ models:
   - name: Test Model
     type: llm
     filename: test.gguf
-    url: https://example.com/test.gguf
+    url: https://huggingface.co/example/test/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/test.gguf
+    expected_revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected_size_bytes: 1073741824
+    security_status: pinned-candidate
     size_gb: 1.0
     vram_gb: 2
     description: A test model.
@@ -1121,8 +1786,7 @@ models:
         assert len(catalog) == 1
         assert catalog[0]["name"] == "Test Model"
         assert catalog[0]["filename"] == "test.gguf"
-        # Computed fields added automatically
-        assert catalog[0]["expected_sha256"] == "pin-on-first-download"
+        assert catalog[0]["expected_sha256"] == "a" * 64
         assert catalog[0]["expected_size_bytes"] == int(1.0 * 1024 * 1024 * 1024)
 
     def test_fallback_on_missing_file(self):
@@ -1156,7 +1820,11 @@ models:
   - name: Valid Model
     type: llm
     filename: valid.gguf
-    url: https://example.com/valid.gguf
+    url: https://huggingface.co/example/valid/resolve/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/valid.gguf
+    expected_revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected_size_bytes: 1
+    security_status: pinned-candidate
   - name: Invalid Model
     type: llm
 """
@@ -1210,6 +1878,8 @@ class TestApplianceState:
             assert data["appliance_state"] == "degraded"
             assert data["subsystems"]["attestor"] == "unknown"
             assert data["subsystems"]["integrity_monitor"] == "unknown"
+            assert data["subsystems"]["incidents"]["available"] is False
+            assert data["subsystems"]["incidents"]["status"] == "unavailable"
 
     def test_appliance_state_marks_host_attestation_not_available_in_sandbox(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
@@ -1220,6 +1890,7 @@ class TestApplianceState:
         data = resp.get_json()
         assert data["subsystems"]["attestor"] == "not_available"
         assert data["subsystems"]["integrity_monitor"] == "not_available"
+        assert data["subsystems"]["incidents"]["status"] == "not_available"
         assert data["appliance_state"] == "trusted"
 
 
@@ -1268,10 +1939,9 @@ class TestForensicExportProxy:
         data = resp.get_json()
         assert data["feature"] == "forensic_export"
 
-    def test_forensic_proxy_handles_unreachable(self, client):
-        """503 when incident recorder is unreachable."""
-        with patch("ui.app.requests.get", side_effect=Exception("connection refused")):
-            resp = client.get("/api/forensic/export")
-            assert resp.status_code == 503
-            data = resp.get_json()
-            assert "error" in data
+    def test_forensic_export_requires_root_local_console(self, client):
+        resp = client.get("/api/forensic/export")
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert "root local-console" in data["error"]
+        assert data["command"].startswith("sudo secai-forensic export")

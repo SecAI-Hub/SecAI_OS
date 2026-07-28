@@ -4,7 +4,19 @@ Required branch protection settings for SecAI OS release infrastructure.
 Configure these in GitHub Settings > Branches > Add branch protection rule,
 or use the setup script below.
 
-Last updated: 2026-04-28
+Last updated: 2026-07-27
+
+The canonical repository ruleset is
+[`rulesets/main-and-release.json`](rulesets/main-and-release.json). Applying the
+file is an administrative action and must be reviewed before it replaces or
+updates an active GitHub ruleset.
+
+## `main`
+
+`main` is protected by the canonical ruleset. Changes require a pull request,
+one approval from a code owner, resolution of review threads, and a fresh
+approval after the last push. Force pushes and deletion are denied. The CI
+checks named in the ruleset are mandatory and branches must be up to date.
 
 ---
 
@@ -24,19 +36,26 @@ Last updated: 2026-04-28
 
 ### Required status checks for `release/*`
 
-All 8 of these must pass before a PR can merge into a release branch:
+All required checks in the canonical ruleset must pass before a PR can merge.
+The release-only hardened gate is additionally required for `release/*` and
+`stable`:
 
-1. **Go Build & Test** (`go-build-and-test`) -- Builds and tests all 9 Go services with race detector
-2. **Python Test & Lint** (`python-test`) -- Ruff, bandit, mypy, unit/integration tests, adversarial + M5 acceptance
-3. **Security Regression Tests** (`security-regression`) -- Adversarial tests (Python + Go MCP/policy/incident-recorder)
-4. **Hadolint & Semgrep** (`appsec-lint`) -- Container linting plus repo-owned application security rules
-5. **Dependency Vulnerability Audit** (`dependency-audit`) -- govulncheck + pip-audit with waiver mechanism
-6. **Test Count Drift Check** (`test-count-check`) -- Ensures test counts do not drop below documented floor
-7. **Documentation Validation** (`docs-validation`) -- Broken links, required docs, milestone count consistency, test references
-8. **Release Branch Hardened Gate** (`release-gate`) -- Zero-tolerance bandit, CVE-ID govulncheck waivers, M5 acceptance re-run
+1. **Go Build & Test** (`go-build-and-test`)
+2. **Python Test & Lint** (`python-test`)
+3. **Shell Script Lint** (`shellcheck`)
+4. **Hadolint & Semgrep** (`appsec-lint`)
+5. **Validate YAML configs** (`policy-validate`)
+6. **Image Reference Consistency** (`image-ref-consistency`)
+7. **Verify action, container, and EOL pins** (`check-pins`)
+8. **Supply Chain & SBOM Verification** (`supply-chain-verify`)
+9. **Security Regression Tests** (`security-regression`)
+10. **Test Count Drift Check** (`test-count-check`)
+11. **Dependency Vulnerability Audit** (`dependency-audit`)
+12. **Documentation Validation** (`docs-validation`)
+13. **Release Branch Hardened Gate** (`release-gate`, release/stable only)
 
-The `release-gate` job has `needs:` on all of the above, so configuring it as the sole required check is sufficient.
-However, listing all 8 makes failure diagnosis easier in the GitHub UI.
+Do not configure only the aggregate release gate. Explicit required checks
+prevent a workflow refactor from silently dropping a security job.
 
 ---
 
@@ -48,6 +67,25 @@ Same settings as `release/*`, plus:
 |---------|-------|
 | Restrict who can push | Maintainers only |
 | Require conversation resolution | Yes |
+
+---
+
+## `release` signing environment
+
+Create a GitHub Environment named `release` and configure:
+
+| Setting | Value |
+|---------|-------|
+| Required reviewers | At least 1 maintainer who cannot approve their own run |
+| Prevent self-review | Enabled |
+| Deployment branches/tags | `main`, `release/*`, `stable`, and protected `v*` tags only |
+| Environment secret | `SIGNING_SECRET` |
+
+Remove `SIGNING_SECRET` from repository-level and organization-level Actions
+secrets after the environment secret is confirmed. The unprivileged pull
+request BlueBuild job has only `contents: read`, sets `push: false`, and never
+references this secret. Only the non-PR publish job enters the `release`
+environment and receives package, OIDC, attestation, and signing authority.
 
 ---
 

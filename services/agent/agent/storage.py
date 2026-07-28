@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -74,20 +75,44 @@ class StorageGateway:
         if not self._path_in_scope(norm, cap.readable_paths):
             return {"ok": False, "error": f"path not in readable scope: {norm}"}
 
-        # Existence
-        real = Path(norm)
-        if not real.is_file():
-            return {"ok": False, "error": f"file not found: {norm}"}
-
-        # Size check
-        size = real.stat().st_size
-        if size > max_bytes:
-            return {"ok": False, "error": f"file too large ({size} bytes, max {max_bytes})"}
-
+        descriptor = -1
         try:
-            content = real.read_text(errors="replace")
+            descriptor = self._open_file_no_symlinks(
+                norm,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+            )
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                return {"ok": False, "error": f"file not found: {norm}"}
+            if info.st_nlink != 1:
+                return {"ok": False, "error": "hard-linked files are not readable"}
+            if info.st_size > max_bytes:
+                return {
+                    "ok": False,
+                    "error": f"file too large ({info.st_size} bytes, max {max_bytes})",
+                }
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > max_bytes:
+                return {
+                    "ok": False,
+                    "error": f"file too large (more than {max_bytes} bytes)",
+                }
+            content = raw.decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            return {"ok": False, "error": f"file not found: {norm}"}
         except OSError as exc:
             return {"ok": False, "error": f"read error: {exc}"}
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
         sensitivity = self._classify_sensitivity(content)
 
@@ -106,7 +131,7 @@ class StorageGateway:
             "ok": True,
             "content": content,
             "sensitivity": sensitivity.value,
-            "size": len(content),
+            "size": len(raw),
         }
 
     def write_file(
@@ -139,17 +164,33 @@ class StorageGateway:
         if len(content_bytes) > max_bytes:
             return {"ok": False, "error": f"content too large ({len(content_bytes)} bytes, max {max_bytes})"}
 
-        real = Path(norm)
-
-        # Overwrite protection
-        if real.exists() and not overwrite:
-            return {"ok": False, "error": f"file exists and overwrite=false: {norm}"}
-
+        descriptor = -1
         try:
-            real.parent.mkdir(parents=True, exist_ok=True)
-            real.write_bytes(content_bytes)
+            flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+            if not overwrite:
+                flags |= os.O_EXCL
+            descriptor = self._open_file_no_symlinks(norm, flags, mode=0o600)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                return {"ok": False, "error": "write target is not a regular file"}
+            if info.st_nlink != 1:
+                return {"ok": False, "error": "hard-linked files cannot be overwritten"}
+            if overwrite:
+                os.ftruncate(descriptor, 0)
+            view = memoryview(content_bytes)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short write")
+                view = view[written:]
+            os.fsync(descriptor)
+        except FileExistsError:
+            return {"ok": False, "error": f"file exists and overwrite=false: {norm}"}
         except OSError as exc:
             return {"ok": False, "error": f"write error: {exc}"}
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
         return {"ok": True, "path": norm, "size": len(content_bytes)}
 
@@ -170,22 +211,28 @@ class StorageGateway:
         if not self._path_in_scope(norm, cap.readable_paths):
             return {"ok": False, "error": f"scope not readable: {norm}"}
 
-        real = Path(norm)
-        if not real.is_dir():
-            return {"ok": False, "error": f"not a directory: {norm}"}
-
         files: list[dict[str, object]] = []
+        directory_fd = -1
         try:
-            for entry in sorted(real.iterdir()):
+            directory_fd = self._open_directory_no_symlinks(norm)
+            for name in sorted(os.listdir(directory_fd)):
                 if len(files) >= max_results:
                     break
+                info = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
                 files.append({
-                    "name": entry.name,
-                    "is_dir": entry.is_dir(),
-                    "size": entry.stat().st_size if entry.is_file() else 0,
+                    "name": name,
+                    "is_dir": stat.S_ISDIR(info.st_mode),
+                    "size": info.st_size if stat.S_ISREG(info.st_mode) else 0,
                 })
         except OSError as exc:
             return {"ok": False, "error": f"list error: {exc}"}
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
 
         return {"ok": True, "files": files}
 
@@ -202,16 +249,79 @@ class StorageGateway:
     def _normalise(path: str) -> str:
         """Normalise and resolve a path, blocking traversal and symlink attacks."""
         # Block null bytes first
-        if "\x00" in path:
+        if not isinstance(path, str) or "\x00" in path:
             return "/dev/null"  # safe sentinel that will fail later checks
         # Resolve relative paths, .., AND symlinks to get the real target
         return os.path.realpath(path)
 
     @staticmethod
+    def _open_directory_no_symlinks(path: str) -> int:
+        """Open an absolute directory one component at a time.
+
+        Holding each directory descriptor while opening the next component
+        eliminates path re-resolution and symlink-swap races.
+        """
+        if not os.path.isabs(path):
+            raise OSError("path must be absolute")
+        parts = Path(path).parts
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(os.sep, flags)
+        try:
+            for component in parts[1:]:
+                if component in {"", ".", ".."}:
+                    raise OSError("unsafe path component")
+                next_descriptor = os.open(
+                    component,
+                    flags,
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    @classmethod
+    def _open_file_no_symlinks(
+        cls,
+        path: str,
+        flags: int,
+        *,
+        mode: int = 0o600,
+    ) -> int:
+        parent, name = os.path.split(path)
+        if not parent or name in {"", ".", ".."}:
+            raise OSError("unsafe file path")
+        parent_fd = cls._open_directory_no_symlinks(parent)
+        try:
+            return os.open(
+                name,
+                flags | getattr(os, "O_NOFOLLOW", 0),
+                mode,
+                dir_fd=parent_fd,
+            )
+        finally:
+            os.close(parent_fd)
+
+    @staticmethod
     def _check_blocked(norm_path: str) -> str | None:
         """Return error string if path is in the blocked set."""
         for blocked in _BLOCKED_PATHS:
-            if norm_path == blocked or norm_path.startswith(blocked + "/"):
+            # Policy roots must be canonicalised with the requested path.
+            # macOS maps /etc -> /private/etc and /var -> /private/var; comparing
+            # a realpath only on one side both bypassed deny rules and rejected
+            # legitimate capability scopes.
+            canonical_blocked = os.path.realpath(blocked)
+            if (
+                norm_path == canonical_blocked
+                or norm_path.startswith(canonical_blocked + os.sep)
+            ):
                 return f"path is blocked by policy: {norm_path}"
         return None
 
@@ -222,7 +332,7 @@ class StorageGateway:
             return False
         import fnmatch
         for pattern in allowed:
-            norm_pattern = os.path.normpath(pattern)
+            norm_pattern = StorageGateway._canonicalise_scope_pattern(pattern)
             if fnmatch.fnmatch(norm_path, norm_pattern):
                 return True
             # Also check if path is the directory itself or under it
@@ -230,6 +340,32 @@ class StorageGateway:
             if norm_path == dir_pattern or norm_path.startswith(dir_pattern + os.sep):
                 return True
         return False
+
+    @staticmethod
+    def _canonicalise_scope_pattern(pattern: str) -> str:
+        """Canonicalise the literal prefix of a capability glob.
+
+        ``realpath`` cannot be applied to a complete glob because it treats
+        wildcard characters as literal path components.  Resolve the path up
+        to the first wildcard and then append the normalised glob suffix.
+        """
+        wildcard_positions = [
+            position
+            for token in ("*", "?", "[")
+            if (position := pattern.find(token)) >= 0
+        ]
+        if not wildcard_positions:
+            return os.path.realpath(os.path.normpath(pattern))
+
+        wildcard_at = min(wildcard_positions)
+        separator_at = pattern.rfind(os.sep, 0, wildcard_at)
+        if separator_at < 0:
+            return os.path.normpath(pattern)
+
+        literal_prefix = pattern[:separator_at] or os.sep
+        glob_suffix = pattern[separator_at + 1:]
+        canonical_prefix = os.path.realpath(os.path.normpath(literal_prefix))
+        return os.path.join(canonical_prefix, glob_suffix)
 
     @staticmethod
     def _classify_sensitivity(content: str) -> SensitivityLevel:

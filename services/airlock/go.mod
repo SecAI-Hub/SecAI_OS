@@ -1,4 +1,4 @@
-module github.com/sec_ai/SecAI_OS/services/airlock
+module github.com/SecAI-Hub/airlock
 
 go 1.25
 

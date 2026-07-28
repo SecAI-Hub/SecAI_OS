@@ -9,7 +9,7 @@ models:
     url_prefix: "https://huggingface.co/"
     require_signature: false  # HF does not sign model files; rely on hash pinning
     allowed_formats: ["safetensors", "gguf"]
-    notes: "Pin exact commit hashes in models.lock.yaml"
+    notes: "Pin exact file hashes in models.lock.yaml or canonical directory receipts in diffusion-models.lock.yaml"
 
   - name: "Hugging Face Xet CAS Bridge"
     url_prefix: "https://cas-bridge.xethub.hf.co/"

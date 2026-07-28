@@ -13,7 +13,8 @@ SHELL := /usr/bin/env bash
 IMAGE ?= ghcr.io/secai-hub/secai_os:latest
 
 GO_SERVICES := airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
-               policy-engine runtime-attestor integrity-monitor incident-recorder
+               policy-engine runtime-attestor integrity-monitor incident-recorder \
+               ui-ingress
 
 SCRIPTS_LIBEXEC := $(wildcard files/system/usr/libexec/secure-ai/*.sh)
 SCRIPTS_FILES   := $(wildcard files/scripts/*.sh) $(wildcard .github/scripts/*.sh) \
@@ -46,7 +47,7 @@ sandbox-vex: ## Generate local sandbox OpenVEX document (requires built sandbox 
 test: test-go test-python ## Run all tests (Go + Python)
 
 .PHONY: test-go
-test-go: ## Run Go service tests (all 9 services, -race)
+test-go: ## Run Go service tests (all 10 modules, -race)
 	@for svc in $(GO_SERVICES); do \
 	  echo "=== $${svc} ===" ; \
 	  (cd services/$${svc} && go test -v -race -count=1 ./...) || exit 1 ; \
@@ -62,11 +63,11 @@ shellcheck: ## Lint all shell scripts with shellcheck
 
 .PHONY: hadolint
 hadolint: ## Lint Containerfiles and Dockerfiles with Hadolint
-	.github/scripts/check-hadolint.sh
+	bash .github/scripts/check-hadolint.sh
 
 .PHONY: semgrep
 semgrep: ## Run repo-owned Semgrep security rules
-	.github/scripts/run-semgrep.sh
+	sh .github/scripts/run-semgrep.sh
 
 .PHONY: lint
 lint: shellcheck hadolint semgrep ## Combined lint (shellcheck + hadolint + semgrep + ruff + go vet)

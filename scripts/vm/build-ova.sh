@@ -5,6 +5,7 @@
 # Prerequisites:
 #   - A completed QCOW2 image (run build-qcow2.sh first)
 #   - qemu-img (for format conversion)
+#   - python3 (for strict qemu-img metadata parsing)
 #   - tar (for OVA packaging)
 #
 # Usage:
@@ -14,11 +15,20 @@
 #   secai-os.ova — importable in VirtualBox, VMware Workstation/Fusion, Proxmox
 #
 set -euo pipefail
+export LC_ALL=C
+umask 077
 
 QCOW2_PATH="${1:-./output/secai-os.qcow2}"
 OUTPUT_DIR="${2:-./output}"
 OVA_NAME="secai-os"
 VM_NAME="SecAI-OS"
+
+for tool in cut du mktemp python3 qemu-img stat tar; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "ERROR: required tool not found: $tool" >&2
+        exit 2
+    }
+done
 
 echo "=========================================="
 echo " SecAI OS — OVA Appliance Builder"
@@ -29,13 +39,28 @@ echo "  See README for security implications."
 echo ""
 echo "=========================================="
 
-if [ ! -f "$QCOW2_PATH" ]; then
+if [ -L "$QCOW2_PATH" ] || [ ! -f "$QCOW2_PATH" ]; then
     echo "ERROR: QCOW2 image not found at: ${QCOW2_PATH}"
     echo "Run build-qcow2.sh first."
     exit 1
 fi
+if [ "$(qemu-img info --output=json "$QCOW2_PATH" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin).get("format", ""))')" != "qcow2" ]; then
+    echo "ERROR: input is not a QCOW2 image: ${QCOW2_PATH}" >&2
+    exit 1
+fi
 
+if [ -L "$OUTPUT_DIR" ]; then
+    echo "ERROR: output directory must not be a symlink: ${OUTPUT_DIR}" >&2
+    exit 1
+fi
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR=$(CDPATH='' cd -- "$OUTPUT_DIR" && pwd -P)
+OVA_PATH="${OUTPUT_DIR}/${OVA_NAME}.ova"
+if [ -e "$OVA_PATH" ] || [ -L "$OVA_PATH" ]; then
+    echo "ERROR: refusing to overwrite existing OVA: ${OVA_PATH}" >&2
+    exit 1
+fi
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -89,9 +114,10 @@ use the bare-metal installation method instead.
 GPU passthrough is disabled by default. Enable it in the UI under
 Settings if you have a dedicated GPU passed through to the VM.
 
-Default user: secai (temporary password is set during QCOW2 generation)
-Vault passphrase: temporary passphrase is set during QCOW2 generation
-Change both immediately after first boot.
+Default user: secai (temporary credential is set during local QCOW2 generation)
+Encrypted host state: temporary credential is set during local generation
+Separate data vault: initialize /dev/sda5 from the trusted local console
+Rotate both temporary credentials before handling sensitive data.
 
 Web UI: http://127.0.0.1:8480 (port-forward or access from within VM)</Annotation>
     </AnnotationSection>
@@ -177,14 +203,22 @@ OVFEOF
 echo "[3/3] Packaging OVA..."
 cd "$WORK_DIR"
 # OVA is just a tar with OVF descriptor first
-tar -cf "${OUTPUT_DIR}/${OVA_NAME}.ova" "${OVA_NAME}.ovf" "${OVA_NAME}-disk1.vmdk"
+OVA_TMP=$(mktemp "${OUTPUT_DIR}/.secai-os.ova.XXXXXX")
+tar -cf "$OVA_TMP" "${OVA_NAME}.ovf" "${OVA_NAME}-disk1.vmdk"
+chmod 0600 "$OVA_TMP"
+if ! ln "$OVA_TMP" "$OVA_PATH"; then
+    rm -f -- "$OVA_TMP"
+    echo "ERROR: could not atomically publish ${OVA_PATH}" >&2
+    exit 1
+fi
+rm -f -- "$OVA_TMP"
 cd - >/dev/null
 
-OVA_SIZE=$(du -h "${OUTPUT_DIR}/${OVA_NAME}.ova" | cut -f1)
+OVA_SIZE=$(du -h "$OVA_PATH" | cut -f1)
 echo ""
 echo "=========================================="
 echo " OVA built successfully!"
-echo "  File: ${OUTPUT_DIR}/${OVA_NAME}.ova"
+echo "  File: ${OVA_PATH}"
 echo "  Size: ${OVA_SIZE}"
 echo ""
 echo " Import in VirtualBox:"
@@ -196,4 +230,6 @@ echo ""
 echo " IMPORTANT: Change temporary passwords after first boot!"
 echo "   sudo passwd secai"
 echo "   sudo cryptsetup luksChangeKey /dev/sda4"
+echo "   sudo /usr/libexec/secure-ai/secai-setup-wizard.sh --vault-device /dev/sda5"
+echo " This is a user-specific local image; do not publish it as a generic appliance."
 echo "=========================================="

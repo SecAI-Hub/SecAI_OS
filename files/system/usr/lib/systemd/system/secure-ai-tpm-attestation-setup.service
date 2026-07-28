@@ -1,0 +1,62 @@
+[Unit]
+Description=Secure AI TPM runtime-attestation enrollment
+Requires=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service
+After=local-fs.target secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service
+Before=secure-ai-runtime-attestor.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/secure-ai/secure-tpm-attestation.py setup
+ExecStartPost=/usr/libexec/secure-ai/secure-tpm-attestation.py status
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/sys/firmware/efi
+ReadOnlyPaths=/var/lib/secure-ai/state
+ReadOnlyPaths=/var/lib/secure-ai/logs/boot-verify-last.json
+ReadWritePaths=/var/lib/secure-ai/tpm-attestation
+
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+PrivateNetwork=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+MemoryMax=128M
+CPUQuota=20%
+TasksMax=32
+LimitNOFILE=256
+LimitFSIZE=1048576
+LimitCORE=0
+TimeoutStartSec=120
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

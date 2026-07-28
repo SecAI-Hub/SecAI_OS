@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,23 +14,23 @@ import (
 
 // AuditEntry is a single record in the tamper-evident audit log.
 type AuditEntry struct {
-	Sequence  int64     `json:"sequence"`
-	Timestamp string    `json:"timestamp"`
-	Hash      string    `json:"hash"`
-	PrevHash  string    `json:"prev_hash"`
-	Event     string    `json:"event"`                // evaluate, reload, startup, etc.
-	Decision  *Decision `json:"decision,omitempty"`
+	Sequence  int64        `json:"sequence"`
+	Timestamp string       `json:"timestamp"`
+	Hash      string       `json:"hash"`
+	PrevHash  string       `json:"prev_hash"`
+	Event     string       `json:"event"` // evaluate, reload, startup, etc.
+	Decision  *Decision    `json:"decision,omitempty"`
 	Request   *EvalRequest `json:"request,omitempty"`
-	Detail    string    `json:"detail,omitempty"`
+	Detail    string       `json:"detail,omitempty"`
 }
 
 // DecisionReceipt is a signed proof of a firewall decision.
 type DecisionReceipt struct {
-	Decision  Decision  `json:"decision"`
+	Decision  Decision    `json:"decision"`
 	Request   EvalRequest `json:"request"`
-	Timestamp string    `json:"timestamp"`
-	Hash      string    `json:"hash"`
-	Signature string    `json:"signature,omitempty"`
+	Timestamp string      `json:"timestamp"`
+	Hash      string      `json:"hash"`
+	Signature string      `json:"signature,omitempty"`
 }
 
 // AuditLog provides tamper-evident, hash-chained audit logging.
@@ -56,6 +57,15 @@ func NewAuditLog(path string, privKey ed25519.PrivateKey, maxMem int) (*AuditLog
 	}
 
 	if path != "" {
+		entries, seq, prevHash, err := loadAuditEntries(path, maxMem)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("resume audit log: %w", err)
+		}
+		al.entries = entries
+		al.seq = seq
+		if prevHash != "" {
+			al.prevHash = prevHash
+		}
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("open audit log: %w", err)
@@ -99,7 +109,9 @@ func (al *AuditLog) Record(event string, decision *Decision, request *EvalReques
 	al.prevHash = entry.Hash
 
 	if al.file != nil {
-		json.NewEncoder(al.file).Encode(entry)
+		if err := json.NewEncoder(al.file).Encode(entry); err == nil {
+			_ = al.file.Sync()
+		}
 	}
 
 	al.entries = append(al.entries, entry)
@@ -173,8 +185,17 @@ func (al *AuditLog) Entries(limit int) []AuditEntry {
 // VerifyChain checks the hash chain integrity of audit entries.
 func VerifyChain(entries []AuditEntry) (bool, int) {
 	for i, entry := range entries {
+		if entry.Sequence <= 0 {
+			return false, i
+		}
+		if i > 0 && entry.Sequence != entries[i-1].Sequence+1 {
+			return false, i
+		}
 		expected := computeAuditHash(entry)
 		if entry.Hash != expected {
+			return false, i
+		}
+		if i == 0 && entry.Sequence == 1 && entry.PrevHash != "genesis" {
 			return false, i
 		}
 		if i > 0 && entry.PrevHash != entries[i-1].Hash {
@@ -182,6 +203,43 @@ func VerifyChain(entries []AuditEntry) (bool, int) {
 		}
 	}
 	return true, -1
+}
+
+func loadAuditEntries(path string, maxMem int) ([]AuditEntry, int64, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer f.Close()
+
+	var retained []AuditEntry
+	var previous = "genesis"
+	var sequence int64
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if len(scanner.Bytes()) == 0 {
+			continue
+		}
+		var entry AuditEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			return nil, sequence, previous, fmt.Errorf("invalid JSON at entry %d: %w", sequence+1, err)
+		}
+		if entry.Sequence != sequence+1 || entry.PrevHash != previous ||
+			entry.Hash != computeAuditHash(entry) {
+			return nil, sequence, previous, fmt.Errorf("chain break at entry %d", sequence+1)
+		}
+		sequence = entry.Sequence
+		previous = entry.Hash
+		retained = append(retained, entry)
+		if len(retained) > maxMem {
+			retained = retained[len(retained)-maxMem:]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, sequence, previous, err
+	}
+	return retained, sequence, previous, nil
 }
 
 // computeAuditHash computes the SHA-256 hash for an audit entry.

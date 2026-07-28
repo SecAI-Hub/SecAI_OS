@@ -20,6 +20,12 @@ is_checked_file() {
 }
 
 while IFS= read -r -d '' file; do
+    # `git ls-files --cached` also reports paths deleted in the worktree.
+    # Skip those, and include intended new files so the pre-commit result
+    # matches what CI will inspect after they are added.
+    if [ ! -f "$file" ]; then
+        continue
+    fi
     if ! is_checked_file "$file"; then
         continue
     fi
@@ -27,7 +33,7 @@ while IFS= read -r -d '' file; do
         echo "ERROR: CRLF detected in $file"
         errors=$((errors + 1))
     fi
-done < <(git ls-files -z)
+done < <(git ls-files --cached --others --exclude-standard -z)
 
 if [ "$errors" -gt 0 ]; then
     echo "FAIL: $errors text file(s) contain CRLF line endings"

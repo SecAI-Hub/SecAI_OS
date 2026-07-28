@@ -23,9 +23,11 @@ import (
 
 // TestChain_IntegrityViolation_FreezeAndDisable verifies the complete
 // enforcement chain for an integrity violation:
-//   integrity-monitor → incident-recorder → freeze_agent + disable_airlock + force_vault_relock
+//
+//	integrity-monitor → incident-recorder → freeze_agent + disable_airlock + force_vault_relock
 func TestChain_IntegrityViolation_FreezeAndDisable(t *testing.T) {
 	resetGlobalState(t)
+	containmentExecutor = executeContainment
 
 	// Set up mock target services to receive containment actions.
 	var mu sync.Mutex
@@ -132,9 +134,11 @@ func TestChain_IntegrityViolation_FreezeAndDisable(t *testing.T) {
 
 // TestChain_AttestationFailure_ContainmentDispatched verifies the enforcement
 // chain for an attestation failure reported by the runtime attestor:
-//   runtime-attestor → incident-recorder → freeze_agent + disable_airlock + force_vault_relock
+//
+//	runtime-attestor → incident-recorder → freeze_agent + disable_airlock + force_vault_relock
 func TestChain_AttestationFailure_ContainmentDispatched(t *testing.T) {
 	resetGlobalState(t)
+	containmentExecutor = executeContainment
 
 	var mu sync.Mutex
 	receivedPaths := []string{}
@@ -160,12 +164,12 @@ func TestChain_AttestationFailure_ContainmentDispatched(t *testing.T) {
 		Source:      "runtime-attestor",
 		Description: "TPM2 quote verification failed: PCR mismatch",
 		Evidence: map[string]string{
-			"tpm_available":    "true",
-			"quote_verified":   "false",
-			"state":            "failed",
-			"failure_0":        "PCR 7 mismatch",
-			"secure_boot":      "true",
-			"policy_digest":    "abc123",
+			"tpm_available":     "true",
+			"quote_verified":    "false",
+			"state":             "failed",
+			"failure_0":         "PCR 7 mismatch",
+			"secure_boot":       "true",
+			"policy_digest":     "abc123",
 			"deployment_digest": "def456",
 		},
 	}
@@ -200,9 +204,11 @@ func TestChain_AttestationFailure_ContainmentDispatched(t *testing.T) {
 
 // TestChain_ManifestMismatch_QuarantinesModel verifies that a manifest
 // mismatch triggers model quarantine containment:
-//   integrity-monitor (model) → incident-recorder → quarantine_model + freeze_agent
+//
+//	integrity-monitor (model) → incident-recorder → quarantine_model + freeze_agent
 func TestChain_ManifestMismatch_QuarantinesModel(t *testing.T) {
 	resetGlobalState(t)
+	containmentExecutor = executeContainment
 
 	var mu sync.Mutex
 	receivedActions := make(map[string]string)
@@ -280,11 +286,15 @@ func TestChain_ManifestMismatch_QuarantinesModel(t *testing.T) {
 	}
 }
 
-// TestChain_BearerToken_PropagatedToContainment verifies that the service
-// token is correctly propagated through the entire chain.
+// TestChain_BearerToken_PropagatedToContainment verifies that a source-bound
+// reporter token triggers containment with independent downstream tokens.
 func TestChain_BearerToken_PropagatedToContainment(t *testing.T) {
 	resetGlobalState(t)
-	serviceToken = "chain-test-secret"
+	containmentExecutor = executeContainment
+	canaryReporterToken = "chain-test-secret"
+	containmentTokens = ContainmentTokens{
+		Agent: "agent-secret", Airlock: "airlock-secret", Registry: "registry-secret",
+	}
 
 	var mu sync.Mutex
 	receivedAuth := []string{}
@@ -305,15 +315,15 @@ func TestChain_BearerToken_PropagatedToContainment(t *testing.T) {
 
 	// Report via authenticated HTTP handler.
 	report := IncidentReport{
-		Class:       ClassPromptInjection,
-		Source:      "agent",
-		Description: "Prompt injection detected in user input",
+		Class:       ClassIntegrityViolation,
+		Source:      "canary-tripwire",
+		Description: "Authenticated canary verification failed",
 	}
 	body, _ := json.Marshal(report)
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/report", bytes.NewReader(body))
 	r.Header.Set("Authorization", "Bearer chain-test-secret")
 	w := httptest.NewRecorder()
-	requireServiceToken(handleReport)(w, r)
+	requireReporterToken(handleReport)(w, r)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -324,10 +334,11 @@ func TestChain_BearerToken_PropagatedToContainment(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// All containment calls should carry the bearer token.
+	// Containment uses target-specific credentials, never the recorder's
+	// inbound token.
 	for i, auth := range receivedAuth {
-		if auth != "Bearer chain-test-secret" {
-			t.Errorf("containment call %d: expected Bearer token, got %q", i, auth)
+		if auth == "Bearer chain-test-secret" || auth == "" {
+			t.Errorf("containment call %d used invalid/shared auth: %q", i, auth)
 		}
 	}
 	if len(receivedAuth) == 0 {
@@ -422,7 +433,10 @@ func TestChain_IncidentLifecycle_FullCycle(t *testing.T) {
 		t.Fatalf("expected 1 incident in list, got %d", len(listed))
 	}
 
-	// Step 3: Resolve the incident.
+	// Step 3: Complete the recovery ceremony required by containment.
+	completeRecoveryCeremony(t, recoveryMgr, inc.ID)
+
+	// Step 4: Resolve the incident.
 	resolveBody, _ := json.Marshal(map[string]string{"id": inc.ID})
 	resolveReq := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/resolve", bytes.NewReader(resolveBody))
 	resolveW := httptest.NewRecorder()
@@ -436,7 +450,7 @@ func TestChain_IncidentLifecycle_FullCycle(t *testing.T) {
 		t.Errorf("expected resolved, got %s", resolved.State)
 	}
 
-	// Step 4: Acknowledge.
+	// Step 5: Acknowledge the resolved incident.
 	ackBody, _ := json.Marshal(map[string]string{"id": inc.ID})
 	ackReq := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/acknowledge", bytes.NewReader(ackBody))
 	ackW := httptest.NewRecorder()
@@ -465,6 +479,7 @@ func TestChain_IncidentLifecycle_FullCycle(t *testing.T) {
 // GPU integrity watch anomalies that report model behavior anomalies.
 func TestChain_GPUAnomaly_IncidentAndQuarantine(t *testing.T) {
 	resetGlobalState(t)
+	containmentExecutor = executeContainment
 
 	var mu sync.Mutex
 	quarantineCalled := false
@@ -490,10 +505,10 @@ func TestChain_GPUAnomaly_IncidentAndQuarantine(t *testing.T) {
 		Source:      "gpu-integrity-watch",
 		Description: "Model behavior regression detected: output entropy spike",
 		Evidence: map[string]string{
-			"model_path":      "/var/lib/secure-ai/registry/promoted/model.gguf",
-			"entropy_score":   "0.98",
-			"baseline_score":  "0.42",
-			"gpu_device":      "0000:01:00.0",
+			"model_path":     "/var/lib/secure-ai/registry/promoted/model.gguf",
+			"entropy_score":  "0.98",
+			"baseline_score": "0.42",
+			"gpu_device":     "0000:01:00.0",
 		},
 	}
 	body, _ := json.Marshal(report)

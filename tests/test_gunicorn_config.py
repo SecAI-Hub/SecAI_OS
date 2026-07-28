@@ -122,6 +122,17 @@ class TestOsVmGunicornRuntimeDefaults:
         content = BUILD_SCRIPT.read_text(encoding="utf-8")
         assert '--workers "${GUNICORN_WORKERS:-1}"' in content
 
+    def test_search_wrapper_defaults_to_single_worker(self):
+        content = BUILD_SCRIPT.read_text(encoding="utf-8")
+        search_wrapper = content.split(
+            'cat > "${INSTALL_DIR}/search-mediator" <<\'WRAPPER\'', 1
+        )[1].split("\nWRAPPER", 1)[0]
+        assert "--workers 1" in search_wrapper
+
+    def test_search_unit_forces_single_worker(self):
+        content = _read_unit("secure-ai-search-mediator.service")
+        assert "Environment=GUNICORN_WORKERS=1" in content
+
     def test_diffusion_wrapper_sets_utf8_locale(self):
         content = BUILD_SCRIPT.read_text(encoding="utf-8")
         assert 'export LANG="${LANG:-C.UTF-8}"' in content

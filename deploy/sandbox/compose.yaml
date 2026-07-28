@@ -26,11 +26,15 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8470
       REGISTRY_DIR: /var/lib/secure-ai/registry
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      PROMOTION_STAGING_DIR: /var/lib/secure-ai/promotion-staging
+      SECURE_AI_DEPLOYMENT_MODE: sandbox
+      SERVICE_TOKEN_PATH: /run/secrets/registry.token
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-registry:/var/lib/secure-ai/registry
+      - secai-promotion-staging:/var/lib/secure-ai/promotion-staging
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
     expose:
       - "8470"
     healthcheck:
@@ -50,11 +54,11 @@ services:
       BIND_ADDR: 0.0.0.0:8500
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
       AGENT_POLICY_PATH: /etc/secure-ai/policy/agent.yaml
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      SERVICE_TOKEN_PATH: /run/secrets/policy-engine.token
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/policy-engine.token:/run/secrets/policy-engine.token:ro,z
     expose:
       - "8500"
     healthcheck:
@@ -73,11 +77,11 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8475
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      SERVICE_TOKEN_PATH: /run/secrets/tool-firewall.token
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/tool-firewall.token:/run/secrets/tool-firewall.token:ro,z
     expose:
       - "8475"
     healthcheck:
@@ -96,11 +100,14 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8490
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      SERVICE_TOKEN_PATH: /run/secrets/airlock.token
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/airlock.token:/run/secrets/airlock.token:ro,z
+    networks:
+      - default
+      - egress
     expose:
       - "8490"
     healthcheck:
@@ -113,31 +120,105 @@ services:
 
   quarantine:
     <<: *secai_runtime_defaults
+    group_add:
+      # Read/write claim owner plus credentialless broker read namespace.
+      - "65532"
+      # Job IPC writer; parser workers explicitly drop all supplementary groups.
+      - "65533"
     build:
       context: ../..
       dockerfile: services/quarantine/Dockerfile.sandbox
     depends_on:
       registry:
         condition: service_healthy
+      quarantine-scanner:
+        condition: service_healthy
     environment:
       REGISTRY_URL: http://registry:8470
-      REGISTRY_DIR: /var/lib/secure-ai/registry
-      QUARANTINE_DIR: /var/lib/secure-ai/quarantine
+      QUARANTINE_DIR: /var/lib/secure-ai/quarantine/incoming
+      PROCESSING_DIR: /var/lib/secure-ai/quarantine/processing
+      SCANNER_JOB_DIR: /var/lib/secure-ai/quarantine-scanner-jobs
+      PROMOTION_STAGING_DIR: /var/lib/secure-ai/promotion-staging
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
       AUDIT_LOG_PATH: /var/lib/secure-ai/logs/quarantine-audit.jsonl
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      AUDIT_HMAC_KEY_PATH: /run/secrets/quarantine-audit.token
+      REGISTRY_TOKEN_PATH: /run/secrets/registry.token
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-quarantine:/var/lib/secure-ai/quarantine
+      - secai-quarantine-scanner-jobs:/var/lib/secure-ai/quarantine-scanner-jobs
+      - secai-promotion-staging:/var/lib/secure-ai/promotion-staging
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
+      - ./runtime/credentials/quarantine-audit.token:/run/secrets/quarantine-audit.token:ro,z
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from pathlib import Path; import sys; sys.exit(0 if Path('/var/lib/secure-ai/quarantine').is_dir() and Path('/var/lib/secure-ai/registry').is_dir() else 1)\""]
+      test: ["CMD-SHELL", "python -c \"from pathlib import Path; import sys; sys.exit(0 if Path('/var/lib/secure-ai/quarantine').is_dir() and Path('/var/lib/secure-ai/promotion-staging').is_dir() else 1)\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    stop_grace_period: 30s
+
+  quarantine-scanner:
+    <<: *secai_runtime_defaults
+    user: "0:0"
+    group_add:
+      # Dedicated read/traverse identity for processing claims. The parser
+      # worker drops this before exec and sees the volume through a read-only
+      # mount; the broker itself has no DAC override capability.
+      - "65532"
+      # Shared read-only file identity for watcher/broker job IPC. The parser
+      # worker drops all supplementary groups before it handles an artifact.
+      - "65533"
+    cap_add:
+      - SETGID
+      - SETUID
+    build:
+      context: ../..
+      dockerfile: services/quarantine/Dockerfile.sandbox
+    entrypoint:
+      [
+        "/opt/venv/bin/python",
+        "-m",
+        "quarantine.scanner_broker",
+      ]
+    environment:
+      PROCESSING_DIR: /var/lib/secure-ai/quarantine/processing
+      SCANNER_JOB_DIR: /var/lib/secure-ai/quarantine-scanner-jobs
+      POLICY_PATH: /etc/secure-ai/policy/policy.yaml
+      MODELS_LOCK_PATH: /etc/secure-ai/policy/models.lock.yaml
+      DIFFUSION_MODELS_LOCK_PATH: /etc/secure-ai/policy/diffusion-models.lock.yaml
+      SOURCES_ALLOWLIST_PATH: /etc/secure-ai/policy/sources.allowlist.yaml
+      YARA_RULES_DIR: /app/quarantine/yara_rules
+      LLAMA_SERVER_BIN: /opt/llama-server/llama-server
+      SCANNER_BROKER_WORKER_TIMEOUT: "1740"
+      SCANNER_WORKER_MAX_OUTPUT: "8388608"
+      SCANNER_UID: "65534"
+      SCANNER_GID: "65534"
+    volumes:
+      - type: volume
+        source: secai-quarantine
+        target: /var/lib/secure-ai/quarantine/processing
+        read_only: true
+        volume:
+          subpath: processing
+      - secai-quarantine-scanner-jobs:/var/lib/secure-ai/quarantine-scanner-jobs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+    network_mode: none
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/opt/venv/bin/python",
+          "-c",
+          "from pathlib import Path; import sys; sys.exit(0 if Path('/var/lib/secure-ai/quarantine-scanner-jobs').is_dir() and Path('/etc/secure-ai/policy/policy.yaml').is_file() else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     stop_grace_period: 30s
 
   search-mediator:
@@ -151,16 +232,19 @@ services:
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
       APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
       AUDIT_DIR: /var/lib/secure-ai/logs
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
-      GUNICORN_WORKERS: 2
+      AUDIT_HMAC_KEY_PATH: /run/secrets/search-mediator-audit.token
+      SERVICE_TOKEN_PATH: /run/secrets/search-mediator.token
+      # AuditChain serialization is process-local; keep exactly one writer.
+      GUNICORN_WORKERS: 1
       GUNICORN_THREADS: 2
       GUNICORN_TIMEOUT: 30
       GUNICORN_GRACEFUL_TIMEOUT: 10
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
-      - ./runtime/config:/etc/secure-ai/config:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
+      - secai-logs:/var/lib/secure-ai/logs
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/config:/etc/secure-ai/config:ro,z
+      - ./runtime/credentials/search-mediator.token:/run/secrets/search-mediator.token:ro,z
+      - ./runtime/credentials/search-mediator-audit.token:/run/secrets/search-mediator-audit.token:ro,z
     networks:
       - default
       - search
@@ -187,10 +271,10 @@ services:
       context: ./tor
       dockerfile: Dockerfile
     volumes:
-      - ./search/torrc:/etc/tor/torrc:ro
+      - ./search/torrc:/etc/tor/torrc:ro,z
     networks:
-      - default
       - search
+      - egress
     expose:
       - "9050"
     tmpfs:
@@ -217,7 +301,9 @@ services:
     environment:
       SEARXNG_PORT: "8888"
       SEARXNG_BIND_ADDRESS: "0.0.0.0"
-      SEARXNG_SECRET: "secai-sandbox-local-only-key"
+      SECAI_SEARXNG_SECRET_PATH: /run/secrets/searxng.token
+    volumes:
+      - ./runtime/credentials/searxng.token:/run/secrets/searxng.token:ro,z
     networks:
       - search
     expose:
@@ -250,6 +336,7 @@ services:
         condition: service_healthy
     environment:
       BIND_ADDR: unix:/run/secure-ai/agent.sock
+      SECURE_AI_DEPLOYMENT_MODE: sandbox
       AGENT_POLICY_PATH: /etc/secure-ai/policy/agent.yaml
       VAULT_ROOT: /var/lib/secure-ai/vault
       INFERENCE_URL: http://inference:8465
@@ -257,10 +344,23 @@ services:
       AIRLOCK_URL: http://airlock:8490
       REGISTRY_URL: http://registry:8470
       SEARCH_MEDIATOR_URL: http://search-mediator:8485
+      SERVICE_TOKEN_PATH: /run/secrets/agent.token
+      AUDIT_HMAC_KEY_PATH: /run/secrets/agent-audit.token
+      AGENT_SIGNING_KEY_PATH: /run/secrets/agent-signing.token
+      AGENT_TASK_STATE_PATH: /var/lib/secure-ai/agent/tasks.json
+      AIRLOCK_TOKEN_PATH: /run/secrets/airlock.token
+      TOOL_FIREWALL_TOKEN_PATH: /run/secrets/tool-firewall.token
     volumes:
-      - secai-state:/var/lib/secure-ai
+      - secai-vault:/var/lib/secure-ai/vault
+      - secai-logs:/var/lib/secure-ai/logs
+      - secai-agent-state:/var/lib/secure-ai/agent
       - secai-run:/run/secure-ai
-      - ./runtime/policy:/etc/secure-ai/policy:ro
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
+      - ./runtime/credentials/airlock.token:/run/secrets/airlock.token:ro,z
+      - ./runtime/credentials/tool-firewall.token:/run/secrets/tool-firewall.token:ro,z
+      - ./runtime/credentials/agent-audit.token:/run/secrets/agent-audit.token:ro,z
+      - ./runtime/credentials/agent-signing.token:/run/secrets/agent-signing.token:ro,z
+      - ./runtime/credentials/agent.token:/run/secrets/agent.token:ro,z
     healthcheck:
       test:
         [
@@ -294,7 +394,7 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8480
       SECURE_AI_ROOT: /var/lib/secure-ai
-      QUARANTINE_DIR: /var/lib/secure-ai/quarantine
+      QUARANTINE_DIR: /var/lib/secure-ai/quarantine/incoming
       APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
       REGISTRY_URL: http://registry:8470
       TOOL_FIREWALL_URL: http://tool-firewall:8475
@@ -303,31 +403,65 @@ services:
       AGENT_SOCKET: /run/secure-ai/agent.sock
       INFERENCE_URL: http://inference:8465
       DIFFUSION_URL: http://diffusion:8455
-      SERVICE_TOKEN_PATH: /run/secrets/service-token
+      REGISTRY_TOKEN_PATH: /run/secrets/registry.token
+      TOOL_FIREWALL_TOKEN_PATH: /run/secrets/tool-firewall.token
+      AIRLOCK_TOKEN_PATH: /run/secrets/airlock.token
+      SEARCH_MEDIATOR_TOKEN_PATH: /run/secrets/search-mediator.token
+      DIFFUSION_TOKEN_PATH: /run/secrets/diffusion.token
+      AGENT_TOKEN_PATH: /run/secrets/agent.token
+      SETUP_TOKEN_PATH: /run/secrets/ui-setup.token
+      AUDIT_HMAC_KEY_PATH: /run/secrets/ui-audit.token
+      FLASK_SECRET_KEY_PATH: /run/secrets/ui-flask.token
       SECURE_AI_DEPLOYMENT_MODE: sandbox
       SECURE_AI_DEPLOYMENT_PROVIDER: compose
       SECURE_AI_ASSURANCE_TIER: evaluation
-      SANDBOX_CONTROL_URL: http://host.docker.internal:${SECAI_CONTROL_PORT:-8498}
+      SANDBOX_CONTROL_URL: http://ui-ingress:8498
       SANDBOX_CONTROL_TOKEN_PATH: /run/secrets/sandbox-control-token
+      SANDBOX_READY_GENERATION_PATH: /run/secure-ai-generation-status/ready-generation
+      SANDBOX_READY_SESSION_PATH: /run/secure-ai-generation-status/ready-session
+      SANDBOX_GENERATION_MANIFEST_PATH: /var/lib/secure-ai/state/generation.json
+      SANDBOX_GENERATION_PROFILE_PATH: /var/lib/secure-ai/state/profile.json
+      SECAI_RUNTIME_GENERATION: ${SECAI_RUNTIME_GENERATION:?required}
       GUNICORN_WORKERS: 1
       GUNICORN_THREADS: 4
       GUNICORN_TIMEOUT: 60
       GUNICORN_GRACEFUL_TIMEOUT: 15
       SECURE_AI_TMPDIR: /var/lib/secure-ai/import-staging/.tmp
     volumes:
-      - secai-state:/var/lib/secure-ai
+      - secai-ui-root:/var/lib/secure-ai
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/profile.json:/var/lib/secure-ai/state/profile.json:ro,z
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/generation.json:/var/lib/secure-ai/state/generation.json:ro,z
+      - ./runtime/generation-status:/run/secure-ai-generation-status:ro,z
+      - secai-auth:/var/lib/secure-ai/auth
+      - secai-import-staging:/var/lib/secure-ai/import-staging
+      - secai-logs:/var/lib/secure-ai/logs
+      - type: volume
+        source: secai-quarantine
+        target: /var/lib/secure-ai/quarantine/incoming
+        volume:
+          subpath: incoming
+      - secai-vault:/var/lib/secure-ai/vault
       - secai-run:/run/secure-ai
-      - ./runtime/config:/etc/secure-ai/config:ro
-      - ./runtime/model-catalog.yaml:/etc/secure-ai/model-catalog.yaml:ro
-      - ./runtime/service-token:/run/secrets/service-token:ro
-      - ./runtime/control-token:/run/secrets/sandbox-control-token:ro
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/config:/etc/secure-ai/config:ro,z
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/model-catalog.yaml:/etc/secure-ai/model-catalog.yaml:ro,z
+      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
+      - ./runtime/credentials/tool-firewall.token:/run/secrets/tool-firewall.token:ro,z
+      - ./runtime/credentials/airlock.token:/run/secrets/airlock.token:ro,z
+      - ./runtime/credentials/search-mediator.token:/run/secrets/search-mediator.token:ro,z
+      - ./runtime/credentials/diffusion.token:/run/secrets/diffusion.token:ro,z
+      - ./runtime/credentials/agent.token:/run/secrets/agent.token:ro,z
+      - ./runtime/credentials/ui-setup.token:/run/secrets/ui-setup.token:ro,z
+      - ./runtime/credentials/ui-audit.token:/run/secrets/ui-audit.token:ro,z
+      - ./runtime/credentials/ui-flask.token:/run/secrets/ui-flask.token:ro,z
+      - ./runtime/control-token:/run/secrets/sandbox-control-token:ro,z
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
       - /run/secure-ai-ui:rw,noexec,nosuid,nodev,mode=0770,uid=65534,gid=65534,size=16m
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "${SECAI_UI_PORT:-8480}:8480"
+    networks:
+      - default
+      - ui-link
+    expose:
+      - "8480"
     healthcheck:
       test:
         [
@@ -342,14 +476,43 @@ services:
       start_period: 5s
     stop_grace_period: 20s
 
+  ui-ingress:
+    <<: *secai_runtime_defaults
+    build:
+      context: ../../services/ui-ingress
+      dockerfile: Dockerfile
+    depends_on:
+      ui:
+        condition: service_healthy
+    user: "65534:65534"
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: "0.50"
+    tmpfs: []
+    networks:
+      - ui-link
+      - ingress
+    extra_hosts:
+      - "host.docker.internal:${SECAI_CONTROL_HOST_GATEWAY:-host-gateway}"
+    ports:
+      - "127.0.0.1:${SECAI_UI_PORT:-8480}:8480"
+    expose:
+      - "8498"
+    healthcheck:
+      test: ["CMD", "/ui-ingress", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    stop_grace_period: 15s
+
   inference:
     profiles: ["llm"]
     <<: *secai_runtime_defaults
     build:
       context: ../../services/inference-worker
       dockerfile: Dockerfile
-      args:
-        IMAGE_TAG: ${SECAI_INFERENCE_IMAGE_TAG:-server}
+      target: ${SECAI_INFERENCE_TARGET:-inference-cpu}
     user: "65534:65534"
     environment:
       BIND_ADDR: 0.0.0.0:8465
@@ -358,12 +521,13 @@ services:
       GPU_LAYERS: ${SECAI_GPU_LAYERS:-0}
       REGISTRY_DIR: /var/lib/secure-ai/registry
     volumes:
-      - secai-state:/var/lib/secure-ai:ro
+      - secai-registry:/var/lib/secure-ai/registry:ro
     expose:
       - "8465"
 
   diffusion:
     profiles: ["diffusion"]
+    platform: linux/amd64
     <<: *secai_runtime_defaults
     build:
       context: ../..
@@ -383,11 +547,14 @@ services:
       GUNICORN_GRACEFUL_TIMEOUT: 30
       DIFFUSION_DEVICE_PREFERENCE: ${SECAI_DIFFUSION_DEVICE_PREFERENCE:-auto}
       DIFFUSION_CPU_OFFLOAD: ${SECAI_DIFFUSION_CPU_OFFLOAD:-0}
+      SERVICE_TOKEN_PATH: /run/secrets/diffusion.token
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m
     volumes:
-      - secai-state:/var/lib/secure-ai
-      - ./runtime/config:/etc/secure-ai/config:ro
+      - secai-registry:/var/lib/secure-ai/registry:ro
+      - secai-vault:/var/lib/secure-ai/vault
+      - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/config:/etc/secure-ai/config:ro,z
+      - ./runtime/credentials/diffusion.token:/run/secrets/diffusion.token:ro,z
     expose:
       - "8455"
     healthcheck:
@@ -405,13 +572,46 @@ services:
     stop_grace_period: 45s
 
 volumes:
-  secai-state:
+  secai-registry:
     external: true
-    name: secai-sandbox_secai-state
+    name: secai-sandbox_secai-registry
+  secai-promotion-staging:
+    external: true
+    name: secai-sandbox_secai-promotion-staging
+  secai-quarantine:
+    external: true
+    name: secai-sandbox_secai-quarantine
+  secai-quarantine-scanner-jobs:
+    external: true
+    name: secai-sandbox_secai-quarantine-scanner-jobs
+  secai-vault:
+    external: true
+    name: secai-sandbox_secai-vault
+  secai-logs:
+    external: true
+    name: secai-sandbox_secai-logs
+  secai-auth:
+    external: true
+    name: secai-sandbox_secai-auth
+  secai-import-staging:
+    external: true
+    name: secai-sandbox_secai-import-staging
+  secai-ui-root:
+    external: true
+    name: secai-sandbox_secai-ui-root
+  secai-agent-state:
+    external: true
+    name: secai-sandbox_secai-agent-state
   secai-run:
     external: true
     name: secai-sandbox_secai-run
 
 networks:
+  default:
+    internal: true
+  ui-link:
+    internal: true
   search:
     internal: true
+  ingress: {}
+  egress: {}

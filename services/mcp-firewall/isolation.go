@@ -37,27 +37,27 @@ type TrustEnforcement struct {
 func DefaultTrustEnforcement() map[string]*TrustEnforcement {
 	return map[string]*TrustEnforcement{
 		"trusted": {
-			MaxRatePerMinute: 120,
-			AllowWrite:       true,
-			AllowSensitive:   true,
-			AllowNetwork:     false,
-			RequireApproval:  false,
+			MaxRatePerMinute:  120,
+			AllowWrite:        true,
+			AllowSensitive:    true,
+			AllowNetwork:      false,
+			RequireApproval:   false,
 			AllowedNamespaces: []string{"/var/lib/secure-ai/vault/**"},
 		},
 		"verified": {
-			MaxRatePerMinute: 60,
-			AllowWrite:       true,
-			AllowSensitive:   false,
-			AllowNetwork:     false,
-			RequireApproval:  false,
+			MaxRatePerMinute:  60,
+			AllowWrite:        true,
+			AllowSensitive:    false,
+			AllowNetwork:      false,
+			RequireApproval:   false,
 			AllowedNamespaces: []string{"/var/lib/secure-ai/vault/outputs/**"},
 		},
 		"untrusted": {
-			MaxRatePerMinute: 30,
-			AllowWrite:       false,
-			AllowSensitive:   false,
-			AllowNetwork:     true,
-			RequireApproval:  true,
+			MaxRatePerMinute:  30,
+			AllowWrite:        false,
+			AllowSensitive:    false,
+			AllowNetwork:      true,
+			RequireApproval:   true,
 			AllowedNamespaces: []string{}, // No filesystem access
 		},
 	}

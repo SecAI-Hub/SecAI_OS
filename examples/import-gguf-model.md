@@ -1,6 +1,6 @@
 # Importing a GGUF Model
 
-There are three ways to bring a GGUF model into the Secure AI Appliance.
+There are four ways to work with GGUF models in the Secure AI Appliance.
 Regardless of method, every model passes through the full quarantine pipeline
 before it can be used for inference.
 
@@ -61,13 +61,13 @@ For headless setups or scripting:
 cp /path/to/model.gguf /var/lib/secure-ai/quarantine/incoming/
 ```
 
-2. The quarantine file watcher (systemd path unit) detects the new file
-   and starts the pipeline automatically.
+2. The continuously running quarantine watcher claims the new file and starts
+   the pipeline automatically.
 
 3. Monitor progress via journalctl:
 
 ```bash
-journalctl -u secure-ai-quarantine.service -f
+journalctl -u secure-ai-quarantine-watcher.service -f
 ```
 
 4. Check the result. On success you will see:
@@ -136,22 +136,23 @@ You can override this with the `REGISTRY_URL` environment variable.
 ## What Happens at Each Pipeline Stage
 
 When a file lands in `quarantine/incoming/`, the pipeline executes these
-stages in order. If any stage fails, the model is rejected and moved to
-`quarantine/rejected/` with a report.
+stages in order. If any stage fails, the private snapshot is deleted and a
+bounded failure event is added to the authenticated quarantine audit chain.
+The rejected artifact is not retained as an execution-ready copy.
 
 | Stage | Name              | What It Does                                           |
 |-------|-------------------|--------------------------------------------------------|
 | 1     | Source Policy      | Checks the model's origin against `sources.allowlist.yaml` |
 | 2     | Format Gate        | Validates file headers; rejects pickle, pt, bin formats |
 | 3     | Integrity Check    | Verifies SHA-256 hash against pinned values (if known)  |
-| 4     | Provenance Check   | Validates cosign/signature from the source              |
+| 4     | Provenance Check   | Records source-appropriate signature or immutable revision evidence |
 | 5     | Static Scan        | Runs ModelScan + YARA + fickling + modelaudit + entropy analysis + gguf-guard |
 | 6     | Behavioral Test    | Adversarial prompt suite (LLM models only)              |
 | 7     | Diffusion Deep Scan| Config integrity check (diffusion models only)          |
 
 On success, the pipeline:
-1. Copies the file to the registry directory.
-2. Generates a gguf-guard per-tensor manifest (if enabled).
-3. Generates a structural fingerprint (if enabled).
-4. Calls `POST /v1/model/promote` on the Registry to register the artifact.
-5. The model is now available for inference.
+1. Copies the verified snapshot to an untrusted promotion inbox.
+2. Calls the authenticated registry promotion transaction.
+3. The registry independently copies, hashes, and validates the artifact.
+4. The registry generates the GGUF tensor manifest and structural fingerprint.
+5. Artifact and metadata commit atomically; only then is the model available.

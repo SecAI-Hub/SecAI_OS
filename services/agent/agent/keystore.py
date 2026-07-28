@@ -17,6 +17,7 @@ import hmac
 import logging
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -94,11 +95,21 @@ class SoftwareKeyProvider(KeyProvider):
     baseline provider used when no HSM / TPM2 hardware is available.
     """
 
-    def __init__(self, key_dir: str = "/run/secure-ai",
-                 default_key_path: str | None = None):
+    def __init__(
+        self,
+        key_dir: str = "/run/secure-ai",
+        default_key_path: str | None = None,
+        *,
+        allow_ephemeral: bool | None = None,
+    ):
         self._key_dir = key_dir
         self._default_key_path = default_key_path
         self._keys: dict[str, bytes] = {}
+        if allow_ephemeral is None:
+            allow_ephemeral = (
+                os.getenv("SECAI_ALLOW_EPHEMERAL_AGENT_KEYS", "") == "1"
+            )
+        self._allow_ephemeral = allow_ephemeral
 
     def _key_path(self, key_id: str) -> str:
         if key_id == "default" and self._default_key_path:
@@ -109,19 +120,42 @@ class SoftwareKeyProvider(KeyProvider):
         if key_id in self._keys:
             return self._keys[key_id]
         path = self._key_path(key_id)
+        descriptor = -1
         try:
-            raw = Path(path).read_bytes()
-            if len(raw) >= 32:
-                self._keys[key_id] = raw[:64]
-                log.info("loaded key '%s' from %s", key_id, path)
-                return self._keys[key_id]
-        except OSError:
-            pass
-        # Generate ephemeral key
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or not 32 <= info.st_size <= 4096:
+                raise RuntimeError("signing key has an unsafe type or size")
+            stored = os.read(descriptor, 4097)
+            stripped = stored.strip(b" \t\r\n")
+            raw = (
+                stripped
+                if stripped
+                and all(0x21 <= octet <= 0x7E for octet in stripped)
+                else stored
+            )
+            if len(raw) < 32:
+                raise RuntimeError("signing key must contain at least 32 bytes")
+            self._keys[key_id] = raw[:64]
+            log.info("loaded key '%s' from %s", key_id, path)
+            return self._keys[key_id]
+        except OSError as exc:
+            if not self._allow_ephemeral:
+                raise RuntimeError(f"signing key unavailable at {path}") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if not self._allow_ephemeral:
+            raise RuntimeError(f"signing key unavailable at {path}")
         key = os.urandom(64)
         self._keys[key_id] = key
-        log.warning("generated ephemeral key '%s' (no persistent key at %s)",
-                    key_id, path)
+        log.warning(
+            "generated ephemeral key '%s' under explicit test/development override",
+            key_id,
+        )
         return key
 
     def sign(self, data: bytes, key_id: str = "default") -> bytes:
@@ -147,10 +181,11 @@ class SoftwareKeyProvider(KeyProvider):
             log.info("rotated key '%s' → %s", key_id, path)
             return f"rotated (software, {path})"
         except OSError as exc:
-            # Fall back to in-memory rotation
+            if not self._allow_ephemeral:
+                raise RuntimeError(f"cannot persist rotated key at {path}") from exc
             self._keys[key_id] = new_key
-            log.warning("in-memory rotation for '%s': %s", key_id, exc)
-            return f"rotated (memory-only: {exc})"
+            log.warning("in-memory test/development rotation for '%s'", key_id)
+            return "rotated (memory-only development override)"
 
     def provider_name(self) -> str:
         return "software"
@@ -377,6 +412,9 @@ def create_provider(config: dict[str, Any] | None = None) -> KeyProvider:
     """
     cfg = config or {}
     backend = cfg.get("backend", "auto")
+    environment_key = os.getenv("AGENT_SIGNING_KEY_PATH", "").strip()
+    if environment_key:
+        return SoftwareKeyProvider(default_key_path=environment_key)
 
     # Explicit PKCS#11
     provider: SoftwareKeyProvider | TPM2KeyProvider | PKCS11KeyProvider
@@ -390,7 +428,7 @@ def create_provider(config: dict[str, Any] | None = None) -> KeyProvider:
         if provider._available:
             log.info("using PKCS#11 key provider")
             return provider
-        log.warning("PKCS#11 requested but not available, falling back")
+        raise RuntimeError("PKCS#11 was required but is unavailable")
 
     # Explicit or auto TPM2
     if backend in ("tpm2", "auto"):
@@ -402,6 +440,8 @@ def create_provider(config: dict[str, Any] | None = None) -> KeyProvider:
         if provider._available and backend == "tpm2":
             log.info("using TPM2 key provider")
             return provider
+        if backend == "tpm2":
+            raise RuntimeError("TPM2 was required but is unavailable")
 
     # Software fallback (always works)
     sw_cfg = cfg.get("software", {})

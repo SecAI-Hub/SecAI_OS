@@ -7,10 +7,11 @@
 # This eliminates the need for an unverified pull entirely.
 #
 # Usage:
-#   sudo bash secai-bootstrap.sh --digest sha256:abc123...   # Production (pinned)
-#   sudo bash secai-bootstrap.sh --tag v1.0.0                # Tag-based
-#   sudo bash secai-bootstrap.sh                             # Latest (default)
-#   sudo bash secai-bootstrap.sh --dry-run                   # Verify only
+#   sudo bash secai-bootstrap.sh --tag release-v1.0.0 \
+#     --digest sha256:abc123...                              # Exact release
+#   sudo bash secai-bootstrap.sh --digest sha256:abc123...   # Exact latest channel
+#   sudo bash secai-bootstrap.sh --digest sha256:abc123... \
+#     --dry-run                                              # Verify only
 #   sudo bash secai-bootstrap.sh --help                      # Help
 #
 # What this script does:
@@ -71,21 +72,18 @@ Usage:
   sudo bash secai-bootstrap.sh [OPTIONS]
 
 Options:
-  --digest DIGEST    Pin to a specific image digest (sha256:...)
-                     Production installs should ALWAYS use this.
-  --tag TAG          Use a specific image tag (default: latest)
+  --digest DIGEST    Required exact image digest (sha256:<64 lowercase hex>)
+  --tag TAG          Update channel to bind to that digest (default: latest)
   --dry-run          Verify everything but do not rebase
   --help             Show this help message
 
 Examples:
   # Production install (digest-pinned)
-  sudo bash secai-bootstrap.sh --digest sha256:abc123...
-
-  # Install a specific release
-  sudo bash secai-bootstrap.sh --tag v1.0.0
+  sudo bash secai-bootstrap.sh --tag release-v1.0.0 \
+    --digest sha256:abc123...
 
   # Verify-only (no changes)
-  sudo bash secai-bootstrap.sh --dry-run
+  sudo bash secai-bootstrap.sh --digest sha256:abc123... --dry-run
 USAGE
     exit 0
 }
@@ -110,20 +108,21 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -n "$DIGEST" ] && ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9A-Fa-f]{64}$'; then
-    fatal "--digest must be a sha256 digest in the form sha256:<64 hex characters>"
+if [ -z "$DIGEST" ]; then
+    fatal "--digest is required; mutable tag-only installation is not supported"
+fi
+if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+    fatal "--digest must be a sha256 digest in the form sha256:<64 lowercase hex characters>"
 fi
 
 if ! printf '%s' "$TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
     fatal "--tag contains unsupported characters. Use an OCI tag such as latest or v1.2.3."
 fi
 
-# Build the image reference
-if [ -n "$DIGEST" ]; then
-    IMAGE_REF="${REGISTRY}@${DIGEST}"
-else
-    IMAGE_REF="${REGISTRY}:${TAG}"
-fi
+# Preserve the reviewed update channel while binding the initial deployment to
+# the exact release digest. update-verify.sh resolves that channel but stages
+# and applies only a newly verified repository:tag@sha256 reference.
+IMAGE_REF="${REGISTRY}:${TAG}@${DIGEST}"
 
 # ---------------------------------------------------------------------------
 # Step 1: Prerequisites
@@ -143,8 +142,8 @@ info "rpm-ostree: available"
 FEDORA_VERSION=$(rpm -E %fedora 2>/dev/null || echo "unknown")
 info "Fedora release: ${FEDORA_VERSION}"
 
-if [ "$FEDORA_VERSION" != "unknown" ] && [ "$FEDORA_VERSION" -lt 42 ] 2>/dev/null; then
-    warn "SecAI OS targets Fedora 42+. You are running Fedora ${FEDORA_VERSION}."
+if [ "$FEDORA_VERSION" != "unknown" ] && [ "$FEDORA_VERSION" -lt 44 ] 2>/dev/null; then
+    warn "SecAI OS targets Fedora 44+. You are running Fedora ${FEDORA_VERSION}."
     warn "The install may still work but is not officially supported."
 fi
 

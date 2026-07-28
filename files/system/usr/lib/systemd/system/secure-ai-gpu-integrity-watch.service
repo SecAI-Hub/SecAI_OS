@@ -1,21 +1,24 @@
 [Unit]
 Description=Secure AI GPU Integrity Watch (continuous GPU runtime verification)
-After=secure-ai-registry.service
+After=secure-ai-registry.service secure-ai-credentials.service
+Requires=secure-ai-credentials.service
 Wants=secure-ai-registry.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/gpu-integrity-watch
-Environment=BIND_ADDR=127.0.0.1:8495
-Environment=PROFILE_PATH=/etc/secure-ai/gpu-integrity/default-profile.yaml
-Environment=BASELINE_PATH=/var/lib/secure-ai/gpu-integrity/baseline.yaml
-Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require gpu_integrity_watch -- /usr/libexec/secure-ai/gpu-integrity-watch daemon
+Environment=INTEGRITY_PROFILE=/etc/secure-ai/gpu-integrity/default-profile.yaml
+Environment=AUDIT_LOG=/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/gpu-integrity-watch.token
+LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-gpu-integrity.token
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
-StateDirectory=secure-ai/gpu-integrity
+SupplementaryGroups=secure-ai-logs secure-ai-gpu-integrity
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
@@ -56,9 +59,6 @@ IPAddressAllow=localhost
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21)
-PrivateUsers=yes
-
 # Syscall filtering
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
@@ -81,9 +81,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=5
 

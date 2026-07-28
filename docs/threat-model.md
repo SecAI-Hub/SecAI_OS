@@ -2,7 +2,10 @@
 
 ## Scope
 
-A bootable USB appliance for a single user on a PC with an NVIDIA RTX GPU (or Apple Silicon CPU-only).
+A bootable x86_64 USB appliance for a single user on a PC. GPU acceleration is
+hardware-dependent and must be qualified per release. Apple Silicon is limited
+to explicitly documented sandbox/development runtimes; there is no native
+macOS appliance.
 The system keeps sensitive data local by default and applies defense-in-depth across: boot, updates,
 model acquisition, verification, scanning, runtime isolation, tool gating, and optional online augmentation.
 
@@ -28,7 +31,7 @@ policy. The system does **not** claim "impossible to leak" guarantees, especiall
 
 | Threat | Primary Controls | Residual Risk |
 |--------|-----------------|---------------|
-| **Malicious model / tampered artifact** | Allowlist + hash pinning; signature verification; format gate (deny pickle); quarantine scanning + smoke tests | Advanced backdoors may evade tests; isolation reduces blast radius |
+| **Malicious model / tampered artifact** | Canonical source allowlist; immutable file/directory pins; signature verification where supported; safe-format gate; credentialless no-routable-network scanning; registry-side revalidation | Advanced backdoors may evade static/behavioral tests; runtime isolation remains necessary |
 | **Remote attacker / network adversary** | Runtime offline by default; strict firewall; allowlisted egress only via airlock | If online mode enabled, exposure increases |
 | **Accidental data leakage** (logs, telemetry) | No raw prompt logging; redaction; encrypted vault; minimal audit metadata | User can still attempt to send text online unless blocked by policy |
 | **Supply chain compromise** | Cosign verification for containers; hash pinning for models; Trivy/Grype scanning | Zero-day in upstream dependencies |

@@ -2,7 +2,12 @@
 
 Defines release channels, versioning strategy, and upgrade paths for SecAI OS.
 
-Last updated: 2026-03-14
+Last updated: 2026-07-27
+
+> **Current status:** No existing tag is production-supported. v0.3.0 is a
+> historical evaluation release; `main` is development. A future stable release
+> must complete the evidence gates below before the `stable` or `latest` label
+> is applied.
 
 ---
 
@@ -29,8 +34,8 @@ vMAJOR.MINOR.PATCH
 - **Tag format:** `v1.2.3`
 - **Image tag:** `ghcr.io/secai-hub/secai_os:latest`, `ghcr.io/secai-hub/secai_os:v1.2.3`
 - **Cadence:** As needed (security patches within 72 hours, features monthly)
-- **Quality gate:** Full [production-readiness checklist](production-readiness-checklist.md) must pass; all CI jobs green including `release-gate` (zero-tolerance vuln scanning, CVE-ID govulncheck waivers, M5 acceptance re-verification)
-- **Supply chain:** Cosign-signed, SBOM-attested, SLSA3 provenance
+- **Quality gate:** Full, signed [production-readiness checklist](production-readiness-checklist.md) and release evidence bundle must pass; all CI jobs green, including the hardened release gate
+- **Supply chain:** Canonical image digest bound to the source commit; verified signature identity; non-empty final-artifact SBOMs; signed provenance, checksums, and readiness evidence
 - **Rollback:** Automatic via Greenboot; manual via `rpm-ostree rollback`
 
 This is the only channel recommended for production use.
@@ -60,10 +65,10 @@ This is the only channel recommended for production use.
 ### 1. Prepare Release
 
 ```bash
-# Ensure main is clean
+# Ensure main is clean and protected
 git checkout main && git pull
 
-# Verify CI is green (all 18 jobs must pass, including enforced vulnerability scans)
+# Verify every current required CI job is green
 gh run list --workflow=ci.yml --limit=1
 
 # Check for unexpired vulnerability waivers that may need review
@@ -92,17 +97,20 @@ git push origin v1.2.3-rc.1
 
 - [ ] Install on test hardware or VM
 - [ ] Run `first-boot-check.sh`
+- [ ] Reboot and prove every service remains authenticated
+- [ ] Run negative egress, update-signature, quarantine-boundary, and service-auth tests
+- [ ] Complete encrypted backup/restore and update/rollback drills
 - [ ] Complete [production-readiness checklist](production-readiness-checklist.md)
 - [ ] Verify supply chain: `files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.2.3-rc.1`
 
 ### 4. Promote to Stable
 
 ```bash
-# Tag stable release (same commit as the validated RC)
+# Tag stable release only from the exact validated RC commit and image digest
 git tag -s v1.2.3 -m "Release v1.2.3"
 git push origin v1.2.3
 
-# Update :latest tag
+# Update :latest only after confirming it resolves to the certified digest
 # (Handled automatically by the build workflow)
 ```
 
@@ -119,26 +127,27 @@ git push origin v1.2.3
 
 ### Patch Upgrades (v1.2.2 → v1.2.3)
 
-- **Method:** `rpm-ostree upgrade`
+- **Method:** `update-verify.sh check`, `stage`, then `apply`
 - **Downtime:** Single reboot (~30 seconds)
 - **Risk:** Low (bug fixes only)
-- **Rollback:** `rpm-ostree rollback` (automatic via Greenboot on health failure)
+- **Rollback:** `update-verify.sh rollback` (automatic via Greenboot on health failure)
 - **Data migration:** None required
 
 ### Minor Upgrades (v1.2.x → v1.3.0)
 
-- **Method:** `rpm-ostree upgrade`
+- **Method:** `update-verify.sh check`, `stage`, then `apply`
 - **Downtime:** Single reboot
 - **Risk:** Low-medium (new features, but backward compatible)
-- **Rollback:** `rpm-ostree rollback`
+- **Rollback:** `update-verify.sh rollback`
 - **Data migration:** None required (new features use new config keys with defaults)
 
 ### Major Upgrades (v1.x → v2.0.0)
 
-- **Method:** `rpm-ostree rebase` to new image reference (if needed) + `rpm-ostree upgrade`
+- **Method:** Release-specific migration followed by the verified
+  `update-verify.sh check/stage/apply` gate
 - **Downtime:** Single reboot + potential post-upgrade steps
 - **Risk:** Medium (breaking changes possible)
-- **Rollback:** `rpm-ostree rollback` (pre-upgrade snapshot recommended)
+- **Rollback:** `update-verify.sh rollback` (pre-upgrade snapshot recommended)
 - **Data migration:** Release notes will include explicit migration steps
 - **Pre-upgrade:** Backup incident store and audit logs (see [production-operations.md](production-operations.md))
 
@@ -151,14 +160,20 @@ Each tagged release may include bootable install artifacts in addition to the OC
 | Artifact | Format | Produced By | Required |
 |----------|--------|-------------|----------|
 | OCI image | Container | BlueBuild (build.yml) | Always |
-| ISO | Bootable installer | isogenerator (release.yml) | Always |
+| ISO | Bootable installer | Verified digest + bootc-image-builder (release.yml) | Always |
 | Portable USB | Direct-flash raw.xz | bootc-image-builder raw + xz (release.yml) | Always |
-| QCOW2 | KVM/QEMU disk image | build-qcow2.sh on KVM runner | When `vars.HAS_KVM_RUNNER` is set |
-| OVA | VirtualBox/VMware appliance | build-ova.sh on KVM runner | When `vars.HAS_KVM_RUNNER` is set |
 
-All install artifacts are built from the same OCI image. After installation, the upgrade path is identical regardless of install method: `rpm-ostree upgrade`.
+Every install artifact must be built from the same canonical `repo@sha256:...`
+reference recorded in the release manifest. Tag equality is insufficient.
+After installation, the upgrade path is identical regardless of install
+method: the `update-verify.sh check/stage/apply` gate.
 
-QCOW2 and OVA may be absent in releases if the repository does not have a self-hosted KVM runner configured. The installer ISO and portable USB image are produced on standard GitHub runners.
+QCOW2 and OVA are deliberately local-only outputs. Their encrypted host-state
+credentials are generated for one operator and written to a local mode-`0600`
+file. A KVM runner qualifies the builders and encrypted boot path with
+ephemeral credentials, then destroys the images; it never uploads them as
+release artifacts. The installer ISO and portable USB image are produced on
+standard GitHub runners.
 
 See [release-artifacts.json](release-artifacts.json) for the machine-readable specification of expected artifacts.
 
@@ -183,7 +198,7 @@ Security patches are always released as patch versions (e.g., v1.2.3 → v1.2.4)
 |----------------|-----------------|------------------|-------------|
 | Go standard library | With Go version updates (semi-annual) | Major version only | govulncheck fails CI on unwaived vulns |
 | Go third-party | Monthly or on CVE | Patch/minor: auto; major: manual review | govulncheck fails CI on unwaived vulns |
-| Python packages | Monthly or on CVE | Pinned in `requirements-ci.txt` | pip-audit fails CI on unwaived vulns |
+| Python packages | Monthly or on CVE | Hash-locked in `requirements-ci.lock` and service/runtime locks | pip-audit fails CI on unwaived vulns |
 | System packages (rpm-ostree) | With Fedora rebases | Follow Fedora release cycle | -- |
 | GitHub Actions | Via Dependabot (auto-PR) | Review + CI must pass | check-pins verifies SHA pinning |
 | Container base image | With Fedora Atomic updates | Follow uBlue release cycle | cosign signature verification |

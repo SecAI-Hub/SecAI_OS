@@ -8,6 +8,7 @@ policy engine.
 from __future__ import annotations
 
 import enum
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -83,6 +84,7 @@ class TaskStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RECOVERY_REQUIRED = "recovery_required"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,17 @@ class Budgets:
     files_touched: int = 0
     output_bytes_used: int = 0
     start_time: float = field(default_factory=time.time)
+
+    def limits_dict(self) -> dict[str, int | float]:
+        """Return only immutable limit fields for capability binding."""
+        return {
+            "max_steps": self.max_steps,
+            "max_tool_calls": self.max_tool_calls,
+            "max_tokens": self.max_tokens,
+            "max_wall_clock_seconds": self.max_wall_clock_seconds,
+            "max_files_touched": self.max_files_touched,
+            "max_output_bytes": self.max_output_bytes,
+        }
 
     def check(self) -> str | None:
         """Return an error message if any budget is exceeded, else None."""
@@ -150,6 +163,7 @@ class CapabilityToken:
 
     # User preferences for medium-risk actions: action -> "always" | "ask" | "never"
     configurable_prefs: dict[str, str] = field(default_factory=dict)
+    budget_limits: dict[str, int | float] = field(default_factory=dict)
 
     # --- Cryptographic binding (M40 — Verified Supervisor) ---
     task_id: str = ""              # bound task ID
@@ -175,7 +189,24 @@ class CapabilityToken:
             "nonce": self.nonce,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
+            "configurable_prefs": self.configurable_prefs,
+            "budget_limits": self.budget_limits,
             "signature": self.signature,
+        }
+
+    def to_public_dict(self) -> dict:
+        """Return non-secret capability metadata safe for API responses."""
+        return {
+            "token_id": self.token_id,
+            "allow_online": self.allow_online,
+            "sensitivity_ceiling": self.sensitivity_ceiling.value,
+            "session_mode": self.session_mode.value,
+            "task_id": self.task_id,
+            "intent_hash": self.intent_hash,
+            "policy_digest": self.policy_digest,
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+            "budget_limits": self.budget_limits,
         }
 
     def is_expired(self) -> bool:
@@ -268,15 +299,21 @@ class Task:
     budgets: Budgets = field(default_factory=Budgets)
     created_at: float = field(default_factory=time.time)
     completed_at: float | None = None
+    runtime_lock: Any = field(
+        default_factory=threading.RLock,
+        repr=False,
+        compare=False,
+    )
 
     def to_dict(self) -> dict:
-        return {
-            "task_id": self.task_id,
-            "intent": self.intent,
-            "status": self.status.value,
-            "mode": self.mode.value,
-            "steps": [s.to_dict() for s in self.steps],
-            "capability": self.capability.to_dict() if self.capability else None,
-            "created_at": self.created_at,
-            "completed_at": self.completed_at,
-        }
+        with self.runtime_lock:
+            return {
+                "task_id": self.task_id,
+                "intent": self.intent,
+                "status": self.status.value,
+                "mode": self.mode.value,
+                "steps": [s.to_dict() for s in self.steps],
+                "capability": self.capability.to_public_dict() if self.capability else None,
+                "created_at": self.created_at,
+                "completed_at": self.completed_at,
+            }

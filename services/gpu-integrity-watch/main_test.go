@@ -666,8 +666,8 @@ func TestHTTP_BaselineRequiresToken(t *testing.T) {
 
 func TestCheckToken_Empty(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
-	if !checkToken(req, "") {
-		t.Error("empty expected token should allow all requests")
+	if checkToken(req, "") {
+		t.Error("empty expected token must fail closed")
 	}
 }
 

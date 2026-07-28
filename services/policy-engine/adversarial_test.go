@@ -36,7 +36,7 @@ func TestAdversarial_ApprovalSpoofing(t *testing.T) {
 		Subject: "trust_change",
 		Action:  "allow",
 		Params: map[string]string{
-			"risk_level": "auto",   // Try to downgrade risk
+			"risk_level": "auto", // Try to downgrade risk
 			"spoofed":    "true",
 			"override":   "admin",
 		},

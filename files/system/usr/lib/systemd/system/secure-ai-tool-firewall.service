@@ -1,24 +1,27 @@
 [Unit]
 Description=Secure AI Tool Firewall (policy-gated tool invocation gateway)
-After=secure-ai-registry.service
-Requires=secure-ai-registry.service
+ConditionPathExists=/var/lib/secure-ai/vault/.initialized
+After=secure-ai-vault-mounted.service secure-ai-registry.service secure-ai-credentials.service
+Requires=secure-ai-vault-mounted.service secure-ai-registry.service secure-ai-credentials.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/tool-firewall
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require tool_firewall -- /usr/libexec/secure-ai/tool-firewall
 Environment=BIND_ADDR=127.0.0.1:8475
 Environment=POLICY_PATH=/etc/secure-ai/policy/policy.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/tool-firewall-audit.jsonl
-Environment=SERVICE_TOKEN_PATH=/run/secure-ai/service-token
+Environment=SERVICE_TOKEN_PATH=%d/service-token
+LoadCredential=service-token:/var/lib/secure-ai/credentials/tool-firewall.token
 
 # Filesystem isolation
 DynamicUser=yes
-LogsDirectory=secure-ai
+SupplementaryGroups=secure-ai-logs secure-ai-vault-read
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
 ReadOnlyPaths=/var/lib/secure-ai/vault
 ReadWritePaths=/var/lib/secure-ai/logs
-PrivateNetwork=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
@@ -47,10 +50,11 @@ AmbientCapabilities=
 
 # Namespace restrictions
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET
 
-# Clipboard isolation (M21) — no access to user clipboard
-PrivateUsers=yes
+# Tool firewall accepts traffic from local control-plane peers only.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
 # Syscall filtering
 SystemCallFilter=@system-service
@@ -68,9 +72,6 @@ LimitCORE=0
 # Production timeouts and restart limits
 TimeoutStartSec=30
 TimeoutStopSec=15
-StartLimitInterval=300
-StartLimitBurst=5
-
 Restart=always
 RestartSec=2
 
