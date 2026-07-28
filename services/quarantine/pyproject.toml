@@ -10,7 +10,7 @@ dependencies = [
     "yara-python==4.5.4",
     "pip==26.1.2",
     "setuptools==83.0.0",
-    "wheel==0.46.2",
+    "wheel==0.47.0",
 ]
 
 [project.optional-dependencies]
