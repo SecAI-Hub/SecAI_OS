@@ -11,13 +11,13 @@
 #   inference-vulkan   - Cross-vendor Vulkan compute
 #   inference-intel    - Intel SYCL
 #   inference-openvino - Intel OpenVINO
-FROM ghcr.io/ggml-org/llama.cpp:server@sha256:a576442ad3649c0b5ea74e20ad29a17c121117f32607cfe59ff27cc38066f874 AS server
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:fc26b60b30836e5a12fdb28823a3d4bda984c9386a4b04200c78e5a5150067fb AS server-cuda
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda13@sha256:88b644c232f36da21405f5d849e2d58d333210e79512e7b3efd8bde7345f64fd AS server-cuda13
-FROM ghcr.io/ggml-org/llama.cpp:server-rocm@sha256:36bd528235ab24e0e9d88a11da55a6b142e2f13c1ede97d8f038dc46a5014765 AS server-rocm
-FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@sha256:eddb40b8a348a652c8829ef036df9bbbae537755ae7026bf6d4b403840cd468e AS server-vulkan
-FROM ghcr.io/ggml-org/llama.cpp:server-intel@sha256:ded090960b3a0c4e2be2f47b092a7de276f7a534356675d16cc1280bf7b39c57 AS server-intel
-FROM ghcr.io/ggml-org/llama.cpp:server-openvino@sha256:df1a75e34c7d40dc6d156624dc87258cb9a254cd4f6122461b0b2a6fa31b8ad1 AS server-openvino
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:51570a4f93c5ce81ac6f2b1ea16a58771cfded2adb34241df7e75329b24fe76e AS server
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:4c0ece468721077a8bff8c114f8b0a92a8604ed310c91939fadfe37595a53b9e AS server-cuda
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda13@sha256:d43a80e7b7f5a32c2341d3c981cf8da16be6348a3baed65bf39296d519b3466b AS server-cuda13
+FROM ghcr.io/ggml-org/llama.cpp:server-rocm@sha256:dca144cf7524616bc11a03732296924e652f727f321c4bc125d0b7671138da4b AS server-rocm
+FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@sha256:31bca24d4ecd1ee8decae5d626ae833bb5d34b94ba9d2f308e7cedcd6bb3e247 AS server-vulkan
+FROM ghcr.io/ggml-org/llama.cpp:server-intel@sha256:3e76f50d7217e288b3ce760b0ef12ec9c7b1c7a7cc1dcaf3c4c1732404f33d48 AS server-intel
+FROM ghcr.io/ggml-org/llama.cpp:server-openvino@sha256:0ed9be3e1b943632ebdd26cf6ce7a127b9adaa4cb9335fa654784b15cd33b2b0 AS server-openvino
 
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e AS runtime-base
 
