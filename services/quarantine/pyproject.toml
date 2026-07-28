@@ -17,7 +17,7 @@ dependencies = [
 scan = [
     "modelscan==0.8.8",
     "fickling==0.1.12",
-    "modelaudit==0.2.42",
+    "modelaudit==0.2.52",
 ]
 garak = [
     "garak==0.14.1",
