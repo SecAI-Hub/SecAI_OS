@@ -182,7 +182,7 @@ jobs:
               $destination = Join-Path $env:GITHUB_WORKSPACE $path
               New-Item -ItemType Directory -Force `
                   -Path (Split-Path -Parent $destination) | Out-Null
-              $uri = "https://api.github.com/repos/$env:SEC_AI_REPOSITORY/contents/$path?ref=$env:SEC_AI_REVISION"
+              $uri = "https://api.github.com/repos/${env:SEC_AI_REPOSITORY}/contents/${path}?ref=${env:SEC_AI_REVISION}"
               Invoke-WebRequest -UseBasicParsing -Headers $headers `
                   -Uri $uri -OutFile $destination
           }
