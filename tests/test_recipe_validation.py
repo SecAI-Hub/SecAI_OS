@@ -50,6 +50,7 @@ class TestBuildPreflight:
     """Build preflight scripts must run before package metadata refresh."""
 
     def test_stale_repo_preflight_runs_before_rpm_ostree(self, recipe):
+        assert recipe["labels"]["org.opencontainers.image.revision"] == "${GITHUB_SHA}"
         modules = recipe.get("modules", [])
         assert modules[0]["type"] == "script"
         assert "disable-stale-fedora-repos.sh" in modules[0]["scripts"]

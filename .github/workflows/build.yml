@@ -419,6 +419,7 @@ jobs:
         uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
         with:
           recipe: ${{ matrix.recipe }}
+          cli_version: v0.9.36
           skip_checkout: true
           verify_install: true
           # The action declares this input required, but push=false never signs.
@@ -477,6 +478,7 @@ jobs:
         uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
         with:
           recipe: ${{ matrix.recipe }}
+          cli_version: v0.9.36
           skip_checkout: true
           verify_install: true
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}

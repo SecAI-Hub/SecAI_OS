@@ -200,6 +200,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "SIGNING_SECRET" not in pr_job
         assert 'cosign_private_key: ""' in pr_job
         assert "push: false" in pr_job
+        assert "cli_version: v0.9.36" in pr_job
 
     def test_publish_build_is_non_pr_and_environment_protected(self):
         content = BUILD_YML.read_text(encoding="utf-8")
@@ -212,6 +213,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "id-token: write" in publish_job
         assert "cosign_private_key: ${{ secrets.SIGNING_SECRET }}" in publish_job
         assert "push: true" in publish_job
+        assert "cli_version: v0.9.36" in publish_job
 
     def test_release_image_tag_promotion_is_environment_protected(self):
         content = RELEASE_YML.read_text(encoding="utf-8")
@@ -223,6 +225,8 @@ class TestBuildWorkflowTrustBoundary:
 
     def test_final_image_rejects_build_only_packages(self):
         content = BUILD_YML.read_text(encoding="utf-8")
+        assert '.Labels["org.opencontainers.image.revision"]' in content
+        assert 'if [ "$revision" != "$GITHUB_SHA" ]; then' in content
         assert (
             "for package in golang golang-bin golang-src go-filesystem "
             "cmake cmake-data gcc-c++ gcc git git-core"

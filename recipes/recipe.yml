@@ -3,6 +3,12 @@
 name: secai_os
 description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
 
+# BlueBuild expands environment variables in custom label values. The workflow
+# authenticates GITHUB_SHA against the staged source-prep manifest before this
+# recipe is parsed, binding the published OCI image to its exact source commit.
+labels:
+  org.opencontainers.image.revision: "${GITHUB_SHA}"
+
 # SECURITY: Fedora 44 is the current supported Fedora release as of 2026-07-27.
 # The uBlue base is pinned to the exact manifest resolved from the `44` tag.
 # The scheduled build fails when that tag moves so a reviewed digest refresh is
