@@ -999,6 +999,76 @@ jobs:
           IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
           PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
         run: |
+          set -euo pipefail
+
+          readonly attestation_bundle_dir="${RUNNER_TEMP}/secai-attestation-bundles"
+          if [ -e "$attestation_bundle_dir" ] || [ -L "$attestation_bundle_dir" ]; then
+            echo "::error::Refusing to reuse the attestation bundle directory" >&2
+            exit 1
+          fi
+          install -d -m 0700 "$attestation_bundle_dir"
+
+          retry_cosign_attest() {
+            local predicate_type=$1
+            local predicate_file=$2
+            local bundle_path="${attestation_bundle_dir}/${predicate_type}.sigstore.json"
+            local attempt delay_seconds
+            local -r max_attempts=4
+
+            if [ -e "$bundle_path" ] || [ -L "$bundle_path" ]; then
+              echo "::error::Refusing to overwrite a pre-existing ${predicate_type} attestation bundle" >&2
+              return 1
+            fi
+
+            for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+              if cosign attest --timeout 3m --yes \
+                --type "$predicate_type" \
+                --predicate "$predicate_file" \
+                --bundle "$bundle_path" \
+                --key env://COSIGN_PRIVATE_KEY \
+                "$PINNED_REF"; then
+                if [ ! -f "$bundle_path" ] || [ ! -s "$bundle_path" ] || [ -L "$bundle_path" ]; then
+                  echo "::error::Cosign did not create a safe, non-empty ${predicate_type} attestation bundle" >&2
+                  return 1
+                fi
+                return 0
+              fi
+              if [ -e "$bundle_path" ] || [ -L "$bundle_path" ]; then
+                echo "::error::Cosign failed after creating the ${predicate_type} bundle; refusing an ambiguous re-upload" >&2
+                return 1
+              fi
+              if ((attempt == max_attempts)); then
+                echo "::error::Cosign ${predicate_type} attestation upload failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+              delay_seconds=$((15 * (1 << (attempt - 1))))
+              echo "::warning::Cosign ${predicate_type} attestation upload failed on attempt ${attempt}/${max_attempts}; retrying in ${delay_seconds}s" >&2
+              sleep "$delay_seconds"
+            done
+          }
+
+          retry_cosign_verify() {
+            local predicate_type=$1
+            local attempt delay_seconds
+            local -r max_attempts=4
+
+            for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+              if cosign verify-attestation --timeout 2m \
+                --type "$predicate_type" \
+                --key cosign.pub \
+                "$PINNED_REF" >/dev/null; then
+                return 0
+              fi
+              if ((attempt == max_attempts)); then
+                echo "::error::Cosign ${predicate_type} attestation verification failed after ${max_attempts} attempts" >&2
+                return 1
+              fi
+              delay_seconds=$((5 * (1 << (attempt - 1))))
+              echo "::warning::Cosign ${predicate_type} attestation verification failed on attempt ${attempt}/${max_attempts}; retrying in ${delay_seconds}s" >&2
+              sleep "$delay_seconds"
+            done
+          }
+
           baseline_sha256=$(sha256sum RELEASE_BASELINE.json | awk '{print $1}')
           base_digest=$(
             python3 - <<'PY'
@@ -1043,18 +1113,10 @@ jobs:
               }
             }' > image-provenance.json
 
-          cosign attest --yes --type cyclonedx \
-            --predicate sbom.cdx.json \
-            --key env://COSIGN_PRIVATE_KEY \
-            "$PINNED_REF"
-          cosign attest --yes --type slsaprovenance \
-            --predicate image-provenance.json \
-            --key env://COSIGN_PRIVATE_KEY \
-            "$PINNED_REF"
-          cosign verify-attestation --type cyclonedx --key cosign.pub \
-            "$PINNED_REF" >/dev/null
-          cosign verify-attestation --type slsaprovenance --key cosign.pub \
-            "$PINNED_REF" >/dev/null
+          retry_cosign_attest cyclonedx sbom.cdx.json
+          retry_cosign_attest slsaprovenance image-provenance.json
+          retry_cosign_verify cyclonedx
+          retry_cosign_verify slsaprovenance
 
       - name: Generate GitHub image provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
@@ -1073,6 +1135,7 @@ jobs:
             RELEASE_BASELINE.json
             sbom.cdx.json
             image-provenance.json
+            ${{ runner.temp }}/secai-attestation-bundles/*.sigstore.json
           if-no-files-found: error
           retention-days: 30
 

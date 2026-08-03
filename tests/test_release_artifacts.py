@@ -253,6 +253,20 @@ class TestBuildWorkflowTrustBoundary:
         assert "Remove registry credentials" in evidence_job
         assert "COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}" in evidence_job
         assert "Create and attach image attestations" in evidence_job
+        assert evidence_job.count("local -r max_attempts=4") == 2
+        assert evidence_job.count("retry_cosign_attest ") == 2
+        assert evidence_job.count("retry_cosign_verify ") == 2
+        assert '--bundle "$bundle_path"' in evidence_job
+        assert "refusing an ambiguous re-upload" in evidence_job
+        assert "--timeout 3m --yes" in evidence_job
+        assert "--timeout 2m" in evidence_job
+        assert "--tlog-upload=false" not in evidence_job
+        assert "--insecure-ignore-tlog" not in evidence_job
+        assert evidence_job.count("--key env://COSIGN_PRIVATE_KEY") == 1
+        assert (
+            "${{ runner.temp }}/secai-attestation-bundles/*.sigstore.json"
+            in evidence_job
+        )
         assert "Generate GitHub image provenance" in evidence_job
         assert "Upload image digest artifact" in evidence_job
 
