@@ -205,15 +205,128 @@ class TestBuildWorkflowTrustBoundary:
     def test_publish_build_is_non_pr_and_environment_protected(self):
         content = BUILD_YML.read_text(encoding="utf-8")
         publish_job = content.split("\n  bluebuild_publish:", 1)[1].split(
-            "\n  bluebuild:", 1
+            "\n  release_evidence:", 1
         )[0]
         assert "if: github.event_name != 'pull_request'" in publish_job
         assert "environment: release" in publish_job
         assert "packages: write" in publish_job
-        assert "id-token: write" in publish_job
+        assert "id-token: write" not in publish_job
+        assert "attestations: write" not in publish_job
         assert "cosign_private_key: ${{ secrets.SIGNING_SECRET }}" in publish_job
         assert "push: true" in publish_job
         assert "cli_version: v0.9.36" in publish_job
+        assert "outputs:" in publish_job
+        assert "digest: ${{ steps.digest.outputs.digest }}" in publish_job
+        assert "pinned_ref: ${{ steps.digest.outputs.pinned_ref }}" in publish_job
+        assert "image_ref: ${{ steps.digest.outputs.image_ref }}" in publish_job
+        assert "Generate final-image SBOM" not in publish_job
+        assert "Create and attach image attestations" not in publish_job
+
+    def test_release_evidence_is_fresh_protected_job(self):
+        content = BUILD_YML.read_text(encoding="utf-8")
+        evidence_job = content.split("\n  release_evidence:", 1)[1].split(
+            "\n  bluebuild:", 1
+        )[0]
+        assert "if: github.event_name != 'pull_request'" in evidence_job
+        assert "needs: [bluebuild_publish]" in evidence_job
+        assert "timeout-minutes: 120" in evidence_job
+        assert "environment: release" in evidence_job
+        assert "packages: write" in evidence_job
+        assert "id-token: write" in evidence_job
+        assert "attestations: write" in evidence_job
+        assert (
+            "sigstore/cosign-installer@"
+            "6f9f17788090df1f26f669e9d70d6ae9567deba6" in evidence_job
+        )
+        assert "cosign-release: v3.1.1" in evidence_job
+        assert "REGISTRY_PASSWORD: ${{ github.token }}" in evidence_job
+        assert (
+            'docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
+            in evidence_job
+        )
+        assert "COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}" in evidence_job
+        assert "Create and attach image attestations" in evidence_job
+        assert "Generate GitHub image provenance" in evidence_job
+        assert "Upload image digest artifact" in evidence_job
+
+    def test_release_evidence_reverifies_published_identity(self):
+        content = BUILD_YML.read_text(encoding="utf-8")
+        evidence_job = content.split("\n  release_evidence:", 1)[1].split(
+            "\n  bluebuild:", 1
+        )[0]
+        assert (
+            "IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}"
+            in evidence_job
+        )
+        assert (
+            "IMAGE_REF: ${{ needs.bluebuild_publish.outputs.image_ref }}"
+            in evidence_job
+        )
+        assert (
+            "PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}"
+            in evidence_job
+        )
+        assert (
+            'if [ "$PINNED_REF" != "${IMAGE_REF}@${IMAGE_DIGEST}" ]; then'
+            in evidence_job
+        )
+        assert 'docker pull --platform linux/amd64 "$PINNED_REF"' in evidence_job
+        assert "revision=$(docker image inspect \\" in evidence_job
+        assert '"$PINNED_REF")' in evidence_job
+        assert 'org.opencontainers.image.revision' in evidence_job
+        assert 'if [ "$revision" != "$GITHUB_SHA" ]; then' in evidence_job
+        assert 'cosign verify --key cosign.pub "$PINNED_REF"' in evidence_job
+        assert "skopeo inspect" not in evidence_job
+
+    def test_bootc_sbom_scan_is_pinned_bounded_and_hardened(self):
+        content = BUILD_YML.read_text(encoding="utf-8")
+        evidence_job = content.split("\n  release_evidence:", 1)[1].split(
+            "\n  bluebuild:", 1
+        )[0]
+        assert "SYFT_VERSION: 1.42.3" in evidence_job
+        assert (
+            "SYFT_ARCHIVE_SHA256: "
+            "0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509"
+            in evidence_job
+        )
+        assert "sha256sum --check --strict" in evidence_job
+        assert "timeout-minutes: 90" in evidence_job
+        assert evidence_job.count("--network none") == 3
+        assert evidence_job.count("--read-only") == 3
+        assert "--memory 7g" in evidence_job
+        assert "--memory-swap 7g" in evidence_job
+        assert "--cpus 2" in evidence_job
+        assert "--pids-limit 256" in evidence_job
+        assert evidence_job.count("--cap-drop ALL") == 3
+        assert evidence_job.count("--security-opt no-new-privileges") == 3
+        assert "--env GOMEMLIMIT=6GiB" in evidence_job
+        assert "scan dir:/" in evidence_job
+        assert "--scope squashed" in evidence_job
+        assert "--override-default-catalogers image" in evidence_job
+        assert "--parallelism 1" in evidence_job
+        assert "--source-supplier SecAI-Hub" in evidence_job
+        assert "--select-catalogers" not in evidence_job
+        assert "--exclude './proc/**'" in evidence_job
+        assert "--exclude '/proc/**'" not in evidence_job
+        assert "--output cyclonedx-json > sbom.cdx.json" in evidence_job
+        assert "anchore/sbom-action@" not in evidence_job
+        assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in evidence_job
+        assert 'if [ "$component_count" -lt 1000 ]; then' in evidence_job
+        assert 'startsWith("pkg:rpm/")' not in evidence_job
+        assert 'startswith("pkg:rpm/")' in evidence_job
+        assert 'startswith("pkg:pypi/")' in evidence_job
+
+    def test_bluebuild_gate_requires_non_pr_release_evidence(self):
+        content = BUILD_YML.read_text(encoding="utf-8")
+        gate_job = content.split("\n  bluebuild:", 1)[1].split(
+            "\n  smoke-test:", 1
+        )[0]
+        assert (
+            "needs: [bluebuild_pr, bluebuild_publish, release_evidence]" in gate_job
+        )
+        assert "needs.bluebuild_pr.result == 'success'" in gate_job
+        assert "needs.bluebuild_publish.result == 'success'" in gate_job
+        assert "needs.release_evidence.result == 'success'" in gate_job
 
     def test_release_image_tag_promotion_is_environment_protected(self):
         content = RELEASE_YML.read_text(encoding="utf-8")
@@ -301,6 +414,10 @@ class TestCiWorkflowStructure:
         content = _read_ci_yml()
         assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
         assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
+        assert (
+            'for keyword in "SYFT_ARCHIVE_SHA256" "cosign attest" "cyclonedx"; do'
+            in content
+        )
 
     def test_ci_govulncheck_install_is_pinned(self):
         content = _read_ci_yml()

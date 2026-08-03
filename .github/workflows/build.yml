@@ -436,11 +436,13 @@ jobs:
     needs: [source-prep]
     runs-on: ubuntu-latest
     environment: release
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+      pinned_ref: ${{ steps.digest.outputs.pinned_ref }}
+      image_ref: ${{ steps.digest.outputs.image_ref }}
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -525,35 +527,184 @@ jobs:
             echo "Pinned image: \`${pinned_ref}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate final-image SBOM
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+  release_evidence:
+    name: "Stage 3: Release Evidence and Attestations"
+    if: github.event_name != 'pull_request'
+    needs: [bluebuild_publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          image: ${{ steps.digest.outputs.pinned_ref }}
-          format: cyclonedx-json
-          output-file: sbom.cdx.json
-          upload-artifact: false
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1
+
+      - name: Authenticate to the image registry
+        env:
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_PASSWORD" |
+            docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Reverify published image identity
+        env:
+          IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
+          IMAGE_REF: ${{ needs.bluebuild_publish.outputs.image_ref }}
+          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Build job returned a non-canonical image digest"
+            exit 1
+          fi
+          if [ "$PINNED_REF" != "${IMAGE_REF}@${IMAGE_DIGEST}" ]; then
+            echo "::error::Build job returned an inconsistent pinned image reference"
+            exit 1
+          fi
+
+          cosign verify --key cosign.pub "$PINNED_REF" >/dev/null
+          docker pull --platform linux/amd64 "$PINNED_REF"
+          revision=$(docker image inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "$PINNED_REF")
+          if [ "$revision" != "$GITHUB_SHA" ]; then
+            echo "::error::Published image revision is not ${GITHUB_SHA}"
+            exit 1
+          fi
+          printf '%s\n' "$IMAGE_DIGEST" > IMAGE_DIGEST
+          printf '%s\n' "$PINNED_REF" > IMAGE_REF_PINNED
+
+      - name: Download and verify pinned Syft
+        env:
+          SYFT_ARCHIVE_SHA256: 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
+          SYFT_VERSION: 1.42.3
+        run: |
+          set -euo pipefail
+          syft_dir="${RUNNER_TEMP}/secai-syft"
+          syft_archive="${RUNNER_TEMP}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$syft_dir"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 \
+            --retry-all-errors --retry-delay 2 \
+            -o "$syft_archive" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SYFT_ARCHIVE_SHA256" "$syft_archive" |
+            sha256sum --check --strict
+          tar --extract --gzip --file "$syft_archive" \
+            --directory "$syft_dir" --no-same-owner --no-same-permissions syft
+          test -f "$syft_dir/syft"
+          test ! -L "$syft_dir/syft"
+          chmod 0555 "$syft_dir/syft"
+          "$syft_dir/syft" version -o json |
+            jq -e --arg version "$SYFT_VERSION" \
+              '.version == $version and .platform == "linux/amd64"' >/dev/null
+          echo "SYFT_DIR=${syft_dir}" >> "$GITHUB_ENV"
+
+      - name: Generate final-image SBOM from squashed root
+        timeout-minutes: 90
+        env:
+          IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
+          IMAGE_REF: ${{ needs.bluebuild_publish.outputs.image_ref }}
+          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
+        run: |
+          set -euo pipefail
+          umask 077
+          docker run --rm \
+            --platform linux/amd64 \
+            --network none \
+            --read-only \
+            --memory 7g \
+            --memory-swap 7g \
+            --cpus 2 \
+            --pids-limit 256 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
+            --mount "type=bind,source=${SYFT_DIR},target=/run/secai-sbom-scanner,readonly" \
+            --env GOMEMLIMIT=6GiB \
+            --env GOMAXPROCS=2 \
+            --env HOME=/tmp \
+            --env TMPDIR=/tmp \
+            --env XDG_CACHE_HOME=/tmp/syft-cache \
+            --env SYFT_CACHE_DIR=/tmp/syft-cache \
+            --env SYFT_CHECK_FOR_APP_UPDATE=false \
+            --entrypoint /run/secai-sbom-scanner/syft \
+            "$PINNED_REF" \
+            scan dir:/ \
+            --scope squashed \
+            --override-default-catalogers image \
+            --parallelism 1 \
+            --source-name "$IMAGE_REF" \
+            --source-version "$IMAGE_DIGEST" \
+            --source-supplier SecAI-Hub \
+            --exclude './proc/**' \
+            --exclude './sys/**' \
+            --exclude './dev/**' \
+            --exclude './run/**' \
+            --exclude './tmp/**' \
+            --exclude './etc/hosts' \
+            --exclude './etc/hostname' \
+            --exclude './etc/resolv.conf' \
+            --output cyclonedx-json > sbom.cdx.json
+          test -s sbom.cdx.json
 
       - name: Validate final-image SBOM
-        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
+          IMAGE_REF: ${{ needs.bluebuild_publish.outputs.image_ref }}
         run: |
+          set -euo pipefail
           component_count=$(jq -er '(.components // []) | length' sbom.cdx.json)
-          if [ "$component_count" -lt 100 ]; then
+          if [ "$component_count" -lt 1000 ]; then
             echo "::error::Final-image SBOM is implausibly small (${component_count} components)"
             exit 1
           fi
-          jq -e '.bomFormat == "CycloneDX" and (.metadata.component.name | length > 0)' \
+          jq -e \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg image_ref "$IMAGE_REF" \
+            '.bomFormat == "CycloneDX"
+             and .metadata.component.name == $image_ref
+             and .metadata.component.version == $image_digest
+             and .metadata.component.type == "file"
+             and .metadata.component.supplier.name == "SecAI-Hub"
+             and any(.metadata.tools.components[]?;
+               .name == "syft" and .version == "1.42.3")
+             and any(.components[]?; (.purl // "") | startswith("pkg:rpm/"))
+             and any(.components[]?; (.purl // "") | startswith("pkg:pypi/"))' \
             sbom.cdx.json >/dev/null
 
       - name: Extract release-bound integrity baseline
-        if: github.event_name != 'pull_request'
         env:
-          PINNED_REF: ${{ steps.digest.outputs.pinned_ref }}
+          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
         run: |
           docker pull "$PINNED_REF"
-          docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c \
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --entrypoint /bin/bash "$PINNED_REF" -c \
             'rpm -q cosign && command -v cosign >/dev/null && cosign version'
-          docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c '
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --entrypoint /bin/bash "$PINNED_REF" -c '
             for package in golang golang-bin golang-src go-filesystem cmake cmake-data gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
               if rpm -q --quiet -- "$package"; then
                 echo "FATAL: build-only package remains in final image: $package" >&2
@@ -594,11 +745,10 @@ jobs:
             RELEASE_BASELINE.json >/dev/null
 
       - name: Create and attach image attestations
-        if: github.event_name != 'pull_request'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
-          PINNED_REF: ${{ steps.digest.outputs.pinned_ref }}
+          IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
+          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
         run: |
           baseline_sha256=$(sha256sum RELEASE_BASELINE.json | awk '{print $1}')
           base_digest=$(
@@ -658,15 +808,13 @@ jobs:
             "$PINNED_REF" >/dev/null
 
       - name: Generate GitHub image provenance
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ${{ steps.digest.outputs.image_ref }}
-          subject-digest: ${{ steps.digest.outputs.digest }}
+          subject-name: ${{ needs.bluebuild_publish.outputs.image_ref }}
+          subject-digest: ${{ needs.bluebuild_publish.outputs.digest }}
           push-to-registry: true
 
       - name: Upload image digest artifact
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-digest
@@ -686,8 +834,9 @@ jobs:
       ((github.event_name == 'pull_request' &&
         needs.bluebuild_pr.result == 'success') ||
        (github.event_name != 'pull_request' &&
-        needs.bluebuild_publish.result == 'success'))
-    needs: [bluebuild_pr, bluebuild_publish]
+        needs.bluebuild_publish.result == 'success' &&
+        needs.release_evidence.result == 'success'))
+    needs: [bluebuild_pr, bluebuild_publish, release_evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: read
