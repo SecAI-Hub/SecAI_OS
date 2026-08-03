@@ -51,5 +51,4 @@ output
 # Developer and generated artifacts not required by sandbox images.
 tests
 docs
-.bluebuild-scripts_*
 Containerfile

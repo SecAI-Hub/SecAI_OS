@@ -135,6 +135,8 @@ def test_restore_preserves_colon_filename_and_replaces_stale_tree(tmp_path: Path
     assert "find vendor/wheels -mindepth 1 -maxdepth 1 -type f -delete" in workflow
     assert "source-prep-bundle/source-prep.tar.gz" in workflow
     assert "            upstreams/\n" not in workflow
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    assert ".bluebuild-scripts_*" not in dockerignore.splitlines()
 
 
 def test_restore_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
