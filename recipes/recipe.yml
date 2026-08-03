@@ -164,7 +164,6 @@ modules:
         - secure-ai-mcp-firewall.service
         - secure-ai-boot-kargs.service
         - greenboot-healthcheck.service
-        - greenboot-task-runner.service
         - nftables.service
         - secure-ai-firstboot.service
         - run-secure\x2dai-tmp.mount

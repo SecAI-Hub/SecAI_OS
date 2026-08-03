@@ -404,3 +404,6 @@ class TestRecipeConfig:
         systemd_module = next(m for m in recipe["modules"] if m.get("type") == "systemd")
         enabled = systemd_module["system"]["enabled"]
         assert "greenboot-healthcheck.service" in enabled
+        # Fedora 44 greenboot 0.16.3 no longer ships the legacy task-runner
+        # unit; enabling it makes the immutable image build fail closed.
+        assert "greenboot-task-runner.service" not in enabled
