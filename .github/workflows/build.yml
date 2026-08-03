@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      bundle_sha256: ${{ steps.package.outputs.bundle_sha256 }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -126,7 +128,7 @@ jobs:
       - name: Materialize Python wheelhouse
         run: |
           mkdir -p vendor/wheels
-          find vendor/wheels -maxdepth 1 -type f -name '*.whl' -delete
+          find vendor/wheels -mindepth 1 -maxdepth 1 -type f -delete
           python3 -m pip download \
             --dest vendor/wheels \
             --require-hashes \
@@ -244,7 +246,9 @@ jobs:
           python3 -c "
           import json, hashlib, os
           from pathlib import Path
-          from datetime import datetime
+          from datetime import datetime, timezone
+
+          import yaml
 
           def digest(path):
               with open(path, 'rb') as handle:
@@ -252,7 +256,7 @@ jobs:
 
           manifest = {
               'schema_version': 1,
-              'timestamp': datetime.utcnow().isoformat() + 'Z',
+              'timestamp': datetime.now(timezone.utc).isoformat(),
               'commit_sha': os.environ.get('GITHUB_SHA', 'unknown'),
               'llama_cpp_version': os.environ.get('LLAMA_CPP_VERSION', 'unknown'),
               'llama_cpp_tarball_sha256': os.environ.get('TARBALL_SHA256', 'unknown'),
@@ -276,6 +280,21 @@ jobs:
           manifest['upstreams_lock_digest'] = digest(required_files[2])
           manifest['wheel_count'] = len(wheel_lines)
           manifest['application_dependency_mode'] = 'staged-offline'
+          with required_files[2].open(encoding='utf-8') as handle:
+              upstream_lock = yaml.safe_load(handle)
+          manifest['upstream_paths'] = sorted(
+              str(entry['local_path'])
+              for entry in upstream_lock.get('upstreams', {}).values()
+          )
+          if not manifest['upstream_paths']:
+              raise SystemExit('upstream source lock contains no materialized paths')
+          manifest['go_vendor_paths'] = sorted(
+              path.as_posix()
+              for path in Path('services').glob('*/vendor')
+              if path.is_dir() and not path.is_symlink()
+          )
+          if not manifest['go_vendor_paths']:
+              raise SystemExit('source preparation produced no Go vendor trees')
 
           with open('.source-prep/SOURCE_PREP_MANIFEST.json', 'w') as f:
               json.dump(manifest, f, indent=2)
@@ -285,17 +304,72 @@ jobs:
           print(json.dumps(manifest, indent=2))
           "
 
+      - name: Package verified source-prep inputs
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t go_vendor_paths < <(
+            find services -mindepth 2 -maxdepth 2 -type d -name vendor -print0 |
+              sort -z
+          )
+          if [ "${#go_vendor_paths[@]}" -eq 0 ]; then
+            echo "::error::Source preparation produced no Go vendor trees"
+            exit 1
+          fi
+
+          archive_paths=(
+            .source-prep
+            .upstreams.lock.yaml
+            upstreams
+            vendor/wheels
+            "${go_vendor_paths[@]}"
+          )
+          for path in "${archive_paths[@]}"; do
+            if [ ! -e "$path" ] || [ -L "$path" ]; then
+              echo "::error::Unsafe or missing source-prep root: ${path}"
+              exit 1
+            fi
+          done
+
+          bundle_dir="${RUNNER_TEMP}/source-prep-bundle"
+          mkdir -p "$bundle_dir"
+          bundle_path="${bundle_dir}/source-prep.tar.gz"
+          printf '%s\0' "${archive_paths[@]}" |
+            tar \
+              --create \
+              --gzip \
+              --file "$bundle_path" \
+              --sort=name \
+              --mtime='UTC 1970-01-01' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              --hard-dereference \
+              --null \
+              --verbatim-files-from \
+              --files-from=-
+          test -s "$bundle_path"
+          tar --list --gzip --file "$bundle_path" >/dev/null
+
+          bundle_sha256=$(sha256sum "$bundle_path" | awk '{print $1}')
+          if ! [[ "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to calculate the source-prep bundle digest"
+            exit 1
+          fi
+          printf '%s  source-prep.tar.gz\n' "$bundle_sha256" > \
+            "${bundle_path}.sha256"
+          echo "bundle_sha256=${bundle_sha256}" >> "$GITHUB_OUTPUT"
+
       - name: Upload staged artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-prep
           path: |
-            .source-prep/
-            .upstreams.lock.yaml
-            upstreams/
-            vendor/wheels/
-            services/*/vendor/
+            ${{ runner.temp }}/source-prep-bundle/source-prep.tar.gz
+            ${{ runner.temp }}/source-prep-bundle/source-prep.tar.gz.sha256
           if-no-files-found: error
+          compression-level: 0
           retention-days: 1
 
   bluebuild_pr:
@@ -315,11 +389,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Download verified source-prep inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: source-prep
-          path: .
+          path: ${{ runner.temp }}/source-prep-download
+
+      - name: Verify and restore external source tree
+        env:
+          EXPECTED_SOURCE_PREP_SHA256: ${{ needs.source-prep.outputs.bundle_sha256 }}
+          SOURCE_PREP_ARCHIVE: ${{ runner.temp }}/source-prep-download/source-prep.tar.gz
+          SOURCE_PREP_CHECKSUM: ${{ runner.temp }}/source-prep-download/source-prep.tar.gz.sha256
+        run: >-
+          python3 .github/scripts/restore-source-prep.py
+          --archive "$SOURCE_PREP_ARCHIVE"
+          --checksum "$SOURCE_PREP_CHECKSUM"
 
       - name: Build Custom Image Without Publishing
         uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
@@ -358,11 +446,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Download verified source-prep inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: source-prep
-          path: .
+          path: ${{ runner.temp }}/source-prep-download
+
+      - name: Verify and restore external source tree
+        env:
+          EXPECTED_SOURCE_PREP_SHA256: ${{ needs.source-prep.outputs.bundle_sha256 }}
+          SOURCE_PREP_ARCHIVE: ${{ runner.temp }}/source-prep-download/source-prep.tar.gz
+          SOURCE_PREP_CHECKSUM: ${{ runner.temp }}/source-prep-download/source-prep.tar.gz.sha256
+        run: >-
+          python3 .github/scripts/restore-source-prep.py
+          --archive "$SOURCE_PREP_ARCHIVE"
+          --checksum "$SOURCE_PREP_CHECKSUM"
 
       - name: Build Custom Image
         id: build
