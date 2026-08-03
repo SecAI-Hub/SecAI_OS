@@ -137,6 +137,7 @@ def test_restore_preserves_colon_filename_and_replaces_stale_tree(tmp_path: Path
     assert "            upstreams/\n" not in workflow
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert ".bluebuild-scripts_*" not in dockerignore.splitlines()
+    assert os.access(REPO_ROOT / "files/scripts/build-services.sh", os.X_OK)
 
 
 def test_restore_rejects_archive_checksum_mismatch(tmp_path: Path) -> None:
