@@ -436,7 +436,8 @@ jobs:
 
           # Verify build workflow has SBOM attestation
           test -f .github/workflows/build.yml || { echo "FAIL: build.yml missing"; exit 1; }
-          for keyword in "SYFT_ARCHIVE_SHA256" "cosign attest" "cyclonedx"; do
+          for keyword in "SYFT_ARCHIVE_SHA256" "UMOCI_BINARY_SHA256" \
+            "unpack --rootless" "cosign attest" "cyclonedx"; do
             grep -q "${keyword}" .github/workflows/build.yml || \
               { echo "FAIL: build.yml missing '${keyword}'"; exit 1; }
             echo "OK: build.yml contains '${keyword}'"

@@ -544,6 +544,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Reserve disk for rootless OCI materialization
+        run: |
+          set -euo pipefail
+          # This isolated job reinstalls Python and does not use these hosted SDKs.
+          cleanup_threshold_kib=$((40 * 1024 * 1024))
+          available_kib=$(df --output=avail -k / | tail -n 1)
+          if [ "$available_kib" -lt "$cleanup_threshold_kib" ]; then
+            sudo rm -rf -- \
+              /opt/ghc \
+              /opt/hostedtoolcache/CodeQL \
+              /opt/hostedtoolcache/PyPy \
+              /opt/hostedtoolcache/Python \
+              /opt/hostedtoolcache/Ruby \
+              /opt/hostedtoolcache/go \
+              /opt/hostedtoolcache/node \
+              /usr/lib/jvm \
+              /usr/local/.ghcup \
+              /usr/local/lib/android \
+              /usr/share/dotnet \
+              /usr/share/miniconda \
+              /usr/share/swift
+          fi
+          df -h /
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -558,8 +582,16 @@ jobs:
           REGISTRY_PASSWORD: ${{ github.token }}
         run: |
           set -euo pipefail
+          registry_config_dir="${RUNNER_TEMP}/secai-registry-auth"
+          install -d -m 0700 "$registry_config_dir"
           printf '%s' "$REGISTRY_PASSWORD" |
-            docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            docker --config "$registry_config_dir" login ghcr.io \
+              --username "$GITHUB_ACTOR" --password-stdin
+          chmod 0600 "$registry_config_dir/config.json"
+          {
+            echo "DOCKER_CONFIG=${registry_config_dir}"
+            echo "REGISTRY_AUTH_FILE=${registry_config_dir}/config.json"
+          } >> "$GITHUB_ENV"
 
       - name: Reverify published image identity
         env:
@@ -572,31 +604,86 @@ jobs:
             echo "::error::Build job returned a non-canonical image digest"
             exit 1
           fi
+          expected_ref="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ "$IMAGE_REF" != "$expected_ref" ]; then
+            echo "::error::Build job returned an unexpected image repository"
+            exit 1
+          fi
           if [ "$PINNED_REF" != "${IMAGE_REF}@${IMAGE_DIGEST}" ]; then
             echo "::error::Build job returned an inconsistent pinned image reference"
             exit 1
           fi
 
           cosign verify --key cosign.pub "$PINNED_REF" >/dev/null
-          docker pull --platform linux/amd64 "$PINNED_REF"
-          revision=$(docker image inspect \
-            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-            "$PINNED_REF")
+
+          index_inspect=$(skopeo inspect \
+            --override-os linux --override-arch amd64 \
+            "docker://${PINNED_REF}")
+          resolved_digest=$(jq -er '.Digest' <<<"$index_inspect")
+          if [ "$resolved_digest" != "$IMAGE_DIGEST" ]; then
+            echo "::error::Registry content no longer matches the published digest"
+            exit 1
+          fi
+
+          index_manifest="${RUNNER_TEMP}/secai-image-index.json"
+          skopeo inspect --raw "docker://${PINNED_REF}" > "$index_manifest"
+          platform_digest=$(
+            jq -er '
+              if (.mediaType == "application/vnd.oci.image.index.v1+json" or
+                  .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+              then
+                [.manifests[]? |
+                  select(.platform.os == "linux" and
+                         .platform.architecture == "amd64")] |
+                if length == 1 then .[0].digest
+                else error("expected exactly one linux/amd64 image manifest")
+                end
+              else
+                error("published image is not a multi-platform index")
+              end
+            ' "$index_manifest"
+          )
+          if ! [[ "$platform_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Image index returned a non-canonical platform digest"
+            exit 1
+          fi
+
+          platform_ref="${IMAGE_REF}@${platform_digest}"
+          platform_inspect=$(skopeo inspect \
+            --override-os linux --override-arch amd64 \
+            "docker://${platform_ref}")
+          selected_digest=$(jq -er '.Digest' <<<"$platform_inspect")
+          revision=$(jq -er '.Labels["org.opencontainers.image.revision"]' \
+            <<<"$platform_inspect")
+          jq -e \
+            '.Architecture == "amd64" and .Os == "linux"' \
+            <<<"$platform_inspect" >/dev/null
+          if [ "$selected_digest" != "$platform_digest" ]; then
+            echo "::error::Selected platform content does not match the image index"
+            exit 1
+          fi
           if [ "$revision" != "$GITHUB_SHA" ]; then
             echo "::error::Published image revision is not ${GITHUB_SHA}"
             exit 1
           fi
           printf '%s\n' "$IMAGE_DIGEST" > IMAGE_DIGEST
           printf '%s\n' "$PINNED_REF" > IMAGE_REF_PINNED
+          {
+            echo "PLATFORM_DIGEST=${platform_digest}"
+            echo "PLATFORM_REF=${platform_ref}"
+          } >> "$GITHUB_ENV"
 
-      - name: Download and verify pinned Syft
+      - name: Download and verify pinned OCI tools
         env:
           SYFT_ARCHIVE_SHA256: 0d6be741479eddd2c8644a288990c04f3df0d609bbc1599a005532a9dff63509
           SYFT_VERSION: 1.42.3
+          UMOCI_BINARY_SHA256: b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b82a3b71
+          UMOCI_VERSION: 0.6.0
         run: |
           set -euo pipefail
           syft_dir="${RUNNER_TEMP}/secai-syft"
           syft_archive="${RUNNER_TEMP}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          umoci_path="${RUNNER_TEMP}/secai-umoci"
           mkdir -p "$syft_dir"
           curl --proto '=https' --tlsv1.2 -fsSL --retry 5 \
             --retry-all-errors --retry-delay 2 \
@@ -612,19 +699,97 @@ jobs:
           "$syft_dir/syft" version -o json |
             jq -e --arg version "$SYFT_VERSION" \
               '.version == $version and .platform == "linux/amd64"' >/dev/null
-          echo "SYFT_DIR=${syft_dir}" >> "$GITHUB_ENV"
+
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 \
+            --retry-all-errors --retry-delay 2 \
+            -o "$umoci_path" \
+            "https://github.com/opencontainers/umoci/releases/download/v${UMOCI_VERSION}/umoci.linux.amd64"
+          printf '%s  %s\n' "$UMOCI_BINARY_SHA256" "$umoci_path" |
+            sha256sum --check --strict
+          test -f "$umoci_path"
+          test ! -L "$umoci_path"
+          chmod 0555 "$umoci_path"
+          "$umoci_path" --version |
+            grep -Fx "umoci version ${UMOCI_VERSION}" >/dev/null
+          {
+            echo "SYFT_DIR=${syft_dir}"
+            echo "UMOCI_PATH=${umoci_path}"
+          } >> "$GITHUB_ENV"
+
+      - name: Materialize final-image root without overlay storage
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          required_kib=$((30 * 1024 * 1024))
+          available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n 1)
+          if [ "$available_kib" -lt "$required_kib" ]; then
+            echo "::error::At least 30 GiB is required to materialize the final image"
+            exit 1
+          fi
+          runner_fs=$(findmnt -no FSTYPE -T "$RUNNER_TEMP")
+          echo "Runner temp filesystem: ${runner_fs}"
+
+          probe_dir="${RUNNER_TEMP}/secai-hardlink-probe"
+          install -d -m 0700 "$probe_dir"
+          ln -s missing-target "$probe_dir/dangling-symlink"
+          if ! ln -P "$probe_dir/dangling-symlink" "$probe_dir/hardlink"; then
+            echo "::error::Runner filesystem cannot preserve OCI hardlinks to symlinks"
+            exit 1
+          fi
+          if [ "$(stat -c '%d:%i' "$probe_dir/dangling-symlink")" != \
+               "$(stat -c '%d:%i' "$probe_dir/hardlink")" ]; then
+            echo "::error::Runner filesystem changed OCI hardlink identity"
+            exit 1
+          fi
+          unlink "$probe_dir/hardlink"
+          unlink "$probe_dir/dangling-symlink"
+          rmdir "$probe_dir"
+
+          oci_dir="${RUNNER_TEMP}/secai-final-image-oci"
+          bundle_dir="${RUNNER_TEMP}/secai-final-image-bundle"
+          test ! -e "$oci_dir"
+          test ! -e "$bundle_dir"
+          skopeo copy --retry-times 5 --preserve-digests \
+            --override-os linux --override-arch amd64 \
+            "docker://${PLATFORM_REF}" "oci:${oci_dir}:secai-os"
+
+          local_inspect=$(skopeo inspect "oci:${oci_dir}:secai-os")
+          local_digest=$(jq -er '.Digest' <<<"$local_inspect")
+          if [ "$local_digest" != "$PLATFORM_DIGEST" ]; then
+            echo "::error::Materialized OCI image does not match the selected platform"
+            exit 1
+          fi
+
+          "$UMOCI_PATH" unpack --rootless \
+            --image "${oci_dir}:secai-os" "$bundle_dir"
+          test -d "$bundle_dir/rootfs"
+          test -f "$bundle_dir/config.json"
+          image_rootfs="${bundle_dir}/rootfs"
+          scanner_uid=$(stat -c %u "$image_rootfs")
+          scanner_gid=$(stat -c %g "$image_rootfs")
+          if [ "$scanner_uid" -eq 0 ] || [ "$scanner_uid" -ne "$(id -u)" ] || \
+             [ "$scanner_gid" -ne "$(id -g)" ]; then
+            echo "::error::Rootless OCI tree has an unexpected owner mapping"
+            exit 1
+          fi
+          {
+            echo "IMAGE_ROOTFS=${image_rootfs}"
+            echo "SCANNER_USER=${scanner_uid}:${scanner_gid}"
+          } >> "$GITHUB_ENV"
 
       - name: Generate final-image SBOM from squashed root
         timeout-minutes: 90
         env:
           IMAGE_DIGEST: ${{ needs.bluebuild_publish.outputs.digest }}
           IMAGE_REF: ${{ needs.bluebuild_publish.outputs.image_ref }}
-          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
+          SCANNER_IMAGE: docker.io/library/fedora@sha256:89f61a124414261868224666aa7fb8df1b78397a53623774bdfb105d1612b48b
         run: |
           set -euo pipefail
           umask 077
+          docker pull --platform linux/amd64 "$SCANNER_IMAGE"
           docker run --rm \
             --platform linux/amd64 \
+            --user "$SCANNER_USER" \
             --network none \
             --read-only \
             --memory 7g \
@@ -635,6 +800,7 @@ jobs:
             --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
             --mount "type=bind,source=${SYFT_DIR},target=/run/secai-sbom-scanner,readonly" \
+            --mount "type=bind,source=${IMAGE_ROOTFS},target=/scan-root,readonly" \
             --env GOMEMLIMIT=6GiB \
             --env GOMAXPROCS=2 \
             --env HOME=/tmp \
@@ -643,8 +809,9 @@ jobs:
             --env SYFT_CACHE_DIR=/tmp/syft-cache \
             --env SYFT_CHECK_FOR_APP_UPDATE=false \
             --entrypoint /run/secai-sbom-scanner/syft \
-            "$PINNED_REF" \
-            scan dir:/ \
+            "$SCANNER_IMAGE" \
+            scan dir:/scan-root \
+            --base-path /scan-root \
             --scope squashed \
             --override-default-catalogers image \
             --parallelism 1 \
@@ -689,48 +856,63 @@ jobs:
 
       - name: Extract release-bound integrity baseline
         env:
-          PINNED_REF: ${{ needs.bluebuild_publish.outputs.pinned_ref }}
+          SCANNER_IMAGE: docker.io/library/fedora@sha256:89f61a124414261868224666aa7fb8df1b78397a53623774bdfb105d1612b48b
         run: |
-          docker pull "$PINNED_REF"
+          set -euo pipefail
           docker run --rm \
+            --platform linux/amd64 \
+            --user "$SCANNER_USER" \
             --network none \
             --read-only \
+            --memory 1g \
+            --memory-swap 1g \
+            --cpus 1 \
+            --pids-limit 128 \
             --cap-drop ALL \
             --security-opt no-new-privileges \
-            --entrypoint /bin/bash "$PINNED_REF" -c \
-            'rpm -q cosign && command -v cosign >/dev/null && cosign version'
-          docker run --rm \
-            --network none \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --entrypoint /bin/bash "$PINNED_REF" -c '
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
+            --mount "type=bind,source=${IMAGE_ROOTFS},target=/scan-root,readonly" \
+            --env HOME=/tmp \
+            --entrypoint /bin/bash "$SCANNER_IMAGE" -c '
+            set -euo pipefail
+            rpm_db=/scan-root/usr/lib/sysimage/rpm
+            test -d "$rpm_db"
+            rpm --dbpath "$rpm_db" -q cosign >/dev/null
+            rpm --dbpath "$rpm_db" -ql cosign |
+              grep -Fx /usr/bin/cosign >/dev/null
+            rpm --dbpath "$rpm_db" -ql cosign |
+              grep -Fx /usr/bin/cosign-linux-amd64 >/dev/null
+            test -L /scan-root/usr/bin/cosign
+            test "$(readlink /scan-root/usr/bin/cosign)" = \
+              /usr/bin/cosign-linux-amd64
+            test -f /scan-root/usr/bin/cosign-linux-amd64
+            test -x /scan-root/usr/bin/cosign-linux-amd64
             for package in golang golang-bin golang-src go-filesystem cmake cmake-data gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
-              if rpm -q --quiet -- "$package"; then
+              if rpm --dbpath "$rpm_db" -q --quiet -- "$package"; then
                 echo "FATAL: build-only package remains in final image: $package" >&2
                 exit 1
               fi
             done
             for command_name in go cmake gcc g++ git pip pip3; do
-              if command -v "$command_name" >/dev/null 2>&1; then
-                echo "FATAL: build-only command remains in final image: $command_name" >&2
-                exit 1
-              fi
+              for directory in usr/local/sbin usr/local/bin usr/sbin usr/bin; do
+                command_path="/scan-root/${directory}/${command_name}"
+                if [ -e "$command_path" ] || [ -L "$command_path" ]; then
+                  echo "FATAL: build-only command remains in final image: $command_name" >&2
+                  exit 1
+                fi
+              done
             done
           '
-          container_id=$(docker create "$PINNED_REF")
-          cleanup() {
-            docker rm -f "$container_id" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-          docker cp \
-            "${container_id}:/usr/share/secure-ai/integrity/release-baseline.json" \
+          install -m 0600 \
+            "$IMAGE_ROOTFS/usr/share/secure-ai/integrity/release-baseline.json" \
             RELEASE_BASELINE.json
           mkdir -p image-root/usr/lib/systemd image-root/usr image-root/etc
-          docker cp "${container_id}:/usr/lib/systemd/system" \
-            image-root/usr/lib/systemd/
-          docker cp "${container_id}:/usr/libexec" image-root/usr/
-          docker cp "${container_id}:/etc/greenboot" image-root/etc/
+          cp -a --no-preserve=ownership \
+            "$IMAGE_ROOTFS/usr/lib/systemd/system" image-root/usr/lib/systemd/
+          cp -a --no-preserve=ownership \
+            "$IMAGE_ROOTFS/usr/libexec" image-root/usr/
+          cp -a --no-preserve=ownership \
+            "$IMAGE_ROOTFS/etc/greenboot" image-root/etc/
           python3 .github/scripts/check-assembled-execstart.py \
             --rootfs image-root
           jq -e \
@@ -743,6 +925,57 @@ jobs:
                and (.sha256 | test("^[0-9a-f]{64}$"))
                and (.size | type == "number" and . >= 0))' \
             RELEASE_BASELINE.json >/dev/null
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ["IMAGE_ROOTFS"]).resolve(strict=True)
+          document = json.loads(
+              Path("RELEASE_BASELINE.json").read_text(encoding="utf-8")
+          )
+          seen: set[str] = set()
+          for entry in document["files"]:
+              raw_path = entry["path"]
+              image_path = PurePosixPath(raw_path)
+              if (
+                  not image_path.is_absolute()
+                  or image_path.as_posix() != raw_path
+                  or any(part in {"", ".", ".."} for part in image_path.parts[1:])
+                  or raw_path in seen
+              ):
+                  raise SystemExit(f"unsafe or duplicate baseline path: {raw_path!r}")
+              seen.add(raw_path)
+
+              candidate = root.joinpath(*image_path.parts[1:])
+              resolved = candidate.resolve(strict=True)
+              try:
+                  resolved.relative_to(root)
+              except ValueError as error:
+                  raise SystemExit(
+                      f"release baseline path escapes image root: {raw_path}"
+                  ) from error
+              file_stat = candidate.stat(follow_symlinks=False)
+              if not stat.S_ISREG(file_stat.st_mode):
+                  raise SystemExit(f"release baseline path is not regular: {raw_path}")
+              if file_stat.st_size != entry["size"]:
+                  raise SystemExit(f"release baseline size mismatch: {raw_path}")
+              expected = entry["sha256"]
+              if not isinstance(expected, str) or not re.fullmatch(
+                  r"[0-9a-f]{64}", expected
+              ):
+                  raise SystemExit(f"invalid baseline digest: {raw_path}")
+              digest = hashlib.sha256()
+              with candidate.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              if digest.hexdigest() != expected:
+                  raise SystemExit(f"release baseline hash mismatch: {raw_path}")
+          print(f"Verified {len(seen)} release-baseline files against image root")
+          PY
 
       - name: Create and attach image attestations
         env:
@@ -827,8 +1060,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Remove registry credentials
+        if: always()
+        run: |
+          if [ -n "${DOCKER_CONFIG:-}" ]; then
+            docker --config "$DOCKER_CONFIG" logout ghcr.io >/dev/null 2>&1 || true
+          fi
+          if [ -n "${REGISTRY_AUTH_FILE:-}" ]; then
+            rm -f -- "$REGISTRY_AUTH_FILE"
+          fi
+
   bluebuild:
-    name: "Stage 2: BlueBuild Gate"
+    name: "Stage 4: BlueBuild Gate"
     if: >-
       always() &&
       ((github.event_name == 'pull_request' &&
