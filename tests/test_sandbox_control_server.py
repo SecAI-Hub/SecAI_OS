@@ -59,7 +59,7 @@ def _ignore_native_acl_in_fixture(monkeypatch):
         monkeypatch.setattr(
             control,
             "_verify_windows_owner_only_acl",
-            lambda _path, **_kwargs: None,
+            lambda _path: None,
         )
 
 
@@ -489,7 +489,7 @@ def test_control_private_state_directory_is_real_and_private(
         assert stat.S_IMODE(os.lstat(state_dir).st_mode) == 0o700
 
 
-def test_windows_acl_commands_distinguish_protected_and_inherited(
+def test_windows_acl_commands_require_protected_owner_only_dacl(
     tmp_path,
     monkeypatch,
 ):
@@ -509,22 +509,19 @@ def test_windows_acl_commands_distinguish_protected_and_inherited(
     monkeypatch.setattr(control.subprocess, "run", run)
 
     control._verify_windows_owner_only_acl(target)
-    control._verify_windows_owner_only_acl(
-        target,
-        allow_inherited=True,
-    )
     control._set_windows_owner_only_acl(target, directory=True)
 
-    assert len(calls) == 4
-    assert calls[0][1]["env"]["SECAI_CONTROL_ALLOW_INHERITED_ACL"] == "0"
-    assert calls[1][1]["env"]["SECAI_CONTROL_ALLOW_INHERITED_ACL"] == "1"
-    assert "DirectorySecurity" in calls[2][0][0][-1]
-    assert "ContainerInherit" in calls[2][0][0][-1]
-    assert calls[3][1]["env"]["SECAI_CONTROL_ALLOW_INHERITED_ACL"] == "0"
+    assert len(calls) == 3
+    assert "SECAI_CONTROL_ALLOW_INHERITED_ACL" not in calls[0][1]["env"]
+    assert "$allowInherited" not in calls[0][0][0][-1]
+    assert "AreAccessRulesProtected" in calls[0][0][0][-1]
+    assert "DirectorySecurity" in calls[1][0][0][-1]
+    assert "ContainerInherit" in calls[1][0][0][-1]
+    assert "SECAI_CONTROL_ALLOW_INHERITED_ACL" not in calls[2][1]["env"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows ACLs")
-def test_windows_native_controller_state_acl_inheritance(tmp_path):
+def test_windows_native_controller_state_acl_normalization(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     control._set_windows_owner_only_acl(state_dir, directory=True)
@@ -532,11 +529,11 @@ def test_windows_native_controller_state_acl_inheritance(tmp_path):
 
     inherited_file = state_dir / "inherited"
     inherited_file.write_bytes(b"state")
-    control._verify_windows_owner_only_acl(
-        inherited_file,
-        allow_inherited=True,
-    )
-    control._set_windows_owner_only_acl(inherited_file, directory=False)
+    with pytest.raises(RuntimeError, match="owner-only Windows ACLs"):
+        control._verify_windows_owner_only_acl(inherited_file)
+    inherited_file.unlink()
+
+    control._write_private_file_atomic(inherited_file, b"state")
     control._verify_windows_owner_only_acl(inherited_file)
 
 

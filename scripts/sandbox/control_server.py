@@ -707,16 +707,12 @@ def _open_private_directory(
     path: Path,
     *,
     normalize_mode: bool = False,
-    allow_inherited_windows_acl: bool = False,
 ) -> int:
     metadata = os.lstat(path)
     if not stat.S_ISDIR(metadata.st_mode) or _is_reparse_point(metadata):
         raise RuntimeError("sandbox controller state parent is not a real directory")
     if os.name == "nt":
-        _verify_windows_owner_only_acl(
-            path,
-            allow_inherited=allow_inherited_windows_acl,
-        )
+        _verify_windows_owner_only_acl(path)
         final_path = os.lstat(path)
         if (
             not stat.S_ISDIR(final_path.st_mode)
@@ -796,15 +792,25 @@ def _ensure_private_directory(path: Path) -> None:
     finally:
         if parent_descriptor >= 0:
             os.close(parent_descriptor)
-    descriptor = _open_private_directory(
-        path,
-        normalize_mode=True,
-        allow_inherited_windows_acl=True,
-    )
-    if descriptor >= 0:
-        os.close(descriptor)
-    _set_windows_owner_only_acl(path, directory=True)
-    descriptor = _open_private_directory(path)
+    if os.name == "nt":
+        metadata = os.lstat(path)
+        if not stat.S_ISDIR(metadata.st_mode) or _is_reparse_point(metadata):
+            raise RuntimeError(
+                "sandbox controller state path is not a real directory"
+            )
+        _set_windows_owner_only_acl(path, directory=True)
+        secured = os.lstat(path)
+        if (
+            not stat.S_ISDIR(secured.st_mode)
+            or _is_reparse_point(secured)
+            or (secured.st_dev, secured.st_ino)
+            != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise RuntimeError(
+                "sandbox controller state directory changed during ACL "
+                "normalization"
+            )
+    descriptor = _open_private_directory(path, normalize_mode=True)
     if descriptor >= 0:
         os.close(descriptor)
 
@@ -871,13 +877,13 @@ def _write_private_file_atomic(
             raise RuntimeError(
                 "sandbox controller temporary state file is unsafe"
             )
-        _verify_windows_owner_only_acl(
-            temporary_path,
-            allow_inherited=True,
-        )
         if os.name == "nt":
             os.close(descriptor)
             descriptor = -1
+            _set_windows_owner_only_acl(
+                temporary_path,
+                directory=False,
+            )
             final_temporary = os.lstat(temporary_path)
             if (
                 not _private_file_metadata_is_safe(
@@ -934,7 +940,7 @@ def _write_private_file_atomic(
                     "sandbox controller state descriptor changed "
                     "during publication"
                 )
-        _verify_windows_owner_only_acl(path, allow_inherited=True)
+        _verify_windows_owner_only_acl(path)
         published_path = os.lstat(path)
         if (
             not _private_file_metadata_is_safe(
@@ -1003,7 +1009,7 @@ def _unlink_private_file_if_payload(
             )
         ):
             return False
-        _verify_windows_owner_only_acl(path, allow_inherited=True)
+        _verify_windows_owner_only_acl(path)
         descriptor = os.open(
             open_target,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
@@ -1201,11 +1207,7 @@ def _validate_control_token_runtime(runtime_dir: Path, token_path: Path) -> None
     _verify_windows_owner_only_acl(runtime_dir)
 
 
-def _verify_windows_owner_only_acl(
-    path: Path,
-    *,
-    allow_inherited: bool = False,
-) -> None:
+def _verify_windows_owner_only_acl(path: Path) -> None:
     """Recheck the launcher-enforced owner-only Windows DACL."""
     if os.name != "nt":
         return
@@ -1222,9 +1224,7 @@ def _verify_windows_owner_only_acl(
         "[System.Security.Principal.SecurityIdentifier]);"
         "$rules=@($acl.GetAccessRules("
         "$true,$true,[System.Security.Principal.SecurityIdentifier]));"
-        "$allowInherited="
-        "$env:SECAI_CONTROL_ALLOW_INHERITED_ACL -eq '1';"
-        "if((-not $acl.AreAccessRulesProtected -and -not $allowInherited)"
+        "if(-not $acl.AreAccessRulesProtected"
         " -or $owner.Value -ne $sid.Value"
         " -or $rules.Count -ne 1"
         " -or $rules[0].IdentityReference.Value -ne $sid.Value"
@@ -1238,9 +1238,6 @@ def _verify_windows_owner_only_acl(
     )
     child_env = os.environ.copy()
     child_env["SECAI_CONTROL_ACL_TARGET"] = str(path)
-    child_env["SECAI_CONTROL_ALLOW_INHERITED_ACL"] = (
-        "1" if allow_inherited else "0"
-    )
     try:
         result = subprocess.run(
             [
@@ -1918,52 +1915,7 @@ def _write_all(descriptor: int, payload: bytes) -> None:
 
 
 def _restrict_windows_file_acl(path: Path) -> None:
-    if os.name != "nt":
-        return
-    whoami = shutil.which("whoami")
-    icacls = shutil.which("icacls")
-    if not whoami or not icacls:
-        raise RuntimeError("whoami and icacls are required to secure sandbox files")
-    try:
-        identity_result = subprocess.run(
-            [whoami],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError("failed to determine the current Windows identity") from exc
-    identity = identity_result.stdout.strip()
-    if (
-        identity_result.returncode != 0
-        or not identity
-        or "\r" in identity
-        or "\n" in identity
-        or len(identity) > 512
-    ):
-        raise RuntimeError("failed to determine the current Windows identity")
-    try:
-        acl_result = subprocess.run(
-            [
-                icacls,
-                str(path),
-                "/inheritance:r",
-                "/grant:r",
-                f"{identity}:(F)",
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError("failed to restrict the sandbox file ACL") from exc
-    if acl_result.returncode != 0:
-        raise RuntimeError("failed to restrict the sandbox file ACL")
+    _set_windows_owner_only_acl(path, directory=False)
 
 
 def _read_env_file_safely(
@@ -2077,6 +2029,7 @@ def _set_env_value(path: Path, key: str, value: str) -> None:
                 raise RuntimeError("sandbox .env changed before atomic replacement")
             os.replace(temporary, path)
         _fsync_directory(path.parent)
+        _verify_windows_owner_only_acl(path)
     except OSError as exc:
         raise RuntimeError("sandbox .env could not be updated atomically") from exc
     finally:
