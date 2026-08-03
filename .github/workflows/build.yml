@@ -32,6 +32,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install pinned workflow dependencies
+        run: python -m pip install --require-hashes -r requirements-ci.lock
+
       - name: Verify supported Fedora base pin
         run: |
           python3 - <<'PY'
