@@ -73,7 +73,9 @@ prepare_work_dir() {
 validate_private_file() {
     local path="$1"
     local label="$2"
-    [ -f "$path" ] && [ ! -L "$path" ] || fatal "$label is missing or not a regular file"
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+        fatal "$label is missing or not a regular file"
+    fi
     [ "$(stat -c '%u' "$path")" -eq 0 ] || fatal "$label must be owned by root"
     local mode
     mode=$(stat -c '%a' "$path")
@@ -85,8 +87,9 @@ validate_loopback_url() {
     [[ "$INCIDENT_RECORDER_URL" =~ ^http://(127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$ ]] \
         || fatal "INCIDENT_RECORDER_URL must be an explicit loopback HTTP origin"
     local port="${BASH_REMATCH[2]}"
-    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] \
-        || fatal "INCIDENT_RECORDER_URL has an invalid port"
+    if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        fatal "INCIDENT_RECORDER_URL has an invalid port"
+    fi
 }
 
 verify_bundle() {
@@ -118,12 +121,15 @@ cmd_export() {
     local output_parent output_name
     output_parent=$(dirname -- "$output")
     output_name=$(basename -- "$output")
-    [ -d "$output_parent" ] && [ ! -L "$output_parent" ] \
-        || fatal "Output parent must be an existing real directory"
-    [ "$output_name" != "." ] && [ "$output_name" != ".." ] \
-        || fatal "Invalid output filename"
-    [ ! -e "$output" ] && [ ! -L "$output" ] \
-        || fatal "Refusing to overwrite output: $output"
+    if [ ! -d "$output_parent" ] || [ -L "$output_parent" ]; then
+        fatal "Output parent must be an existing real directory"
+    fi
+    if [ "$output_name" = "." ] || [ "$output_name" = ".." ]; then
+        fatal "Invalid output filename"
+    fi
+    if [ -e "$output" ] || [ -L "$output" ]; then
+        fatal "Refusing to overwrite output: $output"
+    fi
 
     local curl_config="${WORK_DIR}/curl.conf"
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$curl_config"
@@ -161,8 +167,9 @@ cmd_verify() {
     local bundle="$1"
     require_root
     command -v python3 >/dev/null 2>&1 || fatal "python3 is required for verification"
-    [ -f "$bundle" ] && [ ! -L "$bundle" ] \
-        || fatal "Bundle must be a regular file: $bundle"
+    if [ ! -f "$bundle" ] || [ -L "$bundle" ]; then
+        fatal "Bundle must be a regular file: $bundle"
+    fi
     verify_bundle "$bundle"
 }
 

@@ -3,7 +3,6 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import signal
 import stat
 import sys
@@ -2184,6 +2183,7 @@ def test_windows_native_job_terminates_descendant_on_cancellation(
         )
     )
     child_pid = 0
+    child_handle = 0
     try:
         worker.start()
         deadline = time.monotonic() + 10
@@ -2193,11 +2193,42 @@ def test_windows_native_job_terminates_descendant_on_cancellation(
         child_pid = int(child_pid_path.read_text(encoding="utf-8"))
         assert control._process_exists(child_pid)
 
+        kernel32 = control._load_windows_dll("kernel32")
+        kernel32.OpenProcess.argtypes = [
+            control.ctypes.c_ulong,
+            control.ctypes.c_int,
+            control.ctypes.c_ulong,
+        ]
+        kernel32.OpenProcess.restype = control.ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [
+            control.ctypes.c_void_p,
+            control.ctypes.c_ulong,
+        ]
+        kernel32.WaitForSingleObject.restype = control.ctypes.c_ulong
+        kernel32.CloseHandle.argtypes = [control.ctypes.c_void_p]
+        kernel32.CloseHandle.restype = control.ctypes.c_int
+        child_handle = int(
+            kernel32.OpenProcess(
+                control.WINDOWS_SYNCHRONIZE
+                | control.WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                child_pid,
+            )
+        )
+        assert child_handle
+
         control._shutdown_requested.set()
         worker.join(timeout=15)
 
         assert not worker.is_alive()
         assert result and result[0][2:] == (True, True)
+        assert (
+            kernel32.WaitForSingleObject(
+                control.ctypes.c_void_p(child_handle),
+                5_000,
+            )
+            == control.WINDOWS_WAIT_OBJECT_0
+        )
         assert not control._process_exists(child_pid)
         assert control._tree_termination_confirmed.is_set()
         assert not control._tree_containment_failed.is_set()
@@ -2210,6 +2241,10 @@ def test_windows_native_job_terminates_descendant_on_cancellation(
             with contextlib.suppress(OSError, RuntimeError):
                 control._terminate_process_tree(active, active_job)
         worker.join(timeout=15)
+        if child_handle:
+            assert kernel32.CloseHandle(
+                control.ctypes.c_void_p(child_handle)
+            )
         worker_stopped = not worker.is_alive()
         if worker_stopped:
             control._shutdown_requested.clear()
@@ -2241,7 +2276,7 @@ def test_windows_native_env_acl_is_owner_only(tmp_path):
 
     control._set_env_value(env_path, "TARGET", "value")
 
-    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    powershell = control._windows_powershell()
     assert powershell
     child_env = os.environ.copy()
     child_env["SECAI_TEST_ACL_PATH"] = str(env_path)

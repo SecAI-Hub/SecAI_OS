@@ -225,8 +225,9 @@ backup_luks_header() {
 write_transport_checksum() {
     local artifact="$1"
     local sidecar="${artifact}.sha256"
-    [ ! -e "$sidecar" ] && [ ! -L "$sidecar" ] \
-        || fatal "Refusing to overwrite checksum sidecar: $sidecar"
+    if [ -e "$sidecar" ] || [ -L "$sidecar" ]; then
+        fatal "Refusing to overwrite checksum sidecar: $sidecar"
+    fi
     local checksum
     checksum=$(sha256sum -- "$artifact" | awk '{print $1}')
     [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || fatal "Could not compute artifact SHA-256"
@@ -241,8 +242,9 @@ write_transport_checksum() {
 verify_transport_checksum() {
     local artifact="$1"
     local sidecar="${artifact}.sha256"
-    [ -f "$sidecar" ] && [ ! -L "$sidecar" ] \
-        || fatal "Required transport checksum is missing or unsafe: $sidecar"
+    if [ ! -f "$sidecar" ] || [ -L "$sidecar" ]; then
+        fatal "Required transport checksum is missing or unsafe: $sidecar"
+    fi
     local expected declared extra
     IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
     declared="${declared#\\*}"
@@ -260,8 +262,9 @@ decrypt_to_tmpfs() {
     local plaintext="$2"
     local -a args=(-d)
     if [ -n "$AGE_IDENTITY" ]; then
-        [ -f "$AGE_IDENTITY" ] && [ ! -L "$AGE_IDENTITY" ] \
-            || fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        if [ ! -f "$AGE_IDENTITY" ] || [ -L "$AGE_IDENTITY" ]; then
+            fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        fi
         [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
             || fatal "Age identity must be owned by root"
         local identity_mode
@@ -282,8 +285,9 @@ do_backup() {
 
     local destination_dir="${OUTPUT_DIR:-$BACKUP_DIR}"
     mkdir -p -- "$destination_dir"
-    [ -d "$destination_dir" ] && [ ! -L "$destination_dir" ] \
-        || fatal "Backup destination must be a real directory: $destination_dir"
+    if [ ! -d "$destination_dir" ] || [ -L "$destination_dir" ]; then
+        fatal "Backup destination must be a real directory: $destination_dir"
+    fi
 
     local timestamp random_suffix name
     timestamp=$(date -u +%Y%m%d-%H%M%S)
@@ -326,8 +330,9 @@ do_backup() {
 
     step "Encrypting and authenticating with age"
     local final="${destination_dir}/${name}.tar.gz.age"
-    [ ! -e "$final" ] && [ ! -L "$final" ] \
-        || fatal "Refusing to overwrite existing backup: $final"
+    if [ -e "$final" ] || [ -L "$final" ]; then
+        fatal "Refusing to overwrite existing backup: $final"
+    fi
     local partial
     partial=$(mktemp "${destination_dir}/.${name}.partial.XXXXXXXX")
     if [ -n "$AGE_RECIPIENT" ]; then
@@ -358,8 +363,9 @@ do_verify() {
     local artifact="$1"
     require_root
     require_tools
-    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
-        || fatal "Backup must be a regular encrypted file: $artifact"
+    if [ ! -f "$artifact" ] || [ -L "$artifact" ]; then
+        fatal "Backup must be a regular encrypted file: $artifact"
+    fi
     [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
     prepare_work_dir
     step "Checking encrypted artifact transport integrity"
@@ -374,8 +380,9 @@ do_verify() {
 
 do_list() {
     local directory="${1:-$BACKUP_DIR}"
-    [ -d "$directory" ] && [ ! -L "$directory" ] \
-        || fatal "Backup directory must be a real directory: $directory"
+    if [ ! -d "$directory" ] || [ -L "$directory" ]; then
+        fatal "Backup directory must be a real directory: $directory"
+    fi
     step "Encrypted backups in $directory"
     local count=0
     while IFS= read -r -d '' artifact; do

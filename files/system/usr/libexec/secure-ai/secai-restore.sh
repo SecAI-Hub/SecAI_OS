@@ -179,8 +179,9 @@ PY
 verify_transport_checksum() {
     local artifact="$1"
     local sidecar="${artifact}.sha256"
-    [ -f "$sidecar" ] && [ ! -L "$sidecar" ] \
-        || fatal "Required transport checksum is missing or unsafe: $sidecar"
+    if [ ! -f "$sidecar" ] || [ -L "$sidecar" ]; then
+        fatal "Required transport checksum is missing or unsafe: $sidecar"
+    fi
     local expected declared extra
     IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
     declared="${declared#\\*}"
@@ -198,8 +199,9 @@ decrypt_to_tmpfs() {
     local plaintext="$2"
     local -a args=(-d)
     if [ -n "$AGE_IDENTITY" ]; then
-        [ -f "$AGE_IDENTITY" ] && [ ! -L "$AGE_IDENTITY" ] \
-            || fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        if [ ! -f "$AGE_IDENTITY" ] || [ -L "$AGE_IDENTITY" ]; then
+            fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
+        fi
         [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
             || fatal "Age identity must be owned by root"
         local identity_mode
@@ -316,7 +318,9 @@ restore_luks_header_if_requested() {
         || fatal "Explicit LUKS UUID confirmation does not match the selected target"
 
     local header="${staging}/luks-header-backup"
-    [ -f "$header" ] && [ ! -L "$header" ] || fatal "Validated archive header is missing"
+    if [ ! -f "$header" ] || [ -L "$header" ]; then
+        fatal "Validated archive header is missing"
+    fi
     header_uuid=$(cryptsetup luksUUID "$header" 2>/dev/null || true)
     [ -n "$header_uuid" ] || fatal "Archived LUKS header cannot be parsed by cryptsetup"
     [ "${header_uuid,,}" = "$archived_uuid" ] \
@@ -346,8 +350,9 @@ restore_luks_header_if_requested() {
 do_inspect() {
     local artifact="$1"
     require_root_and_tools
-    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
-        || fatal "Backup must be a regular encrypted file: $artifact"
+    if [ ! -f "$artifact" ] || [ -L "$artifact" ]; then
+        fatal "Backup must be a regular encrypted file: $artifact"
+    fi
     [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
     prepare_work_dir
     step "Authenticating and inspecting backup"
@@ -361,8 +366,9 @@ do_restore() {
     local category="$1"
     local artifact="$2"
     require_root_and_tools
-    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
-        || fatal "Backup must be a regular encrypted file: $artifact"
+    if [ ! -f "$artifact" ] || [ -L "$artifact" ]; then
+        fatal "Backup must be a regular encrypted file: $artifact"
+    fi
     [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
     prepare_work_dir
 

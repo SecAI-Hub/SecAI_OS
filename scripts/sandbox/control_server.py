@@ -132,6 +132,11 @@ def _load_windows_dll(name: str) -> Any:
     return loader(name, use_last_error=True)
 
 
+def _windows_powershell() -> str | None:
+    """Prefer supported PowerShell 7 while retaining Windows PowerShell fallback."""
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
 class _WindowsJobBasicLimitInformation(ctypes.Structure):
     _fields_ = [
         ("per_process_user_time_limit", ctypes.c_longlong),
@@ -1204,7 +1209,7 @@ def _verify_windows_owner_only_acl(
     """Recheck the launcher-enforced owner-only Windows DACL."""
     if os.name != "nt":
         return
-    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    powershell = _windows_powershell()
     if not powershell:
         raise RuntimeError(
             "PowerShell is required to verify the sandbox control token ACL"
@@ -1266,7 +1271,7 @@ def _set_windows_owner_only_acl(path: Path, *, directory: bool) -> None:
     """Protect a Windows path with one current-owner FullControl ACE."""
     if os.name != "nt":
         return
-    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    powershell = _windows_powershell()
     if not powershell:
         raise RuntimeError(
             "PowerShell is required to secure sandbox controller paths"
@@ -1854,7 +1859,7 @@ def _command_args(profile: str, *, inference: bool, gpu: bool) -> list[str]:
     if os.name == "nt":
         if CONFIG is None:
             raise RuntimeError("controller is not configured")
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        powershell = _windows_powershell()
         if not powershell:
             raise RuntimeError("PowerShell is required by the sandbox controller")
         start_script = CONFIG.repo_root / "scripts" / "sandbox" / "start.ps1"
