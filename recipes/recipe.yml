@@ -80,6 +80,14 @@ modules:
       - source: system
         destination: /
 
+  # BlueBuild's pinned systemd module passes unit names through printf and
+  # decodes the required systemd path escape (\x2d) into a literal hyphen.
+  # Enable this mount separately after its unit has been copied into place.
+  - type: script
+    source: ghcr.io/blue-build/modules/script:latest@sha256:9ece7bb6c07d20cf34476decc68f7adad56b2383ea96fdb307962a510262690a
+    scripts:
+      - enable-escaped-mount.sh
+
   # 3) Make service source available to build script, then compile.
   #    Source-prep materializes verified Go vendor trees, Python wheels,
   #    external source, and the llama.cpp archive. Stage 2 consumes only those
@@ -166,7 +174,6 @@ modules:
         - greenboot-healthcheck.service
         - nftables.service
         - secure-ai-firstboot.service
-        - run-secure\x2dai-tmp.mount
         # Path unit watches for UI-triggered profile change request
         - secure-ai-apply-profile.path
       disabled:

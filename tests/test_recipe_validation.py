@@ -18,6 +18,9 @@ RECIPE_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipe.yml"
 STALE_REPO_PREFLIGHT_PATH = (
     Path(__file__).resolve().parent.parent / "files" / "scripts" / "disable-stale-fedora-repos.sh"
 )
+ESCAPED_MOUNT_ENABLE_PATH = (
+    Path(__file__).resolve().parent.parent / "files" / "scripts" / "enable-escaped-mount.sh"
+)
 
 
 @pytest.fixture
@@ -67,6 +70,30 @@ class TestBuildPreflight:
         assert "ENV MULTILIB=0" in before["snippets"]
         assert after["type"] == "containerfile"
         assert "ENV MULTILIB=" in after["snippets"]
+
+    def test_escaped_mount_is_enabled_without_bluebuild_printf_decoding(self, recipe):
+        modules = recipe.get("modules", [])
+        escaped_unit = r"run-secure\x2dai-tmp.mount"
+        files_index = next(i for i, module in enumerate(modules) if module.get("type") == "files")
+        systemd_index = next(
+            i for i, module in enumerate(modules) if module.get("type") == "systemd"
+        )
+        helper_index = next(
+            i
+            for i, module in enumerate(modules)
+            if "enable-escaped-mount.sh" in module.get("scripts", [])
+        )
+
+        assert files_index < helper_index < systemd_index
+        assert escaped_unit not in _get_enabled(modules[systemd_index])
+        assert (
+            RECIPE_PATH.parent.parent
+            / "files/system/usr/lib/systemd/system"
+            / escaped_unit
+        ).is_file()
+        helper = ESCAPED_MOUNT_ENABLE_PATH.read_text(encoding="utf-8")
+        assert "mount_unit='run-secure\\x2dai-tmp.mount'" in helper
+        assert 'systemctl -f enable "$mount_unit"' in helper
 
 
 class TestDiffusionDisabledByDefault:

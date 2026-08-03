@@ -73,7 +73,7 @@ Last updated: 2026-08-02
 | test_quarantine_scanner_stage.py | tests/ | 3 | Scanner-stage fail-closed sequencing |
 | test_quarantine_scanner_worker.py | tests/ | 10 | Native scanner subprocess containment |
 | test_quarantine_watcher.py | tests/ | 18 | Quarantine watcher startup and filesystem behavior |
-| test_recipe_validation.py | tests/ | 31 | Fedora recipe and packaged-file validation |
+| test_recipe_validation.py | tests/ | 32 | Fedora recipe, module ordering, and packaged-file validation |
 | test_release_artifacts.py | tests/ | 72 | Release workflow, artifact manifest, and verification consistency |
 | test_runtime_attestation_hardware.py | tests/ | 8 | Nonce-bound TPM evidence and vTPM degradation |
 | test_sandbox.py | tests/ | 46 | Sandbox policy, runtime constraints, and network isolation |
