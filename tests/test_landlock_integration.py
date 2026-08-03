@@ -70,10 +70,19 @@ def test_release_baseline_and_tpm_paths_are_inside_attestation_boundaries():
 
 def test_quarantine_scanner_runtimes_are_executable_after_restrict_self():
     runtime = "/usr/lib/secure-ai/python3.12-venv"
+    policy = yaml.safe_load(POLICY_PATH.read_text(encoding="utf-8"))
+    for service in ("registry", "quarantine", "quarantine_scanner"):
+        entries = {
+            entry["path"]: entry for entry in policy["services"][service]["paths"]
+        }
+        guard = entries["/usr/bin/gguf-guard"]
+        assert guard["access"] == "exe"
+        assert guard["required"] is True
+        assert "/usr/local/bin" not in entries
+
     for service in ("quarantine", "quarantine_scanner"):
         paths = _policy_paths(service)
         assert paths[runtime] == "exe"
-        assert paths["/usr/local/bin"] == "exe"
         assert paths["/usr/bin/env"] == "exe"
         assert "/opt/secure-ai/scanners" not in paths
         assert "/usr/bin/python3" not in paths

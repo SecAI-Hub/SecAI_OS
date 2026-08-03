@@ -247,7 +247,9 @@ jobs:
         run: |
           shellcheck -s bash \
             files/system/usr/libexec/secure-ai/*.sh \
+            files/system/usr/bin/securectl \
             files/scripts/build-services.sh \
+            files/scripts/finalize-release-baseline.sh \
             files/scripts/generate-mok.sh \
             files/scripts/first-boot-check.sh \
             files/scripts/verify-release.sh

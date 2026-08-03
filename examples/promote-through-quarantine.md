@@ -174,7 +174,7 @@ When all stages pass:
    image-owned diffusion lock.
 4. The registry atomically commits the artifact and manifest metadata, or
    rolls both back.
-5. The model appears in `securectl list` and the Web UI only after commit.
+5. The model appears in `secai-registryctl list` and the Web UI only after commit.
 
 ## What Happens on Fail
 

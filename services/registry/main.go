@@ -1856,7 +1856,7 @@ func newRegistryMux() *http.ServeMux {
 }
 
 // ggufGuardBin is the path to the gguf-guard binary for manifest verification.
-const ggufGuardBin = "/usr/local/bin/gguf-guard"
+const ggufGuardBin = "/usr/bin/gguf-guard"
 
 func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

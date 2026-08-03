@@ -81,7 +81,7 @@ SOURCES_ALLOWLIST_PATH = Path(
     os.getenv("SOURCES_ALLOWLIST_PATH", "/etc/secure-ai/policy/sources.allowlist.yaml")
 )
 LLAMA_SERVER_BIN = os.getenv("LLAMA_SERVER_BIN", "/usr/bin/llama-server")
-GGUF_GUARD_BIN = os.getenv("GGUF_GUARD_BIN", "/usr/local/bin/gguf-guard")
+GGUF_GUARD_BIN = os.getenv("GGUF_GUARD_BIN", "/usr/bin/gguf-guard")
 COSIGN_BIN = os.getenv("COSIGN_BIN", "/usr/bin/cosign")
 FICKLING_BIN = os.getenv("FICKLING_BIN", "/usr/local/bin/fickling")
 MODELAUDIT_BIN = os.getenv("MODELAUDIT_BIN", "/usr/local/bin/modelaudit")

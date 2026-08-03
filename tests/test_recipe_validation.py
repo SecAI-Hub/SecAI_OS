@@ -21,6 +21,12 @@ STALE_REPO_PREFLIGHT_PATH = (
 ESCAPED_MOUNT_ENABLE_PATH = (
     Path(__file__).resolve().parent.parent / "files" / "scripts" / "enable-escaped-mount.sh"
 )
+RELEASE_BASELINE_FINALIZER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "files"
+    / "scripts"
+    / "finalize-release-baseline.sh"
+)
 
 
 @pytest.fixture
@@ -95,6 +101,32 @@ class TestBuildPreflight:
         helper = ESCAPED_MOUNT_ENABLE_PATH.read_text(encoding="utf-8")
         assert "mount_unit='run-secure\\x2dai-tmp.mount'" in helper
         assert 'systemctl -f enable "$mount_unit"' in helper
+
+    def test_release_baseline_finalizer_is_offline_and_after_signing(self, recipe):
+        modules = recipe.get("modules", [])
+        signing_indexes = [
+            index
+            for index, module in enumerate(modules)
+            if module.get("type") == "signing"
+        ]
+        finalizer_indexes = [
+            index
+            for index, module in enumerate(modules)
+            if any(
+                "finalize-release-baseline.sh" in snippet
+                for snippet in module.get("snippets", [])
+            )
+        ]
+
+        assert len(signing_indexes) == 1
+        assert len(finalizer_indexes) == 1
+        assert signing_indexes[0] < finalizer_indexes[0] == len(modules) - 1
+        finalizer_module = modules[finalizer_indexes[0]]
+        assert finalizer_module["type"] == "containerfile"
+        assert finalizer_module["snippets"] == [
+            "RUN --network=none /tmp/files/scripts/finalize-release-baseline.sh"
+        ]
+        assert RELEASE_BASELINE_FINALIZER_PATH.is_file()
 
 
 class TestDiffusionDisabledByDefault:

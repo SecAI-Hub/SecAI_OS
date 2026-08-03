@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Public emergency-control entrypoint. Model-registry operations use
+# secai-registryctl so the two incompatible `status` commands cannot collide.
+set -euo pipefail
+umask 077
+
+exec /usr/libexec/secure-ai/securectl "$@"

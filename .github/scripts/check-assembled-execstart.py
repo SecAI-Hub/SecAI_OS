@@ -35,9 +35,9 @@ EXEC_DIRECTIVES = {
 }
 
 BUILD_OUTPUTS = {
+    "/usr/bin/gguf-guard",
     "/usr/bin/llama-server",
-    "/usr/local/bin/gguf-guard",
-    "/usr/local/bin/securectl",
+    "/usr/bin/secai-registryctl",
     *{
         f"/usr/libexec/secure-ai/{name}"
         for name in (

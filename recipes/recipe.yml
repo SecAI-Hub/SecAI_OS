@@ -221,3 +221,10 @@ modules:
   # 8) Install signing policy for cosign-verified images.
   - type: signing
     source: ghcr.io/blue-build/modules/signing:latest@sha256:d534efeb9d04a50c173a35f0a2263398cbda8f7647c86a18f9e5394b35c95005
+
+  # 9) Measure the final release files after the signing module has performed
+  # its deterministic policy rewrite. The explicit network boundary keeps this
+  # source-binding step hermetic; it must remain the final recipe module.
+  - type: containerfile
+    snippets:
+      - RUN --network=none /tmp/files/scripts/finalize-release-baseline.sh

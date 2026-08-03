@@ -355,6 +355,7 @@ def test_directory_hash_is_length_delimited_and_domain_separated(tmp_path):
 
 
 def test_gguf_guard_is_fail_closed_by_default(tmp_path, monkeypatch):
+    assert pipeline.GGUF_GUARD_BIN == "/usr/bin/gguf-guard"
     payload = tmp_path / "model.gguf"
     payload.write_bytes(b"GGUF")
 

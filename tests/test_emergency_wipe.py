@@ -38,6 +38,7 @@ AUDIT_MANIFEST = (
 RECIPE_PATH = REPO_ROOT / "recipes" / "recipe.yml"
 UI_APP_PATH = REPO_ROOT / "services" / "ui" / "ui" / "app.py"
 PANIC_HELPER = SCRIPTS_DIR / "secure-panic.py"
+PUBLIC_SECURECTL = REPO_ROOT / "files" / "system" / "usr" / "bin" / "securectl"
 
 
 def load_panic():
@@ -66,6 +67,7 @@ def secure_panic():
 class TestEmergencyEntrypoints:
     def test_entrypoints_and_helpers_are_executable(self):
         for path in (
+            PUBLIC_SECURECTL,
             SCRIPTS_DIR / "securectl",
             SCRIPTS_DIR / "panic.sh",
             PANIC_HELPER,
@@ -75,11 +77,13 @@ class TestEmergencyEntrypoints:
             assert os.access(path, os.X_OK)
 
     def test_wrappers_only_exec_fixed_helpers(self):
+        public_securectl = PUBLIC_SECURECTL.read_text()
         securectl = (SCRIPTS_DIR / "securectl").read_text()
         compatibility = (SCRIPTS_DIR / "panic.sh").read_text()
+        assert "exec /usr/libexec/secure-ai/securectl" in public_securectl
         assert "exec /usr/libexec/secure-ai/secure-panic.py" in securectl
         assert 'exec /usr/libexec/secure-ai/securectl panic 1 --no-countdown' in compatibility
-        for content in (securectl, compatibility):
+        for content in (public_securectl, securectl, compatibility):
             assert "eval " not in content
             assert "source " not in content
 

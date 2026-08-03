@@ -21,7 +21,7 @@ Environment=DIFFUSION_MODELS_LOCK_PATH=/etc/secure-ai/policy/diffusion-models.lo
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/quarantine-audit.jsonl
 Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
 Environment=LLAMA_SERVER_BIN=/usr/bin/llama-server
-Environment=GGUF_GUARD_BIN=/usr/local/bin/gguf-guard
+Environment=GGUF_GUARD_BIN=/usr/bin/gguf-guard
 Environment=COSIGN_BIN=/usr/bin/cosign
 Environment=FICKLING_BIN=/usr/lib/secure-ai/python3.12-venv/bin/fickling
 Environment=MODELAUDIT_BIN=/usr/lib/secure-ai/python3.12-venv/bin/modelaudit

@@ -95,7 +95,9 @@ def test_quarantine_uses_scanners_from_locked_python312_runtime():
     assert f"Environment=FICKLING_BIN={runtime_bin}/fickling" in unit
     assert f"Environment=MODELAUDIT_BIN={runtime_bin}/modelaudit" in unit
     assert f"Environment=MODELSCAN_BIN={runtime_bin}/modelscan" in unit
+    assert "Environment=GGUF_GUARD_BIN=/usr/bin/gguf-guard" in unit
     assert "Environment=MODELSCAN_BIN=/usr/local/bin/modelscan" not in unit
+    assert "Environment=GGUF_GUARD_BIN=/usr/local/bin/gguf-guard" not in unit
 
 
 def test_boot_karg_sync_does_not_swallow_update_failures():

@@ -14,6 +14,12 @@ import (
 	"testing"
 )
 
+func TestGGUFGuardUsesImmutableImagePath(t *testing.T) {
+	if ggufGuardBin != "/usr/bin/gguf-guard" {
+		t.Fatalf("unexpected gguf-guard path: %q", ggufGuardBin)
+	}
+}
+
 func installTestPolicyBundle(t *testing.T, diffusionLock string) *PolicyBundleEvidence {
 	t.Helper()
 	policyDir := t.TempDir()

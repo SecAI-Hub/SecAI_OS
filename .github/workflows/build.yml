@@ -887,6 +887,14 @@ jobs:
               /usr/bin/cosign-linux-amd64
             test -f /scan-root/usr/bin/cosign-linux-amd64
             test -x /scan-root/usr/bin/cosign-linux-amd64
+            for runtime_binary in \
+              /usr/bin/securectl \
+              /usr/bin/secai-registryctl \
+              /usr/bin/gguf-guard; do
+              test -f "/scan-root${runtime_binary}"
+              test ! -L "/scan-root${runtime_binary}"
+              test -x "/scan-root${runtime_binary}"
+            done
             for package in golang golang-bin golang-src go-filesystem cmake cmake-data gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
               if rpm --dbpath "$rpm_db" -q --quiet -- "$package"; then
                 echo "FATAL: build-only package remains in final image: $package" >&2
@@ -925,6 +933,14 @@ jobs:
                and (.sha256 | test("^[0-9a-f]{64}$"))
                and (.size | type == "number" and . >= 0))' \
             RELEASE_BASELINE.json >/dev/null
+          for required_path in \
+            /usr/bin/securectl \
+            /usr/bin/secai-registryctl \
+            /usr/bin/gguf-guard; do
+            jq -e --arg required_path "$required_path" \
+              'any(.files[]?; .path == $required_path)' \
+              RELEASE_BASELINE.json >/dev/null
+          done
           python3 - <<'PY'
           import hashlib
           import json

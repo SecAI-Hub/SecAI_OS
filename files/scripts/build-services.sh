@@ -209,9 +209,9 @@ if locate_source ai-model-registry \
     /tmp/upstreams/ai-model-registry /tmp/ai-model-registry /tmp/services/registry; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/securectl ./cmd/securectl/
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/secai-registryctl ./cmd/securectl/
     track_binary "${INSTALL_DIR}/registry"
-    track_binary "/usr/local/bin/securectl"
+    track_binary "/usr/bin/secai-registryctl"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- agent-tool-firewall (policy gateway for LLM tool calls) ---
@@ -288,8 +288,8 @@ echo "Building: gguf-guard"
 if locate_source gguf-guard \
     /tmp/upstreams/gguf-guard /tmp/gguf-guard; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/gguf-guard ./cmd/gguf-guard/
-    track_binary "/usr/local/bin/gguf-guard"
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/gguf-guard ./cmd/gguf-guard/
+    track_binary "/usr/bin/gguf-guard"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 if [ "$GO_SKIPPED" -gt 0 ]; then
@@ -692,14 +692,11 @@ REQUIRED_BINARIES=(
     "${PYTHON_RUNTIME_DIR}/bin/fickling"
     "${PYTHON_RUNTIME_DIR}/bin/modelaudit"
     "${PYTHON_RUNTIME_DIR}/bin/searxng-run"
-    "/usr/local/bin/securectl"
+    "/usr/bin/securectl"
+    "/usr/bin/secai-registryctl"
+    "/usr/bin/gguf-guard"
     "/usr/bin/bwrap"
     "/usr/bin/llama-server"
-)
-
-# Optional binaries -- built from external upstreams, may be skipped
-OPTIONAL_BINARIES=(
-    "/usr/local/bin/gguf-guard"
 )
 
 MISSING=0
@@ -718,16 +715,6 @@ if [ "$MISSING" -gt 0 ]; then
     fail_build "${MISSING} required binaries missing -- image build aborted"
 fi
 echo "All ${#REQUIRED_BINARIES[@]} required binaries verified."
-
-# Check optional binaries (warn but don't fail)
-for bin in "${OPTIONAL_BINARIES[@]}"; do
-    if [ -f "$bin" ]; then
-        SIZE=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin" 2>/dev/null || echo "?")
-        printf "  OPTIONAL: %-45s %s bytes\n" "$bin" "$SIZE"
-    else
-        printf "  OPTIONAL MISSING: %s (upstream not pinned)\n" "$bin"
-    fi
-done
 
 # ---------------------------------------------------------------------------
 # Configure container signing policy for cosign-verified SecAI images.
@@ -772,7 +759,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Release-bound expected measurements
+# Operator and optional-runtime helpers measured by the finalizer
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Installing operator and optional-runtime helpers ==="
@@ -788,20 +775,6 @@ for backend in cpu cuda rocm; do
     install -m 0644 "/tmp/files/scripts/diffusion-${backend}.lock" \
         "${INSTALL_DIR}/diffusion-${backend}.lock"
 done
-
-if [ ! -f /tmp/SOURCE_PREP_MANIFEST.json ]; then
-    fail_build "SOURCE_PREP_MANIFEST.json is required to bind integrity measurements"
-fi
-SOURCE_COMMIT="$(
-    python3 -c "
-import json
-with open('/tmp/SOURCE_PREP_MANIFEST.json', encoding='utf-8') as handle:
-    print(json.load(handle)['commit_sha'])
-"
-)"
-python3 /tmp/files/scripts/generate-release-baseline.py \
-    --source-commit "$SOURCE_COMMIT" || \
-    fail_build "release integrity baseline generation failed"
 
 # Cleanup build artifacts (but not build tools -- they come from the recipe)
 rm -rf "$SRC_DIR"

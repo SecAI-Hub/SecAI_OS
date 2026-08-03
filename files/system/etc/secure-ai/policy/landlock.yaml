@@ -112,8 +112,9 @@ services:
         access: ro
       - path: /usr/libexec/secure-ai/registry
         access: exe
-      - path: /usr/local/bin/gguf-guard
+      - path: /usr/bin/gguf-guard
         access: exe
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64
@@ -216,7 +217,7 @@ services:
       - path: /usr/lib/secure-ai/python3.12-venv
         access: exe
         required: true
-      - path: /usr/local/bin
+      - path: /usr/bin/gguf-guard
         access: exe
         required: true
       - path: /usr/lib
@@ -258,7 +259,7 @@ services:
         access: exe
       - path: /usr/bin/cosign
         access: exe
-      - path: /usr/local/bin
+      - path: /usr/bin/gguf-guard
         access: exe
         required: true
       - path: /usr/lib/secure-ai/python3.12-venv

@@ -22,15 +22,15 @@ func init() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `securectl - Secure AI Appliance model management CLI
+	fmt.Fprintf(os.Stderr, `secai-registryctl - Secure AI Appliance model management CLI
 
 Usage:
-  securectl list                     List all models in the trusted registry
-  securectl info <name>              Show details for a model
-  securectl verify <name>            Verify a model's hash against manifest
-  securectl path <name>              Print the filesystem path of a model
-  securectl delete <name>            Remove a model from the registry
-  securectl status                   Show registry service health
+  secai-registryctl list                     List all models in the trusted registry
+  secai-registryctl info <name>              Show details for a model
+  secai-registryctl verify <name>            Verify a model's hash against manifest
+  secai-registryctl path <name>              Print the filesystem path of a model
+  secai-registryctl delete <name>            Remove a model from the registry
+  secai-registryctl status                   Show registry service health
 
 Environment:
   REGISTRY_URL               Registry endpoint (default: http://127.0.0.1:8470)

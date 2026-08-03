@@ -85,7 +85,7 @@ REJECTED: model.gguf — stage=static_scan reason="modelscan flagged suspicious 
 5. Verify the model is in the registry:
 
 ```bash
-securectl list
+secai-registryctl list
 ```
 
 Example output:
@@ -98,7 +98,7 @@ mistral-7b-q4km     gguf    4.4 GB    a1b2c3d4e5f6  2026-03-08T14:30:00Z
 6. Verify the model's integrity:
 
 ```bash
-securectl verify mistral-7b-q4km
+secai-registryctl verify mistral-7b-q4km
 ```
 
 Expected output:
@@ -107,28 +107,29 @@ Expected output:
 VERIFIED: mistral-7b-q4km (sha256=a1b2c3d4e5f6...)
 ```
 
-## Method 4: securectl CLI
+## Method 4: secai-registryctl CLI
 
-The `securectl` tool provides direct registry management:
+The `secai-registryctl` tool provides direct registry management without
+overloading the security-critical `securectl` emergency controller:
 
 ```bash
 # List all models in the registry
-securectl list
+secai-registryctl list
 
 # Show full details for a model
-securectl info mistral-7b-q4km
+secai-registryctl info mistral-7b-q4km
 
 # Verify a model's hash against the manifest
-securectl verify mistral-7b-q4km
+secai-registryctl verify mistral-7b-q4km
 
 # Get the filesystem path
-securectl path mistral-7b-q4km
+secai-registryctl path mistral-7b-q4km
 
 # Check registry health
-securectl status
+secai-registryctl status
 ```
 
-Note: `securectl` talks to the Registry API at `http://127.0.0.1:8470`.
+Note: `secai-registryctl` talks to the Registry API at `http://127.0.0.1:8470`.
 You can override this with the `REGISTRY_URL` environment variable.
 
 ---

@@ -131,7 +131,7 @@ journalctl -u secure-ai-quarantine-watcher.service -f
 4. Once promoted, verify:
 
 ```bash
-securectl list
+secai-registryctl list
 ```
 
 ### Option C: Signed Offline Import Bundle

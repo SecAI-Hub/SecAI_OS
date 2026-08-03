@@ -47,8 +47,9 @@ def candidate_paths() -> list[Path]:
             Path("/etc/containers/registries.d/secai-os.yaml"),
             Path("/etc/pki/containers/secai-cosign.pub"),
             Path("/usr/bin/llama-server"),
-            Path("/usr/local/bin/gguf-guard"),
-            Path("/usr/local/bin/securectl"),
+            Path("/usr/bin/gguf-guard"),
+            Path("/usr/bin/secai-registryctl"),
+            Path("/usr/bin/securectl"),
         }
     )
     return sorted(paths, key=lambda path: path.as_posix())

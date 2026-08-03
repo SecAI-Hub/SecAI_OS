@@ -30,6 +30,20 @@ RELEASE_BASELINE_SCRIPT = (
     / "scripts"
     / "generate-release-baseline.py"
 )
+RELEASE_BASELINE_FINALIZER = (
+    Path(__file__).resolve().parent.parent
+    / "files"
+    / "scripts"
+    / "finalize-release-baseline.sh"
+)
+REGISTRY_CLI_SOURCE = (
+    Path(__file__).resolve().parent.parent
+    / "services"
+    / "registry"
+    / "cmd"
+    / "securectl"
+    / "main.go"
+)
 
 
 @pytest.fixture
@@ -218,6 +232,46 @@ class TestPythonApplicationRuntime:
         assert common_project.is_file()
         assert "install_python_source /tmp/services/common" in build_script_content
         assert "import common.audit_chain, common.auth" in build_script_content
+
+
+class TestFinalReleaseBaseline:
+    """Final measurements must bind immutable paths after policy assembly."""
+
+    def test_generation_happens_only_in_the_finalizer(self, build_script_content):
+        assert "generate-release-baseline.py" not in build_script_content
+        finalizer = RELEASE_BASELINE_FINALIZER.read_text(encoding="utf-8")
+        assert "set -euo pipefail" in finalizer
+        assert '[ ! -f "$required_file" ] || [ -L "$required_file" ]' in finalizer
+        assert 're.fullmatch(r"[0-9a-f]{40}", source_commit)' in finalizer
+        assert 'python3 "$GENERATOR" --source-commit "$source_commit"' in finalizer
+        assert "container signing policy is not reject-by-default" in finalizer
+        assert "container signing policy does not contain the approved SecAI rule" in finalizer
+
+    def test_candidates_use_immutable_image_paths(self, build_script_content):
+        baseline_script = RELEASE_BASELINE_SCRIPT.read_text(encoding="utf-8")
+        for forbidden_root in ("/usr/local", "/var", "/opt", "/tmp"):
+            assert f'Path("{forbidden_root}' not in baseline_script
+
+        required_block = build_script_content.split("REQUIRED_BINARIES=(", 1)[1].split(
+            ")", 1
+        )[0]
+        for required_path in (
+            "/usr/bin/securectl",
+            "/usr/bin/secai-registryctl",
+            "/usr/bin/gguf-guard",
+        ):
+            assert f'"{required_path}"' in required_block
+            assert f'Path("{required_path}")' in baseline_script
+        assert "OPTIONAL_BINARIES" not in build_script_content
+        assert "/usr/local/bin/securectl" not in build_script_content
+        assert "/usr/local/bin/gguf-guard" not in build_script_content
+
+    def test_registry_cli_does_not_shadow_emergency_securectl(self):
+        registry_cli = REGISTRY_CLI_SOURCE.read_text(encoding="utf-8")
+        assert "secai-registryctl - Secure AI Appliance" in registry_cli
+        for command in ("list", "info", "verify", "path", "delete", "status"):
+            assert f"secai-registryctl {command}" in registry_cli
+        assert "securectl - Secure AI Appliance" not in registry_cli
 
 
 class TestHermeticGoBuilds:
