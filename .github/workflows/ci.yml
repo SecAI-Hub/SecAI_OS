@@ -154,15 +154,38 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          # Avoid materializing Linux systemd unit names that are invalid on
-          # Windows while limiting this job to its qualification inputs.
-          sparse-checkout: |
-            .github
-            scripts/sandbox
-            tests
+      # Git for Windows rejects the valid systemd mount-unit escape in the
+      # Linux image tree before sparse checkout filters can be applied. Fetch
+      # only this job's inputs from the exact workflow commit instead.
+      - name: Materialize qualification inputs from the workflow commit
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEC_AI_REPOSITORY: ${{ github.repository }}
+          SEC_AI_REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $headers = @{
+              Accept = "application/vnd.github.raw+json"
+              Authorization = "Bearer $env:GH_TOKEN"
+              "User-Agent" = "SecAI-OS-Windows-Qualification"
+              "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $paths = @(
+              ".github/requirements-windows-sandbox.lock",
+              "scripts/sandbox/control_server.py",
+              "scripts/sandbox/start.ps1",
+              "scripts/sandbox/stop.ps1",
+              "tests/test_sandbox_control_server.py"
+          )
+          foreach ($path in $paths) {
+              $destination = Join-Path $env:GITHUB_WORKSPACE $path
+              New-Item -ItemType Directory -Force `
+                  -Path (Split-Path -Parent $destination) | Out-Null
+              $uri = "https://api.github.com/repos/$env:SEC_AI_REPOSITORY/contents/$path?ref=$env:SEC_AI_REVISION"
+              Invoke-WebRequest -UseBasicParsing -Headers $headers `
+                  -Uri $uri -OutFile $destination
+          }
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
