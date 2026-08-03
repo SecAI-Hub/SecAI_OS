@@ -70,17 +70,10 @@ jobs:
 
       - name: Verify Fedora 44 package availability
         run: |
-          base_ref=$(
-            python3 - <<'PY'
-          import yaml
-
-          with open("recipes/recipe.yml", encoding="utf-8") as handle:
-              recipe = yaml.safe_load(handle)
-          version = str(recipe["image-version"])
-          digest = version.split("@", 1)[1]
-          print(f'{recipe["base-image"]}@{digest}')
-          PY
-          )
+          # The bootc base can exceed Docker's overlay-layer depth even though
+          # BlueBuild/Podman can consume it. Query the same Fedora 44 repos
+          # through a shallow, immutable official Fedora package-check image.
+          package_check_ref="docker.io/library/fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898"
           mapfile -t packages < <(
             python3 - <<'PY'
           import yaml
@@ -97,8 +90,8 @@ jobs:
             echo "::error::Recipe contains no RPM package requirements"
             exit 1
           fi
-          docker pull "$base_ref"
-          docker run --rm --entrypoint /bin/bash "$base_ref" \
+          docker pull "$package_check_ref"
+          docker run --rm --entrypoint /bin/bash "$package_check_ref" \
             -s -- "${packages[@]}" <<'BASH'
           set -euo pipefail
           dnf5 -q makecache --refresh
