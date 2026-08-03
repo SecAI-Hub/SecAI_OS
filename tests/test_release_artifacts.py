@@ -142,9 +142,10 @@ class TestReleaseWorkflowStructure:
         assert "Qualify Local VM Builders (Not Published)" in content
         assert "VM builders qualified; ephemeral images will now be destroyed." in content
 
-    def test_release_files_include_signatures(self):
+    def test_release_signatures_use_pinned_cosign(self):
         content = _read_release_yml()
         assert "*.iso.sig" in content
+        assert content.count("cosign-release: v3.1.1") == 5
 
     def test_manifest_includes_install_artifacts(self):
         content = _read_release_yml()
@@ -257,11 +258,22 @@ class TestBuildWorkflowTrustBoundary:
         assert evidence_job.count("retry_cosign_attest ") == 2
         assert evidence_job.count("retry_cosign_verify ") == 2
         assert '--bundle "$bundle_path"' in evidence_job
+        assert "--with-default-rekor-v2" in evidence_job
+        assert '--signing-config "$signing_config_path"' in evidence_job
+        assert "select(.majorApiVersion == 2)" in evidence_job
+        assert "all(" in evidence_job
+        assert "$rekor_v2[];" in evidence_job
+        assert "[a-z0-9-]+\\\\.rekor\\\\.sigstore\\\\.dev" in evidence_job
+        assert '.kindVersion.kind == "hashedrekord"' in evidence_job
+        assert '.kindVersion.version == "0.0.2"' in evidence_job
+        assert "tlogEntries | type" in evidence_job
         assert "refusing an ambiguous re-upload" in evidence_job
         assert "--timeout 3m --yes" in evidence_job
         assert "--timeout 2m" in evidence_job
         assert "--tlog-upload=false" not in evidence_job
         assert "--insecure-ignore-tlog" not in evidence_job
+        assert "--use-signing-config=false" not in evidence_job
+        assert "--rekor-url" not in evidence_job
         assert evidence_job.count("--key env://COSIGN_PRIVATE_KEY") == 1
         assert (
             "${{ runner.temp }}/secai-attestation-bundles/*.sigstore.json"
@@ -473,10 +485,11 @@ class TestCiWorkflowStructure:
         assert "Release Helper Script Smoke" in content
         assert ".github/scripts/check-release-installers.sh" in content
 
-    def test_ci_syft_usage_comes_from_pinned_action(self):
+    def test_ci_supply_chain_tools_are_pinned(self):
         content = _read_ci_yml()
         assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
         assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
+        assert content.count("cosign-release: v3.1.1") == 1
         assert (
             'for keyword in "SYFT_ARCHIVE_SHA256" "UMOCI_BINARY_SHA256" \\'
             in content
@@ -566,10 +579,77 @@ class TestVerifyReleaseScript:
         assert "custom-python.vex.json" in content
         assert "openvex_structure" in content
 
-    def test_supports_key_archive_directory(self):
+    def test_supports_key_archive_and_enforces_cosign_version_floor(
+        self, tmp_path: Path
+    ):
         content = VERIFY_RELEASE.read_text(encoding="utf-8")
         assert "COSIGN_PUB_KEYS_DIR" in content
         assert "release-keys" in content
+        assert 'readonly COSIGN_MIN_VERSION="3.1.1"' in content
+        assert "cosign version --json" in content
+        assert '.gitVersion | select(type == "string")' in content
+        assert "sort -V" not in content
+
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        _write_executable(
+            fake_bin / "cosign",
+            """#!/bin/sh
+if [ "${1:-}" = version ] && [ "${2:-}" = --json ]; then
+    printf '%s' "${FAKE_COSIGN_VERSION_JSON:-}"
+    exit "${FAKE_COSIGN_VERSION_STATUS:-0}"
+fi
+exit 0
+""",
+        )
+        key_path = tmp_path / "cosign.pub"
+        key_path.write_text("test-only public key\n", encoding="utf-8")
+        image_ref = f"example.test/secai/os@sha256:{'d' * 64}"
+        base_env = os.environ.copy()
+        base_env["PATH"] = f"{fake_bin}:{base_env['PATH']}"
+        base_env["COSIGN_PUB_KEY"] = str(key_path)
+        base_env["COSIGN_PUB_KEYS_DIR"] = str(tmp_path / "missing-key-archive")
+        base_env["SHA256SUMS_FILE"] = str(tmp_path / "missing-SHA256SUMS")
+
+        def run_with_version(version_json: str, status: int = 0):
+            env = base_env.copy()
+            env["FAKE_COSIGN_VERSION_JSON"] = version_json
+            env["FAKE_COSIGN_VERSION_STATUS"] = str(status)
+            return subprocess.run(
+                ["bash", str(VERIFY_RELEASE), image_ref],
+                cwd=tmp_path,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+
+        for version in ("v3.1.1", "v3.1.1+vendor.1", "v3.2.0", "v4.0.0"):
+            result = run_with_version(json.dumps({"gitVersion": version}))
+            assert result.returncode == 1, (version, result.stderr)
+            assert "Step 1/5" in result.stdout
+
+        rejected_metadata = (
+            json.dumps({"gitVersion": "v3.1.0"}),
+            json.dumps({"gitVersion": "v3.1.1-rc.1"}),
+            json.dumps({"gitVersion": "v03.1.1"}),
+            json.dumps({"gitVersion": "v3.1.1+vendor..1"}),
+            json.dumps({"gitVersion": "devel"}),
+            json.dumps({"gitVersion": 311}),
+            json.dumps({"gitCommit": "missing-version"}),
+            "{malformed",
+            "",
+        )
+        for version_json in rejected_metadata:
+            result = run_with_version(version_json)
+            assert result.returncode == 2, (version_json, result.stderr)
+            assert "Step 1/5" not in result.stdout
+
+        result = run_with_version(json.dumps({"gitVersion": "v3.1.1"}), 7)
+        assert result.returncode == 2, result.stderr
+        assert "Step 1/5" not in result.stdout
 
 
 class TestBootstrapScript:

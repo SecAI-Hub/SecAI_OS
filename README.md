@@ -180,6 +180,9 @@ See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual ri
 
 ### Verify Image Signatures
 
+Install stable Cosign 3.1.1 or newer to verify the Rekor v2-backed image
+attestations produced by the release workflow.
+
 ```bash
 cosign verify --key cosign.pub \
   ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
@@ -271,6 +274,8 @@ artifacts. CI builds ephemeral VM images for qualification and destroys them.
 
 ### Verify a Release
 
+Full release verification requires stable Cosign 3.1.1 or newer.
+
 ```bash
 # Download and verify checksums
 curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/latest/download/SHA256SUMS -o SHA256SUMS
@@ -278,8 +283,8 @@ curl -sSfL https://github.com/SecAI-Hub/SecAI_OS/releases/latest/download/SHA256
 cosign verify-blob --key cosign.pub --signature SHA256SUMS.sig SHA256SUMS
 sha256sum -c SHA256SUMS
 
-# Or use the Makefile (clones repo, runs full verification)
-make verify-release
+# Or use the Makefile from this repository with the published image digest
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 See [docs/sample-release-bundle.md](docs/sample-release-bundle.md) for the full artifact structure and [docs/release-policy.md](docs/release-policy.md) for release channels (stable/candidate/dev).

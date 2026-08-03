@@ -168,24 +168,25 @@ journalctl -u 'secure-ai-*' --since "1 hour ago" --no-pager
 
 ### cosign — Image Signature Verification
 
-Verify the container image was signed by the expected identity:
+Verify the container image and provenance with the shipped SecAI OS public key:
+
+Use stable Cosign 3.1.1 or newer so Rekor v2-backed attestations are supported.
 
 ```bash
 # Verify image signature
 cosign verify \
-  --certificate-identity-regexp=".*SecAI-Hub.*" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/secai-hub/secai_os:latest
+  --key cosign.pub \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Verify SLSA provenance attestation
 cosign verify-attestation \
-  --type slsa \
-  --certificate-identity-regexp=".*SecAI-Hub.*" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-  ghcr.io/secai-hub/secai_os:latest
+  --type slsaprovenance \
+  --key cosign.pub \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
-Expected: verification succeeds with no errors. Output shows the signing certificate chain.
+Expected: verification succeeds with no errors and reports signatures valid for
+the shipped public key and transparency-log evidence.
 
 ### SBOM Generation (per service)
 
@@ -268,6 +269,9 @@ sha256sum -c SHA256SUMS
 
 For a single-command verification of all supply-chain artifacts, use the `verify-release.sh` script:
 
+The script requires stable Cosign 3.1.1 or newer and rejects older,
+prerelease, or unparseable clients before verification begins.
+
 ```bash
 # Download release artifacts
 mkdir release && cd release
@@ -281,14 +285,16 @@ cp /path/to/cosign.pub .
 # public keys.
 
 # Run full verification (colored terminal output)
-../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+../files/scripts/verify-release.sh \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Generate a human-readable report file
 ../files/scripts/verify-release.sh --report verification-report.txt \
-  ghcr.io/secai-hub/secai_os:v1.0.0
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Machine-readable JSON output (for CI pipelines or tooling)
-../files/scripts/verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
+../files/scripts/verify-release.sh --json \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 provenance attestation, SHA256 checksums, and the structural validity of `custom-python.vex.json` when that OpenVEX file is present in the release bundle. See `files/scripts/verify-release.sh --help` for configuration options.
@@ -296,7 +302,7 @@ The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 prov
 Or via Make:
 
 ```bash
-make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ### Forensic Bundle Integrity
@@ -482,7 +488,7 @@ done
 echo "[6/6] Release artifact verification..."
 if [ -f SHA256SUMS ]; then
   files/scripts/verify-release.sh --report /tmp/secai-verify-report.txt \
-    ghcr.io/secai-hub/secai_os:latest
+    ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
   echo "Report: /tmp/secai-verify-report.txt"
 else
   echo "SKIP: No release artifacts found (download with 'gh release download')"

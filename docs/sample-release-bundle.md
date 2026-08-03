@@ -292,12 +292,15 @@ Example provenance predicate (abbreviated):
 
 ## Verification Commands
 
+Use stable Cosign 3.1.1 or newer, the supported verifier for the Rekor v2
+transparency-log entries used by current SecAI OS image attestations.
+
 ### 1. Verify image signature
 
 ```bash
 cosign verify \
   --key cosign.pub \
-  ghcr.io/secai-hub/secai_os:v1.0.0
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ### 2. Verify SBOM attestation
@@ -306,7 +309,7 @@ cosign verify \
 cosign verify-attestation \
   --type cyclonedx \
   --key cosign.pub \
-  ghcr.io/secai-hub/secai_os:v1.0.0
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ### 3. Verify SLSA provenance attestation
@@ -315,7 +318,7 @@ cosign verify-attestation \
 cosign verify-attestation \
   --type slsaprovenance \
   --key cosign.pub \
-  ghcr.io/secai-hub/secai_os:v1.0.0
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ### 4. Verify SHA256SUMS signature
@@ -350,6 +353,8 @@ diff /tmp/fresh.json /tmp/released.json
 
 For a streamlined verification workflow, use `files/scripts/verify-release.sh`:
 
+The script requires stable Cosign 3.1.1 or newer.
+
 ```bash
 # Download release artifacts into a directory
 mkdir release && cd release
@@ -362,16 +367,19 @@ cp /path/to/cosign.pub .
 # archived public keys in ./release-keys/ or set COSIGN_PUB_KEYS_DIR.
 
 # Run full verification (colored terminal output)
-../files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.0.0
+../files/scripts/verify-release.sh \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Save a human-readable report
-../files/scripts/verify-release.sh --report report.txt ghcr.io/secai-hub/secai_os:v1.0.0
+../files/scripts/verify-release.sh --report report.txt \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Machine-readable JSON (for CI pipelines or tooling)
-../files/scripts/verify-release.sh --json ghcr.io/secai-hub/secai_os:v1.0.0
+../files/scripts/verify-release.sh --json \
+  ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
 # Or via Make target from the repo root
-make verify-release IMAGE=ghcr.io/secai-hub/secai_os:v1.0.0
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 The script prints PASS/FAIL for each step, validates `custom-python.vex.json` when it is present, and exits non-zero if any check fails. See `--help` for configuration options.
@@ -382,49 +390,51 @@ A successful `verify-release.sh` run produces output like:
 
 ```
 === SecAI_OS Release Verification ===
-Image: ghcr.io/secai-hub/secai_os:v1.0.0
+Image: ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 
-[1/4] Verifying image signature (cosign)...
-  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+[INFO] Step 1/5: Verifying cosign image signature...
+  Verification for ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST --
   The following checks were performed on each of these signatures:
     - The cosign claims were validated
     - The signatures were verified against the specified public key
   [PASS] Image signature verified
 
-[2/4] Verifying CycloneDX SBOM attestation...
-  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+[INFO] Step 2/5: Verifying CycloneDX SBOM attestation...
+  Verification for ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST --
   The following checks were performed on each of these signatures:
     - The cosign claims were validated
     - The signatures were verified against the specified public key
   [PASS] SBOM attestation verified
 
-[3/4] Verifying SLSA3 provenance attestation...
-  Verification for ghcr.io/secai-hub/secai_os:v1.0.0 --
+[INFO] Step 3/5: Verifying SLSA provenance attestation...
+  Verification for ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST --
   The following checks were performed on each of these signatures:
     - The cosign claims were validated
     - The signatures were verified against the specified public key
   [PASS] Provenance attestation verified
 
-[4/4] Verifying SHA256SUMS (local artifacts)...
+[INFO] Step 4/5: Verifying signed SHA256 checksums and release metadata...
   airlock-linux-amd64: OK
   airlock-linux-arm64: OK
   registry-linux-amd64: OK
   ... (18 artifacts verified)
   [PASS] All checksums match
 
+[INFO] Step 5/5: Verifying install artifact signatures (if present)...
+  [PASS] Install artifact signatures verified
+
 === Results ===
-  4/4 checks passed
+  All verification checks passed
   Status: ALL VERIFIED
 ```
 
 A failed run exits with code 1 and clearly identifies which step failed:
 
 ```
-[1/4] Verifying image signature (cosign)...
-  Error: no matching signatures: crypto/rsa: verification error
+[INFO] Step 1/5: Verifying cosign image signature...
   [FAIL] Image signature verification FAILED
 
 === Results ===
-  0/4 checks passed
+  One or more verification checks failed
   Status: VERIFICATION FAILED — do not trust this release
 ```

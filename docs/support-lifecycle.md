@@ -112,7 +112,7 @@ Sandbox deployments are supported for **evaluation only**. Known limitations:
 | Python | 3.12/3.14 | Yes (service locks and images) | Quarantine stays on Python 3.12 while scanner metadata requires it; sandbox UI, agent, search, and diffusion images use patched Python 3.14.5 runtimes where compatible. |
 | llama.cpp | Latest stable | Via build | LLM inference engine |
 | Flask | 3.x | Via pip | Web UI framework |
-| cosign | 2.4.x | Via release workflow | Image/artifact signing |
+| cosign | 3.1.1+ | Yes (CI pins 3.1.1) | Minimum supported verifier for Rekor v2-backed image attestations |
 | Syft | Latest stable | Via CI | SBOM generation |
 
 ### Inference Backends

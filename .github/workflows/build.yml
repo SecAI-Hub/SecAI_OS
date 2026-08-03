@@ -1008,6 +1008,32 @@ jobs:
           fi
           install -d -m 0700 "$attestation_bundle_dir"
 
+          readonly signing_config_path="${attestation_bundle_dir}/signing-config.json"
+          cosign signing-config create \
+            --with-default-rekor-v2 \
+            --out "$signing_config_path"
+          if [ ! -f "$signing_config_path" ] || [ ! -s "$signing_config_path" ] || [ -L "$signing_config_path" ]; then
+            echo "::error::Cosign did not create a safe, non-empty signing config" >&2
+            exit 1
+          fi
+          jq -e '
+            .mediaType == "application/vnd.dev.sigstore.signingconfig.v0.2+json"
+            and .rekorTlogConfig.selector == "ANY"
+            and (.rekorTlogUrls | type == "array" and length > 0)
+            and (
+              [.rekorTlogUrls[] | select(.majorApiVersion == 2)] as $rekor_v2
+              | ($rekor_v2 | length) > 0
+                and all(
+                  $rekor_v2[];
+                  (.url | type == "string")
+                  and (.url | test("^https://[a-z0-9-]+\\.rekor\\.sigstore\\.dev$"))
+                  and .operator == "sigstore.dev"
+                )
+            )
+            and (.tsaUrls | type == "array" and length > 0)
+            and .tsaConfig.selector == "ANY"
+          ' "$signing_config_path" >/dev/null
+
           retry_cosign_attest() {
             local predicate_type=$1
             local predicate_file=$2
@@ -1025,10 +1051,24 @@ jobs:
                 --type "$predicate_type" \
                 --predicate "$predicate_file" \
                 --bundle "$bundle_path" \
+                --signing-config "$signing_config_path" \
                 --key env://COSIGN_PRIVATE_KEY \
                 "$PINNED_REF"; then
                 if [ ! -f "$bundle_path" ] || [ ! -s "$bundle_path" ] || [ -L "$bundle_path" ]; then
                   echo "::error::Cosign did not create a safe, non-empty ${predicate_type} attestation bundle" >&2
+                  return 1
+                fi
+                if ! jq -e '
+                  .mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json"
+                  and (.verificationMaterial.tlogEntries | type == "array" and length > 0)
+                  and all(
+                    .verificationMaterial.tlogEntries[];
+                    (.kindVersion | type == "object")
+                    and .kindVersion.kind == "hashedrekord"
+                    and .kindVersion.version == "0.0.2"
+                  )
+                ' "$bundle_path" >/dev/null; then
+                  echo "::error::Cosign created a ${predicate_type} bundle without a Rekor v2 hashedrekord entry" >&2
                   return 1
                 fi
                 return 0

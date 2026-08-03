@@ -12,7 +12,7 @@
 #   5. Signed install media, release manifest, and readiness evidence
 #
 # Prerequisites:
-#   - cosign   (https://docs.sigstore.dev/cosign/overview/)
+#   - cosign >= 3.1.1 (https://docs.sigstore.dev/cosign/overview/)
 #   - jq       (for JSON output parsing and OpenVEX validation)
 #   - sha256sum (coreutils)
 #
@@ -39,6 +39,7 @@ COSIGN_PUB_KEYS_DIR="${COSIGN_PUB_KEYS_DIR:-./release-keys}"
 SHA256SUMS_FILE="${SHA256SUMS_FILE:-./SHA256SUMS}"
 RELEASE_MANIFEST_FILE="${RELEASE_MANIFEST_FILE:-./RELEASE_MANIFEST.json}"
 RELEASE_READINESS_FILE="${RELEASE_READINESS_FILE:-./RELEASE_READINESS.json}"
+readonly COSIGN_MIN_VERSION="3.1.1"
 
 # ---------------------------------------------------------------------------
 # Colour helpers (disabled when stdout is not a terminal)
@@ -67,6 +68,20 @@ CHECKS=()
 STARTED_AT=""
 KEY_FILES=()
 LAST_SUCCESS_KEY=""
+
+cosign_version_is_supported() {
+    local raw_version="$1"
+    local version_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+    if [[ ! "$raw_version" =~ $version_re ]]; then
+        return 1
+    fi
+    local major="${BASH_REMATCH[1]}"
+    local minor="${BASH_REMATCH[2]}"
+    local patch="${BASH_REMATCH[3]}"
+    (( major > 3 ||
+       (major == 3 && minor > 1) ||
+       (major == 3 && minor == 1 && patch >= 1) ))
+}
 
 # Record a check result for structured output
 record_check() {
@@ -158,6 +173,9 @@ Options:
   --help          Show this help message and exit
   --json          Print machine-readable JSON summary to stdout
   --report FILE   Write a human-readable verification report to FILE
+
+Requirements:
+  cosign 3.1.1 or newer (stable release) for Rekor v2 attestations
 
 Environment variables:
   COSIGN_PUB_KEY    Path to cosign public key  (default: ./cosign.pub)
@@ -267,6 +285,24 @@ for cmd in cosign jq sha256sum; do
         missing_prereqs=1
     fi
 done
+
+if command -v cosign >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    cosign_version_json=""
+    cosign_git_version=""
+    if ! cosign_version_json="$(cosign version --json 2>/dev/null)"; then
+        fail "Unable to query Cosign version; stable Cosign v${COSIGN_MIN_VERSION} or newer is required for Rekor v2"
+        missing_prereqs=1
+    elif ! cosign_git_version="$(
+        jq -er '.gitVersion | select(type == "string")' \
+            <<<"$cosign_version_json"
+    )"; then
+        fail "Cosign returned invalid version metadata; stable Cosign v${COSIGN_MIN_VERSION} or newer is required for Rekor v2"
+        missing_prereqs=1
+    elif ! cosign_version_is_supported "$cosign_git_version"; then
+        fail "Unsupported Cosign version ${cosign_git_version}; stable Cosign v${COSIGN_MIN_VERSION} or newer is required for Rekor v2"
+        missing_prereqs=1
+    fi
+fi
 
 collect_key_files
 if [[ ${#KEY_FILES[@]} -eq 0 ]]; then

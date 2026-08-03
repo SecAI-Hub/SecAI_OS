@@ -101,7 +101,7 @@ git push origin v1.2.3-rc.1
 - [ ] Run negative egress, update-signature, quarantine-boundary, and service-auth tests
 - [ ] Complete encrypted backup/restore and update/rollback drills
 - [ ] Complete [production-readiness checklist](production-readiness-checklist.md)
-- [ ] Verify supply chain: `files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os:v1.2.3-rc.1`
+- [ ] Verify supply chain: `files/scripts/verify-release.sh ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST`
 
 ### 4. Promote to Stable
 
@@ -117,7 +117,7 @@ git push origin v1.2.3
 ### 5. Post-Release
 
 - [ ] Verify GitHub Release is published with all artifacts
-- [ ] Verify image is available: `cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:v1.2.3`
+- [ ] Verify the certified digest is available: `cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST`
 - [ ] Update any external references
 - [ ] Announce release
 

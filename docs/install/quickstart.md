@@ -289,7 +289,7 @@ Get-Content SHA256SUMS
 
 For advanced verification (cosign detached signatures, SLSA3 provenance attestation), see [sample-release-bundle.md](../sample-release-bundle.md) or run:
 ```bash
-make verify-release
+make verify-release IMAGE=ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 ---

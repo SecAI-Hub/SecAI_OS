@@ -12,7 +12,7 @@ Last updated: 2026-08-02
 | Language | Test Count | Runner |
 |----------|-----------|--------|
 | Go | 506 | `go test -race ./...` |
-| Python | 1568 | `pytest` |
+| Python | 1598 | `pytest` |
 | Shell | CI-scoped scripts plus Makefile target for all repo shell scripts | `shellcheck` |
 
 ## Go Tests (506 total)
@@ -30,7 +30,7 @@ Last updated: 2026-08-02
 | Incident Recorder | services/incident-recorder/ | 108 | Incident creation, auto-containment, lifecycle management, severity ranking, policy loading, containment execution, enforcement chain integration, recovery ceremony, severity escalation, forensic bundle export (M43), persistence durability (fsync) |
 | UI Ingress | services/ui-ingress/ | 6 | Uncredentialed fixed-route TCP relay, bounded connections, dual UI/controller health validation, protocol identity, and failure behavior |
 
-## Python Tests (1568 total)
+## Python Tests (1598 total)
 
 | Test File | Location | Tests | Description |
 |-----------|----------|-------|-------------|

@@ -85,7 +85,7 @@ Last updated: 2026-08-02
 
 | Language | Current Automated Tests | Source of Truth |
 |----------|--------------------------|-----------------|
-| Python | 1568 | `docs/test-counts.json` and `pytest --collect-only` |
+| Python | 1598 | `docs/test-counts.json` and `pytest --collect-only` |
 | Go | 506 | `docs/test-counts.json` and `go test -v -count=1 ./...` |
 | **Total** | **2074** | Enforced by `.github/scripts/check-test-counts.sh` |
 

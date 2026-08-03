@@ -11,12 +11,12 @@ how to set up your development environment, run tests, and submit changes.
 | Python | 3.12+ recommended | Build Python services. Quarantine package metadata still allows 3.11 for scanner compatibility. |
 | shellcheck | Latest | Lint shell scripts |
 | git | 2.x | Version control |
+| cosign | 3.1.1+ | Verify Rekor v2-backed image attestations |
 
 Optional but recommended:
 
 - `gofmt` (included with Go) for formatting Go code.
 - `pip` or a virtual-environment manager (`venv`, `uv`) for Python dependencies.
-- `cosign` for verifying container image signatures.
 
 ## Local Development Setup
 
@@ -75,7 +75,7 @@ for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
 done
 ```
 
-### Python Tests (1426 collected tests)
+### Python Tests (1598 collected tests)
 
 ```bash
 python -m pip install --require-hashes -r requirements-ci.lock
@@ -107,7 +107,7 @@ for svc in airlock registry tool-firewall gpu-integrity-watch mcp-firewall \
   (cd "services/$svc" && go test -v -race ./...)
 done
 
-# Python (1426 collected tests)
+# Python (1598 collected tests)
 PYTHONPATH=services python -m pytest tests/ -v
 
 # Type check
