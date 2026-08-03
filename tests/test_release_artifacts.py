@@ -267,6 +267,8 @@ class TestBuildWorkflowTrustBoundary:
             "${{ runner.temp }}/secai-attestation-bundles/*.sigstore.json"
             in evidence_job
         )
+        assert "Upload Sigstore attestation bundles" in evidence_job
+        assert "name: image-attestation-bundles" in evidence_job
         assert "Generate GitHub image provenance" in evidence_job
         assert "Upload image digest artifact" in evidence_job
 
