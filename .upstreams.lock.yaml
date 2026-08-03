@@ -22,6 +22,7 @@ upstreams:
   searxng:
     upstream_url: https://github.com/searxng/searxng.git
     pinned_commit: b060c780d0751a55e75ad22f0d930c8965789db8
+    commit_timestamp: "2026-07-26T16:53:10Z"
     archive_sha256: 503fb3eb387a7a858d3fa438af54822fce1163803657e775a7dfe7abbf7c8aa6
     local_path: upstreams/searxng
     license: AGPL-3.0-or-later

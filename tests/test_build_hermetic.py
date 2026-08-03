@@ -21,7 +21,15 @@ from pathlib import Path
 
 import pytest
 
-BUILD_SCRIPT = Path(__file__).resolve().parent.parent / "files" / "scripts" / "build-services.sh"
+BUILD_SCRIPT = (
+    Path(__file__).resolve().parent.parent / "files" / "scripts" / "build-services.sh"
+)
+RELEASE_BASELINE_SCRIPT = (
+    Path(__file__).resolve().parent.parent
+    / "files"
+    / "scripts"
+    / "generate-release-baseline.py"
+)
 
 
 @pytest.fixture
@@ -54,7 +62,7 @@ class TestNoNetworkClones:
             if line.startswith("echo ") or line.startswith('"') or "echo " in line:
                 continue
             # git clone as an actual command (not inside a function override)
-            if re.match(r'.*\bgit\s+clone\b', line):
+            if re.match(r".*\bgit\s+clone\b", line):
                 # Check it's inside the hermetic guard
                 if 'if [ "$1" = "clone" ]' in line:
                     continue
@@ -73,13 +81,16 @@ class TestLlamaCppChecksum:
 
     def test_llama_cpp_sha256_exists(self, build_script_content):
         """LLAMA_CPP_SHA256 variable must be defined."""
-        assert "LLAMA_CPP_SHA256" in build_script_content, \
+        assert "LLAMA_CPP_SHA256" in build_script_content, (
             "build-services.sh must define LLAMA_CPP_SHA256 for tarball verification"
+        )
 
     def test_sha256_verification_present(self, build_script_content):
         """sha256sum verification must be called on the llama.cpp tarball."""
-        assert "sha256sum" in build_script_content or "sha256" in build_script_content.lower(), \
-            "build-services.sh must verify llama.cpp tarball checksum"
+        assert (
+            "sha256sum" in build_script_content
+            or "sha256" in build_script_content.lower()
+        ), "build-services.sh must verify llama.cpp tarball checksum"
 
 
 class TestNoBareNetworkFetches:
@@ -93,14 +104,18 @@ class TestNoBareNetworkFetches:
             if "fail_build" in line and "curl" in line:
                 continue
             # Skip the llama.cpp download (allowed with checksum verification)
-            if "llama.cpp" in line.lower() or "LLAMA_CPP" in line or "LLAMA_TARBALL" in line:
+            if (
+                "llama.cpp" in line.lower()
+                or "LLAMA_CPP" in line
+                or "LLAMA_TARBALL" in line
+            ):
                 continue
             if "curl()" in line:  # function definition
                 continue
             # Skip echo/string output (not actual commands)
             if line.startswith("echo ") or line.startswith('"'):
                 continue
-            if re.match(r'.*\bcurl\s+-', line) or re.match(r'.*\bcurl\s+http', line):
+            if re.match(r".*\bcurl\s+-", line) or re.match(r".*\bcurl\s+http", line):
                 pytest.fail(f"Found bare curl fetch: {line}")
 
     def test_no_bare_wget(self, build_script_content):
@@ -111,7 +126,7 @@ class TestNoBareNetworkFetches:
                 continue
             if "wget()" in line:
                 continue
-            if re.match(r'.*\bwget\b', line):
+            if re.match(r".*\bwget\b", line):
                 pytest.fail(f"Found wget command: {line}")
 
 
@@ -122,14 +137,14 @@ class TestNoDnfInBuildScript:
         """No dnf install commands (deps come from recipe rpm-ostree)."""
         lines = _non_comment_lines(build_script_content)
         for line in lines:
-            if re.match(r'.*\bdnf\s+install\b', line):
+            if re.match(r".*\bdnf\s+install\b", line):
                 pytest.fail(f"Found dnf install in build script: {line}")
 
     def test_no_yum_install(self, build_script_content):
         """No yum install commands."""
         lines = _non_comment_lines(build_script_content)
         for line in lines:
-            if re.match(r'.*\byum\s+install\b', line):
+            if re.match(r".*\byum\s+install\b", line):
                 pytest.fail(f"Found yum install in build script: {line}")
 
 
@@ -153,15 +168,69 @@ class TestHermeticPythonInstalls:
                 pass  # Allowed — PIP_NO_INDEX env var handles this
 
 
+class TestPythonApplicationRuntime:
+    """The image must consume the CPython 3.12 wheelhouse with CPython 3.12."""
+
+    def test_uses_an_exact_isolated_python312_runtime(self, build_script_content):
+        assert (
+            'PYTHON_RUNTIME_DIR="/usr/lib/secure-ai/python3.12-venv"'
+            in build_script_content
+        )
+        assert "/usr/bin/python3.12 -m venv --copies --clear" in build_script_content
+        assert (
+            'PYTHON_BIN="${PYTHON_RUNTIME_DIR}/bin/python3.12"' in build_script_content
+        )
+        assert '"${PYTHON_BIN}" -m pip install' in build_script_content
+
+    def test_never_installs_application_packages_with_system_pip(
+        self, build_script_content
+    ):
+        lines = _non_comment_lines(build_script_content)
+        assert not any(re.search(r"\bpip3\s+install\b", line) for line in lines)
+        assert "--prefix=/usr" not in build_script_content
+        assert "--break-system-packages" not in build_script_content
+        assert "--only-binary=:all:" in build_script_content
+
+    def test_runtime_is_symlink_free_and_release_measured(self, build_script_content):
+        assert (
+            'find "${PYTHON_RUNTIME_DIR}" -type l -print -quit' in build_script_content
+        )
+        baseline_script = RELEASE_BASELINE_SCRIPT.read_text(encoding="utf-8")
+        assert 'Path("/usr/lib/secure-ai/python3.12-venv")' in baseline_script
+
+    def test_service_entrypoints_use_the_exact_runtime(self, build_script_content):
+        shebang = "#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12"
+        assert build_script_content.count(shebang) == 3
+        assert (
+            build_script_content.count(
+                "exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn"
+            )
+            == 2
+        )
+
+    def test_shared_security_primitives_are_installed(self, build_script_content):
+        common_project = (
+            Path(__file__).resolve().parent.parent
+            / "services"
+            / "common"
+            / "pyproject.toml"
+        )
+        assert common_project.is_file()
+        assert "install_python_source /tmp/services/common" in build_script_content
+        assert "import common.audit_chain, common.auth" in build_script_content
+
+
 class TestHermeticGoBuilds:
     """Go builds must use -mod=vendor."""
 
     def test_goflags_mod_vendor(self, build_script_content):
         """GOFLAGS=-mod=vendor must be set in hermetic mode."""
-        assert "GOFLAGS" in build_script_content and "mod=vendor" in build_script_content, \
-            "Hermetic mode must set GOFLAGS=-mod=vendor"
+        assert (
+            "GOFLAGS" in build_script_content and "mod=vendor" in build_script_content
+        ), "Hermetic mode must set GOFLAGS=-mod=vendor"
 
     def test_goproxy_off(self, build_script_content):
         """GOPROXY=off must be set in hermetic mode."""
-        assert "GOPROXY=off" in build_script_content, \
+        assert "GOPROXY=off" in build_script_content, (
             "Hermetic mode must set GOPROXY=off"
+        )

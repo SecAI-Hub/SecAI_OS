@@ -70,22 +70,25 @@ class TestExecStartPointsToWrapper:
         assert exec_start is not None, f"{unit_name} missing ExecStart"
 
         # Must NOT directly invoke python3
-        assert not exec_start.startswith("/usr/bin/python3"), \
+        assert not exec_start.startswith("/usr/bin/python3"), (
             f"{unit_name} ExecStart should use wrapper, not python3 directly: {exec_start}"
+        )
 
         # For diffusion: if disabled with placeholder, the ExecStart may be a
         # failing placeholder — that's acceptable
         if unit_name == "secure-ai-diffusion.service":
             # Either points to wrapper or is a placeholder
-            assert config["wrapper"] in exec_start or \
-                "not configured" in exec_start.lower() or \
-                "secai-enable-diffusion" in exec_start or \
-                "/bin/false" in exec_start or \
-                "echo" in exec_start, \
-                f"{unit_name} ExecStart unexpected: {exec_start}"
+            assert (
+                config["wrapper"] in exec_start
+                or "not configured" in exec_start.lower()
+                or "secai-enable-diffusion" in exec_start
+                or "/bin/false" in exec_start
+                or "echo" in exec_start
+            ), f"{unit_name} ExecStart unexpected: {exec_start}"
         else:
-            assert config["wrapper"] in exec_start, \
+            assert config["wrapper"] in exec_start, (
                 f"{unit_name} ExecStart should reference {config['wrapper']}: {exec_start}"
+            )
 
 
 class TestTimeoutStopSec:
@@ -97,8 +100,9 @@ class TestTimeoutStopSec:
         timeout = _parse_unit_value(content, "TimeoutStopSec")
         assert timeout is not None, f"{unit_name} missing TimeoutStopSec"
         timeout_val = int(timeout)
-        assert timeout_val >= config["min_timeout_stop"], \
+        assert timeout_val >= config["min_timeout_stop"], (
             f"{unit_name} TimeoutStopSec={timeout_val} too low (min {config['min_timeout_stop']})"
+        )
 
 
 class TestAgentExcludedFromGunicorn:
@@ -107,8 +111,9 @@ class TestAgentExcludedFromGunicorn:
     def test_agent_not_using_gunicorn(self):
         content = _read_unit("secure-ai-agent.service")
         exec_start = _parse_unit_value(content, "ExecStart")
-        assert "gunicorn" not in (exec_start or "").lower(), \
+        assert "gunicorn" not in (exec_start or "").lower(), (
             "Agent service should NOT use gunicorn (keeps make_server)"
+        )
 
 
 class TestOsVmGunicornRuntimeDefaults:
@@ -125,13 +130,26 @@ class TestOsVmGunicornRuntimeDefaults:
     def test_search_wrapper_defaults_to_single_worker(self):
         content = BUILD_SCRIPT.read_text(encoding="utf-8")
         search_wrapper = content.split(
-            'cat > "${INSTALL_DIR}/search-mediator" <<\'WRAPPER\'', 1
+            "cat > \"${INSTALL_DIR}/search-mediator\" <<'WRAPPER'", 1
         )[1].split("\nWRAPPER", 1)[0]
         assert "--workers 1" in search_wrapper
 
     def test_search_unit_forces_single_worker(self):
         content = _read_unit("secure-ai-search-mediator.service")
         assert "Environment=GUNICORN_WORKERS=1" in content
+
+    def test_os_wrappers_use_locked_python312_gunicorn(self):
+        content = BUILD_SCRIPT.read_text(encoding="utf-8")
+        locked_gunicorn = "/usr/lib/secure-ai/python3.12-venv/bin/gunicorn"
+        ui_wrapper = content.split("cat > \"${INSTALL_DIR}/ui\" <<'WRAPPER'", 1)[
+            1
+        ].split("\nWRAPPER", 1)[0]
+        search_wrapper = content.split(
+            "cat > \"${INSTALL_DIR}/search-mediator\" <<'WRAPPER'", 1
+        )[1].split("\nWRAPPER", 1)[0]
+        assert f"exec {locked_gunicorn}" in ui_wrapper
+        assert f"exec {locked_gunicorn}" in search_wrapper
+        assert "/usr/lib/python3/site-packages" not in ui_wrapper
 
     def test_diffusion_wrapper_sets_utf8_locale(self):
         content = BUILD_SCRIPT.read_text(encoding="utf-8")
@@ -146,6 +164,7 @@ class TestModuleExportsApp:
         sys.path.insert(0, str(REPO_ROOT / "services"))
         try:
             from ui.app import app
+
             assert app is not None
             assert callable(app)
         except ImportError as e:
@@ -164,6 +183,7 @@ class TestModuleExportsApp:
             app_file = sm_path / "app.py"
             if app_file.exists():
                 import importlib.util
+
                 spec = importlib.util.spec_from_file_location("sm_app", str(app_file))
                 mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(mod)
@@ -182,6 +202,7 @@ class TestModuleExportsApp:
             pytest.skip("diffusion-worker app.py not found")
         try:
             import importlib.util
+
             spec = importlib.util.spec_from_file_location("dw_app", str(app_file))
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)

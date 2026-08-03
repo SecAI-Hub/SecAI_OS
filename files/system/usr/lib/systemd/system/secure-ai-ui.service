@@ -8,7 +8,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/secure-ai/ui
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require ui -- /usr/libexec/secure-ai/ui
 Environment=BIND_ADDR=127.0.0.1:8480
 Environment=INFERENCE_URL=http://127.0.0.1:8465
 Environment=REGISTRY_URL=http://127.0.0.1:8470

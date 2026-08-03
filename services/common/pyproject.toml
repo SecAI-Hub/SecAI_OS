@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure-ai-common"
+version = "0.1.0"
+description = "Shared security primitives for SecAI OS Python services"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.setuptools]
+packages = ["common"]
+package-dir = { common = "." }

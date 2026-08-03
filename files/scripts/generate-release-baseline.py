@@ -26,6 +26,7 @@ def candidate_paths() -> list[Path]:
     paths: set[Path] = set()
     recursive_roots = (
         Path("/usr/libexec/secure-ai"),
+        Path("/usr/lib/secure-ai/python3.12-venv"),
         Path("/etc/secure-ai"),
     )
     for root in recursive_roots:

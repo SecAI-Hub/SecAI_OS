@@ -79,7 +79,23 @@ def test_searxng_uses_private_credential_and_loopback_only_egress():
     assert "IPAddressDeny=any" in unit
     assert "IPAddressAllow=localhost" in unit
     assert 'secret_key: "secai-local-only-key"' not in settings
-    assert 'export SEARXNG_SECRET="$secret"' in wrapper
+    assert "prepare-searxng-settings.py" in wrapper
+    assert "export SEARXNG_SECRET=" not in wrapper
+    assert (
+        "exec /usr/lib/secure-ai/python3.12-venv/bin/python3.12 -m searx.webapp"
+        in wrapper
+    )
+
+
+def test_quarantine_uses_scanners_from_locked_python312_runtime():
+    unit = (UNIT_DIR / "secure-ai-quarantine-watcher.service").read_text(
+        encoding="utf-8"
+    )
+    runtime_bin = "/usr/lib/secure-ai/python3.12-venv/bin"
+    assert f"Environment=FICKLING_BIN={runtime_bin}/fickling" in unit
+    assert f"Environment=MODELAUDIT_BIN={runtime_bin}/modelaudit" in unit
+    assert f"Environment=MODELSCAN_BIN={runtime_bin}/modelscan" in unit
+    assert "Environment=MODELSCAN_BIN=/usr/local/bin/modelscan" not in unit
 
 
 def test_boot_karg_sync_does_not_swallow_update_failures():
@@ -96,9 +112,9 @@ def test_boot_karg_sync_does_not_swallow_update_failures():
 
 
 def test_firstboot_does_not_mark_complete_after_critical_control_failure():
-    script = (
-        SYSTEM_ROOT / "usr" / "libexec" / "secure-ai" / "firstboot.sh"
-    ).read_text(encoding="utf-8")
+    script = (SYSTEM_ROOT / "usr" / "libexec" / "secure-ai" / "firstboot.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert "swapoff -a 2>/dev/null || true" not in script
     assert 'fatal "failed to load firewall rules"' in script
@@ -127,16 +143,14 @@ def test_first_boot_readiness_rejects_warnings_and_public_listeners():
     assert '[[ "$token" =~ ^[0-9a-f]{64}$ ]]' in script
     assert "--proto '=http' --proto-redir '=http' --noproxy '*'" in script
     assert "--max-filesize 1048576" in script
-    warning_branch = script.split('if [ $WARNINGS -gt 0 ]; then', 1)[1].split(
+    warning_branch = script.split("if [ $WARNINGS -gt 0 ]; then", 1)[1].split(
         "\nfi", 1
     )[0]
     assert "exit 1" in warning_branch
 
 
 def test_vault_watchdog_can_persist_ui_activity_under_its_sandbox():
-    unit = (UNIT_DIR / "secure-ai-vault-watchdog.service").read_text(
-        encoding="utf-8"
-    )
+    unit = (UNIT_DIR / "secure-ai-vault-watchdog.service").read_text(encoding="utf-8")
     assert "After=local-fs.target secure-ai-ui.service" in unit
     assert "ReadWritePaths=-/run/secure-ai-ui" in unit
     assert "SupplementaryGroups=secure-ai-ui-control" in unit
@@ -145,8 +159,7 @@ def test_vault_watchdog_can_persist_ui_activity_under_its_sandbox():
         SYSTEM_ROOT / "usr" / "lib" / "tmpfiles.d" / "secure-ai.conf"
     ).read_text(encoding="utf-8")
     assert (
-        "d /run/secure-ai-ui                          "
-        "2730 root secure-ai-ui-control"
+        "d /run/secure-ai-ui                          2730 root secure-ai-ui-control"
     ) in tmpfiles
 
 
@@ -167,8 +180,6 @@ def test_vault_consumers_require_exact_mount_gate_and_setup_condition():
         assert "ConditionPathExists=/var/lib/secure-ai/vault/.initialized" in unit
         assert "secure-ai-vault-mounted.service" in unit
 
-    gate = (UNIT_DIR / "secure-ai-vault-mounted.service").read_text(
-        encoding="utf-8"
-    )
+    gate = (UNIT_DIR / "secure-ai-vault-mounted.service").read_text(encoding="utf-8")
     assert "ExecStart=/usr/libexec/secure-ai/verify-vault-mount.py" in gate
     assert "ConditionPathExists=/var/lib/secure-ai/vault/.initialized" in gate

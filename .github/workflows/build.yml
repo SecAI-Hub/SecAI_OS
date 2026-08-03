@@ -217,6 +217,12 @@ jobs:
                           archive.extract(member, destination, filter="data")
           PY
 
+      - name: Freeze pinned SearXNG version metadata
+        run: |
+          python3 files/scripts/prepare-searxng-source.py \
+            --lock .upstreams.lock.yaml \
+            --source upstreams/searxng
+
       - name: Download and verify llama.cpp tarball
         run: |
           mkdir -p .source-prep

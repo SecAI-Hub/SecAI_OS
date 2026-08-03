@@ -23,9 +23,9 @@ Environment=AUDIT_HMAC_KEY_PATH=%d/audit-hmac-key
 Environment=LLAMA_SERVER_BIN=/usr/bin/llama-server
 Environment=GGUF_GUARD_BIN=/usr/local/bin/gguf-guard
 Environment=COSIGN_BIN=/usr/bin/cosign
-Environment=FICKLING_BIN=/usr/local/bin/fickling
-Environment=MODELAUDIT_BIN=/usr/local/bin/modelaudit
-Environment=MODELSCAN_BIN=/usr/local/bin/modelscan
+Environment=FICKLING_BIN=/usr/lib/secure-ai/python3.12-venv/bin/fickling
+Environment=MODELAUDIT_BIN=/usr/lib/secure-ai/python3.12-venv/bin/modelaudit
+Environment=MODELSCAN_BIN=/usr/lib/secure-ai/python3.12-venv/bin/modelscan
 Environment=GARAK_BIN=/usr/local/bin/garak
 Environment=REGISTRY_TOKEN_PATH=%d/registry-promote-token
 Environment=SERVICE_TOKEN_PATH=%d/registry-promote-token

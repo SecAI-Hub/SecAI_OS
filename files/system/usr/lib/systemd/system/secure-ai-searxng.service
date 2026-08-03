@@ -8,9 +8,13 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-Environment=SEARXNG_SETTINGS_PATH=/etc/secure-ai/searxng/settings.yml
+UMask=0077
+Environment=SEARXNG_BASE_SETTINGS_PATH=/etc/secure-ai/searxng/settings.yml
+Environment=SEARXNG_RUNTIME_SETTINGS_PATH=/run/secure-ai-searxng/settings.yml
 Environment=SEARXNG_SECRET_PATH=%d/searxng-secret
 LoadCredential=searxng-secret:/var/lib/secure-ai/credentials/searxng-secret.key
+RuntimeDirectory=secure-ai-searxng
+RuntimeDirectoryMode=0700
 ExecStart=/usr/libexec/secure-ai/start-searxng.sh
 Restart=on-failure
 RestartSec=5
@@ -20,6 +24,7 @@ DynamicUser=yes
 ProtectSystem=strict
 ReadOnlyPaths=/etc/secure-ai/searxng
 ReadOnlyPaths=/run/secure-ai
+ReadWritePaths=/run/secure-ai-searxng
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

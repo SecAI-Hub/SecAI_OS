@@ -40,7 +40,7 @@ Last updated: 2026-08-02
 | test_audit_verifier.py | tests/ | 5 | Audit-chain verifier command behavior |
 | test_auth.py | tests/ | 25 | Authentication, session handling, and API authorization |
 | test_backup_restore_security.py | tests/ | 14 | Encrypted backup/restore validation and unsafe archive rejection |
-| test_build_hermetic.py | tests/ | 11 | Hermetic build inputs, vendoring, and network-denial checks |
+| test_build_hermetic.py | tests/ | 16 | Hermetic build inputs, version-bound Python runtime, shared-package assembly, vendoring, and network-denial checks |
 | test_canary_security.py | tests/ | 7 | Canary ownership, confidentiality, and fail-closed behavior |
 | test_canary_tripwire.py | tests/ | 49 | Canary token placement, tripwire monitoring, alerts |
 | test_capability_claims.py | tests/ | 8 | Capability metadata and implementation claim consistency |
@@ -56,12 +56,12 @@ Last updated: 2026-08-02
 | test_emergency_wipe.py | tests/ | 20 | Three-level panic containment and recovery behavior |
 | test_forensic_verify.py | tests/ | 8 | Forensic archive authenticity and tamper detection |
 | test_govulncheck_stream.py | tests/ | 2 | Streaming govulncheck result normalization |
-| test_gunicorn_config.py | tests/ | 15 | Gunicorn wrapper and runtime configuration |
+| test_gunicorn_config.py | tests/ | 16 | Gunicorn wrapper and runtime configuration |
 | test_hardware_qualification.py | tests/ | 6 | Redacted hardware qualification evidence generation, including scoped SELinux and Podman security state |
 | test_hardware_state_security.py | tests/ | 11 | Hardware-state persistence and trust boundaries |
 | test_host_state_encryption.py | tests/ | 8 | Encrypted host-state verification |
 | test_image_ref_consistency.py | tests/ | 10 | Canonical image reference consistency |
-| test_landlock_integration.py | tests/ | 6 | Landlock policy application and fail-closed integration |
+| test_landlock_integration.py | tests/ | 7 | Landlock policy application and fail-closed integration |
 | test_m5_acceptance.py | tests/ | 32 | M5 acceptance certification across attestation, integrity, policy, recovery, and workspace isolation |
 | test_memory_protection.py | tests/ | 33 | Swap encryption, zswap, core dumps, mlock, TEE detection |
 | test_native_scoped_credentials.py | tests/ | 7 | Per-service native credential scope |
@@ -82,8 +82,10 @@ Last updated: 2026-08-02
 | test_podman_anchor.py | tests/ | 5 | Project-scoped Podman gateway anchor hardening, stopped/orphan recovery, ownership validation, and owner-only state |
 | test_search.py | tests/ | 37 | Search mediator, PII stripping, injection detection |
 | test_secure_boot.py | tests/ | 18 | Secure Boot, measured boot, and enrollment behavior |
+| test_searxng_credentials.py | tests/ | 6 | Owner-only ephemeral SearXNG settings, credential injection, and pinned schema |
 | test_slo_tracker.py | tests/ | 3 | Service-level objective tracker persistence |
-| test_systemd_units.py | tests/ | 11 | Unit hardening, dependencies, and packaged execution paths |
+| test_source_prep_archive.py | tests/ | 7 | Cross-job source-prep archive validation and deterministic SearXNG metadata |
+| test_systemd_units.py | tests/ | 12 | Unit hardening, dependencies, and packaged execution paths |
 | test_traffic_analysis.py | tests/ | 41 | Padding, timing jitter, dummy traffic generation |
 | test_ui.py | tests/ | 110 | Flask UI routes, setup, agent controls, authentication, exact sandbox-control credentials, manifest/session-bound sandbox readiness, fail-closed profile recovery, and model catalog loading |
 | test_ui_cookies.py | tests/ | 11 | UI cookie security attributes |

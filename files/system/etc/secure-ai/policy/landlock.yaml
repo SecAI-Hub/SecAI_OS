@@ -128,15 +128,29 @@ services:
         access: rw
       - path: /var/lib/secure-ai/auth
         access: rw
+      - path: /var/lib/secure-ai/ui
+        access: rw
+        required: true
+      - path: /var/lib/secure-ai/import-staging
+        access: ro
+        required: true
       - path: /var/lib/secure-ai/logs
         access: rw
       - path: /run/secure-ai
         access: rw
+      - path: /run/secure-ai-ui
+        access: rw
+        required: true
       - path: /etc/secure-ai
         access: ro
       - path: /usr/libexec/secure-ai/ui
         access: exe
-      - path: /usr/bin/python3
+      - path: /usr/lib/secure-ai/python3.12-venv
+        access: exe
+        required: true
+      - path: /usr/bin/env
+        access: exe
+      - path: /usr/bin/bash
         access: exe
       - path: /usr/lib
         access: ro
@@ -179,9 +193,6 @@ services:
         access: rw
       - path: /etc/secure-ai
         access: ro
-      - path: /usr/bin/python3
-        access: exe
-        required: true
       - path: /usr/libexec/secure-ai/landlock-apply.py
         access: exe
         required: true
@@ -200,13 +211,12 @@ services:
         access: exe
       - path: /usr/bin/cosign
         access: exe
-      # Scanner entry points are symlinks into separately pinned virtual
-      # environments. Both the symlink directory and the resolved runtimes
-      # must be executable after landlock_restrict_self().
-      - path: /usr/local/bin
+      # Scanner entry points and their exact CPython interpreter live in the
+      # immutable, release-measured application runtime.
+      - path: /usr/lib/secure-ai/python3.12-venv
         access: exe
         required: true
-      - path: /opt/secure-ai/scanners
+      - path: /usr/local/bin
         access: exe
         required: true
       - path: /usr/lib
@@ -238,9 +248,6 @@ services:
       - path: /usr/libexec/secure-ai/quarantine-scanner
         access: exe
         required: true
-      - path: /usr/bin/python3
-        access: exe
-        required: true
       - path: /usr/bin/env
         access: exe
         required: true
@@ -254,7 +261,7 @@ services:
       - path: /usr/local/bin
         access: exe
         required: true
-      - path: /opt/secure-ai/scanners
+      - path: /usr/lib/secure-ai/python3.12-venv
         access: exe
         required: true
       - path: /usr/lib
@@ -330,12 +337,9 @@ services:
       - path: /usr/bin/bash
         access: exe
         required: true
-      - path: /usr/bin/python3
+      - path: /usr/lib/secure-ai/python3.12-venv
         access: exe
-      - path: /usr/bin/gunicorn
-        access: exe
-      - path: /usr/local/bin/gunicorn
-        access: exe
+        required: true
       - path: /usr/lib
         access: ro
       - path: /usr/lib64

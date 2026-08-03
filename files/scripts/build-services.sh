@@ -18,6 +18,8 @@ set -euo pipefail
 INSTALL_DIR="/usr/libexec/secure-ai"
 SRC_DIR="/tmp/secure-ai-build"
 SOURCE_DIR=""  # Set by locate_source
+PYTHON_RUNTIME_DIR="/usr/lib/secure-ai/python3.12-venv"
+PYTHON_BIN="${PYTHON_RUNTIME_DIR}/bin/python3.12"
 
 # Fatal error -- abort the build.
 fail_build() {
@@ -361,6 +363,37 @@ echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
 # Python Services (required -- build failures are fatal)
 # ===========================================================================
 
+# The reviewed wheelhouse is built for CPython 3.12 because modelscan 0.8.x
+# declares Python <3.13. Fedora's unversioned python3/pip3 may move ahead of
+# that ABI, so application packages must never be installed through them.
+# Keep the application graph in one immutable, path-explicit runtime instead.
+echo "Creating: isolated CPython 3.12 application runtime"
+if [ ! -x /usr/bin/python3.12 ]; then
+    fail_build "required CPython 3.12 interpreter is unavailable"
+fi
+if ! /usr/bin/python3.12 -c \
+    'import sys; raise SystemExit(sys.version_info[:2] != (3, 12))'; then
+    fail_build "python3.12 command does not provide CPython 3.12"
+fi
+/usr/bin/python3.12 -m venv --copies --clear "${PYTHON_RUNTIME_DIR}" \
+    || fail_build "isolated CPython 3.12 runtime creation failed"
+
+# Fedora's venv module creates lib64 as a symlink to lib, even with --copies.
+# The release baseline rejects symlinks so an immutable measurement can never
+# be redirected after generation. Materialize the directory before installing
+# the locked graph; pure-Python wheels then use lib and native wheels lib64.
+if [ -L "${PYTHON_RUNTIME_DIR}/lib64" ]; then
+    if [ "$(readlink "${PYTHON_RUNTIME_DIR}/lib64")" != "lib" ]; then
+        fail_build "unexpected CPython runtime lib64 symlink target"
+    fi
+    rm "${PYTHON_RUNTIME_DIR}/lib64"
+    mv "${PYTHON_RUNTIME_DIR}/lib" "${PYTHON_RUNTIME_DIR}/lib64"
+    mkdir -p "${PYTHON_RUNTIME_DIR}/lib/python3.12/site-packages"
+fi
+if [ ! -x "${PYTHON_BIN}" ]; then
+    fail_build "isolated CPython 3.12 runtime is incomplete"
+fi
+
 # Install the complete reviewed application graph exactly once. The source-prep
 # job materializes every hash-locked wheel, and the image build remains
 # network-independent even when this script is run outside the CI namespace.
@@ -368,45 +401,58 @@ echo "Installing: hash-locked Python application dependency graph"
 if [ ! -s /tmp/application-requirements.lock ] || [ ! -d /tmp/wheels ]; then
     fail_build "application dependency lock or wheelhouse is missing"
 fi
-if ! pip3 install \
-    --prefix=/usr \
+if ! "${PYTHON_BIN}" -m pip install \
     --no-cache-dir \
     --no-index \
     --find-links=/tmp/wheels \
+    --only-binary=:all: \
     --require-hashes \
     -r /tmp/application-requirements.lock; then
-    pip3 install \
-        --prefix=/usr \
-        --break-system-packages \
+    fail_build "hash-locked Python application dependency install failed"
+fi
+
+install_python_source() {
+    local source_path="$1"
+    "${PYTHON_BIN}" -m pip install \
         --no-cache-dir \
         --no-index \
         --find-links=/tmp/wheels \
-        --require-hashes \
-        -r /tmp/application-requirements.lock \
-        || fail_build "hash-locked Python application dependency install failed"
+        --no-build-isolation \
+        --no-deps \
+        "${source_path}" \
+        || fail_build "local Python package install failed: ${source_path}"
+}
+
+# Shared audit/auth/circuit-breaker primitives are imported by multiple
+# services and must be installed independently of the build-only source tree.
+echo "Building: shared Python security primitives"
+if [ -d "/tmp/services/common" ]; then
+    install_python_source /tmp/services/common
+    "${PYTHON_BIN}" -c \
+        "import common.audit_chain, common.auth, common.circuit_breaker, common.mlock_helper"
+else
+    fail_build "shared Python security primitives not found at /tmp/services/common"
 fi
 
 # --- ai-quarantine (seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
 if locate_source ai-quarantine \
     /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine; then
-    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
-        "${SOURCE_DIR}" 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-            --no-build-isolation --no-deps "${SOURCE_DIR}"
+    install_python_source "${SOURCE_DIR}"
     cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12
 from quarantine.watcher import main
 main()
 WRAPPER
     cat > "${INSTALL_DIR}/quarantine-scanner" <<'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12
 from quarantine.scanner_worker import main
 main()
 WRAPPER
     # Import every scanner-boundary module now so a partial package assembly
     # cannot produce an image whose native quarantine unit only fails at boot.
-    python3 -c "import quarantine.scanner_broker, quarantine.scanner_stage, quarantine.scanner_worker"
+    "${PYTHON_BIN}" -c \
+        "import quarantine.scanner_broker, quarantine.scanner_stage, quarantine.scanner_worker"
     chmod 0755 \
         "${INSTALL_DIR}/quarantine-watcher" \
         "${INSTALL_DIR}/quarantine-scanner"
@@ -418,7 +464,7 @@ fi
 
 # Quarantine scanning tools are mandatory members of the application lock.
 echo "Verifying: hash-locked quarantine scanning tools"
-python3 - <<'PY' || fail_build "quarantine scanner dependency verification failed"
+"${PYTHON_BIN}" - <<'PY' || fail_build "quarantine scanner dependency verification failed"
 from importlib.metadata import version
 
 expected = {
@@ -433,7 +479,7 @@ for package, wanted in expected.items():
     print(f"  {package}=={actual}")
 PY
 for scanner in modelscan fickling modelaudit; do
-    command -v "$scanner" >/dev/null \
+    test -x "${PYTHON_RUNTIME_DIR}/bin/${scanner}" \
         || fail_build "hash-locked scanner executable is missing: $scanner"
 done
 if [ "${ENABLE_GARAK_SCANNER:-}" = "true" ]; then
@@ -443,12 +489,9 @@ fi
 # --- Agent service (policy-bound local autopilot) ---
 echo "Building: agent"
 if [ -d "/tmp/services/agent" ]; then
-    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
-        /tmp/services/agent 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-            --no-build-isolation --no-deps /tmp/services/agent
+    install_python_source /tmp/services/agent
     cat > "${INSTALL_DIR}/agent" <<'WRAPPER'
-#!/usr/bin/env python3
+#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12
 from agent.app import main
 main()
 WRAPPER
@@ -461,16 +504,12 @@ fi
 # --- Web UI (production: gunicorn via wrapper; dev: Flask built-in) ---
 echo "Building: ui"
 if [ -d "/tmp/services/ui" ]; then
-    pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
-        /tmp/services/ui 2>/dev/null || \
-        pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-            --no-build-isolation --no-deps /tmp/services/ui
+    install_python_source /tmp/services/ui
     cat > "${INSTALL_DIR}/ui" <<'WRAPPER'
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn with env-driven config.
-# The appliance runtime gets Gunicorn from the OS image (python3-gunicorn).
-export PYTHONPATH="${PYTHONPATH:-/usr/lib/python3/site-packages}"
-exec gunicorn \
+# Use the immutable, hash-locked CPython 3.12 application runtime directly.
+exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8480}" \
     --workers "${GUNICORN_WORKERS:-1}" \
     --threads "${GUNICORN_THREADS:-4}" \
@@ -551,13 +590,13 @@ if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
     elif [ -f "${SRC_DIR}/llm-search-mediator/app.py" ]; then
         cp "${SRC_DIR}/llm-search-mediator/app.py" "$SEARCH_DIR/app.py"
     fi
-    python3 -c "import flask, gunicorn, requests, yaml" \
+    "${PYTHON_BIN}" -c "import flask, gunicorn, requests, yaml" \
         || fail_build "search-mediator locked dependencies are unavailable"
     cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn for search mediator.
 export PYTHONPATH="/opt/secure-ai/services/search-mediator:${PYTHONPATH:-}"
-exec gunicorn \
+exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8485}" \
     --workers 1 \
     --threads "${GUNICORN_THREADS:-4}" \
@@ -572,7 +611,7 @@ WRAPPER
 fi
 
 # Hugging Face is a required, hash-locked runtime dependency.
-python3 -c "import huggingface_hub" \
+"${PYTHON_BIN}" -c "import huggingface_hub" \
     || fail_build "hash-locked huggingface-hub dependency is unavailable"
 
 # SearXNG is absent from PyPI. Source prep stages the exact commit and archive
@@ -582,14 +621,43 @@ SEARXNG_SOURCE="/tmp/upstreams/searxng"
 if [ ! -f "${SEARXNG_SOURCE}/setup.py" ]; then
     fail_build "commit-pinned SearXNG source is unavailable"
 fi
-if ! pip3 install --prefix=/usr --no-cache-dir --no-build-isolation --no-deps \
-    "${SEARXNG_SOURCE}"; then
-    pip3 install --prefix=/usr --break-system-packages --no-cache-dir \
-        --no-build-isolation --no-deps "${SEARXNG_SOURCE}" \
-        || fail_build "commit-pinned SearXNG install failed"
+python3 /tmp/files/scripts/prepare-searxng-source.py \
+    --lock /tmp/.upstreams.lock.yaml \
+    --source "${SEARXNG_SOURCE}" \
+    --verify-only \
+    || fail_build "commit-pinned SearXNG version metadata is invalid"
+install_python_source "${SEARXNG_SOURCE}"
+SEARXNG_SETTINGS_PATH=/etc/secure-ai/searxng/settings.yml \
+    "${PYTHON_BIN}" - <<'PY' || \
+    fail_build "commit-pinned SearXNG runtime import failed"
+import searx
+from searx.engines import load_engines
+
+configured = {
+    engine["name"]
+    for engine in searx.settings["engines"]
+    if not engine.get("disabled", False) and not engine.get("inactive", False)
+}
+loaded = set(load_engines(searx.settings["engines"]))
+if loaded != configured:
+    raise SystemExit(
+        f"SearXNG engine validation mismatch: configured={sorted(configured)}, "
+        f"loaded={sorted(loaded)}"
+    )
+print(f"Validated {len(loaded)} pinned SearXNG engines without network access")
+PY
+
+# The release-bound application runtime is measured recursively. Refuse any
+# symlink or group/world-writable entry before generating that baseline.
+chmod -R go-w -- "${PYTHON_RUNTIME_DIR}"
+runtime_link="$(find "${PYTHON_RUNTIME_DIR}" -type l -print -quit)"
+if [ -n "${runtime_link}" ]; then
+    fail_build "isolated Python runtime contains a symlink: ${runtime_link}"
 fi
-python3 -c "import searx.webapp" \
-    || fail_build "commit-pinned SearXNG runtime import failed"
+runtime_writable="$(find "${PYTHON_RUNTIME_DIR}" -perm /0022 -print -quit)"
+if [ -n "${runtime_writable}" ]; then
+    fail_build "isolated Python runtime contains an unsafe writable path: ${runtime_writable}"
+fi
 
 # ===========================================================================
 # Staging directory for local model imports (M54 hardening)
@@ -618,8 +686,13 @@ REQUIRED_BINARIES=(
     "${INSTALL_DIR}/quarantine-scanner"
     "${INSTALL_DIR}/agent"
     "${INSTALL_DIR}/ui"
+    "${PYTHON_BIN}"
+    "${PYTHON_RUNTIME_DIR}/bin/gunicorn"
+    "${PYTHON_RUNTIME_DIR}/bin/modelscan"
+    "${PYTHON_RUNTIME_DIR}/bin/fickling"
+    "${PYTHON_RUNTIME_DIR}/bin/modelaudit"
+    "${PYTHON_RUNTIME_DIR}/bin/searxng-run"
     "/usr/local/bin/securectl"
-    "/usr/bin/searxng-run"
     "/usr/bin/bwrap"
     "/usr/bin/llama-server"
 )

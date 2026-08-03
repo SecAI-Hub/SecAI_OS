@@ -10,8 +10,8 @@ general:
 server:
   bind_address: "127.0.0.1"
   port: 8888
-  # start-searxng.sh fails closed unless systemd supplies SEARXNG_SECRET from
-  # a private, persistent credential. SearXNG overrides this public marker.
+  # start-searxng.sh fails closed unless it can replace this public marker in
+  # an owner-only, ephemeral /run settings file from the systemd credential.
   secret_key: "required-runtime-credential"
   # No public access — localhost only
   limiter: false
@@ -21,15 +21,15 @@ server:
 search:
   safe_search: 1
   default_lang: "en"
-  autocomplete: false
-  # Max results per engine
-  max_results: 10
+  autocomplete: ""
 
 # Route ALL outbound requests through Tor SOCKS5 proxy
 outgoing:
   proxies:
     all://:
       - socks5h://127.0.0.1:9050
+  using_tor_proxy: true
+  extra_proxy_timeout: 10
   # Timeout per engine request (Tor adds latency)
   request_timeout: 20
   useragent_suffix: ""
@@ -54,8 +54,10 @@ engines:
 
   # Programming / technical
   - name: stackoverflow
-    engine: stackoverflow
+    engine: stackexchange
     shortcut: so
+    api_site: stackoverflow
+    categories: [it, q&a]
     disabled: false
 
   - name: github
@@ -68,34 +70,17 @@ engines:
     shortcut: aw
     disabled: false
 
-  # Disable all engines that require API keys or track users
-  - name: google
-    engine: google
-    disabled: true
-
-  - name: bing
-    engine: bing
-    disabled: true
-
-  - name: yahoo
-    engine: yahoo
-    disabled: true
-
-  - name: brave
-    engine: brave
-    disabled: true
-
 # Disable analytics, tracking, result collection
 ui:
-  static_use_hash: true
   default_theme: simple
   results_on_new_tab: false
 
-# No external plugins
-plugins: []
-
-# Privacy-focused defaults
-enabled_plugins:
-  - "Hash plugin"
-  - "Hostname replace"
-  - "Tracker URL remover"
+# Only privacy-focused built-in plugins are active. The mapping uses the
+# pinned SearXNG plugin schema; no external plugin code is loaded.
+plugins:
+  searx.plugins.hash_plugin.SXNGPlugin:
+    active: true
+  searx.plugins.hostnames.SXNGPlugin:
+    active: true
+  searx.plugins.tracker_url_remover.SXNGPlugin:
+    active: true

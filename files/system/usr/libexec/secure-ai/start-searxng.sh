@@ -7,6 +7,8 @@
 set -euo pipefail
 
 credential_path="${SEARXNG_SECRET_PATH:-}"
+base_settings_path="${SEARXNG_BASE_SETTINGS_PATH:-/etc/secure-ai/searxng/settings.yml}"
+runtime_settings_path="${SEARXNG_RUNTIME_SETTINGS_PATH:-/run/secure-ai-searxng/settings.yml}"
 if [ -z "$credential_path" ] || [ ! -f "$credential_path" ] || [ -L "$credential_path" ]; then
     echo "ERROR: SearXNG credential is unavailable or unsafe" >&2
     exit 1
@@ -19,12 +21,10 @@ if [ "$credential_size" -lt 64 ] || [ "$credential_size" -gt 65 ] || [ "$credent
     exit 1
 fi
 
-secret=$(<"$credential_path")
-if [[ ! "$secret" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "ERROR: SearXNG credential must be a 256-bit lowercase hex token" >&2
-    exit 1
-fi
-
-export SEARXNG_SECRET="$secret"
-unset secret
-exec /usr/bin/python3 -m searx.webapp
+umask 077
+/usr/bin/python3 /usr/libexec/secure-ai/prepare-searxng-settings.py \
+    --base "$base_settings_path" \
+    --credential "$credential_path" \
+    --output "$runtime_settings_path"
+export SEARXNG_SETTINGS_PATH="$runtime_settings_path"
+exec /usr/lib/secure-ai/python3.12-venv/bin/python3.12 -m searx.webapp
