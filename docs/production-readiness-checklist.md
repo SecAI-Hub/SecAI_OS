@@ -2,7 +2,7 @@
 
 Formal release gate checklist for SecAI OS deployments. Every item must be verified before a release is tagged as production-ready. This checklist is separate from the [production operations guide](production-operations.md), which covers day-to-day operational procedures.
 
-Last updated: 2026-07-28
+Last updated: 2026-08-02
 
 This file is a template, not evidence that any release passed. A completed
 checklist must identify the immutable source commit and image digest, link every
@@ -55,6 +55,12 @@ production designation.
 - [ ] All systemd units have production hardening (TimeoutStartSec, StartLimitInterval, etc.)
 - [ ] Seccomp profiles present for all Go services
 - [ ] Landlock entries configured for all services
+- [ ] SELinux is `Enforcing` with the approved policy, fixed SecAI OS paths have
+      reviewed labels, and locally reviewed AVC/USER_AVC denials contain no
+      unexplained SecAI OS events
+- [ ] Podman qualification evidence reports SELinux and seccomp enabled for the
+      target runtime; any bind-mount relabeling is limited to the documented
+      shared `:z` paths
 - [ ] No services listening on public interfaces (localhost-only by default)
 
 ---

@@ -146,9 +146,8 @@
       "additionalProperties": false,
       "properties": {
         "default": {
-          "type": "string",
-          "enum": ["deny", "allow"],
-          "description": "Default action for tools not in the allow or deny list."
+          "const": "deny",
+          "description": "Default action for tools not in the allow or deny list. Must remain deny."
         },
         "rate_limit": {
           "type": "object",
@@ -157,12 +156,14 @@
             "requests_per_minute": {
               "type": "integer",
               "minimum": 1,
+              "maximum": 1000000,
               "default": 120,
               "description": "Maximum tool calls per minute across all tools."
             },
             "burst_size": {
               "type": "integer",
               "minimum": 1,
+              "maximum": 1000000,
               "default": 20,
               "description": "Maximum burst size for rate limiting."
             }
@@ -195,9 +196,58 @@
                 "items": { "type": "string" },
                 "description": "Substrings that cause an argument to be rejected."
               },
+              "args": {
+                "type": "array",
+                "maxItems": 128,
+                "description": "Complete typed allowlist for tool arguments. When present, undeclared arguments are rejected.",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "type"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": ["string", "boolean", "number", "integer", "object", "array"]
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "max_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 65536
+                    },
+                    "pattern": {
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "redact": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": { "required": ["pattern"] },
+                      "then": {
+                        "properties": {
+                          "type": { "const": "string" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
               "max_arg_length": {
                 "type": "integer",
                 "minimum": 1,
+                "maximum": 65536,
                 "default": 4096,
                 "description": "Maximum allowed length for any single argument value."
               }

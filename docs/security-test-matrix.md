@@ -2,7 +2,7 @@
 
 This document maps each security feature to its corresponding test files, test counts, and coverage areas.
 
-Last updated: 2026-07-28
+Last updated: 2026-08-02
 
 ## Security Feature to Test Mapping
 
@@ -20,7 +20,7 @@ Last updated: 2026-07-28
 | Update verification | tests/test_update_rollback.py | Python | 80 | Signature verification, rollback triggers, version pinning, recovery |
 | Vault auto-lock | tests/test_vault_watchdog.py | Python | 32 | Idle detection, exact mount identity, local-console lock/unlock, and web-secret rejection |
 | Web UI security | tests/test_ui.py, tests/test_ui_cookies.py, tests/test_ui_file_handling.py | Python | 139 total | Route protection, input validation, exact control credentials, session-bound generation readiness, CSP/cookie headers, setup completion, upload/path handling |
-| Tool firewall | services/tool-firewall/*_test.go | Go | 16 | Default-deny policy, rule evaluation, egress filtering |
+| Tool firewall | services/tool-firewall/*_test.go | Go | 32 | Default-deny typed-argument policy, nested blocklists and path constraints, strict request decoding, audit redaction and file-identity checks, and fail-closed allowed decisions |
 | Airlock | services/airlock/*_test.go | Go | 27 | Request sanitization, policy enforcement, disabled-by-default |
 | Trusted registry | services/registry/*_test.go | Go | 36 | Hash pinning, cosign verification, model fetch authorization |
 | GPU integrity watch | services/gpu-integrity-watch/*_test.go | Go | 63 | GPU probe scoring, baseline verification, degradation actions, daemon mode, driver fingerprint, device allowlist, attestor/incident integration |
@@ -32,7 +32,8 @@ Last updated: 2026-07-28
 | Sandbox UI ingress | services/ui-ingress/*_test.go | Go | 6 | Uncredentialed fixed routes, bounded relaying, dual UI/controller health, current protocol identity, and fail-closed upstream errors |
 | Sandbox host controller | tests/test_sandbox_control_server.py | Python | 70 | Exact high-entropy signing keys, request HMACs, restart-persistent nonce replay protection, token-nondisclosing protocol probes, session/profile-bound state proofs, bounded HTTP concurrency, manifest-backed generation/profile reads, pinned runtime/safe host binds, cross-platform process-tree cancellation, and verified shutdown |
 | Podman control-network anchor | tests/test_podman_anchor.py | Python | 5 | Exact image/identity hardening, project-only gateway lifecycle, stopped and orphan recovery, and owner-only state |
-| Agent verified supervisor + HSM keys | tests/test_agent.py | Python | 186 | HMAC-SHA256 token signing, nonce replay protection, expiry, tamper detection, two-phase approval, policy evidence, keystore abstraction (software/TPM2/PKCS11), key rotation, key derivation |
+| Agent verified supervisor + HSM keys | tests/test_agent.py | Python | 191 | HMAC-SHA256 token signing, nonce replay protection, expiry, tamper detection, two-phase approval, policy evidence, fail-closed tool-firewall responses, keystore abstraction (software/TPM2/PKCS11), key rotation, key derivation |
+| Hardware qualification evidence | tests/test_hardware_qualification.py | Python | 6 | Recursive identifier redaction, allowlisted host evidence, scoped SELinux and Podman security state, owner-only atomic reports, and explicit non-certification |
 | CI app-security lint | .github/scripts/check-hadolint.sh, .github/scripts/run-semgrep.sh | Shell / Semgrep | CI gate | Containerfile/Dockerfile linting and repo-owned Semgrep security rules |
 
 ## Coverage by Security Category
@@ -50,7 +51,7 @@ Last updated: 2026-07-28
 
 | Area | Tests | Notes |
 |------|-------|-------|
-| Tool firewall | 16 | Default-deny egress, allowlist enforcement |
+| Tool firewall | 32 | Default-deny typed arguments, nested constraints, audit file-identity checks, and fail-closed enforcement |
 | Airlock | 27 | Controlled network access with sanitization |
 | MCP firewall | 71 | MCP tool call policy, input redaction, taint tracking |
 | Traffic analysis resistance | 41 | Prevents metadata-based surveillance |
@@ -67,7 +68,8 @@ Last updated: 2026-07-28
 | Runtime attestation | 64 | TPM2 quotes, HMAC bundles, state machine, startup gating |
 | Continuous integrity | 54 | Baseline scanning, violation detection, model/binary/policy watching |
 | Incident recorder | 108 | Incident creation, auto-containment, lifecycle, severity ranking |
-| Agent verified supervisor + HSM keys | 186 | HMAC tokens, nonce replay, two-phase approval, policy evidence, keystore (software/TPM2/PKCS11) |
+| Agent verified supervisor + HSM keys | 191 | HMAC tokens, nonce replay, two-phase approval, policy evidence, fail-closed tool-firewall responses, keystore (software/TPM2/PKCS11) |
+| Hardware qualification evidence | 6 | Redacts machine identifiers while recording scoped SELinux and Podman security state without self-certifying the host |
 
 ### Runtime Protection
 
@@ -83,9 +85,9 @@ Last updated: 2026-07-28
 
 | Language | Current Automated Tests | Source of Truth |
 |----------|--------------------------|-----------------|
-| Python | 1559 | `docs/test-counts.json` and `pytest --collect-only` |
-| Go | 490 | `docs/test-counts.json` and `go test -v -count=1 ./...` |
-| **Total** | **2049** | Enforced by `.github/scripts/check-test-counts.sh` |
+| Python | 1568 | `docs/test-counts.json` and `pytest --collect-only` |
+| Go | 506 | `docs/test-counts.json` and `go test -v -count=1 ./...` |
+| **Total** | **2074** | Enforced by `.github/scripts/check-test-counts.sh` |
 
 Security coverage overlaps heavily with functional coverage, so the feature tables above use exact file or service totals rather than attempting to split each test into exclusive "security" and "non-security" buckets.
 
@@ -102,7 +104,7 @@ PYTHONPATH=services python -m pytest \
        tests/test_vault_watchdog.py tests/test_ui.py tests/test_ui_cookies.py \
        tests/test_ui_file_handling.py tests/test_sandbox.py \
        tests/test_sandbox_bundle.py tests/test_sandbox_control_server.py \
-       tests/test_podman_anchor.py -v
+       tests/test_podman_anchor.py tests/test_hardware_qualification.py -v
 ```
 
 To run all Go security tests:

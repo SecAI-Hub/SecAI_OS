@@ -1,9 +1,9 @@
 {
-  "generated": "2026-07-28",
+  "generated": "2026-08-02",
   "go": {
     "airlock": 27,
     "registry": 36,
-    "tool-firewall": 16,
+    "tool-firewall": 32,
     "gpu-integrity-watch": 63,
     "mcp-firewall": 71,
     "policy-engine": 45,
@@ -12,7 +12,7 @@
     "incident-recorder": 108,
     "ui-ingress": 6
   },
-  "go_total": 490,
-  "python_total": 1559,
-  "grand_total": 2049
+  "go_total": 506,
+  "python_total": 1568,
+  "grand_total": 2074
 }

@@ -48,6 +48,11 @@ tools:
     burst_size: 20
   allow:
     - name: "filesystem.read"
+      args:
+        - name: "path"
+          type: "string"
+          required: true
+          max_length: 4096
       paths_allowlist:
         - "/vault/user_docs/**"
       paths_denylist:
@@ -56,16 +61,29 @@ tools:
         - "/etc/secure-ai/**"
       max_arg_length: 4096
     - name: "filesystem.write"
+      args:
+        - name: "path"
+          type: "string"
+          required: true
+          max_length: 4096
+        - name: "content"
+          type: "string"
+          required: true
+          max_length: 4096
+          redact: true
       paths_allowlist:
         - "/vault/outputs/**"
-      paths_denylist:
-        - "/vault/outputs/../**"
       args_blocklist:
         - "../"
         - "/etc/"
         - "/usr/"
       max_arg_length: 4096
     - name: "filesystem.list"
+      args:
+        - name: "path"
+          type: "string"
+          required: true
+          max_length: 4096
       paths_allowlist:
         - "/vault/user_docs/**"
         - "/vault/outputs/**"

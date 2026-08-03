@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 ALLOWED_OS_RELEASE_KEYS = {
     "ID",
     "VERSION_ID",
@@ -33,6 +33,24 @@ ALLOWED_OS_RELEASE_KEYS = {
 SENSITIVE_FIELD = re.compile(
     r"(hostname|username|serial|uuid|machine.?id|mac address|ip address)",
     re.IGNORECASE,
+)
+SELINUX_STATUS_FIELDS = {
+    "SELinux status",
+    "SELinuxfs mount",
+    "SELinux root directory",
+    "Loaded policy name",
+    "Current mode",
+    "Mode from config file",
+    "Policy MLS status",
+    "Policy deny_unknown status",
+    "Memory protection checking",
+    "Max kernel policy version",
+}
+SELINUX_CONTEXT_PATHS = (
+    "/etc/secure-ai",
+    "/var/lib/secure-ai",
+    "/var/log/secure-ai",
+    "/usr/libexec/secure-ai",
 )
 
 
@@ -86,6 +104,13 @@ def redact_mapping(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [redact_mapping(item) for item in value]
+    if isinstance(value, str):
+        # Several qualification tools (notably vulkaninfo and rocminfo) emit
+        # line-oriented text instead of JSON.  Filtering dictionary keys alone
+        # would therefore retain UUID/serial-labelled lines in their stdout.
+        return "\n".join(
+            line for line in value.splitlines() if not SENSITIVE_FIELD.search(line)
+        )
     return value
 
 
@@ -96,6 +121,47 @@ def parse_json_probe(probe: dict[str, Any]) -> Any:
         return redact_mapping(json.loads(probe["stdout"]))
     except json.JSONDecodeError:
         return probe
+
+
+def parse_selinux_status(probe: dict[str, Any]) -> dict[str, Any]:
+    """Return only non-identifying SELinux policy and enforcement fields."""
+    result = {
+        "available": probe.get("available", False),
+        "exit_code": probe.get("exit_code"),
+    }
+    if probe.get("exit_code") != 0:
+        return result
+
+    fields: dict[str, str] = {}
+    for raw_line in str(probe.get("stdout", "")).splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        key = key.strip()
+        if key in SELINUX_STATUS_FIELDS:
+            fields[key] = value.strip()
+    result["fields"] = fields
+    return result
+
+
+def selinux_evidence() -> dict[str, Any]:
+    """Collect enforcement and fixed-path label evidence without audit content."""
+    return {
+        "enforcement": run_command(("getenforce",)),
+        "status": parse_selinux_status(run_command(("sestatus",))),
+        "fixed_path_contexts": run_command(("ls", "-Zd", *SELINUX_CONTEXT_PATHS)),
+        "notice": (
+            "This inventory does not inspect or export AVC records. Review AVC/USER_AVC "
+            "denials locally on the qualification host because they may contain sensitive paths."
+        ),
+    }
+
+
+def podman_security_evidence() -> Any:
+    """Collect only Podman's security capability block, not host identity data."""
+    return parse_json_probe(
+        run_command(("podman", "info", "--format", "{{json .Host.Security}}"))
+    )
 
 
 def rpm_ostree_evidence() -> dict[str, Any]:
@@ -189,6 +255,12 @@ def collect() -> dict[str, Any]:
         "boot_security": {
             "secure_boot": run_command(("mokutil", "--sb-state")),
             "tpm2": tpm_evidence(),
+        },
+        "mandatory_access_control": {
+            "selinux": selinux_evidence(),
+        },
+        "container_runtime": {
+            "podman_security": podman_security_evidence(),
         },
         "gpu": gpu_evidence(),
         "deployment": rpm_ostree_evidence(),

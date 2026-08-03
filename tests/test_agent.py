@@ -1214,7 +1214,7 @@ class TestSecurityInvariants:
 
         mock_resp = type("Resp", (), {
             "status_code": 200,
-            "json": lambda self: {"decision": "allow"},
+            "json": lambda self: {"allowed": True},
         })()
 
         with patch("agent.agent.executor.requests.post", return_value=mock_resp) as mock_post:
@@ -1226,6 +1226,42 @@ class TestSecurityInvariants:
         assert kwargs["json"]["tool"] == "filesystem.read"
         assert kwargs["json"]["params"] == {"path": "/tmp/test"}
         assert "args" not in kwargs["json"]
+
+    @pytest.mark.parametrize(
+        "firewall_payload",
+        [
+            {},
+            {"allowed": "true"},
+            {"allowed": 1},
+            {"decision": "allow"},
+            [],
+        ],
+    )
+    def test_tool_firewall_malformed_decisions_fail_closed(self, firewall_payload):
+        """Only the documented boolean `allowed` response can authorize a tool."""
+        tmpdir = tempfile.mkdtemp()
+        storage = StorageGateway(tmpdir)
+        executor = Executor(storage)
+        cap = CapabilityToken(
+            allowed_tools=["filesystem.read"],
+            sensitivity_ceiling=SensitivityLevel.HIGH,
+        )
+        step = Step(
+            action=StepAction.TOOL_INVOKE,
+            status=StepStatus.APPROVED,
+            params={"tool": "filesystem.read", "args": {"path": "/tmp/test"}},
+        )
+        budgets = Budgets()
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "json": lambda self: firewall_payload,
+        })()
+
+        with patch("agent.agent.executor.requests.post", return_value=mock_resp):
+            result_step = executor.execute(step, cap, budgets)
+
+        assert result_step.result["ok"] is False
+        assert "malformed decision" in result_step.result["error"]
 
     def test_cannot_widen_scope_silently(self):
         """Widen-scope action is always classified as approval-required."""

@@ -4,16 +4,24 @@ Required branch protection settings for SecAI OS release infrastructure.
 Configure these in GitHub Settings > Branches > Add branch protection rule,
 or use the setup script below.
 
-Last updated: 2026-07-27
+Last updated: 2026-08-02
 
-The canonical repository ruleset is
-[`rulesets/main-and-release.json`](rulesets/main-and-release.json). Applying the
-file is an administrative action and must be reviewed before it replaces or
-updates an active GitHub ruleset.
+The canonical repository rulesets are [`rulesets/main.json`](rulesets/main.json)
+and [`rulesets/release.json`](rulesets/release.json). Applying either file is an
+administrative action and must be reviewed before it replaces or updates an
+active GitHub ruleset.
+
+Hosted-state note (verified 2026-08-02): the active `basic` repository ruleset
+currently prevents branch deletion and non-fast-forward updates, but the
+canonical pull-request and required-check policy below is not yet active. Do
+not describe the hosted repository as fully protected until the API/UI state
+matches this file. Requiring an independent approval also requires an eligible
+reviewer other than the change author; enabling it on a single-maintainer
+repository can deadlock releases.
 
 ## `main`
 
-`main` is protected by the canonical ruleset. Changes require a pull request,
+When the canonical ruleset is applied, changes to `main` require a pull request,
 one approval from a code owner, resolution of review threads, and a fresh
 approval after the last push. Force pushes and deletion are denied. The CI
 checks named in the ruleset are mandatory and branches must be up to date.
@@ -40,19 +48,23 @@ All required checks in the canonical ruleset must pass before a PR can merge.
 The release-only hardened gate is additionally required for `release/*` and
 `stable`:
 
-1. **Go Build & Test** (`go-build-and-test`)
-2. **Python Test & Lint** (`python-test`)
-3. **Shell Script Lint** (`shellcheck`)
-4. **Hadolint & Semgrep** (`appsec-lint`)
-5. **Validate YAML configs** (`policy-validate`)
-6. **Image Reference Consistency** (`image-ref-consistency`)
-7. **Verify action, container, and EOL pins** (`check-pins`)
-8. **Supply Chain & SBOM Verification** (`supply-chain-verify`)
-9. **Security Regression Tests** (`security-regression`)
-10. **Test Count Drift Check** (`test-count-check`)
-11. **Dependency Vulnerability Audit** (`dependency-audit`)
-12. **Documentation Validation** (`docs-validation`)
-13. **Release Branch Hardened Gate** (`release-gate`, release/stable only)
+1. **Secret Scan (Current Tree + Git History)** (`secret-scan`)
+2. **Go Build & Test** (`go-build-and-test`)
+3. **Python Test & Lint** (`python-test`)
+4. **Windows Sandbox Security Qualification** (`windows-sandbox-security`)
+5. **Shell Script Lint** (`shellcheck`)
+6. **Release Helper Script Smoke** (`release-helper-smoke`)
+7. **Hadolint & Semgrep** (`appsec-lint`)
+8. **Validate YAML configs** (`policy-validate`)
+9. **Image Reference Consistency** (`image-ref-consistency`)
+10. **Verify action, container, and EOL pins** (`check-pins`)
+11. **Supply Chain & SBOM Verification** (`supply-chain-verify`)
+12. **Sandbox OpenVEX Smoke** (`sandbox-vex-smoke`)
+13. **Security Regression Tests** (`security-regression`)
+14. **Test Count Drift Check** (`test-count-check`)
+15. **Dependency Vulnerability Audit** (`dependency-audit`)
+16. **Documentation Validation** (`docs-validation`)
+17. **Release Branch Hardened Gate** (`release-gate`, release/stable only)
 
 Do not configure only the aggregate release gate. Explicit required checks
 prevent a workflow refactor from silently dropping a security job.
@@ -101,58 +113,30 @@ environment and receives package, OIDC, attestation, and signing authority.
 
 ---
 
-## Setup Script
+## Applying the desired rulesets
 
-Run from a machine with the `gh` CLI authenticated as a repository admin.
+Run from a machine where `gh` is authenticated as a repository administrator.
+Before applying either file, confirm that an eligible independent reviewer is
+available and that every named check has completed successfully on the current
+default branch. Otherwise the no-bypass pull-request rule can intentionally
+block all merges.
 
-**Note:** The GitHub API endpoint for branch protection rules with wildcard
-patterns (`release/*`) requires using rulesets. The script below uses the
-branch protection API for `stable` (exact name) and documents the UI steps
-for wildcard patterns.
-
-### For `stable` branch (exact match -- API supported)
+Inspect the live rulesets first:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-OWNER="SecAI-Hub"
-REPO="SecAI_OS"
-
-gh api -X PUT "repos/${OWNER}/${REPO}/branches/stable/protection" \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": [],
-    "checks": [
-      {"context": "Go Build & Test"},
-      {"context": "Python Test & Lint"},
-      {"context": "Security Regression Tests"},
-      {"context": "Hadolint & Semgrep"},
-      {"context": "Dependency Vulnerability Audit"},
-      {"context": "Test Count Drift Check"},
-      {"context": "Documentation Validation"},
-      {"context": "Release Branch Hardened Gate"}
-    ]
-  },
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 1,
-    "dismiss_stale_reviews": true
-  },
-  "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false
-}
-EOF
-echo "OK: Branch protection set for stable"
+gh api repos/SecAI-Hub/SecAI_OS/rulesets
 ```
 
-### For `release/*` branches (wildcard -- use GitHub UI)
+After review, create the two desired rulesets:
 
-1. Go to **Settings > Branches > Add branch protection rule**
-2. Branch name pattern: `release/*`
-3. Enable all settings listed in the table above
-4. Under "Require status checks to pass", add all 8 check names listed above
-5. Save changes
+```bash
+gh api --method POST repos/SecAI-Hub/SecAI_OS/rulesets \
+  --input .github/rulesets/main.json
+gh api --method POST repos/SecAI-Hub/SecAI_OS/rulesets \
+  --input .github/rulesets/release.json
+```
+
+Use `PUT repos/SecAI-Hub/SecAI_OS/rulesets/<id>` with the corresponding JSON
+file when updating an existing canonical ruleset. Do not delete or disable the
+active baseline deletion/non-fast-forward ruleset until the replacement is
+confirmed `active` through a fresh API read.

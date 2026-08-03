@@ -1,14 +1,12 @@
 {
-  "name": "protected-main-and-release",
+  "name": "protected-main",
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [],
   "conditions": {
     "ref_name": {
       "include": [
-        "~DEFAULT_BRANCH",
-        "refs/heads/stable",
-        "refs/heads/release/*"
+        "~DEFAULT_BRANCH"
       ],
       "exclude": []
     }
@@ -37,13 +35,22 @@
         "strict_required_status_checks_policy": true,
         "required_status_checks": [
           {
+            "context": "Secret Scan (Current Tree + Git History)"
+          },
+          {
             "context": "Go Build & Test"
           },
           {
             "context": "Python Test & Lint"
           },
           {
+            "context": "Windows Sandbox Security Qualification"
+          },
+          {
             "context": "Shell Script Lint"
+          },
+          {
+            "context": "Release Helper Script Smoke"
           },
           {
             "context": "Hadolint & Semgrep"
@@ -59,6 +66,9 @@
           },
           {
             "context": "Supply Chain & SBOM Verification"
+          },
+          {
+            "context": "Sandbox OpenVEX Smoke"
           },
           {
             "context": "Security Regression Tests"

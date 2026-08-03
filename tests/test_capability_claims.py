@@ -127,25 +127,44 @@ def test_codeowners_references_existing_repository_owner() -> None:
     assert "@sec_ai" not in owners
 
 
-def test_declared_ruleset_protects_default_branch_with_real_ci_checks() -> None:
-    ruleset = json.loads(_read(".github/rulesets/main-and-release.json"))
+def _required_ruleset_checks(path: str) -> set[str]:
+    ruleset = json.loads(_read(path))
     assert ruleset["enforcement"] == "active"
-    assert "~DEFAULT_BRANCH" in ruleset["conditions"]["ref_name"]["include"]
-
     rules = {entry["type"]: entry for entry in ruleset["rules"]}
-    assert {"deletion", "non_fast_forward", "pull_request", "required_status_checks"} <= set(
-        rules
-    )
+    assert {
+        "deletion",
+        "non_fast_forward",
+        "pull_request",
+        "required_status_checks",
+    } <= set(rules)
     assert rules["pull_request"]["parameters"]["require_code_owner_review"] is True
     assert rules["pull_request"]["parameters"]["required_approving_review_count"] >= 1
-
-    declared = {
+    return {
         entry["context"]
         for entry in rules["required_status_checks"]["parameters"][
             "required_status_checks"
         ]
     }
+
+
+def test_declared_rulesets_protect_main_and_release_with_every_ci_check() -> None:
+    main = json.loads(_read(".github/rulesets/main.json"))
+    release = json.loads(_read(".github/rulesets/release.json"))
+    assert main["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"]
+    assert release["conditions"]["ref_name"]["include"] == [
+        "refs/heads/stable",
+        "refs/heads/release/*",
+    ]
+
+    main_checks = _required_ruleset_checks(".github/rulesets/main.json")
+    release_checks = _required_ruleset_checks(".github/rulesets/release.json")
     workflow_names = set(
         re.findall(r"^\s{4}name:\s+(.+?)\s*$", _read(".github/workflows/ci.yml"), re.M)
     )
-    assert declared <= workflow_names
+    release_gate = "Release Branch Hardened Gate"
+    assert main_checks == workflow_names - {release_gate}
+    assert release_checks == workflow_names
+
+    workflow = _read(".github/workflows/ci.yml")
+    assert "github.event_name == 'pull_request'" in workflow
+    assert "startsWith(github.base_ref, 'release/')" in workflow

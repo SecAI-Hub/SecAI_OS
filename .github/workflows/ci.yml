@@ -878,7 +878,11 @@ jobs:
 
   release-gate:
     name: Release Branch Hardened Gate
-    if: startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/stable'
+    if: >-
+      (github.event_name == 'pull_request' &&
+       (startsWith(github.base_ref, 'release/') || github.base_ref == 'stable')) ||
+      (github.event_name != 'pull_request' &&
+       (startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/stable'))
     needs:
       - go-build-and-test
       - python-test

@@ -69,3 +69,77 @@ def test_collector_never_self_certifies(monkeypatch) -> None:
     report = qualification.collect()
     assert report["assurance"]["certified"] is False
     assert report["assurance"]["classification"] == "evidence-only"
+
+
+def test_collector_records_only_scoped_selinux_and_podman_security(monkeypatch) -> None:
+    def fake_run(argv, timeout=15):
+        del timeout
+        if argv[0] == "getenforce":
+            return {"available": True, "exit_code": 0, "stdout": "Enforcing"}
+        if argv[0] == "sestatus":
+            return {
+                "available": True,
+                "exit_code": 0,
+                "stdout": (
+                    "SELinux status: enabled\n"
+                    "Current mode: enforcing\n"
+                    "Loaded policy name: targeted\n"
+                    "Hostname: must-not-appear\n"
+                ),
+            }
+        if argv[0] == "ls" and argv[1] == "-Zd":
+            return {
+                "available": True,
+                "exit_code": 0,
+                "stdout": "system_u:object_r:etc_t:s0 /etc/secure-ai",
+            }
+        if argv[0] == "podman":
+            return {
+                "available": True,
+                "exit_code": 0,
+                "stdout": '{"rootless":false,"selinuxEnabled":true}',
+            }
+        return {"available": False}
+
+    monkeypatch.setattr(qualification, "run_command", fake_run)
+    monkeypatch.setattr(
+        qualification,
+        "rpm_ostree_evidence",
+        lambda: {"available": False},
+    )
+
+    report = qualification.collect()
+    assert report["schema_version"] == "1.1"
+    selinux = report["mandatory_access_control"]["selinux"]
+    assert selinux["enforcement"]["stdout"] == "Enforcing"
+    assert selinux["status"]["fields"] == {
+        "SELinux status": "enabled",
+        "Current mode": "enforcing",
+        "Loaded policy name": "targeted",
+    }
+    assert "must-not-appear" not in json.dumps(report)
+    assert report["container_runtime"]["podman_security"] == {
+        "rootless": False,
+        "selinuxEnabled": True,
+    }
+
+
+def test_redaction_removes_sensitive_lines_from_text_probes() -> None:
+    probe = {
+        "available": True,
+        "stdout": (
+            "deviceName = Example GPU\n"
+            "deviceUUID = 11111111-2222-3333-4444-555555555555\n"
+            "Serial Number: customer-specific\n"
+            "driverVersion = 1.2.3"
+        ),
+    }
+
+    redacted = qualification.redact_mapping(probe)
+
+    assert redacted["stdout"] == (
+        "deviceName = Example GPU\n"
+        "driverVersion = 1.2.3"
+    )
+    assert "11111111" not in json.dumps(redacted)
+    assert "customer-specific" not in json.dumps(redacted)

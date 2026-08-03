@@ -10,6 +10,7 @@ Validates:
 - Profile API endpoints exist in app.py
 """
 
+import json
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,7 @@ CONFIG_PATH = REPO_ROOT / "files" / "system" / "etc" / "secure-ai" / "config" / 
 SYSTEMD_DIR = REPO_ROOT / "files" / "system" / "usr" / "lib" / "systemd" / "system"
 SCRIPTS_DIR = REPO_ROOT / "files" / "system" / "usr" / "libexec" / "secure-ai"
 POLICY_PATH = REPO_ROOT / "files" / "system" / "etc" / "secure-ai" / "policy" / "policy.yaml"
+POLICY_SCHEMA_PATH = REPO_ROOT / "schemas" / "policy.schema.json"
 AGENT_POLICY_PATH = REPO_ROOT / "files" / "system" / "etc" / "secure-ai" / "policy" / "agent.yaml"
 APP_PY = REPO_ROOT / "services" / "ui" / "ui" / "app.py"
 
@@ -123,6 +125,49 @@ class TestOfflinePrivateAgentSafety:
         assert egress == "deny", (
             f"policy.yaml network.runtime_egress must be 'deny', got '{egress}'"
         )
+
+    def test_tool_policy_is_default_deny_with_typed_arguments(self):
+        """Shipped tool rules must constrain the exact agent request shape."""
+        policy = yaml.safe_load(POLICY_PATH.read_text(encoding="utf-8"))
+        tools = policy["tools"]
+        assert tools["default"] == "deny"
+        allowed = {entry["name"]: entry for entry in tools["allow"]}
+
+        for tool_name in ("filesystem.read", "filesystem.list"):
+            rules = {rule["name"]: rule for rule in allowed[tool_name]["args"]}
+            assert set(rules) == {"path"}
+            assert rules["path"]["type"] == "string"
+            assert rules["path"]["required"] is True
+            assert rules["path"]["max_length"] <= 4096
+
+        write_rules = {
+            rule["name"]: rule for rule in allowed["filesystem.write"]["args"]
+        }
+        assert set(write_rules) == {"path", "content"}
+        assert write_rules["path"]["type"] == "string"
+        assert write_rules["path"]["required"] is True
+        assert write_rules["content"]["type"] == "string"
+        assert write_rules["content"]["required"] is True
+        assert write_rules["content"]["max_length"] <= 4096
+        assert write_rules["content"]["redact"] is True
+        assert "/vault/outputs/**" in allowed["filesystem.write"]["paths_allowlist"]
+        assert "/vault/outputs/../**" not in allowed["filesystem.write"].get(
+            "paths_denylist", []
+        )
+
+    def test_tool_policy_schema_requires_default_deny_and_typed_rules(self):
+        schema = json.loads(POLICY_SCHEMA_PATH.read_text(encoding="utf-8"))
+        tool_properties = schema["properties"]["tools"]["properties"]
+        assert tool_properties["default"]["const"] == "deny"
+        allow_item = tool_properties["allow"]["items"]
+        arg_schema = allow_item["properties"]["args"]
+        assert arg_schema["maxItems"] == 128
+        rule_schema = arg_schema["items"]
+        assert set(rule_schema["required"]) == {"name", "type"}
+        assert set(rule_schema["properties"]["type"]["enum"]) == {
+            "string", "boolean", "number", "integer", "object", "array",
+        }
+        assert rule_schema["properties"]["pattern"]["maxLength"] == 4096
 
 
 class TestApplyProfileScript:

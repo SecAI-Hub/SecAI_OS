@@ -76,9 +76,12 @@ python3 scripts/qualification/collect_hardware_evidence.py \
 ```
 
 The collector intentionally emits `certified: false`; a reviewer combines this
-inventory with workload, boot-security, failure, and soak-test results. The
-report omits hostnames, usernames, network addresses, serials, TPM unique
-values, and device UUIDs.
+inventory with workload, boot-security, failure, and soak-test results. It also
+records SELinux enforcement/policy state, labels for fixed SecAI OS paths, and
+Podman's security capability block. It never exports AVC records because those
+can contain sensitive paths; review AVC and USER_AVC denials locally on the
+qualification host. The report omits hostnames, usernames, network addresses,
+serials, TPM unique values, and device UUIDs.
 
 Until such evidence is attached to a release:
 

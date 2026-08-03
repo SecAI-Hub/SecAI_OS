@@ -319,11 +319,25 @@ class Executor:
                     "error": f"tool firewall denied: {resp.text}",
                 }
 
-            fw_result = resp.json()
-            if fw_result.get("decision") != "allow":
+            try:
+                fw_result = resp.json()
+            except (TypeError, ValueError):
                 return {
                     "ok": False,
-                    "error": f"tool firewall: {fw_result.get('reason', 'denied')}",
+                    "error": "tool firewall returned a malformed decision",
+                }
+            if not isinstance(fw_result, dict) or type(fw_result.get("allowed")) is not bool:
+                return {
+                    "ok": False,
+                    "error": "tool firewall returned a malformed decision",
+                }
+            if fw_result["allowed"] is not True:
+                reason = fw_result.get("reason", "denied")
+                if not isinstance(reason, str):
+                    reason = "denied"
+                return {
+                    "ok": False,
+                    "error": f"tool firewall: {reason}",
                 }
 
         except requests.RequestException as exc:

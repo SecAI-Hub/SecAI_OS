@@ -11,12 +11,35 @@ import (
 	"testing"
 )
 
+func setupTestAudit(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	f, err := openAuditLog(path)
+	if err != nil {
+		t.Fatalf("open test audit log: %v", err)
+	}
+	auditMu.Lock()
+	previous := auditFile
+	auditFile = f
+	auditMu.Unlock()
+	t.Cleanup(func() {
+		auditMu.Lock()
+		auditFile = previous
+		auditMu.Unlock()
+		_ = f.Close()
+	})
+}
+
 func setupTestPolicy() {
 	policyMu.Lock()
 	policy = Policy{
 		Version: 1,
 		Tools: ToolsPolicy{
 			Default: "deny",
+			RateLimit: RateConfig{
+				RequestsPerMinute: 10_000,
+				BurstSize:         10_000,
+			},
 			Allow: []ToolEntry{
 				{
 					Name:           "filesystem.read",
@@ -132,6 +155,7 @@ func TestEvaluateEndpointMethodNotAllowed(t *testing.T) {
 
 func TestEvaluateEndpointPost(t *testing.T) {
 	setupTestPolicy()
+	setupTestAudit(t)
 	body := `{"tool":"filesystem.read","params":{"path":"/vault/user_docs/test.txt"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/evaluate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -150,6 +174,7 @@ func TestEvaluateEndpointPost(t *testing.T) {
 
 func TestEvaluateEndpointAcceptsLegacyArgsAlias(t *testing.T) {
 	setupTestPolicy()
+	setupTestAudit(t)
 	body := `{"tool":"filesystem.read","args":{"path":"/vault/user_docs/test.txt"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/evaluate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -242,10 +267,12 @@ func TestSanitizeAuditParamsRedactsSensitivePayloads(t *testing.T) {
 	if got["path"] != params["path"] {
 		t.Fatalf("expected path to remain readable, got %q", got["path"])
 	}
-	if !strings.HasPrefix(got["prompt"], "[redacted len=") {
+	prompt, _ := got["prompt"].(string)
+	if !strings.HasPrefix(prompt, "[redacted len=") {
 		t.Fatalf("expected prompt to be redacted, got %q", got["prompt"])
 	}
-	if !strings.HasPrefix(got["body"], "[redacted len=") {
+	body, _ := got["body"].(string)
+	if !strings.HasPrefix(body, "[redacted len=") {
 		t.Fatalf("expected body to be redacted, got %q", got["body"])
 	}
 }
