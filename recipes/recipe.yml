@@ -8,7 +8,7 @@ description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime
 # The scheduled build fails when that tag moves so a reviewed digest refresh is
 # required instead of silently changing the base of a signed appliance.
 base-image: ghcr.io/ublue-os/silverblue-main
-image-version: "44@sha256:24d0698ea2b530c6915584473f2f52571c9db7ce3f9be02303c9fa16d9ee9f35"
+image-version: "44@sha256:d1d10db64e96aa4bdd20c586c89a471228a68a73e27d996c66ac137cc40fa158"
 # BlueBuild installs cosign from its upstream OCI image. Keep that helper
 # immutable as well; Fedora 44 does not publish a `cosign` RPM.
 cosign-version: "3.1.1@sha256:6bbe0d281d955c79f85b325f0f7e651c1bcab5a4fa4ad4903d74955178a3b2eb"
