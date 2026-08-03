@@ -147,6 +147,7 @@ jobs:
           import hashlib
           import io
           import pathlib
+          import posixpath
           import shutil
           import tarfile
           import urllib.request
@@ -177,15 +178,38 @@ jobs:
               destination.mkdir(parents=True)
               with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
                   members = archive.getmembers()
-                  prefix = members[0].name.split("/", 1)[0] + "/"
+                  if not members:
+                      raise SystemExit(f"{name}: archive is empty")
+                  root = members[0].name.split("/", 1)[0]
+                  if not root or root in {".", ".."}:
+                      raise SystemExit(f"{name}: malformed archive root")
+                  prefix = root + "/"
                   for member in members:
-                      if member.issym() or member.islnk():
-                          raise SystemExit(f"{name}: archive contains a link")
+                      if member.islnk():
+                          raise SystemExit(f"{name}: archive contains a hard link")
+                      if member.name == root:
+                          if not member.isdir():
+                              raise SystemExit(f"{name}: malformed archive root")
+                          continue
                       if not member.name.startswith(prefix):
                           raise SystemExit(f"{name}: malformed archive root")
                       relative = pathlib.PurePosixPath(member.name.removeprefix(prefix))
                       if relative.is_absolute() or ".." in relative.parts:
                           raise SystemExit(f"{name}: unsafe archive path")
+                      if member.issym():
+                          link = pathlib.PurePosixPath(member.linkname)
+                          resolved_link = pathlib.PurePosixPath(
+                              posixpath.normpath((relative.parent / link).as_posix())
+                          )
+                          if (
+                              link.is_absolute()
+                              or not member.linkname
+                              or resolved_link.is_absolute()
+                              or ".." in resolved_link.parts
+                          ):
+                              raise SystemExit(
+                                  f"{name}: archive contains an unsafe symbolic link"
+                              )
                       member.name = relative.as_posix()
                       if member.name and member.name != ".":
                           archive.extract(member, destination, filter="data")

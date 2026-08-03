@@ -13,11 +13,11 @@ schema_version: 1
 upstreams:
   gguf-guard:
     upstream_url: https://github.com/SecAI-Hub/gguf-guard.git
-    pinned_commit: 17854ad9db54eb12a8c2ee13dd24c17bf6eea141
-    archive_sha256: cef8f76a97dc1eff037e3d6cf7964c76cb1ccf6cf710bad922c90689c839fbe4
+    pinned_commit: 71cdf1f811ba9df8a4ba1e56e343aaabb5a4b65d
+    archive_sha256: e0412557c129acc1f79a0d51cf25a4fafe65c2fbceb61a67ef0facba03d8c949
     local_path: upstreams/gguf-guard
     license: Apache-2.0
-    sync_date: "2026-07-27T00:00:00Z"
+    sync_date: "2026-08-03T00:00:00Z"
     reviewer: secai-release-audit
   searxng:
     upstream_url: https://github.com/searxng/searxng.git
