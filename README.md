@@ -518,7 +518,7 @@ See [docs/test-matrix.md](docs/test-matrix.md) for full breakdown.
 ## Roadmap
 
 <details>
-<summary>All 54 implementation milestones (click to expand)</summary>
+<summary>All 54 project milestones (implementation status; click to expand)</summary>
 
 Checked milestones mean that the associated source implementation exists.
 They are not release certification, production sign-off, or hardware
