@@ -199,7 +199,11 @@ modules:
     source: ghcr.io/blue-build/modules/rpm-ostree:latest@sha256:5999e871a2d8de5906cdff926fda8563446ea7f98632318bab0f0a554080997b
     remove:
       - golang
+      - golang-bin
+      - golang-src
+      - go-filesystem
       - cmake
+      - cmake-data
       - gcc-c++
       - gcc
       - git

@@ -223,7 +223,10 @@ class TestBuildWorkflowTrustBoundary:
 
     def test_final_image_rejects_build_only_packages(self):
         content = BUILD_YML.read_text(encoding="utf-8")
-        assert "for package in golang cmake gcc-c++ gcc git git-core" in content
+        assert (
+            "for package in golang golang-bin golang-src go-filesystem "
+            "cmake cmake-data gcc-c++ gcc git git-core"
+        ) in content
         assert "for command_name in go cmake gcc g++ git pip pip3" in content
 
 

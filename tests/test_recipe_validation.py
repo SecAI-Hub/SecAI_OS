@@ -163,7 +163,11 @@ class TestRuntimeImageTooling:
         removed = set(cleanup_modules[0]["remove"])
         assert {
             "golang",
+            "golang-bin",
+            "golang-src",
+            "go-filesystem",
             "cmake",
+            "cmake-data",
             "gcc-c++",
             "gcc",
             "git",

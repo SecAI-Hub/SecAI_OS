@@ -552,7 +552,7 @@ jobs:
           docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c \
             'rpm -q cosign && command -v cosign >/dev/null && cosign version'
           docker run --rm --entrypoint /bin/bash "$PINNED_REF" -c '
-            for package in golang cmake gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
+            for package in golang golang-bin golang-src go-filesystem cmake cmake-data gcc-c++ gcc git git-core git-core-doc perl-Git python3-pip; do
               if rpm -q --quiet -- "$package"; then
                 echo "FATAL: build-only package remains in final image: $package" >&2
                 exit 1
