@@ -539,6 +539,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -583,6 +584,10 @@ jobs:
         run: |
           set -euo pipefail
           registry_config_dir="${RUNNER_TEMP}/secai-registry-auth"
+          if [ -e "$registry_config_dir" ] || [ -L "$registry_config_dir" ]; then
+            echo "::error::Refusing to reuse the registry credential directory" >&2
+            exit 1
+          fi
           install -d -m 0700 "$registry_config_dir"
           printf '%s' "$REGISTRY_PASSWORD" |
             docker --config "$registry_config_dir" login ghcr.io \
@@ -1158,12 +1163,165 @@ jobs:
           retry_cosign_verify cyclonedx
           retry_cosign_verify slsaprovenance
 
+      - name: Authenticate GitHub provenance registry client
+        env:
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          readonly default_registry_config_dir="${HOME}/.docker"
+          readonly default_registry_config="${default_registry_config_dir}/config.json"
+          readonly provenance_login_marker="${RUNNER_TEMP}/secai-provenance-registry-login.marker"
+          if [ -L "$default_registry_config_dir" ] || {
+            [ -e "$default_registry_config_dir" ] && [ ! -d "$default_registry_config_dir" ];
+          }; then
+            echo "::error::Unsafe default Docker config directory" >&2
+            exit 1
+          fi
+          if [ -d "$default_registry_config_dir" ] && [ ! -O "$default_registry_config_dir" ]; then
+            echo "::error::Default Docker config directory is not runner-owned" >&2
+            exit 1
+          fi
+          if [ -e "$default_registry_config" ] || [ -L "$default_registry_config" ]; then
+            if [ ! -f "$default_registry_config" ] || [ -L "$default_registry_config" ] || [ ! -O "$default_registry_config" ]; then
+              echo "::error::Unsafe default Docker config file" >&2
+              exit 1
+            fi
+            if ! jq -e '
+              type == "object"
+              and ((has("auths") | not) or (.auths | type == "object"))
+              and ((has("credHelpers") | not) or (.credHelpers | type == "object"))
+              and ((has("credsStore") | not) or (.credsStore | type == "string"))
+            ' "$default_registry_config" >/dev/null; then
+              echo "::error::Invalid pre-existing default Docker config" >&2
+              exit 1
+            fi
+            if jq -e '
+              def registry_host:
+                sub("^https?://"; "") | split("/")[0];
+              any((.auths // {}) | to_entries[]; (.key | registry_host) == "ghcr.io")
+              or any((.credHelpers // {}) | to_entries[]; (.key | registry_host) == "ghcr.io")
+              or ((.credsStore // "") != "")
+            ' "$default_registry_config" >/dev/null; then
+              echo "::error::Refusing to replace pre-existing GHCR credentials or credential helpers" >&2
+              exit 1
+            fi
+            chmod 0600 "$default_registry_config"
+          fi
+          install -d -m 0700 "$default_registry_config_dir"
+          chmod 0700 "$default_registry_config_dir"
+          if [ -e "$provenance_login_marker" ] || [ -L "$provenance_login_marker" ]; then
+            echo "::error::Refusing to reuse the provenance registry login marker" >&2
+            exit 1
+          fi
+          umask 077
+          if ! (set -o noclobber; : > "$provenance_login_marker") 2>/dev/null; then
+            echo "::error::Could not create the provenance registry login marker exclusively" >&2
+            exit 1
+          fi
+          chmod 0600 "$provenance_login_marker"
+          if [ "$(stat -c '%a' "$provenance_login_marker")" != "600" ]; then
+            echo "::error::Provenance registry login marker has unsafe permissions" >&2
+            exit 1
+          fi
+          echo "SECAI_PROVENANCE_LOGIN_MARKER=${provenance_login_marker}" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_PASSWORD" |
+            docker --config "$default_registry_config_dir" login ghcr.io \
+              --username "$GITHUB_ACTOR" --password-stdin
+          if [ ! -f "$default_registry_config" ] || [ -L "$default_registry_config" ] || [ ! -O "$default_registry_config" ]; then
+            echo "::error::Docker did not create a safe default credential file" >&2
+            exit 1
+          fi
+          chmod 0600 "$default_registry_config"
+          jq -e '
+            def registry_host:
+              sub("^https?://"; "") | split("/")[0];
+            [(.auths // {}) | to_entries[] | select((.key | registry_host) == "ghcr.io")] as $ghcr_auth
+            | ($ghcr_auth | length) == 1
+            and ($ghcr_auth[0].value.auth | type == "string" and length > 0)
+            and (any(
+              (.credHelpers // {}) | to_entries[];
+              (.key | registry_host) == "ghcr.io"
+            ) | not)
+            and ((.credsStore // "") == "")
+          ' "$default_registry_config" >/dev/null
+
       - name: Generate GitHub image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ${{ needs.bluebuild_publish.outputs.image_ref }}
           subject-digest: ${{ needs.bluebuild_publish.outputs.digest }}
           push-to-registry: true
+
+      - name: Remove GitHub provenance registry credentials
+        if: always()
+        run: |
+          set -euo pipefail
+          readonly default_registry_config_dir="${HOME}/.docker"
+          readonly default_registry_config="${default_registry_config_dir}/config.json"
+          readonly provenance_login_marker="${RUNNER_TEMP}/secai-provenance-registry-login.marker"
+          if [ -z "${SECAI_PROVENANCE_LOGIN_MARKER:-}" ]; then
+            exit 0
+          fi
+          if [ "$SECAI_PROVENANCE_LOGIN_MARKER" != "$provenance_login_marker" ]; then
+            echo "::error::Refusing to trust an unexpected provenance registry login marker" >&2
+            exit 1
+          fi
+          if [ ! -e "$provenance_login_marker" ] && [ ! -L "$provenance_login_marker" ]; then
+            echo "::error::Provenance registry login marker is missing" >&2
+            exit 1
+          fi
+          if [ ! -f "$provenance_login_marker" ] || [ -L "$provenance_login_marker" ] || [ ! -O "$provenance_login_marker" ]; then
+            echo "::error::Unsafe provenance registry login marker" >&2
+            exit 1
+          fi
+          if [ "$(stat -c '%a' "$provenance_login_marker")" != "600" ]; then
+            echo "::error::Provenance registry login marker has unsafe permissions" >&2
+            exit 1
+          fi
+          if [ -L "$default_registry_config_dir" ] || {
+            [ -e "$default_registry_config_dir" ] && [ ! -d "$default_registry_config_dir" ];
+          }; then
+            echo "::error::Unsafe default Docker config directory during cleanup" >&2
+            exit 1
+          fi
+          if [ -d "$default_registry_config_dir" ] && [ ! -O "$default_registry_config_dir" ]; then
+            echo "::error::Default Docker config directory is not runner-owned during cleanup" >&2
+            exit 1
+          fi
+          chmod 0700 "$default_registry_config_dir"
+          if [ -e "$default_registry_config" ] || [ -L "$default_registry_config" ]; then
+            if [ ! -f "$default_registry_config" ] || [ -L "$default_registry_config" ] || [ ! -O "$default_registry_config" ]; then
+              echo "::error::Unsafe default Docker config file during cleanup" >&2
+              exit 1
+            fi
+            chmod 0600 "$default_registry_config"
+          fi
+          docker --config "$default_registry_config_dir" logout ghcr.io >/dev/null 2>&1 || true
+          if [ -e "$default_registry_config" ] || [ -L "$default_registry_config" ]; then
+            if ! jq -e '
+              type == "object"
+              and ((has("auths") | not) or (.auths | type == "object"))
+              and ((has("credHelpers") | not) or (.credHelpers | type == "object"))
+              and ((has("credsStore") | not) or (.credsStore | type == "string"))
+            ' "$default_registry_config" >/dev/null; then
+              echo "::error::Invalid default Docker config after provenance cleanup" >&2
+              exit 1
+            fi
+            if ! jq -e '
+              def registry_host:
+                sub("^https?://"; "") | split("/")[0];
+              (any((.auths // {}) | to_entries[]; (.key | registry_host) == "ghcr.io") | not)
+              and (any(
+                (.credHelpers // {}) | to_entries[];
+                (.key | registry_host) == "ghcr.io"
+              ) | not)
+              and ((.credsStore // "") == "")
+            ' "$default_registry_config" >/dev/null; then
+              echo "::error::GHCR credentials or credential helpers remain after provenance cleanup" >&2
+              exit 1
+            fi
+          fi
+          rm -f -- "$provenance_login_marker"
 
       - name: Upload image digest artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1189,11 +1347,33 @@ jobs:
       - name: Remove registry credentials
         if: always()
         run: |
-          if [ -n "${DOCKER_CONFIG:-}" ]; then
-            docker --config "$DOCKER_CONFIG" logout ghcr.io >/dev/null 2>&1 || true
+          set -euo pipefail
+          readonly expected_registry_config="${RUNNER_TEMP}/secai-registry-auth"
+          readonly expected_registry_auth="${expected_registry_config}/config.json"
+          if [ -n "${DOCKER_CONFIG:-}" ] && [ "$DOCKER_CONFIG" != "$expected_registry_config" ]; then
+            echo "::error::Refusing to clean an unexpected Docker config path" >&2
+            exit 1
           fi
-          if [ -n "${REGISTRY_AUTH_FILE:-}" ]; then
-            rm -f -- "$REGISTRY_AUTH_FILE"
+          if [ -n "${REGISTRY_AUTH_FILE:-}" ] && [ "$REGISTRY_AUTH_FILE" != "$expected_registry_auth" ]; then
+            echo "::error::Refusing to clean an unexpected registry auth file" >&2
+            exit 1
+          fi
+          if [ -e "$expected_registry_config" ] || [ -L "$expected_registry_config" ]; then
+            if [ ! -d "$expected_registry_config" ] || [ -L "$expected_registry_config" ] || [ ! -O "$expected_registry_config" ]; then
+              echo "::error::Unsafe isolated registry config directory during cleanup" >&2
+              exit 1
+            fi
+          fi
+          if [ -e "$expected_registry_auth" ] || [ -L "$expected_registry_auth" ]; then
+            if [ ! -f "$expected_registry_auth" ] || [ -L "$expected_registry_auth" ] || [ ! -O "$expected_registry_auth" ]; then
+              echo "::error::Unsafe isolated registry auth file during cleanup" >&2
+              exit 1
+            fi
+          fi
+          docker --config "$expected_registry_config" logout ghcr.io >/dev/null 2>&1 || true
+          rm -f -- "$expected_registry_auth"
+          if [ -d "$expected_registry_config" ]; then
+            rmdir -- "$expected_registry_config"
           fi
 
   bluebuild:

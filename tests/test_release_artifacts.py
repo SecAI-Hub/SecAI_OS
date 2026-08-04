@@ -140,7 +140,9 @@ class TestReleaseWorkflowStructure:
         assert "dist/secai-os-*.qcow2" not in content
         assert "dist/secai-os-*.ova" not in content
         assert "Qualify Local VM Builders (Not Published)" in content
-        assert "VM builders qualified; ephemeral images will now be destroyed." in content
+        assert (
+            "VM builders qualified; ephemeral images will now be destroyed." in content
+        )
 
     def test_release_signatures_use_pinned_cosign(self):
         content = _read_release_yml()
@@ -235,6 +237,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "packages: write" in evidence_job
         assert "id-token: write" in evidence_job
         assert "attestations: write" in evidence_job
+        assert "artifact-metadata: write" in evidence_job
         assert (
             "sigstore/cosign-installer@"
             "6f9f17788090df1f26f669e9d70d6ae9567deba6" in evidence_job
@@ -246,11 +249,60 @@ class TestBuildWorkflowTrustBoundary:
         assert "/opt/hostedtoolcache/Python \\" in evidence_job
         assert "/usr/local/lib/android \\" in evidence_job
         assert "REGISTRY_PASSWORD: ${{ github.token }}" in evidence_job
+        assert 'docker --config "$registry_config_dir" login ghcr.io' in evidence_job
         assert (
-            'docker --config "$registry_config_dir" login ghcr.io'
+            'registry_config_dir="${RUNNER_TEMP}/secai-registry-auth"' in evidence_job
+        )
+        assert (
+            'echo "REGISTRY_AUTH_FILE=${registry_config_dir}/config.json"'
             in evidence_job
         )
-        assert 'echo "REGISTRY_AUTH_FILE=${registry_config_dir}/config.json"' in evidence_job
+        assert "Authenticate GitHub provenance registry client" in evidence_job
+        assert (
+            'docker --config "$default_registry_config_dir" login ghcr.io'
+            in evidence_job
+        )
+        assert (
+            "actions/attest-build-provenance@"
+            "0f67c3f4856b2e3261c31976d6725780e5e4c373" in evidence_job
+        )
+        assert "create-storage-record: false" not in evidence_job
+        assert "Remove GitHub provenance registry credentials" in evidence_job
+        assert (
+            'docker --config "$default_registry_config_dir" logout ghcr.io'
+            in evidence_job
+        )
+        assert (
+            "GHCR credentials or credential helpers remain after provenance cleanup"
+            in evidence_job
+        )
+        assert "secai-provenance-registry-login.marker" in evidence_job
+        assert "set -o noclobber" in evidence_job
+        assert (
+            'echo "SECAI_PROVENANCE_LOGIN_MARKER=${provenance_login_marker}"'
+            ' >> "$GITHUB_ENV"' in evidence_job
+        )
+        assert 'if [ -z "${SECAI_PROVENANCE_LOGIN_MARKER:-}" ]; then' in evidence_job
+        assert (
+            'if [ "$SECAI_PROVENANCE_LOGIN_MARKER"'
+            ' != "$provenance_login_marker" ]; then' in evidence_job
+        )
+        assert "Refusing to replace pre-existing GHCR credentials" in evidence_job
+        assert (
+            'and ((has("auths") | not) or (.auths | type == "object"))' in evidence_job
+        )
+        assert 'sub("^https?://"; "") | split("/")[0]' in evidence_job
+        assert "HOME:" not in evidence_job
+        assert "Refusing to clean an unexpected Docker config path" in evidence_job
+        assert evidence_job.index(
+            "Authenticate GitHub provenance registry client"
+        ) < evidence_job.index("Generate GitHub image provenance")
+        assert evidence_job.index(
+            "Generate GitHub image provenance"
+        ) < evidence_job.index("Remove GitHub provenance registry credentials")
+        assert evidence_job.index(
+            "Remove GitHub provenance registry credentials"
+        ) < evidence_job.index("Upload image digest artifact")
         assert "Remove registry credentials" in evidence_job
         assert "COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}" in evidence_job
         assert "Create and attach image attestations" in evidence_job
@@ -313,7 +365,7 @@ class TestBuildWorkflowTrustBoundary:
         assert '.platform.architecture == "amd64"' in evidence_job
         assert 'platform_ref="${IMAGE_REF}@${platform_digest}"' in evidence_job
         assert 'if [ "$selected_digest" != "$platform_digest" ]; then' in evidence_job
-        assert 'org.opencontainers.image.revision' in evidence_job
+        assert "org.opencontainers.image.revision" in evidence_job
         assert 'if [ "$revision" != "$GITHUB_SHA" ]; then' in evidence_job
         assert 'cosign verify --key cosign.pub "$PINNED_REF"' in evidence_job
         assert 'docker pull --platform linux/amd64 "$PINNED_REF"' not in evidence_job
@@ -340,8 +392,13 @@ class TestBuildWorkflowTrustBoundary:
         assert "Materialize final-image root without overlay storage" in evidence_job
         assert "required_kib=$((30 * 1024 * 1024))" in evidence_job
         assert 'if [ "$available_kib" -lt "$required_kib" ]; then' in evidence_job
-        assert 'ln -P "$probe_dir/dangling-symlink" "$probe_dir/hardlink"' in evidence_job
-        assert "Runner filesystem cannot preserve OCI hardlinks to symlinks" in evidence_job
+        assert (
+            'ln -P "$probe_dir/dangling-symlink" "$probe_dir/hardlink"' in evidence_job
+        )
+        assert (
+            "Runner filesystem cannot preserve OCI hardlinks to symlinks"
+            in evidence_job
+        )
         assert (
             "docker.io/library/fedora@sha256:"
             "89f61a124414261868224666aa7fb8df1b78397a53623774bdfb105d1612b48b"
@@ -358,10 +415,13 @@ class TestBuildWorkflowTrustBoundary:
         assert "/usr/bin/cosign-linux-amd64" in evidence_job
         assert "rpm --root" not in evidence_job
         assert "/scan-root/usr/bin/cosign version" not in evidence_job
-        assert 'root = Path(os.environ["IMAGE_ROOTFS"]).resolve(strict=True)' in evidence_job
+        assert (
+            'root = Path(os.environ["IMAGE_ROOTFS"]).resolve(strict=True)'
+            in evidence_job
+        )
         assert "resolved.relative_to(root)" in evidence_job
-        assert 'candidate.stat(follow_symlinks=False)' in evidence_job
-        assert 'digest.hexdigest() != expected' in evidence_job
+        assert "candidate.stat(follow_symlinks=False)" in evidence_job
+        assert "digest.hexdigest() != expected" in evidence_job
         assert "timeout-minutes: 90" in evidence_job
         assert evidence_job.count("--network none") == 2
         assert evidence_job.count("--read-only") == 2
@@ -375,7 +435,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "--env GOMEMLIMIT=6GiB" in evidence_job
         assert "scan dir:/scan-root" in evidence_job
         assert "--base-path /scan-root" in evidence_job
-        assert 'source=${IMAGE_ROOTFS},target=/scan-root,readonly' in evidence_job
+        assert "source=${IMAGE_ROOTFS},target=/scan-root,readonly" in evidence_job
         assert "--scope squashed" in evidence_job
         assert "--override-default-catalogers image" in evidence_job
         assert "--parallelism 1" in evidence_job
@@ -385,7 +445,9 @@ class TestBuildWorkflowTrustBoundary:
         assert "--exclude '/proc/**'" not in evidence_job
         assert "--output cyclonedx-json > sbom.cdx.json" in evidence_job
         assert "anchore/sbom-action@" not in evidence_job
-        assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in evidence_job
+        assert (
+            "raw.githubusercontent.com/anchore/syft/main/install.sh" not in evidence_job
+        )
         assert 'if [ "$component_count" -lt 1000 ]; then' in evidence_job
         assert 'startsWith("pkg:rpm/")' not in evidence_job
         assert 'startswith("pkg:rpm/")' in evidence_job
@@ -393,12 +455,8 @@ class TestBuildWorkflowTrustBoundary:
 
     def test_bluebuild_gate_requires_non_pr_release_evidence(self):
         content = BUILD_YML.read_text(encoding="utf-8")
-        gate_job = content.split("\n  bluebuild:", 1)[1].split(
-            "\n  smoke-test:", 1
-        )[0]
-        assert (
-            "needs: [bluebuild_pr, bluebuild_publish, release_evidence]" in gate_job
-        )
+        gate_job = content.split("\n  bluebuild:", 1)[1].split("\n  smoke-test:", 1)[0]
+        assert "needs: [bluebuild_pr, bluebuild_publish, release_evidence]" in gate_job
         assert "needs.bluebuild_pr.result == 'success'" in gate_job
         assert "needs.bluebuild_publish.result == 'success'" in gate_job
         assert "needs.release_evidence.result == 'success'" in gate_job
@@ -449,14 +507,18 @@ class TestCiWorkflowStructure:
         assert "garak" in optional
         assert all(not dep.startswith("garak") for dep in scan_deps)
         for package in ("modelscan", "fickling", "modelaudit"):
-            matches = [dep for dep in scan_deps if "==" in dep and dep.split("==", 1)[0] == package]
+            matches = [
+                dep
+                for dep in scan_deps
+                if "==" in dep and dep.split("==", 1)[0] == package
+            ]
             assert len(matches) == 1
         assert "yara-python==4.5.4" in dependencies
 
     def test_quarantine_container_scanners_are_pinned(self):
-        lock = (
-            REPO_ROOT / "services/quarantine/requirements.lock"
-        ).read_text(encoding="utf-8")
+        lock = (REPO_ROOT / "services/quarantine/requirements.lock").read_text(
+            encoding="utf-8"
+        )
         for package, version in (
             ("modelscan", "0.8.8"),
             ("fickling", "0.1.12"),
@@ -470,7 +532,9 @@ class TestCiWorkflowStructure:
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             assert "ARG ENABLE_GARAK_SCANNER=false" in content
             assert "--require-hashes -r requirements.lock" in content
-            assert "garak is not present in the reviewed default scanner lock" in content
+            assert (
+                "garak is not present in the reviewed default scanner lock" in content
+            )
             assert "for scanner in modelscan fickling modelaudit" in content
             assert "ARG MODELSCAN_PACKAGE=" not in content
 
@@ -491,8 +555,7 @@ class TestCiWorkflowStructure:
         assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
         assert content.count("cosign-release: v3.1.1") == 1
         assert (
-            'for keyword in "SYFT_ARCHIVE_SHA256" "UMOCI_BINARY_SHA256" \\'
-            in content
+            'for keyword in "SYFT_ARCHIVE_SHA256" "UMOCI_BINARY_SHA256" \\' in content
         )
         assert '"unpack --rootless" "cosign attest" "cyclonedx"; do' in content
 
@@ -658,10 +721,14 @@ class TestBootstrapScript:
         assert 'VERIFY_KEY="$TEMP_KEY"' in content
         assert "would install cosign via dnf" in content
         assert "DRY RUN — would install public key" in content
-        policy_section = content.split('step "Configuring container signing policy"', 1)[1]
-        dry_run_block = policy_section.split('if [ "$DRY_RUN" = true ]; then', 1)[1].split("else", 1)[0]
-        assert "cp \"$TEMP_KEY\" \"$COSIGN_PUB_DEST\"" not in dry_run_block
-        assert "cat > \"$REGISTRIES_YAML\"" not in dry_run_block
+        policy_section = content.split(
+            'step "Configuring container signing policy"', 1
+        )[1]
+        dry_run_block = policy_section.split('if [ "$DRY_RUN" = true ]; then', 1)[
+            1
+        ].split("else", 1)[0]
+        assert 'cp "$TEMP_KEY" "$COSIGN_PUB_DEST"' not in dry_run_block
+        assert 'cat > "$REGISTRIES_YAML"' not in dry_run_block
 
     def test_fresh_policy_fails_closed_and_digest_is_validated(self):
         content = BOOTSTRAP.read_text(encoding="utf-8")
@@ -717,8 +784,7 @@ class TestBuildQcow2Script:
         assert "releases/44/Silverblue" in content
         assert "--os-variant fedora44" in content
         assert (
-            "part /var/lib/secure-ai --fstype=ext4 --size=8192 "
-            "--encrypted"
+            "part /var/lib/secure-ai --fstype=ext4 --size=8192 --encrypted"
         ) in content
         assert "part /var/tmp/secai-vault-staging --fstype=ext4 --grow" in content
         assert "--vault-device /dev/sda5" in content
@@ -739,7 +805,10 @@ class TestBuildQcow2Script:
         )
         assert "--ci requires caller-provided SECAI_VM_PASSWORD" in content
         assert "--qualification-ssh-key is restricted to --ci builds" in content
-        assert "This CI output is qualification-only and must not be distributed." in content
+        assert (
+            "This CI output is qualification-only and must not be distributed."
+            in content
+        )
 
     def test_vm_release_catalog_marks_images_local_only(self):
         data = _load_artifacts_json()
@@ -754,9 +823,7 @@ class TestBuildQcow2Script:
             for definition in local_only.values()
         )
 
-    def test_local_vm_builder_protects_generated_credentials(
-        self, tmp_path: Path
-    ):
+    def test_local_vm_builder_protects_generated_credentials(self, tmp_path: Path):
         env = _fake_vm_builder_environment(tmp_path)
         output = tmp_path / "output"
         image_ref = f"example.test/secai/os@sha256:{'a' * 64}"
@@ -815,9 +882,7 @@ class TestBuildQcow2Script:
         assert "--ci requires caller-provided" in result.stderr
         assert not (output / "secai-os.qcow2").exists()
 
-    def test_ci_vm_builder_does_not_persist_plaintext_credentials(
-        self, tmp_path: Path
-    ):
+    def test_ci_vm_builder_does_not_persist_plaintext_credentials(self, tmp_path: Path):
         env = _fake_vm_builder_environment(tmp_path)
         env["SECAI_VM_PASSWORD"] = "a" * 32
         env["SECAI_HOST_STATE_PASSWORD"] = "b" * 32
