@@ -174,7 +174,7 @@ Every model passes through the same fully automatic pipeline:
 | **Tripwire** | Canary files in sensitive dirs, inotify real-time monitoring |
 | **Emergency** | Verified lock, TPM unlock removal, or LUKS cryptographic erase |
 | **Updates** | Cosign-verified rpm-ostree, staged workflow, greenboot auto-rollback |
-| **Supply Chain** | Per-service CycloneDX SBOMs, SLSA3 provenance attestation, cosign-signed checksums |
+| **Supply Chain** | Per-service CycloneDX SBOMs, SLSA v1 provenance attestations, cosign-signed checksums |
 
 See [docs/threat-model.md](docs/threat-model.md) for threat classes, residual risks, and security invariants. See [docs/security-status.md](docs/security-status.md) for implementation status of all 54 milestones.
 
@@ -564,7 +564,7 @@ evidence produced for a specific release are authoritative.
 - [x] **Milestone 31** -- Agent Mode (Phase 1: safe local autopilot)
 - [x] **Milestone 32** -- GPU Integrity Watch (continuous GPU runtime verification)
 - [x] **Milestone 33** -- MCP Firewall (Model Context Protocol policy gateway)
-- [x] **Milestone 34** -- Release provenance + per-service SBOMs (SLSA3, CycloneDX, cosign)
+- [x] **Milestone 34** -- Release provenance + per-service SBOMs (SLSA v1, CycloneDX, cosign)
 - [x] **Milestone 35** -- Unified policy decision engine (6 domains, OPA/Rego-upgradeable)
 - [x] **Milestone 36** -- Runtime attestation + startup gating (TPM2, HMAC state bundles)
 - [x] **Milestone 37** -- Continuous integrity monitor (baseline-verified file watcher)
@@ -620,7 +620,7 @@ tests/                      Python, integration, adversarial, and acceptance tes
 docs/                       Architecture, API, threat model, install guides
 schemas/                    OpenAPI spec, JSON Schema for config files
 examples/                   Task-oriented walkthroughs
-.github/workflows/          CI (test/lint), build (image), release (SLSA3/SBOM)
+.github/workflows/          CI (test/lint), build (image), release (SLSA v1/SBOM)
 ```
 
 ---

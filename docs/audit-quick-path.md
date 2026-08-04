@@ -180,13 +180,15 @@ cosign verify \
 
 # Verify SLSA provenance attestation
 cosign verify-attestation \
-  --type slsaprovenance \
+  --type slsaprovenance1 \
   --key cosign.pub \
   ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
 Expected: verification succeeds with no errors and reports signatures valid for
-the shipped public key and transparency-log evidence.
+the shipped public key and transparency-log evidence. Cosign 3.1.1 wraps this
+SLSA v1 predicate in its in-toto Statement v0.1 envelope; the release workflow
+decodes the generated bundle and rejects an empty or mismatched predicate.
 
 ### SBOM Generation (per service)
 
@@ -297,7 +299,7 @@ cp /path/to/cosign.pub .
   ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```
 
-The script checks cosign image signature, CycloneDX SBOM attestation, SLSA3 provenance attestation, SHA256 checksums, and the structural validity of `custom-python.vex.json` when that OpenVEX file is present in the release bundle. See `files/scripts/verify-release.sh --help` for configuration options.
+The script checks cosign image signature, CycloneDX SBOM attestation, SLSA v1 provenance attestation, SHA256 checksums, and the structural validity of `custom-python.vex.json` when that OpenVEX file is present in the release bundle. See `files/scripts/verify-release.sh --help` for configuration options.
 
 Or via Make:
 

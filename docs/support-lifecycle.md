@@ -71,7 +71,7 @@ readiness checklist. Target service levels after certification are:
 
 - Security patches within 72 hours of disclosure
 - Automated rollback via Greenboot
-- Supply-chain verification (cosign + SLSA3 provenance)
+- Supply-chain verification (cosign + SLSA v1 provenance)
 - Documented recovery procedures
 
 VM installations are supported for **evaluation and development** only. Known limitations:

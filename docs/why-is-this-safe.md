@@ -47,9 +47,9 @@ You don't have to take our word for it:
 - **Security-critical keyed logs** are HMAC-chained and periodically verified;
   logs still classified as structured-only are identified as such in the
   audit-format manifest rather than being represented as tamper-evident.
-- **OS image** is cosign-signed with SLSA3 provenance attestation. Verify with:
+- **OS image** is cosign-signed with a SLSA v1 provenance attestation. Verify the exact release digest with:
   ```bash
-  cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os:latest
+  cosign verify --key cosign.pub ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
   ```
 - **Every model** passes 7 automated stages (source policy, format gate, integrity, provenance, static scan, behavioral test, diffusion scan) before it can be used.
 - **Forensic export** bundles all verification evidence into a signed archive you can review offline.

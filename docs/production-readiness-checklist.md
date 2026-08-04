@@ -41,7 +41,7 @@ production designation.
 
 - [ ] Container image signed with cosign (`cosign verify --key cosign.pub`)
 - [ ] Per-release-service CycloneDX SBOMs generated (9 native Go + 6 Python), and the sandbox UI ingress container has a generated image SBOM
-- [ ] SLSA3 provenance attestation attached to image
+- [ ] SLSA v1 provenance attestation attached to image
 - [ ] SHA256SUMS file generated and signed
 - [ ] `verify-release.sh` runs clean against the release artifacts
 - [ ] Release workflow (`release.yml`) executed without errors

@@ -1159,9 +1159,62 @@ jobs:
             }' > image-provenance.json
 
           retry_cosign_attest cyclonedx sbom.cdx.json
-          retry_cosign_attest slsaprovenance image-provenance.json
+          retry_cosign_attest slsaprovenance1 image-provenance.json
+
+          readonly provenance_bundle_path="${attestation_bundle_dir}/slsaprovenance1.sigstore.json"
+          readonly provenance_statement_path="${attestation_bundle_dir}/slsaprovenance1.statement.json"
+          if [ -e "$provenance_statement_path" ] || [ -L "$provenance_statement_path" ]; then
+            echo "::error::Refusing to overwrite a pre-existing decoded provenance statement" >&2
+            exit 1
+          fi
+          if ! jq -er '
+            .dsseEnvelope.payload
+            | select(type == "string" and length > 0)
+          ' "$provenance_bundle_path" |
+            base64 --decode > "$provenance_statement_path"; then
+            echo "::error::Could not decode the SLSA v1 attestation payload" >&2
+            rm -f -- "$provenance_statement_path"
+            exit 1
+          fi
+          if [ ! -f "$provenance_statement_path" ] || [ ! -s "$provenance_statement_path" ] || [ -L "$provenance_statement_path" ]; then
+            echo "::error::Cosign did not create a safe, non-empty SLSA v1 statement" >&2
+            rm -f -- "$provenance_statement_path"
+            exit 1
+          fi
+          if ! jq -e \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg source_repository "https://github.com/${GITHUB_REPOSITORY}" \
+            --arg workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg image_digest "${IMAGE_DIGEST#sha256:}" \
+            --arg subject_name "${PINNED_REF%@*}" \
+            --arg base_digest "${base_digest#sha256:}" \
+            --arg baseline_sha256 "$baseline_sha256" \
+            '
+              ._type == "https://in-toto.io/Statement/v0.1"
+              and .predicateType == "https://slsa.dev/provenance/v1"
+              and (.subject | type == "array" and length == 1)
+              and .subject[0].name == $subject_name
+              and .subject[0].digest.sha256 == $image_digest
+              and .predicate.buildDefinition.buildType == "https://blue-build.org/secai-os/v1"
+              and .predicate.buildDefinition.externalParameters.source_repository == $source_repository
+              and .predicate.buildDefinition.externalParameters.source_commit == $source_commit
+              and .predicate.buildDefinition.externalParameters.recipe == "recipes/recipe.yml"
+              and (.predicate.buildDefinition.resolvedDependencies | type == "array" and length == 2)
+              and .predicate.buildDefinition.resolvedDependencies[0].uri == "pkg:oci/ublue-os/silverblue-main@44"
+              and .predicate.buildDefinition.resolvedDependencies[0].digest.sha256 == $base_digest
+              and .predicate.buildDefinition.resolvedDependencies[1].uri == "file:/usr/share/secure-ai/integrity/release-baseline.json"
+              and .predicate.buildDefinition.resolvedDependencies[1].digest.sha256 == $baseline_sha256
+              and .predicate.runDetails.builder.id == $workflow
+              and .predicate.runDetails.metadata.invocationId == $workflow
+            ' "$provenance_statement_path" >/dev/null; then
+            echo "::error::Cosign created an incomplete or mismatched SLSA v1 provenance statement" >&2
+            rm -f -- "$provenance_statement_path"
+            exit 1
+          fi
+          rm -f -- "$provenance_statement_path"
+
           retry_cosign_verify cyclonedx
-          retry_cosign_verify slsaprovenance
+          retry_cosign_verify slsaprovenance1
 
       - name: Authenticate GitHub provenance registry client
         env:
@@ -1395,6 +1448,7 @@ jobs:
 
   smoke-test:
     name: Tier 1 Smoke Test (Artifact Verification)
+    if: ${{ !cancelled() && needs.bluebuild.result == 'success' }}
     needs: [bluebuild]
     runs-on: ubuntu-latest
     permissions:

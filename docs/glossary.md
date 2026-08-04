@@ -27,7 +27,7 @@ implemented the Airlock). M5 assurance requires:
 - Adversarial test suite passing (prompt injection, policy bypass, containment)
 - Continuous integrity monitoring active
 - Automated incident containment operational
-- Supply chain provenance verified (SBOMs, cosign, SLSA3)
+- Supply chain provenance verified (SBOMs, cosign, SLSA v1)
 
 The M5 security bar is defined in
 [docs/m5-control-matrix.md](m5-control-matrix.md) and verified by the

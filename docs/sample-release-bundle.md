@@ -316,7 +316,7 @@ cosign verify-attestation \
 
 ```bash
 cosign verify-attestation \
-  --type slsaprovenance \
+  --type slsaprovenance1 \
   --key cosign.pub \
   ghcr.io/secai-hub/secai_os@sha256:RELEASE_DIGEST
 ```

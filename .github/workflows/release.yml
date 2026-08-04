@@ -242,7 +242,7 @@ jobs:
           cosign verify --key cosign.pub "$pinned_ref" >/dev/null
           cosign verify-attestation --type cyclonedx --key cosign.pub \
             "$pinned_ref" >/dev/null
-          cosign verify-attestation --type slsaprovenance --key cosign.pub \
+          cosign verify-attestation --type slsaprovenance1 --key cosign.pub \
             "$pinned_ref" >/dev/null
 
           release_tag="release-${RELEASE_TAG_INPUT}"
@@ -726,7 +726,7 @@ jobs:
           cosign verify --key cosign.pub "$PINNED_REF" >/dev/null
           cosign verify-attestation --type cyclonedx --key cosign.pub \
             "$PINNED_REF" >/dev/null
-          cosign verify-attestation --type slsaprovenance --key cosign.pub \
+          cosign verify-attestation --type slsaprovenance1 --key cosign.pub \
             "$PINNED_REF" >/dev/null
           jq -n \
             --arg source_commit "$GITHUB_SHA" \

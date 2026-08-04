@@ -149,6 +149,11 @@ class TestReleaseWorkflowStructure:
         assert "*.iso.sig" in content
         assert content.count("cosign-release: v3.1.1") == 5
 
+    def test_release_verifies_slsa_v1_image_provenance(self):
+        content = _read_release_yml()
+        assert content.count("--type slsaprovenance1") == 2
+        assert re.search(r"--type slsaprovenance(?:\s|$)", content) is None
+
     def test_manifest_includes_install_artifacts(self):
         content = _read_release_yml()
         assert "install_artifacts" in content
@@ -309,6 +314,31 @@ class TestBuildWorkflowTrustBoundary:
         assert evidence_job.count("local -r max_attempts=4") == 2
         assert evidence_job.count("retry_cosign_attest ") == 2
         assert evidence_job.count("retry_cosign_verify ") == 2
+        assert (
+            "retry_cosign_attest slsaprovenance1 image-provenance.json" in evidence_job
+        )
+        assert "retry_cosign_verify slsaprovenance1" in evidence_job
+        assert ".dsseEnvelope.payload" in evidence_job
+        assert "base64 --decode" in evidence_job
+        assert '._type == "https://in-toto.io/Statement/v0.1"' in evidence_job
+        assert '.predicateType == "https://slsa.dev/provenance/v1"' in evidence_job
+        assert (
+            ".predicate.buildDefinition.buildType == "
+            '"https://blue-build.org/secai-os/v1"' in evidence_job
+        )
+        assert ".subject[0].name == $subject_name" in evidence_job
+        assert (
+            ".predicate.buildDefinition.resolvedDependencies[0].digest.sha256 "
+            "== $base_digest" in evidence_job
+        )
+        assert (
+            ".predicate.buildDefinition.resolvedDependencies[1].digest.sha256 "
+            "== $baseline_sha256" in evidence_job
+        )
+        assert ".predicate.runDetails.builder.id == $workflow" in evidence_job
+        assert (
+            ".predicate.runDetails.metadata.invocationId == $workflow" in evidence_job
+        )
         assert '--bundle "$bundle_path"' in evidence_job
         assert "--with-default-rekor-v2" in evidence_job
         assert '--signing-config "$signing_config_path"' in evidence_job
@@ -461,6 +491,18 @@ class TestBuildWorkflowTrustBoundary:
         assert "needs.bluebuild_publish.result == 'success'" in gate_job
         assert "needs.release_evidence.result == 'success'" in gate_job
 
+    def test_smoke_gate_runs_after_successful_bluebuild(self):
+        content = BUILD_YML.read_text(encoding="utf-8")
+        smoke_job = content.split("\n  smoke-test:", 1)[1]
+        assert "needs: [bluebuild]" in smoke_job
+        assert (
+            "if: ${{ !cancelled() && needs.bluebuild.result == 'success' }}"
+            in smoke_job
+        )
+        assert "needs.bluebuild_pr.result" not in smoke_job
+        assert "needs.bluebuild_publish.result" not in smoke_job
+        assert "needs.release_evidence.result" not in smoke_job
+
     def test_release_image_tag_promotion_is_environment_protected(self):
         content = RELEASE_YML.read_text(encoding="utf-8")
         resolve_job = content.split("\n  resolve-image:", 1)[1].split(
@@ -576,6 +618,13 @@ class TestCiWorkflowStructure:
 
 
 class TestSampleReleaseBundle:
+    def test_docs_do_not_overclaim_slsa_build_level(self):
+        paths = [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "docs").rglob("*.md"))]
+        for path in paths:
+            content = path.read_text(encoding="utf-8")
+            assert re.search(r"SLSA(?:\s*Level\s*)?3|SLSA3", content, re.I) is None
+            assert re.search(r"--type\s+slsa(?:\s|$)", content) is None
+
     def test_mentions_iso(self):
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         assert ".iso" in content
@@ -606,6 +655,11 @@ class TestSampleReleaseBundle:
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         assert "custom-python.vex.json" in content
 
+    def test_verifies_slsa_v1_image_provenance(self):
+        content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
+        assert "--type slsaprovenance1" in content
+        assert re.search(r"--type slsaprovenance(?:\s|$)", content) is None
+
     def test_mentions_release_helper_scripts(self):
         content = SAMPLE_BUNDLE.read_text(encoding="utf-8")
         for helper in (
@@ -618,6 +672,17 @@ class TestSampleReleaseBundle:
 
 
 class TestVerifyReleaseScript:
+    def test_verifies_slsa_v1_image_provenance(self):
+        content = VERIFY_RELEASE.read_text(encoding="utf-8")
+        assert 'verify_attestation_with_any_key "slsaprovenance1"' in content
+        assert (
+            re.search(
+                r'verify_attestation_with_any_key "slsaprovenance"(?:\s|$)',
+                content,
+            )
+            is None
+        )
+
     def test_has_step5_install_artifacts(self):
         content = VERIFY_RELEASE.read_text(encoding="utf-8")
         assert "Step 5" in content

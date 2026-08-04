@@ -89,7 +89,7 @@ git push origin v1.2.3-rc.1
 # - Builds all Go binaries (linux/amd64 + linux/arm64)
 # - Generates per-service SBOMs
 # - Creates SHA256SUMS and signs with cosign
-# - Creates SLSA3 provenance attestation
+# - Creates SLSA v1 provenance attestation
 # - Publishes GitHub Release (pre-release)
 ```
 

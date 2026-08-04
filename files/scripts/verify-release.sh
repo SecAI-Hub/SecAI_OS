@@ -7,7 +7,7 @@
 #
 #   1. Cosign signature on the container image
 #   2. CycloneDX SBOM attestation
-#   3. SLSA3 provenance attestation
+#   3. SLSA v1 provenance attestation
 #   4. SHA256 checksum of local release artifacts
 #   5. Signed install media, release manifest, and readiness evidence
 #
@@ -187,7 +187,7 @@ Environment variables:
 Steps performed:
   1. Verify cosign image signature
   2. Verify CycloneDX SBOM attestation
-  3. Verify SLSA3 provenance attestation
+  3. Verify SLSA v1 provenance attestation
   4. Verify SHA256 checksums of local artifacts
   5. Validate custom-python.vex.json when it is present
 
@@ -352,7 +352,7 @@ echo ""
 # ---------------------------------------------------------------------------
 info "Step 3/5: Verifying SLSA provenance attestation..."
 
-if verify_attestation_with_any_key "slsaprovenance"; then
+if verify_attestation_with_any_key "slsaprovenance1"; then
     pass "SLSA provenance attestation is valid"
     record_check 3 "slsa_provenance" "PASS" "key=${LAST_SUCCESS_KEY}"
 else

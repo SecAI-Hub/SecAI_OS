@@ -13,7 +13,7 @@ Last updated: 2026-03-14
 | **CI Tests** | `ci.yml` | `.github/workflows/ci.yml` | Push to main, PRs, manual dispatch |
 | **Image SBOM** | `build.yml` | `.github/workflows/build.yml` | After image build (non-PR only) |
 | **Service SBOMs** | `release.yml` | `.github/workflows/release.yml` | At release time |
-| **Provenance Attestation** | `release.yml` | `.github/workflows/release.yml` | At release time |
+| **Provenance Attestation** | `build.yml` + `release.yml` | Both | After image builds and at release time |
 | **Signing** | `build.yml` + `release.yml` | Both | cosign with `SIGNING_SECRET` |
 | **Verification** | `ci.yml` (supply-chain-verify job) | `.github/workflows/ci.yml` | Every CI run |
 
@@ -29,10 +29,10 @@ build → attest → sign → verify → promote
 - cosign signs the image using `SIGNING_SECRET`
 
 ### 2. Attest (build.yml + release.yml)
-- **Image SBOM:** `anchore/sbom-action` generates CycloneDX JSON SBOM for the OS image
+- **Image SBOM:** pinned Syft scans the squashed final-image root and generates a CycloneDX JSON SBOM
 - **SBOM Attestation:** `cosign attest --type cyclonedx` creates a signed attestation binding the SBOM to the image
 - **Service SBOMs:** Syft generates per-service CycloneDX SBOMs at release time
-- **SLSA3 Provenance:** `actions/attest-build-provenance` generates GitHub-native SLSA3 provenance attestation
+- **SLSA v1 Provenance:** Cosign creates signed SLSA v1 image provenance, and `actions/attest-build-provenance` creates an independent GitHub-native SLSA v1 attestation
 
 ### 3. Sign (build.yml + release.yml)
 - All images signed with cosign + `SIGNING_SECRET`
@@ -63,7 +63,7 @@ The `supply-chain-verify` CI job validates:
 
 | Component | Generator | Format | When |
 |-----------|-----------|--------|------|
-| OS image | anchore/sbom-action | CycloneDX JSON | build.yml (non-PR) |
+| OS image | Syft against the squashed image root | CycloneDX JSON | build.yml (non-PR) |
 | Go services (9) | Syft | CycloneDX JSON | release.yml + ci.yml verification |
 | Python services (6) | Syft | CycloneDX JSON | release.yml + ci.yml verification |
 
