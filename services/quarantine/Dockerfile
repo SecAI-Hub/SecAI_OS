@@ -1,6 +1,6 @@
 ARG ENABLE_GARAK_SCANNER=false
 
-FROM ghcr.io/ggml-org/llama.cpp:server@sha256:8d528edc02fd8332bed793a80c7bea0a5a38874409e80c1bb314d84b2abfd10b AS llama_server
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:6b2480f5e6ff49cdfb0360d8187524ddb14ed6511fc94c976312be8afadc26ef AS llama_server
 
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e AS build
 
