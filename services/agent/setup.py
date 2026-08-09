@@ -6,7 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "flask==3.1.3",
-        "requests==2.33.1",
+        "requests==2.34.2",
         "pyyaml==6.0.3",
     ],
     entry_points={
