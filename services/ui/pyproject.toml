@@ -9,7 +9,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "gunicorn==25.3.0",
     "pip==26.1.2",
-    "setuptools==83.0.0",
+    "setuptools==84.0.0",
     "wheel==0.46.2",
 ]
 
