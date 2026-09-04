@@ -1,4 +1,4 @@
-FROM docker.io/searxng/searxng@sha256:e37c25170d9f5947b16713af33e0ab41f0e6e6e73685e19c30fc6bb63562f801
+FROM docker.io/searxng/searxng@sha256:3602e6ddbeba037f5d800d1ed9d296a8b93c9f5b3cf9d05fa179d0e766dd59a1
 
 USER root
 
