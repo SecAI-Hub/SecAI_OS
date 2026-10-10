@@ -1,141 +1,71 @@
-# Search Mediator
+# Search mediator
 
-## Overview
+The native `secure-ai-search-mediator.service` exposes the authenticated API at
+`127.0.0.1:8485`. It sends approved requests only to the configured SearXNG origin
+(default `http://127.0.0.1:8888`). The source is the embedded
+`services/search-mediator` implementation, installed as `app:app`; separately
+staged helper sources cannot override the appliance's offline policy.
 
-- **Purpose:** Sanitized web search with PII stripping and injection detection
-- **Port:** 8485
-- **Language:** Python
-- **Systemd unit:** secure-ai-search-mediator.service
-- **Default state:** Disabled
+`POST /v1/search` accepts a JSON object containing a string `query` and an optional
+allowed string `categories`. Bodies are capped at 16 KiB, including streams without
+Content-Length. Queries longer than 200 characters are rejected without sending a
+truncated identifier. Common PII is redacted; credential-bearing queries are blocked.
+Normalization checks supported Unicode and percent-encoded forms before egress.
+These heuristics do not detect every secret or declassify confidential topics.
 
-The Search Mediator allows the LLM to perform web searches while maintaining user privacy. All queries are sanitized, routed through Tor, and results are scanned for injection attacks before being fed back to the model as context.
+Search must be enabled in `/etc/secure-ai/policy/policy.yaml`. The current session
+mode in `/etc/secure-ai/config/appliance.yaml` must permit networking; missing or
+invalid session configuration fails closed. The same checks gate ordinary searches,
+cover traffic, decoys, `GET /v1/search/test`, and authenticated `GET /health`.
+`GET /live` performs no network requests. Health returns 503 when enabled search
+cannot reach its upstream. The UI requires explicit positive readiness fields.
 
----
+SearXNG is intended to use the appliance's Tor proxy. The mediator cannot attest
+the actual network route: its `tor_routed` value is null and `routing_verified` is
+false. Configured routing, successful HTTP, and verified Tor routing are separate
+claims. Full OS packet/circuit tests remain required before making an anonymity
+claim. Results carry untrusted provenance, with typed/bounded text and URL checks.
+An executor must enforce action permissions independently of model interpretation.
 
-## Request Flow
+Every outbound attempt needs a durable minimized audit intent before HTTP and an
+outcome afterward. Audit failure before intent returns 503 with `egress=not_sent`;
+a later failure says `egress=may_have_been_sent` and `retry_safe=false`. Do not
+retry that response automatically. A random request ID links the attempt's events.
+Cross-request and restart-persistent client idempotency is not yet implemented.
+Logs omit raw queries, argument values, result URLs, and query hashes; Gunicorn's
+access format omits URL/query strings. The native journal has stable service
+ownership. Broader audit isolation, anchoring and retention are separate controls.
 
-```
-LLM generates query
-       |
-       v
-PII stripped from query
-       |
-       v
-Query routed through Tor
-       |
-       v
-SearXNG meta-search engine
-       |
-       v
-Results cleaned and normalized
-       |
-       v
-Injection detection scan
-       |
-       v
-Safe results injected as LLM context
-```
+Each worker admits one active egress request and returns 429 for excess load.
+The default deployment uses one worker with multiple threads, so liveness remains
+responsive. Searches share a 20-second egress/timing budget. Decoys reserve time for
+the real query; `decoys_attempted` and `decoys_sent` distinguish attempted and
+successful cover requests. Cover traffic provides heuristic obfuscation, with no
+formal differential privacy guarantee.
 
-1. The LLM generates a search query as part of its reasoning.
-2. The Search Mediator strips any PII (names, emails, addresses, etc.) from the query before it leaves the appliance.
-3. The sanitized query is sent to a local SearXNG instance, which routes the request through Tor.
-4. SearXNG aggregates results from privacy-respecting search engines.
-5. Returned results are cleaned (HTML stripped, normalized) and scanned for prompt injection patterns.
-6. Clean results are injected into the LLM's context window for the current conversation.
+The transport invokes only the installed Python interpreter with an isolated
+worker module. Queries pass through stdin, never process arguments or environment.
+The worker drops proxy/credential environment variables, disables redirects and
+ambient proxies, fixes request headers, rejects compressed/non-JSON responses,
+and caps response bytes at 2 MiB. A parent timeout kills a stalled worker, including
+while it waits for DNS, headers or body data. No caller chooses the executable,
+origin, or endpoint. The native seccomp lifecycle and Landlock interpreter allowlist
+must be qualified together. Immediate client-disconnect cancellation and a hard
+incoming-body deadline are not yet claimed.
 
----
+Local regression suites exercise credential formats, URL controls, streamed body
+limits, disabled/offline routes, audit faults, admission, and real loopback transport
+redirect/size/deadline behavior. These tests do not certify Tor, SELinux, installed
+systemd isolation, or production load limits.
 
-## Privacy Controls
 
-### Tor Routing
-
-All search traffic is routed through the Tor network. The search engines never see the appliance's real IP address.
-
-### Privacy-Respecting Engines Only
-
-SearXNG is configured to query only privacy-respecting sources:
-
-- DuckDuckGo (DDG)
-- Wikipedia
-- Stack Overflow (SO)
-- GitHub
-
-Google, Bing, and other tracking-heavy engines are excluded.
-
-### Differential Privacy
-
-To prevent traffic analysis and query correlation:
-
-- **Decoy queries:** The mediator periodically issues plausible but meaningless queries to mask real search patterns.
-- **K-anonymity:** Queries are generalized to reduce uniqueness before submission.
-- **Batch timing:** Multiple queries are batched and submitted together to prevent timing correlation.
-
-### Traffic Analysis Protection
-
-- **Query padding:** All queries are padded to a uniform length to prevent length-based fingerprinting.
-- **Timing randomization:** Random delays are added between queries to break timing patterns.
-
----
-
-## Injection Detection
-
-Search results are scanned for prompt injection patterns before being injected into the LLM context. Detected patterns include:
-
-- Instructions embedded in result text (e.g., "ignore previous instructions")
-- Encoded payloads (base64, URL-encoded instructions)
-- Excessive special characters or formatting designed to break context boundaries
-
-Results containing detected injection patterns are filtered out and logged.
-
----
-
-## API
-
-### POST /search
-
-Submit a search query.
-
-**Request body:**
-
-```json
-{
-  "query": "how to configure nftables firewall rules",
-  "max_results": 5
-}
-```
-
-**Response:** `200 OK`
-
-```json
-{
-  "results": [
-    {
-      "title": "nftables wiki - Quick reference",
-      "url": "https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference",
-      "snippet": "This page provides a quick reference for nftables rule syntax..."
-    }
-  ],
-  "query_sanitized": true,
-  "results_filtered": 0
-}
-```
-
-**Response (disabled):** `503 Service Unavailable`
-
-```json
-{
-  "error": "search mediator is disabled"
-}
-```
-
----
-
-## Enabling the Search Mediator
-
-The Search Mediator is disabled by default. To enable it:
-
-1. Set `search.enabled: true` in `policy.yaml`.
-2. Ensure the Tor service is running.
-3. Restart the search-mediator service.
-
-Enabling search introduces a privacy trade-off: even with Tor and differential privacy, the act of searching reveals that the appliance is active and interested in certain topics.
+The native SearXNG process uses the locked Gunicorn runtime and an ephemeral
+cache under `/run/secure-ai-searxng`. Its config inherits the pinned upstream
+application defaults while keeping exactly six reviewed engines. HTML and JSON
+formats are explicit, and Wikipedia emits ordinary results for the mediator.
+Startup tracker-list downloads are disabled; common tracking query parameters
+are removed locally without changing the encoding of retained parameters.
+The [upstream settings contract](https://docs.searxng.org/admin/settings/settings.html#use-default-settings)
+explains the defaults/engine merge, and the [format contract](https://docs.searxng.org/admin/settings/settings_search.html#formats)
+defines enabled outputs. Runtime regression checks must accompany future pins:
+schema-only imports do not exercise request initialization or result shapes.

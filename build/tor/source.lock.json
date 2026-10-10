@@ -1,0 +1,151 @@
+{
+  "architecture": "x86_64",
+  "build": {
+    "address_space_bytes": 3221225472,
+    "file_limit_bytes": 67108864,
+    "install_file_limit_bytes": 134217728,
+    "jobs": 2,
+    "optflags": "-O2 -flto=auto -ffat-lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall -Werror=format-security -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1  -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
+    "source_date_epoch": 1791331200,
+    "timeout_seconds": 1100,
+    "tree_stop_bytes": 2130706432
+  },
+  "fedora_signature": {
+    "fingerprint": "36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6"
+  },
+  "local_inputs": {
+    "README": {
+      "bytes": 904,
+      "path": "inputs/README",
+      "sha256": "34e26be39e6380ab2526862adb30055c67321c07370076adbb01ad682c9db669"
+    },
+    "build.py": {
+      "bytes": 14002,
+      "path": "build.py",
+      "sha256": "ccb68112efeed7408345cdcd6334f895c305936186d66985e0719a5be55237db"
+    },
+    "fedora44-key.asc": {
+      "bytes": 1672,
+      "path": "inputs/fedora44-key.asc",
+      "sha256": "93642aec521a1e5e96dd715f7ae0ec0850ebc9de09a94ce03cae5263f26cc18a"
+    },
+    "tor-0.4.8.4-torrc-ControlSocket-and-CookieAuthFile.patch": {
+      "bytes": 672,
+      "path": "inputs/tor-0.4.8.4-torrc-ControlSocket-and-CookieAuthFile.patch",
+      "sha256": "e9ad6021272a0d19570bb1ad9b22dbbf1a01fb8ea62c08dc54200b7b67436fbd"
+    },
+    "tor-keyring.gpg": {
+      "bytes": 1548,
+      "path": "inputs/tor-keyring.gpg",
+      "sha256": "4ad3a43cacb8b1724039fb880802ca3b773cad8a91ec37f59eb94285e8832436"
+    },
+    "tor-master.service": {
+      "bytes": 395,
+      "path": "inputs/tor-master.service",
+      "sha256": "8da0bb4055e03498f04a164a04d9cdbf31a039244a373564e40060e9843b8fdc"
+    },
+    "tor-sigblock-candidate.patch": {
+      "bytes": 639,
+      "path": "inputs/tor-sigblock-candidate.patch",
+      "sha256": "760b7ba75142de53b7343a1d24758e4e655344ab1940abe0b54371f00dcee88c"
+    },
+    "tor.defaults-torrc": {
+      "bytes": 116,
+      "path": "inputs/tor.defaults-torrc",
+      "sha256": "1ae41b2ee9fa16c3ea917cc4c2d0e866c33d1e277f98cc095f8e390b90abdca0"
+    },
+    "tor.logrotate": {
+      "bytes": 262,
+      "path": "inputs/tor.logrotate",
+      "sha256": "0ae171d27d9e03e47a68e83541865d33b3f2224dc2e3ec45b99cf17b0814af30"
+    },
+    "tor.service": {
+      "bytes": 1016,
+      "path": "inputs/tor.service",
+      "sha256": "7e63b4c346ca0878954803b82620deb007324fbff3562804a769c6c52008c507"
+    },
+    "tor.spec": {
+      "bytes": 38557,
+      "path": "inputs/tor.spec",
+      "sha256": "492e5c575e9f72d9ef99cee43e2a58b0fd40704a4176a639bbc412e9008eb15b"
+    },
+    "tor.sysusers": {
+      "bytes": 143,
+      "path": "inputs/tor.sysusers",
+      "sha256": "8a9fd098f6b97b617f5ce9f6f327e32cb61a30b1a12840bd53efb0cb93aa25fb"
+    },
+    "tor.tmpfiles.d": {
+      "bytes": 32,
+      "path": "inputs/tor.tmpfiles.d",
+      "sha256": "cedddf5ac108863af971f5c04f38f859115d23b8241d697fd681e10ea8b31e5e"
+    },
+    "tor@.service": {
+      "bytes": 1037,
+      "path": "inputs/tor@.service",
+      "sha256": "cd34622fb17d4f23ca1db37600f48ced1c71d0643200b5c0cfa1db03cea227da"
+    },
+    "verify.py": {
+      "bytes": 9449,
+      "path": "verify.py",
+      "sha256": "03685af5a75d68c7419b1089136c3d357ba38e4ecaaaf4579265ea0e3ab37f04"
+    }
+  },
+  "provenance": {
+    "derivative_changes": [
+      "upstream0.4.9.14 sources/checksum/signature",
+      "Version0.4.9.14 +Oct7 changelog",
+      ".secai1 derivative release retained",
+      "same pinned signing identities with accepted refreshed certificate",
+      "unchanged reviewed SIG_BLOCK patch"
+    ],
+    "fedora_spec_sha256": "f36d96c74900efde329178a717fca339e6089cfe5c9b2c5ae188f78f0fcfdcc7",
+    "unchanged_fedora_auxiliaries": [
+      "README",
+      "tor-0.4.8.4-torrc-ControlSocket-and-CookieAuthFile.patch",
+      "tor-master.service",
+      "tor.defaults-torrc",
+      "tor.logrotate",
+      "tor.service",
+      "tor.sysusers",
+      "tor.tmpfiles.d",
+      "tor@.service"
+    ]
+  },
+  "qualification_limits": [
+    "source checksum signature and stable version authenticated; local rebuilt RPM is not Fedora-signed",
+    "GCC16 partial-struct object-size and LTO compatibility risk remains open; warnings are retained, not universally declared harmless",
+    "full upstream tests required; only established optional fuzz-corpus/root-switch-id skips permitted",
+    "fresh target image ABI and native boot/systemd/hardware/circuits require separate qualification",
+    "source epoch does not establish universal artifact bit reproducibility across changed SDK/compiler/library versions"
+  ],
+  "release": "1.fc44.secai1",
+  "remote_inputs": {
+    "tor-0.4.9.14.tar.gz": {
+      "bytes": 11082552,
+      "sha256": "182449ac1c8ff43278da27b69b02040e11d03d0327db6d9126e4190ec6235e4a",
+      "url": "https://dist.torproject.org/tor-0.4.9.14.tar.gz"
+    },
+    "tor-0.4.9.14.tar.gz.sha256sum": {
+      "bytes": 86,
+      "sha256": "7afa503d7654c9280e4ab8e74bb0b543b0b248d83c10ea6d76c049882a53abed",
+      "url": "https://dist.torproject.org/tor-0.4.9.14.tar.gz.sha256sum"
+    },
+    "tor-0.4.9.14.tar.gz.sha256sum.asc": {
+      "bytes": 716,
+      "sha256": "64587fc92330890be6b433ab51fe770b85470e7ccfcc199838fa65eebd3e3877",
+      "url": "https://dist.torproject.org/tor-0.4.9.14.tar.gz.sha256sum.asc"
+    },
+    "tor-source.rpm": {
+      "bytes": 10537868,
+      "sha256": "235ed8c8e03f10b706038c6a4b1f19b4cdb57e3a7153da6474903b28f6d72aee",
+      "url": "https://kojipkgs.fedoraproject.org/packages/tor/0.4.9.11/1.fc44/data/signed/6d9f90a6/src/tor-0.4.9.11-1.fc44.src.rpm"
+    }
+  },
+  "schema_version": 1,
+  "upstream_signature": {
+    "good_keyid": "BE6A0531C18A9179",
+    "primary": "1C1BC007A9F607AA8152C040BEA7B180B1491921",
+    "signer": "514102454D0A87DB0767A1EBBE6A0531C18A9179"
+  },
+  "version": "0.4.9.14"
+}

@@ -20,6 +20,9 @@ SRC_DIR="/tmp/secure-ai-build"
 SOURCE_DIR=""  # Set by locate_source
 PYTHON_RUNTIME_DIR="/usr/lib/secure-ai/python3.12-venv"
 PYTHON_BIN="${PYTHON_RUNTIME_DIR}/bin/python3.12"
+GO_TOOLCHAIN_VERSION="${GO_TOOLCHAIN_VERSION:-1.27.2}"
+GO_TOOLCHAIN_SHA256="${GO_TOOLCHAIN_SHA256:-ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5}"
+
 
 # Fatal error -- abort the build.
 fail_build() {
@@ -52,11 +55,15 @@ with open('/tmp/SOURCE_PREP_MANIFEST.json') as f:
 required = {
     'schema_version',
     'commit_sha',
+    'go_toolchain_version',
+    'go_toolchain_tarball_sha256',
     'llama_cpp_version',
     'llama_cpp_tarball_sha256',
     'wheelhouse_sha256sums_digest',
     'application_requirements_lock_digest',
     'upstreams_lock_digest',
+    'tor_source_manifest_sha256',
+    'tor_source_contract_sha256',
     'wheel_count',
     'application_dependency_mode',
 }
@@ -110,6 +117,13 @@ if actual != expected:
     sys.exit(1)
 print('OK: .upstreams.lock.yaml digest verified')
 
+# Bind the compiler bytes into the same source-prep contract.
+with open('/tmp/go-toolchain.tar.gz', 'rb') as f:
+    actual = hashlib.sha256(f.read()).hexdigest()
+if actual != manifest['go_toolchain_tarball_sha256']:
+    print('FATAL: Go compiler digest does not match source-prep manifest')
+    sys.exit(1)
+
 # Verify the staged inference source itself, not only its manifest field.
 with open('/tmp/llama-cpp-staged.tar.gz', 'rb') as f:
     actual = hashlib.sha256(f.read()).hexdigest()
@@ -155,6 +169,8 @@ fi
 # ---------------------------------------------------------------------------
 
 # Locate service source from local paths only.
+# Appliance services always select the embedded /tmp/services tree. Only locked
+# external components select /tmp/upstreams; standalone helpers are not fallbacks.
 # Usage: locate_source <name> <local-path...>
 # Sets SOURCE_DIR on success. Returns 1 if not found (does NOT exit).
 locate_source() {
@@ -165,7 +181,9 @@ locate_source() {
         paths+=("$1"); shift
     done
 
+    [ ! -e "${SRC_DIR}/${name}" ] && [ ! -L "${SRC_DIR}/${name}" ] || fail_build "source destination already exists: ${name}"
     for p in "${paths[@]}"; do
+        [ ! -L "$p" ] || fail_build "source root is a symlink: ${name}"
         if [ -d "$p" ]; then
             cp -r "$p" "${SRC_DIR}/${name}"
             SOURCE_DIR="${SRC_DIR}/${name}"
@@ -189,6 +207,24 @@ track_binary() {
 # ---------------------------------------------------------------------------
 mkdir -p "$INSTALL_DIR" "$SRC_DIR"
 
+# Fedora's compiler can lag a Go security release. Always build appliance
+# services with the reviewed compiler, including in network-disabled builds.
+GO_TARBALL="/tmp/go-toolchain.tar.gz"
+if [ ! -f "$GO_TARBALL" ]; then
+    [ "${HERMETIC_BUILD:-}" != "true" ] || fail_build "staged Go compiler is missing"
+    curl -fsSL -o "$GO_TARBALL" "https://go.dev/dl/go${GO_TOOLCHAIN_VERSION}.linux-amd64.tar.gz"
+fi
+[ "$(uname -m)" = "x86_64" ] || fail_build "the pinned Go compiler supports only x86_64"
+echo "${GO_TOOLCHAIN_SHA256}  ${GO_TARBALL}" | sha256sum -c || fail_build "Go compiler checksum mismatch"
+GO_BUILD_ROOT="$(mktemp -d /tmp/secure-ai-go.XXXXXX)"
+trap 'rm -rf -- "$GO_BUILD_ROOT"' EXIT
+tar -xzf "$GO_TARBALL" -C "$GO_BUILD_ROOT"
+export GOROOT="${GO_BUILD_ROOT}/go"
+export PATH="${GOROOT}/bin:${PATH}"
+export GOTOOLCHAIN=local
+[ "$(go env GOVERSION)" = "go${GO_TOOLCHAIN_VERSION}" ] || fail_build "Go compiler version mismatch"
+
+
 # ===========================================================================
 # Go Services -- skip gracefully if upstream source not yet available.
 # Once upstreams are populated (PENDING -> pinned), missing source becomes fatal.
@@ -197,7 +233,7 @@ GO_SKIPPED=0
 
 # --- Airlock (egress control gateway, disabled at runtime by default) ---
 echo "Building: airlock"
-if locate_source airlock /tmp/services/airlock /tmp/files/services/airlock; then
+if locate_source airlock /tmp/services/airlock; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
     track_binary "${INSTALL_DIR}/airlock"
@@ -206,7 +242,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- ai-model-registry (security-first artifact registry) ---
 echo "Building: ai-model-registry"
 if locate_source ai-model-registry \
-    /tmp/upstreams/ai-model-registry /tmp/ai-model-registry /tmp/services/registry; then
+    /tmp/services/registry; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/secai-registryctl ./cmd/securectl/
@@ -217,7 +253,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- agent-tool-firewall (policy gateway for LLM tool calls) ---
 echo "Building: agent-tool-firewall"
 if locate_source agent-tool-firewall \
-    /tmp/upstreams/agent-tool-firewall /tmp/agent-tool-firewall /tmp/services/tool-firewall; then
+    /tmp/services/tool-firewall; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
     track_binary "${INSTALL_DIR}/tool-firewall"
@@ -226,31 +262,32 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- gpu-integrity-watch (continuous GPU runtime verification) ---
 echo "Building: gpu-integrity-watch"
 if locate_source gpu-integrity-watch \
-    /tmp/upstreams/gpu-integrity-watch /tmp/services/gpu-integrity-watch /tmp/gpu-integrity-watch; then
+    /tmp/services/gpu-integrity-watch; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
     track_binary "${INSTALL_DIR}/gpu-integrity-watch"
-    # Default profile (optional -- runtime uses built-in defaults if missing)
+    # Producer input is required protected release policy, never a fallback.
     mkdir -p /etc/secure-ai/gpu-integrity
-    cp profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/ 2>/dev/null || true
+    install -m 0644 profiles/default-profile.yaml /etc/secure-ai/gpu-integrity/default-profile.yaml
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- mcp-firewall (Model Context Protocol policy gateway) ---
 echo "Building: mcp-firewall"
 if locate_source mcp-firewall \
-    /tmp/upstreams/mcp-firewall /tmp/services/mcp-firewall /tmp/mcp-firewall; then
+    /tmp/services/mcp-firewall; then
+    python3 /tmp/files/scripts/verify-source-snapshot.py "$SOURCE_DIR" || fail_build "MCP source snapshot verification failed"
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
     track_binary "${INSTALL_DIR}/mcp-firewall"
     # Default policy (optional -- runtime uses built-in defaults if missing)
     mkdir -p /etc/secure-ai/mcp-firewall
-    cp policies/default-policy.yaml /etc/secure-ai/mcp-firewall/ 2>/dev/null || true
+    install -m 0644 policies/default-policy.yaml /etc/secure-ai/mcp-firewall/default-policy.yaml
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 # --- policy-engine (unified OPA-style decision point) ---
 echo "Building: policy-engine"
 if locate_source policy-engine \
-    /tmp/upstreams/policy-engine /tmp/services/policy-engine /tmp/policy-engine; then
+    /tmp/services/policy-engine; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
     track_binary "${INSTALL_DIR}/policy-engine"
@@ -259,7 +296,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- runtime-attestor (TPM2 quote verification + startup gating) ---
 echo "Building: runtime-attestor"
 if locate_source runtime-attestor \
-    /tmp/upstreams/runtime-attestor /tmp/services/runtime-attestor /tmp/runtime-attestor; then
+    /tmp/services/runtime-attestor; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
     track_binary "${INSTALL_DIR}/runtime-attestor"
@@ -268,7 +305,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- integrity-monitor (continuous baseline-verified file watcher) ---
 echo "Building: integrity-monitor"
 if locate_source integrity-monitor \
-    /tmp/upstreams/integrity-monitor /tmp/services/integrity-monitor /tmp/integrity-monitor; then
+    /tmp/services/integrity-monitor; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
     track_binary "${INSTALL_DIR}/integrity-monitor"
@@ -277,7 +314,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- incident-recorder (security event capture and containment) ---
 echo "Building: incident-recorder"
 if locate_source incident-recorder \
-    /tmp/upstreams/incident-recorder /tmp/services/incident-recorder /tmp/incident-recorder; then
+    /tmp/services/incident-recorder; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
     track_binary "${INSTALL_DIR}/incident-recorder"
@@ -286,7 +323,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 # --- gguf-guard (GGUF model integrity scanner) ---
 echo "Building: gguf-guard"
 if locate_source gguf-guard \
-    /tmp/upstreams/gguf-guard /tmp/gguf-guard; then
+    /tmp/upstreams/gguf-guard; then
     cd "$SOURCE_DIR"
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/gguf-guard ./cmd/gguf-guard/
     track_binary "/usr/bin/gguf-guard"
@@ -294,7 +331,7 @@ else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
 if [ "$GO_SKIPPED" -gt 0 ]; then
     echo "WARNING: ${GO_SKIPPED} Go service(s) skipped -- upstream source not available"
-    echo "  This is expected while upstreams are PENDING. Pin upstreams to fix."
+    echo "  Required embedded or locked source is missing; final payload validation will fail."
 fi
 
 # ===========================================================================
@@ -305,9 +342,9 @@ fi
 # or produce a pinned source artifact in release CI.
 # ===========================================================================
 echo "Building: llama-server"
-LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-b5200}"
+LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-v0.6.0}"
 # SHA256 of the release tarball -- update when bumping LLAMA_CPP_VERSION
-LLAMA_CPP_SHA256="${LLAMA_CPP_SHA256:-d823b3a8976743a83eaaf25451b6b3ed99d113d7c61f04d61dbe2aa9e46f1eec}"
+LLAMA_CPP_SHA256="${LLAMA_CPP_SHA256:-09b36dba235fcac180efff18514da7038e65d8e5b9e4aefa59238468abfdec12}"
 
 cd "$SRC_DIR"
 
@@ -328,20 +365,24 @@ echo "${LLAMA_CPP_SHA256}  ${LLAMA_TARBALL}" | sha256sum -c || \
     fail_build "llama.cpp tarball checksum mismatch (expected ${LLAMA_CPP_SHA256})"
 
 tar xzf "$LLAMA_TARBALL"
-cd "llama.cpp-${LLAMA_CPP_VERSION}"
+cd "llama.cpp-${LLAMA_CPP_VERSION#v}"
 
 # GPU backend detection -- best-effort fallback chain: CUDA -> Vulkan -> CPU
 # This is intentionally soft: the build must succeed even without GPU headers.
 GPU_BACKEND="cpu"
-if cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_BUILD_TYPE=Release 2>/dev/null; then
+LLAMA_CMAKE_ARGS=(
+    -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+    -DLLAMA_OPENSSL=OFF -DLLAMA_SUBPROCESS=OFF
+    -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF
+    -DLLAMA_BUILD_IS_DEV=OFF -DLLAMA_BUILD_NUMBER=11429
+    -DLLAMA_BUILD_COMMIT=d81235049384534c167caea52b85a694f6103d14
+)
+if cmake -B build -DGGML_CUDA=ON -DGGML_VULKAN=ON "${LLAMA_CMAKE_ARGS[@]}"; then
     GPU_BACKEND="cuda"
-elif { rm -rf build && cmake -B build -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_BUILD_TYPE=Release 2>/dev/null; }; then
+elif { rm -rf build && cmake -B build -DGGML_VULKAN=ON "${LLAMA_CMAKE_ARGS[@]}"; }; then
     GPU_BACKEND="vulkan"
 else
-    rm -rf build && cmake -B build -DBUILD_SHARED_LIBS=OFF \
-        -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+    rm -rf build && cmake -B build "${LLAMA_CMAKE_ARGS[@]}"
     GPU_BACKEND="cpu"
 fi
 cmake --build build --target llama-server -j"$(nproc)"
@@ -354,7 +395,9 @@ cat > /etc/secure-ai/gpu-backend.json <<GPUMETA
 {
     "backend": "${GPU_BACKEND}",
     "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "llama_cpp_version": "${LLAMA_CPP_VERSION}"
+    "llama_cpp_version": "${LLAMA_CPP_VERSION}",
+    "llama_cpp_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "go_toolchain_version": "${GO_TOOLCHAIN_VERSION}"
 }
 GPUMETA
 echo "  -> /etc/secure-ai/gpu-backend.json (backend: ${GPU_BACKEND})"
@@ -429,7 +472,7 @@ echo "Building: shared Python security primitives"
 if [ -d "/tmp/services/common" ]; then
     install_python_source /tmp/services/common
     "${PYTHON_BIN}" -c \
-        "import common.audit_chain, common.auth, common.circuit_breaker, common.mlock_helper"
+        "import common.audit_chain, common.auth, common.circuit_breaker, common.mlock_helper, common.inference_auth, common.inference_client"
 else
     fail_build "shared Python security primitives not found at /tmp/services/common"
 fi
@@ -437,15 +480,15 @@ fi
 # --- ai-quarantine (seven-stage artifact admission-control) ---
 echo "Building: quarantine-watcher"
 if locate_source ai-quarantine \
-    /tmp/upstreams/ai-quarantine /tmp/ai-quarantine /tmp/services/quarantine; then
+    /tmp/services/quarantine; then
     install_python_source "${SOURCE_DIR}"
     cat > "${INSTALL_DIR}/quarantine-watcher" <<'WRAPPER'
-#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12
+#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12 -IB
 from quarantine.watcher import main
 main()
 WRAPPER
     cat > "${INSTALL_DIR}/quarantine-scanner" <<'WRAPPER'
-#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12
+#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12 -IB
 from quarantine.scanner_worker import main
 main()
 WRAPPER
@@ -470,7 +513,7 @@ from importlib.metadata import version
 expected = {
     "modelscan": "0.8.8",
     "fickling": "0.1.12",
-    "modelaudit": "0.2.42",
+    "modelaudit": "0.2.52",
 }
 for package, wanted in expected.items():
     actual = version(package)
@@ -509,7 +552,9 @@ if [ -d "/tmp/services/ui" ]; then
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn with env-driven config.
 # Use the immutable, hash-locked CPython 3.12 application runtime directly.
-exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/lib/secure-ai/python3.12-venv/bin/python -I -B -m ui.runtime -- \
+    /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8480}" \
     --workers "${GUNICORN_WORKERS:-1}" \
     --threads "${GUNICORN_THREADS:-4}" \
@@ -517,6 +562,7 @@ exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
     --graceful-timeout 15 \
     --max-requests 1000 \
     --max-requests-jitter 50 \
+    --no-control-socket \
     --access-logfile - \
     --error-logfile - \
     ui.app:app
@@ -533,10 +579,14 @@ fi
 
 # Diffusion worker (optional -- disabled by default, opt-in via secai-enable-diffusion.sh)
 echo "Installing: diffusion-worker"
-DIFFUSION_DIR="/opt/secure-ai/services/diffusion-worker"
+DIFFUSION_DIR="/usr/lib/secure-ai/services/diffusion-worker"
 mkdir -p "$DIFFUSION_DIR"
 if [ -f "/tmp/services/diffusion-worker/app.py" ]; then
     cp /tmp/services/diffusion-worker/app.py "$DIFFUSION_DIR/app.py"
+    # The optional diffusion venv must consume the same reviewed admission
+    # code as the core venv without fetching or rebuilding a package at boot.
+    install -d -m 0755 /usr/lib/secure-ai/services/common
+    install -m 0644 /tmp/services/common/*.py /usr/lib/secure-ai/services/common/
     echo "  -> ${DIFFUSION_DIR}/app.py"
     # Wrapper for when diffusion is enabled via opt-in installer
     cat > "${INSTALL_DIR}/diffusion-worker" <<'WRAPPER'
@@ -552,15 +602,16 @@ fi
 source /var/lib/secure-ai/diffusion-venv/bin/activate
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
-export PYTHONPATH="/opt/secure-ai/services/diffusion-worker:${PYTHONPATH:-}"
+export PYTHONPATH="/usr/lib/secure-ai/services:/usr/lib/secure-ai/services/diffusion-worker"
 exec gunicorn \
-    --chdir /opt/secure-ai/services/diffusion-worker \
+    --chdir /usr/lib/secure-ai/services/diffusion-worker \
     --bind "${BIND_ADDR:-127.0.0.1:8455}" \
     --workers 1 \
     --threads 2 \
     --timeout "${GUNICORN_TIMEOUT:-1800}" \
     --graceful-timeout 30 \
     --max-requests 500 \
+    --no-control-socket \
     --access-logfile - \
     --error-logfile - \
     app:app
@@ -572,39 +623,34 @@ fi
 
 # --- llm-search-mediator (optional -- privacy-preserving search bridge) ---
 echo "Installing: llm-search-mediator"
-SEARCH_DIR="/opt/secure-ai/services/search-mediator"
+SEARCH_DIR="/usr/lib/secure-ai/services/search-mediator"
 mkdir -p "$SEARCH_DIR"
-if [ -d "/tmp/upstreams/llm-search-mediator" ]; then
-    cp -r /tmp/upstreams/llm-search-mediator "${SRC_DIR}/llm-search-mediator"
-elif [ -d "/tmp/llm-search-mediator" ]; then
-    cp -r /tmp/llm-search-mediator "${SRC_DIR}/llm-search-mediator"
-elif [ -d "/tmp/services/search-mediator" ]; then
+if [ -d "/tmp/services/search-mediator" ]; then
     cp -r /tmp/services/search-mediator "${SRC_DIR}/llm-search-mediator"
 else
     fail_build "search-mediator source not available"
 fi
 if [ -d "${SRC_DIR}/llm-search-mediator" ]; then
     # Copy source to runtime location
-    if [ -d "${SRC_DIR}/llm-search-mediator/search_mediator" ]; then
-        cp -r "${SRC_DIR}/llm-search-mediator/search_mediator" "$SEARCH_DIR/"
-    elif [ -f "${SRC_DIR}/llm-search-mediator/app.py" ]; then
-        cp "${SRC_DIR}/llm-search-mediator/app.py" "$SEARCH_DIR/app.py"
-    fi
+    test -f "${SRC_DIR}/llm-search-mediator/app.py" || fail_build "embedded search entry point is missing"
+    install -m 0644 "${SRC_DIR}/llm-search-mediator/"*.py "$SEARCH_DIR/"
     "${PYTHON_BIN}" -c "import flask, gunicorn, requests, yaml" \
         || fail_build "search-mediator locked dependencies are unavailable"
     cat > "${INSTALL_DIR}/search-mediator" <<'WRAPPER'
 #!/usr/bin/env bash
 # Production wrapper -- Gunicorn for search mediator.
-export PYTHONPATH="/opt/secure-ai/services/search-mediator:${PYTHONPATH:-}"
+export PYTHONPATH="/usr/lib/secure-ai/services/search-mediator"
 exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
     --bind "${BIND_ADDR:-127.0.0.1:8485}" \
     --workers 1 \
     --threads "${GUNICORN_THREADS:-4}" \
     --timeout "${GUNICORN_TIMEOUT:-30}" \
     --graceful-timeout 10 \
+    --no-control-socket \
     --access-logfile - \
+    --access-logformat '%(m)s %(s)s %(L)s' \
     --error-logfile - \
-    search_mediator.app:app
+    app:app
 WRAPPER
     chmod +x "${INSTALL_DIR}/search-mediator"
     echo "  -> ${INSTALL_DIR}/search-mediator"

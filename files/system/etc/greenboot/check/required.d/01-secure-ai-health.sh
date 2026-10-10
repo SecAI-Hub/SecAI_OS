@@ -293,6 +293,7 @@ expected_vault_services = {
     "integrity-monitor",
     "mcp-firewall",
     "registry",
+    "quarantine-watcher",
     "tool-firewall",
 }
 services = profile.get("services", [])
@@ -309,6 +310,9 @@ for service in services:
 for service_id in expected_vault_services:
     if by_id.get(service_id, {}).get("requires_vault") is not True:
         raise SystemExit(f"missing vault dependency declaration: {service_id}")
+watcher = by_id.get("quarantine-watcher", {})
+if watcher.get("required") is not True or watcher.get("unit") != "secure-ai-quarantine-watcher.service":
+    raise SystemExit("quarantine watcher must be a required native service")
 for service in profile.get("services", []):
     requires_vault = service.get("requires_vault", False)
     if not isinstance(requires_vault, bool):
@@ -325,7 +329,7 @@ PY
 ) || fail "service profile validation failed"
 mapfile -t CRITICAL_SERVICES <<< "$critical_service_output"
 [ -n "$critical_service_output" ] || fail "service profile has no required services"
-CRITICAL_SERVICES+=("nftables.service")
+CRITICAL_SERVICES+=("secure-ai-network-boot.service")
 
 if [ "$VAULT_MODE" = "setup_required" ]; then
     mapfile -t VAULT_CONSUMERS < <(
@@ -406,10 +410,10 @@ log "  incident recorder: reachable with no open incidents"
 # ── Check 3: Firewall rules ──
 log "Checking firewall rules..."
 if command -v nft &>/dev/null; then
-    if ! nft list ruleset 2>/dev/null | grep -F "table inet secure_ai" >/dev/null; then
-        fail "nftables secure_ai table not loaded"
+    if ! /usr/libexec/secure-ai/network-profile.py observe >/dev/null; then
+        fail "nftables secure_ai policy or kernel lease not verified"
     fi
-    log "  nftables: secure_ai table loaded"
+    log "  nftables: secure_ai complete policy verified"
 else
     fail "nft command not found"
 fi

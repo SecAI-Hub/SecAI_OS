@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------- policy engine tests ----------
@@ -58,6 +59,7 @@ func testPolicy() *FirewallPolicy {
 					{
 						Name:       "search",
 						Action:     "allow",
+						ArgRules:   []ArgRule{{Name: "query", MaxLen: 1000}},
 						TaintLabel: "external-data",
 					},
 				},
@@ -355,8 +357,10 @@ func TestTaint_PropagationAndBlock(t *testing.T) {
 		t.Fatalf("search should be allowed, got %s", d1.Action)
 	}
 	if len(d1.TaintApplied) == 0 || d1.TaintApplied[0] != "external-data" {
-		t.Error("expected external-data taint applied")
+		t.Error("expected external-data post-execution taint instruction")
 	}
+	// A trusted executor applies the instruction only after successful execution.
+	ts.Add("s1", "external-data", "web-search/search")
 
 	// Step 2: write_file should be blocked due to taint
 	d2 := engine.Evaluate(EvalRequest{
@@ -379,11 +383,8 @@ func TestTaint_DifferentSessions(t *testing.T) {
 	engine := NewPolicyEngine(testPolicy())
 	ts := NewTaintState()
 
-	// Taint session s1
-	engine.Evaluate(EvalRequest{
-		Server: "web-search", Method: "tools/call", Tool: "search",
-		Arguments: map[string]string{"query": "test"}, SessionID: "s1",
-	}, ts)
+	// Model successful authenticated completion for a source call in session s1.
+	ts.Add("s1", "external-data", "web-search/search")
 
 	// Session s2 should be unaffected
 	d := engine.Evaluate(EvalRequest{
@@ -532,7 +533,7 @@ func TestAudit_SignedReceipt(t *testing.T) {
 	decision := Decision{Action: "deny", Rule: "test", Reason: "test"}
 	request := EvalRequest{Server: "test", Method: "tools/call", Tool: "test", SessionID: "s1"}
 
-	receipt := al.SignReceipt(decision, request)
+	receipt := signTestReceipt(t, al, decision, request)
 
 	if receipt.Signature == "" {
 		t.Error("expected signed receipt")
@@ -553,7 +554,7 @@ func TestAudit_ReceiptTamperDetection(t *testing.T) {
 	decision := Decision{Action: "allow", Rule: "test", Reason: "test"}
 	request := EvalRequest{Server: "test", Method: "tools/call", SessionID: "s1"}
 
-	receipt := al.SignReceipt(decision, request)
+	receipt := signTestReceipt(t, al, decision, request)
 
 	// Tamper with the decision
 	receipt.Decision.Action = "deny"
@@ -561,6 +562,35 @@ func TestAudit_ReceiptTamperDetection(t *testing.T) {
 	if VerifyReceipt(receipt, pub) {
 		t.Error("tampered receipt should fail verification")
 	}
+}
+
+func TestAudit_ReceiptHashTamperDetection(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	al, _ := NewAuditLog("", priv, 100)
+	receipt := signTestReceipt(t, al,
+		Decision{Action: "allow", Rule: "test", Reason: "test"},
+		EvalRequest{Server: "test", Method: "tools/call", SessionID: "s1"},
+	)
+	receipt.Hash = strings.Repeat("0", 64)
+	if VerifyReceipt(receipt, pub) {
+		t.Error("tampered receipt hash should fail verification")
+	}
+}
+
+func signTestReceipt(t *testing.T, al *AuditLog, decision Decision, request EvalRequest) DecisionReceipt {
+	t.Helper()
+	entry, err := al.Record("evaluate", &decision, &request, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := al.SignReceipt(decision, request, entry, ReceiptOptions{
+		Audience: "test:mcp-firewall", PolicyDigest: "sha256:" + strings.Repeat("a", 64),
+		TTL: 2 * time.Minute, BatchSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
 }
 
 func TestAudit_MaxHistory(t *testing.T) {
@@ -665,7 +695,7 @@ func buildTestMuxWithToken(t *testing.T, token string) *http.ServeMux {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !checkToken(r, token) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -800,31 +830,6 @@ func TestHTTP_ReloadRequiresToken(t *testing.T) {
 	}
 }
 
-// ---------- token auth ----------
-
-func TestCheckToken_Empty(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
-	if checkToken(r, "") {
-		t.Error("empty token must fail closed")
-	}
-}
-
-func TestCheckToken_Valid(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
-	r.Header.Set("Authorization", "Bearer my-token")
-	if !checkToken(r, "my-token") {
-		t.Error("valid token should pass")
-	}
-}
-
-func TestCheckToken_Invalid(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
-	r.Header.Set("Authorization", "Bearer wrong")
-	if checkToken(r, "correct") {
-		t.Error("invalid token should fail")
-	}
-}
-
 // ---------- policy validation ----------
 
 func TestValidatePolicy_Warnings(t *testing.T) {
@@ -860,6 +865,13 @@ servers:
     allowed_tools:
       - name: test-tool
         action: allow
+audit:
+  enabled: true
+  log_path: /tmp/mcp-firewall-test-audit.jsonl
+  sign_reports: true
+  key_path: /tmp/mcp-firewall-test-signing.key
+  receipt_audience: test:mcp-firewall
+  receipt_ttl_seconds: 120
 `), 0o644)
 
 	policy, err := LoadPolicy(policyFile)
@@ -906,6 +918,9 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		Arguments: map[string]string{"query": "test"}, SessionID: "s1",
 	}, ts)
 	al.Record("evaluate", &d, nil, "")
+	for _, label := range d.TaintApplied {
+		ts.Add("s1", label, "web-search/search")
+	}
 	if !ts.HasTaint("s1", "external-data") {
 		t.Error("session should have external-data taint")
 	}

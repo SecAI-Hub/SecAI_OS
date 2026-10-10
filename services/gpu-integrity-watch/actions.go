@@ -104,7 +104,9 @@ func shouldTrigger(trigger Verdict, current Verdict) bool {
 		VerdictCritical: 2,
 	}
 
-	return order[current] >= order[trigger]
+	currentRank, currentKnown := order[current]
+	triggerRank, triggerKnown := order[trigger]
+	return currentKnown && triggerKnown && currentRank >= triggerRank
 }
 
 // executeReload signals the inference server to reload the model.
@@ -259,8 +261,13 @@ func (e *ActionExecutor) executeFailClosed(ac ActionConfig) ActionResult {
 			return ar
 		}
 		defer resp.Body.Close()
-		ar.Success = true
-		ar.Message = "fail-closed: shutdown signal sent to inference server"
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			ar.Message = fmt.Sprintf("shutdown request returned HTTP %d; containment unverified", resp.StatusCode)
+			return ar
+		}
+		// The inference HTTP API does not provide an authenticated termination
+		// receipt. Even a successful response cannot establish containment.
+		ar.Message = "shutdown request acknowledged; containment must be verified by the incident recorder"
 		return ar
 	}
 

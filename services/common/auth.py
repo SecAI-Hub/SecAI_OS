@@ -17,10 +17,14 @@ import os
 import re
 import secrets
 import stat
-import tempfile
 import threading
+import math
 import time
 from pathlib import Path
+
+from . import runtime_clock
+from .bounded_state import StateCapacity, StateUnavailable, open_directory
+from .session_store import MAX_CLIENTS, MAX_SESSIONS, SessionStore, credential_fingerprint, token_digest
 
 log = logging.getLogger("auth")
 
@@ -132,268 +136,248 @@ def validate_new_passphrase(passphrase: object) -> str | None:
 
 
 class AuthManager:
-    """Manages passphrase storage, sessions, and rate limiting."""
+    """Passphrase credentials and durable, process-shared session metadata."""
 
     def __init__(self, data_dir: str, session_timeout: int = DEFAULT_SESSION_TIMEOUT,
                  max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-                 lockout_duration: int = DEFAULT_LOCKOUT_DURATION):
+                 lockout_duration: int = DEFAULT_LOCKOUT_DURATION,
+                 *, runtime_dir: str | None = None, absolute_timeout: float | None = None):
         self._data_dir = Path(data_dir)
         self._creds_path = self._data_dir / "auth.json"
         self._session_timeout = session_timeout
         self._max_attempts = max_attempts
         self._lockout_duration = lockout_duration
-        self._lock = threading.Lock()
-
-        # In-memory state
-        self._sessions: dict[str, dict[str, float]] = {}  # token -> {"created": ts, "last_active": ts}
-        # Rate limits are keyed by the directly connected client. A single
-        # unauthenticated caller must not lock every local operator out.
-        self._login_states: dict[str, dict[str, float | int]] = {}
+        absolute = float(absolute_timeout if absolute_timeout is not None else os.getenv("SESSION_ABSOLUTE_TIMEOUT", "43200"))
+        if not math.isfinite(absolute) or not 1 <= absolute <= 7 * 86400:
+            raise ValueError("invalid absolute session timeout")
+        if not isinstance(session_timeout, (int, float)) or not 0 < session_timeout <= 86400:
+            raise ValueError("invalid idle session timeout")
+        # UI passes an explicit /run path. Standalone/test instances keep their
+        # runtime namespace in the caller-owned fixture directory.
+        runtime = Path(runtime_dir) if runtime_dir else self._data_dir / ".session-runtime"
+        self._store = SessionStore(self._data_dir, runtime, idle=session_timeout, absolute=absolute)
 
     def _write_creds(self, creds: dict, *, exclusive: bool = False) -> None:
-        """Persist credentials atomically using the stable auth group."""
-        self._data_dir.mkdir(mode=0o2770, parents=True, exist_ok=True)
+        directory = open_directory(self._data_dir, create=True)
+        temporary = ".auth." + secrets.token_hex(12)
+        descriptor = None
         try:
-            self._data_dir.chmod(0o2770)
-        except OSError:
-            pass
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=".auth.",
-            suffix=".tmp",
-            dir=str(self._data_dir),
-        )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(creds, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp_path, 0o660)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                                 0o660, dir_fd=directory)
+            os.fchmod(descriptor, 0o660)
+            raw = (json.dumps(creds, sort_keys=True, allow_nan=False) + "\n").encode()
+            if len(raw) > MAX_AUTH_FILE_BYTES or os.write(descriptor, raw) != len(raw):
+                raise StateUnavailable("credential write incomplete")
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
             if exclusive:
-                # link(2) is an atomic create-if-absent operation on the same
-                # filesystem. It prevents two workers from both winning the
-                # unauthenticated first-boot setup race.
-                os.link(tmp_path, self._creds_path)
-                os.unlink(tmp_path)
+                os.link(temporary, "auth.json", src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+                os.unlink(temporary, dir_fd=directory)
             else:
-                os.replace(tmp_path, self._creds_path)
-            os.chmod(self._creds_path, 0o660)
-        except Exception:
+                os.replace(temporary, "auth.json", src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
             try:
-                os.unlink(tmp_path)
-            except OSError:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
                 pass
-            raise
+            os.close(directory)
 
     def is_configured(self) -> bool:
-        """Check if a passphrase has been set."""
         return self._creds_path.exists()
 
     def setup_passphrase(self, passphrase: str) -> bool:
-        """Set the initial passphrase. Only works if not already configured."""
         if validate_new_passphrase(passphrase):
             return False
-
         creds = hash_passphrase(passphrase)
         creds["created_at"] = time.time()
-
-        with self._lock:
-            if self.is_configured():
-                return False
-            try:
+        try:
+            with self._store.state.transaction(write=True) as state:
+                self._store.current(state)
+                if self.is_configured():
+                    return False
                 self._write_creds(creds, exclusive=True)
-                log.info("passphrase configured successfully")
-                return True
-            except FileExistsError:
-                log.warning("passphrase setup lost concurrent setup race")
-                return False
-            except OSError:
-                log.error("failed to save credentials")
-                return False
+            return True
+        except OSError:
+            log.error("failed to save credentials")
+            return False
 
     def change_passphrase(self, current: str, new_passphrase: str) -> dict:
-        """Change the passphrase. Requires current passphrase for verification."""
         if not self.is_configured():
             return {"success": False, "error": "not configured"}
-
-        if not self._verify_stored(current):
-            return {"success": False, "error": "current passphrase incorrect"}
-
         policy_error = validate_new_passphrase(new_passphrase)
         if policy_error:
             return {"success": False, "error": policy_error}
-
+        with self._store.state.transaction() as state:
+            expected = self._read_stored()
+        if not verify_passphrase(current, expected):
+            return {"success": False, "error": "current passphrase incorrect"}
         creds = hash_passphrase(new_passphrase)
         creds["created_at"] = time.time()
-
-        try:
+        with self._store.state.transaction(write=True) as state:
+            self._store.current(state)
+            if credential_fingerprint(self._read_stored()) != credential_fingerprint(expected):
+                return {"success": False, "error": "credentials changed; sign in again"}
             self._write_creds(creds)
+            state["sessions"].clear()
+            state["clients"].clear()
+        return {"success": True}
 
-            # Invalidate all existing sessions
-            with self._lock:
-                self._sessions.clear()
+    def _prune(self, state, now):
+        state["sessions"] = {key: row for key, row in state["sessions"].items()
+                             if self._store.valid(row, row["credential"], now=now)}
+        state["clients"] = {key: row for key, row in state["clients"].items()
+                            if now - row["last_failed"] <= DEFAULT_ESCALATED_LOCKOUT or now < row["lockout_until"]}
 
-            log.info("passphrase changed successfully")
-            return {"success": True}
-        except OSError:
-            log.exception("failed to change passphrase")
-            return {"success": False, "error": "failed to change passphrase"}
+    def _lockout(self, row, now):
+        until = row.get("lockout_until", 0) if row else 0
+        if now < until:
+            return {"success": False, "error": f"account locked, try again in {int(until - now)}s",
+                    "locked_until": time.time() + until - now, "locked": True}
+        return None
 
     def login(self, passphrase: str, client_id: str = "local") -> dict:
-        """Attempt login. Returns {success, token} or {success, error, locked_until}."""
-        client_key = str(client_id or "local")[:200]
-        with self._lock:
-            now = time.time()
-            state = self._login_states.setdefault(
-                client_key,
-                {"failed_attempts": 0, "last_failed": 0.0, "lockout_until": 0.0},
-            )
-
-            # Check lockout
-            lockout_until = float(state["lockout_until"])
-            if now < lockout_until:
-                remaining = int(lockout_until - now)
-                return {
-                    "success": False,
-                    "error": f"account locked, try again in {remaining}s",
-                    "locked_until": lockout_until,
-                    "locked": True,
-                }
-
         if not self.is_configured():
             return {"success": False, "error": "passphrase not configured"}
-
-        if self._verify_stored(passphrase):
-            self._upgrade_legacy_hash(passphrase)
-            with self._lock:
-                self._login_states.pop(client_key, None)
+        client = hashlib.sha256(str(client_id or "local")[:200].encode()).hexdigest()
+        self._store.require_current_epoch()
+        with self._store.state.transaction(write=True) as state:
+            self._store.current(state)
+            now = runtime_clock.now()
+            self._prune(state, now)
+            locked = self._lockout(state["clients"].get(client), now)
+            if locked:
+                return locked
+            if client not in state["clients"] and len(state["clients"]) >= MAX_CLIENTS:
+                raise StateCapacity("authentication admission capacity reached")
+            expected = self._read_stored()
+        verified = verify_passphrase(passphrase, expected)
+        upgraded = None
+        if verified and expected.get("params", {}).get("n") != SCRYPT_N:
+            upgraded = hash_passphrase(passphrase)
+            upgraded["created_at"] = expected.get("created_at", time.time())
+            upgraded["upgraded_at"] = time.time()
+        with self._store.state.transaction(write=True) as state:
+            self._store.current(state)
+            now = runtime_clock.now()
+            self._prune(state, now)
+            if credential_fingerprint(self._read_stored()) != credential_fingerprint(expected):
+                return {"success": False, "error": "credentials changed; sign in again"}
+            locked = self._lockout(state["clients"].get(client), now)
+            if locked:
+                return locked
+            if verified:
+                if len(state["sessions"]) >= MAX_SESSIONS:
+                    raise StateCapacity("session admission capacity reached")
+                if upgraded is not None:
+                    self._write_creds(upgraded)
+                    expected = upgraded
+                    state["sessions"].clear()
+                state["clients"].pop(client, None)
                 token = secrets.token_hex(32)
-                now = time.time()
-                self._sessions[token] = {"created": now, "last_active": now}
-            log.info("login successful")
-            return {"success": True, "token": token}
-
-        # Failed login
-        with self._lock:
-            state = self._login_states.setdefault(
-                client_key,
-                {"failed_attempts": 0, "last_failed": 0.0, "lockout_until": 0.0},
-            )
-            state["failed_attempts"] = int(state["failed_attempts"]) + 1
-            state["last_failed"] = time.time()
-            attempts = int(state["failed_attempts"])
-
-            if attempts >= DEFAULT_ESCALATION_THRESHOLD:
-                state["lockout_until"] = time.time() + DEFAULT_ESCALATED_LOCKOUT
-                log.warning("login failed %d times, escalated lockout %ds",
-                            attempts, DEFAULT_ESCALATED_LOCKOUT)
-            elif attempts >= self._max_attempts:
-                state["lockout_until"] = time.time() + self._lockout_duration
-                log.warning("login failed %d times, locked out for %ds",
-                            attempts, self._lockout_duration)
-
-            # Bound memory if callers continually rotate source addresses.
-            if len(self._login_states) > 4096:
-                cutoff = time.time() - DEFAULT_ESCALATED_LOCKOUT
-                self._login_states = {
-                    key: value
-                    for key, value in self._login_states.items()
-                    if float(value["last_failed"]) >= cutoff
+                state["sessions"][token_digest(token)] = {
+                    "created": now, "last_active": now, "credential": credential_fingerprint(expected),
                 }
-
-        return {"success": False, "error": "incorrect passphrase"}
+            else:
+                if client not in state["clients"] and len(state["clients"]) >= MAX_CLIENTS:
+                    raise StateCapacity("authentication admission capacity reached")
+                row = state["clients"].setdefault(client, {"failed_attempts": 0, "last_failed": 0.0, "lockout_until": 0.0})
+                row["failed_attempts"] = min(row["failed_attempts"] + 1, 1000000)
+                row["last_failed"] = now
+                if row["failed_attempts"] >= DEFAULT_ESCALATION_THRESHOLD:
+                    row["lockout_until"] = now + DEFAULT_ESCALATED_LOCKOUT
+                elif row["failed_attempts"] >= self._max_attempts:
+                    row["lockout_until"] = now + self._lockout_duration
+        return {"success": True, "token": token} if verified else {"success": False, "error": "incorrect passphrase"}
 
     def validate_session(self, token: str, refresh: bool = True) -> bool:
-        """Check if a session token is valid and not expired.
+        digest = token_digest(token)
+        return bool(digest and self.is_configured() and self.validate_grant(digest, refresh=refresh))
 
-        When ``refresh`` is False, validation does not extend the session's
-        idle timeout. This is useful for passive polling endpoints.
-        """
-        if not token:
-            return False
-
-        with self._lock:
-            session = self._sessions.get(token)
-            if not session:
+    def validate_grant(self, digest: str, *, refresh: bool = False, epoch: str | None = None,
+                       credential: str | None = None) -> bool:
+        """Internal executor check; digest alone is never an HTTP bearer token."""
+        self._store.require_current_epoch()
+        with self._store.state.transaction(write=refresh) as state:
+            self._store.current(state)
+            if epoch is not None and epoch != self._store.epoch:
                 return False
-
-            now = time.time()
-            if now - session["last_active"] > self._session_timeout:
-                del self._sessions[token]
+            current = credential_fingerprint(self._read_stored())
+            if credential is not None and credential != current:
                 return False
-
+            row = state["sessions"].get(digest)
+            if not self._store.valid(row, current):
+                if refresh:
+                    state["sessions"].pop(digest, None)
+                return False
             if refresh:
-                session["last_active"] = now
+                row["last_active"] = runtime_clock.now()
             return True
 
+    def grant(self, token: str) -> dict:
+        digest = token_digest(token)
+        self._store.require_current_epoch()
+        with self._store.state.transaction() as state:
+            self._store.current(state)
+            row = state["sessions"].get(digest)
+            current = credential_fingerprint(self._read_stored())
+            valid = bool(digest and self._store.valid(row, current))
+            grant = {"session": digest, "epoch": self._store.epoch, "credential": current}
+        if not valid:
+            raise PermissionError("authentication required")
+        return grant
+
     def logout(self, token: str):
-        """Invalidate a session."""
-        with self._lock:
-            self._sessions.pop(token, None)
+        digest = token_digest(token)
+        if digest:
+            with self._store.state.transaction(write=True) as state:
+                self._store.current(state)
+                state["sessions"].pop(digest, None)
 
     def get_session_info(self, token: str) -> dict:
-        """Get session metadata."""
-        with self._lock:
-            session = self._sessions.get(token)
-            if not session:
+        digest = token_digest(token)
+        if not digest or not self.validate_grant(digest):
+            return {}
+        with self._store.state.transaction() as state:
+            row = state["sessions"].get(digest)
+            if not self._store.valid(row, credential_fingerprint(self._read_stored())):
                 return {}
-            now = time.time()
-            return {
-                "active": True,
-                "age_seconds": int(now - session["created"]),
-                "idle_seconds": int(now - session["last_active"]),
-                "timeout": self._session_timeout,
-            }
+            now = runtime_clock.now()
+            return {"active": True, "age_seconds": int(now - row["created"]),
+                    "idle_seconds": int(now - row["last_active"]), "timeout": self._session_timeout,
+                    "absolute_timeout": self._store.absolute,
+                    "remaining_seconds": max(0, int(min(self._store.idle - now + row["last_active"],
+                                                        self._store.absolute - now + row["created"])))}
 
     def cleanup_expired(self):
-        """Remove expired sessions."""
-        with self._lock:
-            now = time.time()
-            expired = [
-                t for t, s in self._sessions.items()
-                if now - s["last_active"] > self._session_timeout
-            ]
-            for t in expired:
-                del self._sessions[t]
+        with self._store.state.transaction(write=True) as state:
+            self._store.current(state)
+            self._prune(state, runtime_clock.now())
 
     def _verify_stored(self, passphrase: str) -> bool:
-        """Verify passphrase against stored credentials."""
         try:
-            stored = self._read_stored()
-            return verify_passphrase(passphrase, stored)
+            return verify_passphrase(passphrase, self._read_stored())
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            log.error("failed to read credentials")
             return False
 
     def _read_stored(self) -> dict:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(self._creds_path, flags)
+        directory = open_directory(self._data_dir)
+        descriptor = None
         try:
+            descriptor = os.open("auth.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
             info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_AUTH_FILE_BYTES:
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_AUTH_FILE_BYTES
+                    or stat.S_IMODE(info.st_mode) not in {0o600, 0o660}):
                 raise ValueError("unsafe credential file")
             raw = os.read(descriptor, MAX_AUTH_FILE_BYTES + 1)
         finally:
-            os.close(descriptor)
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory)
         value = json.loads(raw)
         if not isinstance(value, dict):
             raise ValueError("invalid credential schema")
         return value
-
-    def _upgrade_legacy_hash(self, passphrase: str) -> None:
-        """Upgrade a verified legacy hash without overwriting a concurrent change."""
-        try:
-            stored = self._read_stored()
-            params = stored.get("params")
-            if not isinstance(params, dict) or params.get("n") == SCRYPT_N:
-                return
-            old_hash = stored.get("hash")
-            upgraded = hash_passphrase(passphrase)
-            upgraded["created_at"] = stored.get("created_at", time.time())
-            upgraded["upgraded_at"] = time.time()
-            with self._lock:
-                current = self._read_stored()
-                if current.get("hash") != old_hash:
-                    return
-                self._write_creds(upgraded)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            log.error("failed to upgrade legacy passphrase hash")

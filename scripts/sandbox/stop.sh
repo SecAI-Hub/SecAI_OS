@@ -202,7 +202,7 @@ COMPOSE_PROJECT_NAME=secai-sandbox
 export COMPOSE_PROJECT_NAME
 PODMAN_CONTROL_NETWORK="${COMPOSE_PROJECT_NAME}_ingress"
 PODMAN_ANCHOR_SCRIPT="$REPO_ROOT/scripts/sandbox/podman_anchor.py"
-ALPINE_HELPER_IMAGE="docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+ALPINE_HELPER_IMAGE="docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 PYTHON_BIN=$(command -v python3 || command -v python || true)
 
 stop_control_server() {

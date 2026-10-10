@@ -14,7 +14,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -299,6 +298,8 @@ class Task:
     budgets: Budgets = field(default_factory=Budgets)
     created_at: float = field(default_factory=time.time)
     completed_at: float | None = None
+    history_only: bool = False
+    history_expires_at: float | None = None
     runtime_lock: Any = field(
         default_factory=threading.RLock,
         repr=False,
@@ -307,13 +308,25 @@ class Task:
 
     def to_dict(self) -> dict:
         with self.runtime_lock:
+            review = {}
+            if not self.history_only and self.capability is not None:
+                from .approval import approval_snapshot
+                review = approval_snapshot(self)
+            steps = [step.to_dict() for step in self.steps]
+            for step in steps:
+                step["approval_hash"] = review.get("step_hashes", {}).get(step["step_id"])
             return {
                 "task_id": self.task_id,
                 "intent": self.intent,
                 "status": self.status.value,
                 "mode": self.mode.value,
-                "steps": [s.to_dict() for s in self.steps],
+                "steps": steps,
                 "capability": self.capability.to_public_dict() if self.capability else None,
                 "created_at": self.created_at,
                 "completed_at": self.completed_at,
+                "history_only": self.history_only,
+                "content_available": not self.history_only,
+                "history_storage": "metadata_only",
+                "history_expires_at": self.history_expires_at,
+                **review,
             }

@@ -17,6 +17,22 @@ func TestModelQueryPathEncodesName(t *testing.T) {
 	}
 }
 
+func TestVerifiedPathResponseFailsClosed(t *testing.T) {
+	for _, code := range []int{404, 408, 409, 429, 503, 504} {
+		if path, err := verifiedPathResponse([]byte(`{"path":"/stale/model.gguf"}`), code); err == nil || path != "" {
+			t.Fatalf("HTTP %d produced path %q: %v", code, path, err)
+		}
+	}
+	for _, body := range []string{`{`, `{}`, `{"path":"relative"}`, `{"path":"/model\nother"}`} {
+		if path, err := verifiedPathResponse([]byte(body), 200); err == nil || path != "" {
+			t.Fatalf("invalid body %s produced path %q", body, path)
+		}
+	}
+	if path, err := verifiedPathResponse([]byte(`{"path":"/registry/model.gguf"}`), 200); err != nil || path != "/registry/model.gguf" {
+		t.Fatalf("valid path rejected: %q %v", path, err)
+	}
+}
+
 func TestAPIRequestAddsServiceToken(t *testing.T) {
 	tokenFile, err := os.CreateTemp(t.TempDir(), "service-token-*")
 	if err != nil {
@@ -71,5 +87,12 @@ func TestAPIRequestOmitsEmptyServiceToken(t *testing.T) {
 	}
 	if strings.TrimSpace(gotAuth) != "" {
 		t.Fatalf("expected no authorization header, got %q", gotAuth)
+	}
+}
+
+func TestVerifiedPathResponseAcceptsAdditiveVerificationMetadata(t *testing.T) {
+	body := `{"schema_version":1,"status":"verified","safe_to_use":"true","path":"/registry/model.gguf","sha256":"abc","format":"gguf"}`
+	if path, err := verifiedPathResponse([]byte(body), 200); err != nil || path != "/registry/model.gguf" {
+		t.Fatalf("additive path metadata broke caller: %q %v", path, err)
 	}
 }

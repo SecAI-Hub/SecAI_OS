@@ -5,6 +5,9 @@
 # while preserving linkage and their HMAC checkpoint. MCP's unkeyed chain is
 # also excluded from copytruncate; the explicit audit-format manifest reports
 # its weaker security class truthfully.
+# Panic uses a separate bounded HMAC/checkpoint writer without rotation.
+# Its log and checkpoint need a reviewed capacity-maintenance procedure;
+# external copytruncate would break verification and subsequent appends.
 
 /var/lib/secure-ai/logs/airlock-audit.jsonl
 /var/lib/secure-ai/logs/audit.jsonl
@@ -14,7 +17,6 @@
 /var/lib/secure-ai/logs/incident-recorder-audit.jsonl
 /var/lib/secure-ai/logs/integrity-monitor-audit.jsonl
 /var/lib/secure-ai/logs/keystore-audit.jsonl
-/var/lib/secure-ai/logs/panic-audit.jsonl
 /var/lib/secure-ai/logs/policy-engine-audit.jsonl
 /var/lib/secure-ai/logs/registry-audit.jsonl
 /var/lib/secure-ai/logs/runtime-attestor-audit.jsonl

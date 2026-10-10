@@ -20,6 +20,7 @@ CANDIDATE_DIR="${CANDIDATE_DIR:-${SECURE_AI_ROOT}/updates}"
 CANDIDATE_RECORD="${CANDIDATE_RECORD:-${CANDIDATE_DIR}/verified-candidate.json}"
 HIGH_WATER_RECORD="${HIGH_WATER_RECORD:-${CANDIDATE_DIR}/accepted-release.json}"
 EXPECTED_IMAGE_REPOSITORY="${EXPECTED_IMAGE_REPOSITORY:-ghcr.io/secai-hub/secai_os}"
+NETWORK_HELPER="${NETWORK_HELPER:-/usr/libexec/secure-ai/network-profile.py}"
 
 log() {
     printf '[update-verify] %s\n' "$*" >&2
@@ -283,6 +284,10 @@ current_exact_reference() {
 }
 
 resolve_candidate() {
+    "$NETWORK_HELPER" require-maintenance || {
+        log "ERROR: explicit current maintenance network lease required"
+        return 1
+    }
     require_verification_tools
 
     local tracking channel digest
@@ -305,6 +310,7 @@ resolve_candidate() {
 }
 
 verify_signature() {
+    "$NETWORK_HELPER" require-maintenance || return 1
     local registry_ref="${1:-}"
     if ! validate_exact_reference "$registry_ref"; then
         log "ERROR: signature verification requires an approved exact digest reference"
@@ -321,6 +327,7 @@ verify_signature() {
 }
 
 inspect_release_metadata() {
+    "$NETWORK_HELPER" require-maintenance || return 1
     local ref="$1"
     local inspect_json
     validate_exact_reference "$ref" || return 1
@@ -457,6 +464,7 @@ stage_update() {
         return 1
     }
 
+    "$NETWORK_HELPER" require-maintenance || return 1
     if rpm-ostree rebase --experimental --download-only \
         "ostree-image-signed:docker://${candidate}" 2>&1; then
         install -d -m 0700 "$CANDIDATE_DIR"
@@ -529,6 +537,7 @@ PY
         return 1
     fi
 
+    "$NETWORK_HELPER" require-maintenance || return 1
     if rpm-ostree rebase --experimental \
         "ostree-image-signed:docker://${candidate}" 2>&1; then
         install -d -m 0700 "$CANDIDATE_DIR"

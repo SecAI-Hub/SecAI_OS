@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SecAI-Hub/mcp-firewall/schemas/policy.schema.json",
+  "title": "mcp-firewall policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "default_action", "audit"],
+  "properties": {
+    "version": {"const": 1},
+    "default_action": {"const": "deny"},
+    "servers": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {"$ref": "#/$defs/server"}
+    },
+    "global_rules": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {"$ref": "#/$defs/globalRule"}
+    },
+    "taint_rules": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {"$ref": "#/$defs/taintRule"}
+    },
+    "redaction": {"$ref": "#/$defs/redaction"},
+    "audit": {"$ref": "#/$defs/audit"},
+    "daemon": {"$ref": "#/$defs/daemon"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "action": {"enum": ["allow", "deny", "require-approval"]},
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "trust_level"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "fingerprint": {"type": "string", "maxLength": 4096},
+        "trust_level": {"enum": ["trusted", "verified", "untrusted"]},
+        "rate_limit": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "allowed_tools": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {"$ref": "#/$defs/tool"}
+        },
+        "allowed_resources": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/resource"}
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "action"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "action": {"$ref": "#/$defs/action"},
+        "arg_rules": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/argRule"}
+        },
+        "path_restrict": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^/"}
+        },
+        "taint_label": {"type": "string", "maxLength": 256},
+        "rate_limit": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "argRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "pattern": {"type": "string", "maxLength": 4096},
+        "max_len": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "required": {"type": "boolean"},
+        "redact": {"type": "boolean"}
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "action"],
+      "properties": {
+        "pattern": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "action": {"$ref": "#/$defs/action"}
+      }
+    },
+    "globalRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "match", "action"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "description": {"type": "string", "maxLength": 4096},
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "methods": {"type": "array", "items": {"$ref": "#/$defs/identifier"}},
+            "server_trust": {"type": "array", "items": {"enum": ["trusted", "verified", "untrusted"]}},
+            "has_taint": {"type": "array", "items": {"$ref": "#/$defs/identifier"}},
+            "arg_patterns": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+          }
+        },
+        "action": {"enum": ["deny", "require-approval"]},
+        "reason": {"type": "string", "maxLength": 4096}
+      }
+    },
+    "taintRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "match", "action"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "description": {"type": "string", "maxLength": 4096},
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_taint"],
+          "properties": {
+            "source_taint": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/identifier"}},
+            "target_tools": {"type": "array", "items": {"$ref": "#/$defs/identifier"}},
+            "target_server": {"type": "array", "items": {"$ref": "#/$defs/identifier"}}
+          }
+        },
+        "action": {"enum": ["allow", "deny"]},
+        "reason": {"type": "string", "maxLength": 4096}
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "patterns": {
+          "type": "array",
+          "items": {"enum": ["all", "api_key", "bearer_token", "password", "email", "aws_key", "private_key", "connection_string", "ssn"]}
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "log_path", "sign_reports", "key_path", "receipt_audience", "receipt_ttl_seconds"],
+      "properties": {
+        "enabled": {"const": true},
+        "log_path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "sign_reports": {"const": true},
+        "key_path": {"type": "string", "maxLength": 4096},
+        "receipt_audience": {"$ref": "#/$defs/identifier"},
+        "receipt_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 600}
+      }
+    },
+    "daemon": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bind_addr": {"type": "string", "maxLength": 512}
+      }
+    }
+  }
+}

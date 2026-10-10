@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from graphlib import TopologicalSorter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,9 +49,30 @@ def test_attestor_waits_for_exec_before_credentialed_start_gate():
     )
     assert "Type=exec" in content
     assert (
-        "ExecStartPost=/usr/libexec/secure-ai/attestation-gate.sh %d/service-token"
+        "ExecStartPost=/usr/libexec/secure-ai/attestation-gate.sh %d/service-token bootstrap"
         in content
     )
+
+
+def test_gpu_scopes_have_an_acyclic_native_startup_order():
+    units = {path.name: path.read_text() for path in UNIT_DIR.glob('secure-ai-*.service')}
+    predecessors = {name: set() for name in units}
+    for name, content in units.items():
+        for line in content.splitlines():
+            if line.startswith('After='):
+                predecessors[name].update(peer for peer in line[6:].split() if peer in units)
+            elif line.startswith('Before='):
+                for peer in line[7:].split():
+                    if peer in units:
+                        predecessors[peer].add(name)
+    order = list(TopologicalSorter(predecessors).static_order())
+    chain = ['gpu-bootstrap', 'runtime-attestor', 'policy-engine', 'registry', 'inference', 'gpu-integrity-watch']
+    positions = [order.index(f'secure-ai-{name}.service') for name in chain]
+    assert positions == sorted(positions)
+    bootstrap = units['secure-ai-gpu-bootstrap.service']
+    assert 'InaccessiblePaths=/var/lib/secure-ai/vault /var/lib/secure-ai/gpu-integrity' in bootstrap
+    assert 'GPU_ATTESTATION_SCOPE=bootstrap' in bootstrap
+    assert 'gpu-runtime-attestation-hmac.key' not in bootstrap
 
 
 def test_integrity_monitor_waits_for_authenticated_firstboot_baseline():
@@ -81,10 +103,11 @@ def test_searxng_uses_private_credential_and_loopback_only_egress():
     assert 'secret_key: "secai-local-only-key"' not in settings
     assert "prepare-searxng-settings.py" in wrapper
     assert "export SEARXNG_SECRET=" not in wrapper
-    assert (
-        "exec /usr/lib/secure-ai/python3.12-venv/bin/python3.12 -m searx.webapp"
-        in wrapper
-    )
+    assert "exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn" in wrapper
+    assert "searx.webapp:app" in wrapper
+    assert "--no-control-socket" in wrapper
+    assert "%(m)s %(s)s %(L)s" in wrapper
+    assert "-m searx.webapp" not in wrapper
 
 
 def test_quarantine_uses_scanners_from_locked_python312_runtime():
@@ -119,7 +142,7 @@ def test_firstboot_does_not_mark_complete_after_critical_control_failure():
     )
 
     assert "swapoff -a 2>/dev/null || true" not in script
-    assert 'fatal "failed to load firewall rules"' in script
+    assert 'fatal "native network enforcement is unavailable"' in script
     assert 'fatal "boot chain verification failed"' in script
     assert 'fatal "canary placement failed"' in script
     assert 'fatal "initial canary check failed"' in script
@@ -133,7 +156,7 @@ def test_host_firewall_does_not_publish_the_loopback_ui():
     )
     assert "tcp dport 8480" not in rules
     assert "chain input" in rules
-    assert "type filter hook input priority 0; policy drop;" in rules
+    assert "type filter hook input priority -300; policy drop;" in rules
 
 
 def test_first_boot_readiness_rejects_warnings_and_public_listeners():

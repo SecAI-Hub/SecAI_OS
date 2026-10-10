@@ -1,0 +1,392 @@
+openapi: "3.0.3"
+info:
+  title: mcp-firewall API
+  version: "1.0.0"
+  description: Strict default-deny policy evaluation for MCP operations.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://127.0.0.1:8510
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Minimal liveness check
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, enum: [ok]}
+  /v1/evaluate:
+    post:
+      x-required-role: evaluator
+      summary: Evaluate one MCP operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EvalRequest"}
+      responses:
+        "200":
+          description: Policy decision and optional signed receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision]
+                properties:
+                  decision: {$ref: "#/components/schemas/Decision"}
+                  receipt: {$ref: "#/components/schemas/DecisionReceipt"}
+        "400": {description: Invalid strict JSON request}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks evaluator role}
+        "413": {description: Request exceeds 1 MiB}
+        "503": {description: Audit persistence failed; decision withheld}
+        "405": {description: Method not allowed (only POST accepted)}
+  /v1/evaluate/batch:
+    post:
+      x-required-role: evaluator
+      summary: Evaluate 1 to 100 MCP operations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items: {$ref: "#/components/schemas/EvalRequest"}
+      responses:
+        "200":
+          description: Ordered decisions and one-time receipts bound to a common batch ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_id, decisions, receipts]
+                properties:
+                  batch_id: {type: string}
+                  decisions:
+                    type: array
+                    items: {$ref: "#/components/schemas/Decision"}
+                  receipts:
+                    type: array
+                    items: {$ref: "#/components/schemas/DecisionReceipt"}
+        "400": {description: Invalid strict JSON request or batch count}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks evaluator role}
+        "413": {description: Request exceeds 4 MiB}
+        "503": {description: Audit persistence failed; decisions withheld}
+        "405": {description: Method not allowed (only POST accepted)}
+  /v1/sessions:
+    post:
+      x-required-role: evaluator
+      summary: Create an unpredictable server-issued session binding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [server]
+              properties:
+                server: {type: string, minLength: 1, maxLength: 256}
+                max_calls: {type: integer, format: int64, minimum: 1, maximum: 10000, default: 100}
+                ttl_seconds: {type: integer, format: int64, minimum: 30, maximum: 86400, default: 900}
+      responses:
+        "201":
+          description: Session ID and secret binding token
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SessionBinding"}
+        "400": {description: Invalid request or unknown server}
+        "401": {description: Missing or invalid service credential}
+        "403": {description: Authenticated credential lacks evaluator role}
+        "413": {description: Request exceeds 16 KiB}
+        "503": {description: Session or audit service unavailable}
+        "405": {description: Method not allowed (only POST accepted)}
+  /v1/sessions/{session}:
+    parameters:
+      - name: session
+        in: path
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 256}
+    delete:
+      x-required-role: administrator
+      security: [{adminAuth: []}]
+      summary: Administratively revoke a session
+      responses:
+        "200": {description: Session revoked}
+        "400": {description: Invalid session identifier}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Administrative credential required}
+        "405": {description: Method not allowed (only DELETE accepted)}
+        "503": {description: Audit persistence failed; revocation withheld}
+  /v1/executions/complete:
+    post:
+      x-required-role: evaluator
+      summary: Record the outcome of an identity-bound operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [receipt, session_token, success]
+              properties:
+                receipt: {$ref: "#/components/schemas/DecisionReceipt"}
+                session_token: {type: string, minLength: 1, maxLength: 256}
+                success: {type: boolean}
+      responses:
+        "200": {description: Completion recorded and successful-call taint propagated}
+        "400": {description: Invalid strict JSON request}
+        "401": {description: Invalid service credential or session binding}
+        "403": {description: Receipt denied, expired, context-mismatched, or replayed}
+        "413": {description: Request exceeds 512 KiB}
+        "503": {description: Audit persistence failed}
+        "405": {description: Method not allowed (only POST accepted)}
+  /v1/servers:
+    get:
+      x-required-role: observer
+      summary: List non-secret server policy summaries
+      responses:
+        "200":
+          description: Server summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name, trust_level, tools]
+                  properties:
+                    name: {type: string}
+                    trust_level: {type: string, enum: [trusted, verified, untrusted]}
+                    tools: {type: array, items: {type: string}}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed (only GET accepted)}
+  /v1/policy:
+    get:
+      x-required-role: observer
+      summary: Return non-secret policy metadata
+      responses:
+        "200":
+          description: Policy and receipt-verification metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, policy_digest, default_action, servers, global_rules, taint_rules, redaction, receipt_audience, receipt_key_id]
+                properties:
+                  version: {type: integer, enum: [1]}
+                  policy_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+                  default_action: {type: string, enum: [deny]}
+                  servers: {type: integer, minimum: 0}
+                  global_rules: {type: integer, minimum: 0}
+                  taint_rules: {type: integer, minimum: 0}
+                  redaction: {type: boolean}
+                  receipt_audience: {type: string}
+                  receipt_key_id: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed (only GET accepted)}
+  /v1/taint/{session}:
+    parameters:
+      - name: session
+        in: path
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 256}
+    get:
+      x-required-role: observer
+      summary: Get the authenticated identity's taint across its server sessions
+      responses:
+        "200": {description: Authenticated identity taint entries}
+        "400": {description: Invalid session identifier}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed}
+    delete:
+      x-required-role: administrator
+      security: [{adminAuth: []}]
+      summary: Refuse clearing a live security context
+      responses:
+        "409": {description: Monotonic context cannot be cleared; provision a distinct trusted identity}
+        "400": {description: Invalid session identifier}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Administrative credential required}
+        "405": {description: Method not allowed}
+        "503": {description: Audit persistence failed; taint change withheld}
+  /v1/audit:
+    get:
+      x-required-role: observer
+      summary: Return up to 100 recent redacted audit entries
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/AuditEntry"}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed (only GET accepted)}
+  /v1/audit/verify:
+    get:
+      x-required-role: observer
+      summary: Verify the retained in-memory audit segment
+      responses:
+        "200": {description: Verification result}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed (only GET accepted)}
+  /v1/metrics:
+    get:
+      x-required-role: observer
+      summary: Return aggregate service counters
+      responses:
+        "200": {description: Counter object}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Authenticated credential lacks observer role}
+        "405": {description: Method not allowed (only GET accepted)}
+  /v1/reload:
+    post:
+      x-required-role: administrator
+      security: [{adminAuth: []}]
+      summary: Atomically activate a fully validated policy
+      responses:
+        "200": {description: Policy reloaded}
+        "401": {description: Missing or invalid credential}
+        "403": {description: Administrative credential required}
+        "409": {description: Audit configuration changes require restart}
+        "500": {description: Policy validation or reload failed}
+        "503": {description: Audit persistence failed; reload withheld}
+        "405": {description: Method not allowed (only POST accepted)}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: File-backed credential bound to an audited identity and explicit evaluator/observer role set
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: Isolated administrator credential; cannot evaluate or observe
+  schemas:
+    EvalRequest:
+      type: object
+      additionalProperties: false
+      required: [server, method, session_id, session_token]
+      properties:
+        server: {type: string, minLength: 1, maxLength: 256}
+        server_fingerprint: {type: string, maxLength: 4096}
+        method: {type: string, minLength: 1, maxLength: 256}
+        tool: {type: string, maxLength: 256}
+        resource: {type: string, maxLength: 4096}
+        arguments:
+          type: object
+          maxProperties: 128
+          additionalProperties: {type: string, maxLength: 1048576}
+        session_id: {type: string, minLength: 1, maxLength: 256}
+        session_token: {type: string, minLength: 1, maxLength: 256}
+        request_id: {type: string, maxLength: 256}
+    Decision:
+      type: object
+      required: [action, server, rule, reason, evidence, session_id]
+      properties:
+        action: {type: string, enum: [allow, deny, require-approval, redact]}
+        server: {type: string}
+        tool: {type: string}
+        resource: {type: string}
+        rule: {type: string}
+        reason: {type: string}
+        evidence: {type: array, items: {type: string}}
+        taint_applied: {type: array, items: {type: string}}
+        taint_active: {type: array, items: {type: string}}
+        redacted_args: {type: object, additionalProperties: {type: string}}
+        session_id: {type: string}
+        request_id: {type: string}
+    AuditRequest:
+      type: object
+      additionalProperties: false
+      required: [server, method, session_id]
+      properties:
+        server: {type: string}
+        server_fingerprint: {type: string}
+        method: {type: string}
+        tool: {type: string}
+        resource: {type: string}
+        arguments: {type: object, additionalProperties: {type: string}, maxProperties: 128}
+        session_id: {type: string}
+        request_id: {type: string}
+    DecisionReceipt:
+      type: object
+      additionalProperties: false
+      required: [version, decision, request_digest, session_token_hash, issued_at, expires_at, nonce, audience, key_id, policy_digest, audit_sequence, audit_hash, batch_index, batch_size, hash, signature]
+      properties:
+        version: {type: integer, enum: [2]}
+        identity: {type: string, maxLength: 128}
+        session_token_hash: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        decision: {$ref: "#/components/schemas/Decision"}
+        request_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        issued_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        nonce: {type: string, minLength: 43, maxLength: 43}
+        audience: {type: string, minLength: 1, maxLength: 256}
+        key_id: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        policy_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        audit_sequence: {type: integer, format: int64, minimum: 1}
+        audit_hash: {type: string, pattern: "^[a-f0-9]{64}$"}
+        batch_id: {type: string}
+        batch_index: {type: integer, minimum: 0, maximum: 99}
+        batch_size: {type: integer, minimum: 1, maximum: 100}
+        hash: {type: string, pattern: "^[a-f0-9]{64}$"}
+        signature: {type: string, pattern: "^[a-f0-9]{128}$"}
+    SessionBinding:
+      type: object
+      additionalProperties: false
+      required: [session_id, server_name, created_at, expires_at, binding_token, call_count, max_calls]
+      properties:
+        session_id: {type: string}
+        server_name: {type: string}
+        created_at: {type: integer, format: int64}
+        expires_at: {type: integer, format: int64}
+        binding_token: {type: string}
+        call_count: {type: integer, format: int64}
+        max_calls: {type: integer, format: int64}
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [sequence, timestamp, hash, prev_hash, event]
+      properties:
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        hash: {type: string, pattern: "^[a-f0-9]{64}$"}
+        prev_hash: {type: string}
+        event: {type: string}
+        identity: {type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}
+        policy_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        old_policy_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        new_policy_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        decision: {$ref: "#/components/schemas/Decision"}
+        request: {$ref: "#/components/schemas/AuditRequest"}
+        detail: {type: string}
+        receipt_use:
+          type: object
+          additionalProperties: false
+          required: [nonce_hash, expires_at, success]
+          properties:
+            nonce_hash: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+            expires_at: {type: string, format: date-time}
+            success: {type: boolean}

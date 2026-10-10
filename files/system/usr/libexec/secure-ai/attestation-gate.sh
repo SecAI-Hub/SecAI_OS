@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# Block dependent units until runtime evidence is release-bound and verified.
+# Block dependent units until the explicitly requested trust scope passes.
 set -euo pipefail
 umask 077
 
 token_path="${1:?credential path is required}"
-endpoint="${ATTESTATION_VERIFY_URL:-http://127.0.0.1:8505/api/v1/verify}"
+scope="${2:-runtime}"
+case "$scope" in bootstrap|runtime) ;; *) exit 1 ;; esac
+suffix=""
+if [ "$scope" = bootstrap ]; then suffix="/bootstrap"; fi
+endpoint="${ATTESTATION_VERIFY_URL:-http://127.0.0.1:8505/api/v1/verify${suffix}}"
 if ! printf '%s\n' "$endpoint" |
-    LC_ALL=C grep -Eq '^http://127\.0\.0\.1:[1-9][0-9]{0,4}/api/v1/verify$'; then
+    LC_ALL=C grep -Eq '^http://127\.0\.0\.1:[1-9][0-9]{0,4}/api/v1/verify(/bootstrap)?$'; then
     echo "attestation gate: verify URL must be an exact numeric loopback HTTP endpoint" >&2
     exit 1
 fi
+case "$endpoint:$scope" in
+    */api/v1/verify:runtime|*/api/v1/verify/bootstrap:bootstrap) ;;
+    *) echo "attestation gate: verify endpoint and scope disagree" >&2; exit 1 ;;
+esac
 port=$(printf '%s\n' "$endpoint" | sed -E 's#^http://127\.0\.0\.1:([0-9]+)/.*#\1#')
 if [ "$port" -gt 65535 ]; then
     echo "attestation gate: verify URL port is out of range" >&2
@@ -52,17 +60,22 @@ for _attempt in $(seq 1 30); do
     )
     if [ "${#response}" -le 1048576 ] &&
         printf '%s\n' "$response" |
-        jq -e '
+        jq -e --arg scope "$scope" '
+            .schema_version == 2 and
+            .verification_scope == $scope and
+            (.gpu_mode == "required" or .gpu_mode == "optional" or .gpu_mode == "no_gpu") and
+            .gpu_policy_satisfied == true and
             type == "object" and
             .policy_satisfied == true and
             (.verified | type == "boolean") and
             (.evidence_verified | type == "boolean") and
-            (.assurance_mode == "hardware" or .assurance_mode == "evaluation")
+            ((.assurance_mode == "hardware" and .verified == true and .evidence_verified == true) or
+             (.assurance_mode == "evaluation" and .verified == false and .evidence_verified == false))
         ' >/dev/null 2>&1; then
             exit 0
     fi
     sleep 1
 done
 
-echo "attestation gate: runtime evidence did not reach verified state" >&2
+echo "attestation gate: requested evidence scope did not reach verified state" >&2
 exit 1

@@ -56,6 +56,7 @@ def main() -> None:
         "--worker-tmp-dir", container_tmp,
         "--max-requests", os.getenv("GUNICORN_MAX_REQUESTS", "500"),
         "--max-requests-jitter", os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "25"),
+        "--no-control-socket",
         "--access-logfile", "-",
         "--error-logfile", "-",
         "app:app",

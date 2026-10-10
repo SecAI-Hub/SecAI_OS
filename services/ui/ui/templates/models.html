@@ -28,6 +28,11 @@
         line-height: 1.5;
         margin-bottom: 0.75rem;
     }
+    @media (max-width: 600px) {
+        .topbar { flex-wrap: wrap; gap: 0.5rem; }
+        .topbar-right { flex-wrap: wrap; max-width: 100%; }
+        #catalog-list .badge { white-space: normal; overflow-wrap: anywhere; }
+    }
 </style>
 {% endblock %}
 
@@ -41,8 +46,8 @@
 </div>
 
 <div class="section-title">Model Catalog</div>
-<p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">One-click download from verified sources. Models are scanned in quarantine before use.</p>
-<p class="catalog-note" id="catalog-auth-note">Checking download credential mode...</p>
+<p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">Downloads use pinned catalog sources and enter quarantine before use. Jobs survive page reloads. Sign-in expiry, logout or policy changes stop transfers; polling does not extend your session. Each attempt is limited to 30 minutes. Interrupted downloads keep their partial files. Automatic cleanup and retry are currently unavailable.</p>
+<p class="catalog-note" id="catalog-auth-note">Checking provider access...</p>
 <div class="catalog-toolbar">
     <label class="form-label" for="catalog-filter" style="margin:0">Catalog Type</label>
     <select class="catalog-filter" id="catalog-filter">
@@ -52,7 +57,7 @@
         <option value="video">Video</option>
     </select>
 </div>
-<div id="catalog-list" class="mb-lg">
+<div id="catalog-list" class="mb-lg" role="region" aria-label="Catalog downloads" aria-live="polite" tabindex="-1">
     <div class="empty-state"><p>Loading catalog...</p></div>
 </div>
 
@@ -69,12 +74,12 @@
 <div class="section-title">Quarantine</div>
 <p class="text-muted" style="font-size:0.8rem;margin-bottom:0.75rem">Files pending security scan before promotion</p>
 <div id="quarantine-list">
-    <div class="empty-state"><p>No files pending.</p></div>
+    <div class="empty-state"><p>Loading quarantine status...</p></div>
 </div>
 
 <div class="section-title">Trusted Models</div>
 <div id="models-list">
-    <div class="empty-state"><p>No models registered yet. Import one above.</p></div>
+    <div class="empty-state"><p>Loading trusted models...</p></div>
 </div>
 {% endblock %}
 
@@ -143,11 +148,14 @@
     }
 
     async function loadModels() {
+        var container = document.getElementById('models-list');
         try {
             var resp = await fetch('/api/models');
+            if (resp.status === 401) throw new Error('authentication_required');
+            if (!resp.ok) throw new Error('models_unavailable');
             var models = await resp.json();
-            trustedModels = Array.isArray(models) ? models : [];
-            var container = document.getElementById('models-list');
+            if (!Array.isArray(models)) throw new Error('models_unavailable');
+            trustedModels = models;
 
             if (!trustedModels.length) {
                 container.innerHTML = '<div class="empty-state"><p>No models registered yet. Import one above.</p></div>';
@@ -192,14 +200,24 @@
                     '</div>' +
                 '</div>';
             }).join('');
-        } catch(e) { }
+        } catch(e) {
+            trustedModels = [];
+            if (e.message === 'authentication_required') {
+                container.innerHTML = '<div class="empty-state" role="alert"><p>Sign in again to view trusted models.</p><a class="btn btn-sm" href="/login">Sign in</a></div>';
+            } else {
+                container.innerHTML = '<div class="empty-state" role="alert"><p>Trusted models are unavailable. Retry to load registered models.</p><button class="btn btn-sm" type="button" data-action="models-retry">Retry</button></div>';
+            }
+        }
     }
 
     async function loadQuarantine() {
+        var container = document.getElementById('quarantine-list');
         try {
             var resp = await fetch('/api/models/quarantine');
+            if (resp.status === 401) throw new Error('authentication_required');
+            if (!resp.ok) throw new Error('quarantine_unavailable');
             var files = await resp.json();
-            var container = document.getElementById('quarantine-list');
+            if (!Array.isArray(files)) throw new Error('quarantine_unavailable');
 
             if (!files.length) {
                 container.innerHTML = '<div class="empty-state"><p>No files pending.</p></div>';
@@ -215,7 +233,13 @@
                     '<div class="meta"><span>' + formatBytes(f.size_bytes) + '</span></div>' +
                 '</div>';
             }).join('');
-        } catch(e) { }
+        } catch(e) {
+            if (e.message === 'authentication_required') {
+                container.innerHTML = '<div class="empty-state" role="alert"><p>Sign in again to view quarantine status.</p><a class="btn btn-sm" href="/login">Sign in</a></div>';
+            } else {
+                container.innerHTML = '<div class="empty-state" role="alert"><p>Quarantine status is unavailable. Retry to check files pending a scan.</p><button class="btn btn-sm" type="button" data-action="quarantine-retry">Retry</button></div>';
+            }
+        }
     }
 
     function formatCount(n) {
@@ -340,12 +364,14 @@
             var resp = await fetch('/api/catalog/auth/status');
             var data = await resp.json();
             var note = document.getElementById('catalog-auth-note');
-            note.textContent = data.detail || 'Catalog downloads use public provider URLs.';
+            note.textContent = data.shared_provider_token_configured
+                ? 'A shared Hugging Face token is configured. Downloads may use the administrator’s provider account.'
+                : 'A shared Hugging Face token is not configured. Some models may need administrator setup before downloading.';
             if (data.shared_provider_token_configured) {
                 note.style.color = 'var(--warning)';
             }
         } catch(e) {
-            document.getElementById('catalog-auth-note').textContent = 'Could not check download credential mode.';
+            document.getElementById('catalog-auth-note').textContent = 'Could not check provider access.';
         }
     }
 
@@ -378,15 +404,44 @@
             '&model=' + encodeURIComponent(modelName);
     }
 
+    var catalogRequestGeneration = 0;
+    function renderCatalog(html) {
+        var container = document.getElementById('catalog-list');
+        var focused = document.activeElement;
+        var restore = container.contains(focused);
+        var identity = restore ? {
+            action: focused.getAttribute('data-action'),
+            job: focused.getAttribute('data-job'),
+            filename: focused.getAttribute('data-filename'),
+            href: focused.getAttribute('href')
+        } : null;
+        container.innerHTML = html;
+        if (restore) {
+            var replacement = Array.from(container.querySelectorAll('[data-action],a[href]')).find(function(node) {
+                return node.getAttribute('data-action') === identity.action &&
+                    node.getAttribute('data-job') === identity.job &&
+                    node.getAttribute('data-filename') === identity.filename &&
+                    node.getAttribute('href') === identity.href;
+            });
+            (replacement || container).focus({preventScroll: true});
+        }
+    }
     async function loadCatalog() {
+        var generation = ++catalogRequestGeneration;
         try {
             var resp = await fetch('/api/catalog');
             var catalog = await resp.json();
             var dlResp = await fetch('/api/catalog/downloads');
             var downloads = await dlResp.json();
+            if (resp.status === 401 || dlResp.status === 401) throw new Error('authentication_required');
+            if (!resp.ok || !dlResp.ok) throw new Error('storage_unavailable');
             var modelResp = await fetch('/api/models');
-            trustedModels = await modelResp.json();
-            var container = document.getElementById('catalog-list');
+            if (modelResp.status === 401) throw new Error('authentication_required');
+            if (!modelResp.ok) throw new Error('models_unavailable');
+            var models = await modelResp.json();
+            if (!Array.isArray(models)) throw new Error('models_unavailable');
+            if (generation !== catalogRequestGeneration) return;
+            trustedModels = models;
             var activeFilter = catalogFilter.value || 'all';
             var trustedByFilename = {};
             (trustedModels || []).forEach(function(model) {
@@ -394,7 +449,7 @@
             });
 
             if (!catalog.length) {
-                container.innerHTML = '<div class="empty-state"><p>No catalog entries configured.</p></div>';
+                renderCatalog('<div class="empty-state"><p>No catalog entries configured.</p></div>');
                 return;
             }
 
@@ -403,40 +458,39 @@
                 return activeFilter === 'all' || category === activeFilter;
             });
             if (!visible.length) {
-                container.innerHTML = '<div class="empty-state"><p>No catalog entries for this type.</p></div>';
+                renderCatalog('<div class="empty-state"><p>No catalog entries for this type.</p></div>');
                 return;
             }
 
-            container.innerHTML = visible.map(function(m) {
+            renderCatalog(visible.map(function(m) {
                 var dl = downloads[m.filename];
-                var trusted = trustedByFilename[m.filename];
+                var candidate = trustedByFilename[m.filename];
+                // A shared filename alone cannot prove this catalog's outcome.
+                var matchingRegistry = candidate && m.expected_sha256 && candidate.sha256 === m.expected_sha256;
                 var btnHtml;
                 var blocked = !!m.blocked || String(m.security_status || '').toLowerCase() === 'blocked';
-                if (blocked && !trusted) {
+                if (blocked) {
                     btnHtml = '<span class="badge badge-danger">Blocked by policy</span>';
-                } else if (trusted) {
-                    if ((m.type || '').toLowerCase() === 'llm') {
-                        btnHtml = '<a class="btn btn-sm btn-primary" href="/chat?model=' + encodeURIComponent(trusted.name || trusted.filename) + '">Use in Chat</a>' +
-                            '<span class="badge badge-success">trusted</span>';
-                    } else {
-                        btnHtml = '<a class="btn btn-sm btn-primary" href="' + esc(generateHrefForModel(m, trusted)) + '">Use in Generate</a>' +
-                            '<span class="badge badge-success">trusted</span>';
-                    }
-                } else if (dl && dl.status === 'downloading') {
+                } else if (dl && ['queued', 'running', 'verified', 'publishing'].indexOf(dl.status) >= 0) {
                     var pct = dl.progress || 0;
-                    var dlText = pct + '% downloading...';
+                    var dlText = pct + '% · ' + dl.status.replace(/_/g, ' ');
                     if (dl.downloaded_mb && dl.total_mb) {
                         dlText = pct + '% (' + dl.downloaded_mb + ' / ' + dl.total_mb + ' MB)';
                     }
                     btnHtml = '<div style="flex:1;max-width:200px">' +
                         '<div class="progress-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
                         '<span style="font-size:0.75rem;color:var(--text-muted)">' + esc(dlText) + '</span>' +
-                        '</div>';
+                        '</div><button class="btn btn-sm" type="button" data-action="catalog-cancel" data-job="' + esc(dl.job_id) + '">Cancel</button>';
                 } else if (dl && dl.status === 'quarantined') {
-                    btnHtml = '<span class="badge badge-warning">Scanning...</span>';
-                } else if (dl && dl.status === 'failed') {
-                    btnHtml = '<span class="badge badge-danger">Failed</span>' +
-                        '<button class="btn btn-sm" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Retry</button>';
+                    btnHtml = '<span class="badge badge-warning">Submitted to quarantine · outcome pending</span>';
+                } else if (dl && dl.cleanup_required) {
+                    btnHtml = '<span class="badge badge-warning">Stopped · cleanup required</span>' +
+                        '<p class="meta">Partial files and their inventory are retained. Automatic cleanup and retry are unavailable.</p>';
+                } else if (dl) {
+                    btnHtml = '<span class="badge badge-warning">' + esc(dl.status === 'handoff_unknown' ? 'Download outcome needs review' : dl.status) + '</span>';
+                    if (dl.retry_available) btnHtml += '<button class="btn btn-sm" type="button" data-action="catalog-retry" data-job="' + esc(dl.job_id) + '">Retry with current sign-in</button>';
+                } else if (matchingRegistry) {
+                    btnHtml = '<span class="badge">Matching digest reported by registry · verify in Models</span>';
                 } else {
                     btnHtml = '<button class="btn btn-sm btn-primary" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Download</button>';
                 }
@@ -444,8 +498,8 @@
                 var terms = m.requires_terms && m.terms_url
                     ? '<a class="btn btn-sm" href="' + esc(m.terms_url) + '" target="_blank" rel="noopener noreferrer">Provider Terms</a>'
                     : '';
-                var failedDetail = dl && dl.status === 'failed' && dl.detail
-                    ? '<p class="meta mt-sm">' + esc(dl.detail) + '</p>'
+                var failedDetail = dl && dl.error
+                    ? '<p class="meta mt-sm">' + esc(dl.error === 'handoff_unknown' ? 'Download outcome needs review' : dl.error.replace(/_/g, ' ')) + '</p>'
                     : '';
                 var blockedDetail = blocked && m.blocked_reason
                     ? '<p class="meta mt-sm">' + esc(m.blocked_reason) + '</p>'
@@ -458,16 +512,23 @@
                     '</div>' +
                     '<p style="font-size:0.8rem;color:var(--text-muted);margin:0.25rem 0 0.5rem">' + esc(m.description) + '</p>' +
                     '<div class="meta">' +
-                        '<span>' + m.size_gb + ' GB</span>' +
-                        '<span>VRAM: ~' + m.vram_gb + ' GB</span>' +
+                        '<span>' + (Number.isFinite(m.size_gb) ? m.size_gb + ' GB' : (m.expected_size_bytes / 1048576).toFixed(1) + ' MiB') + '</span>' +
+                        '<span>' + (Number.isFinite(m.vram_gb) ? 'VRAM: ~' + m.vram_gb + ' GB' : 'VRAM estimate unavailable') + '</span>' +
                     '</div>' +
                     blockedDetail +
                     failedDetail +
                     '<div class="btn-group mt-md" style="align-items:center">' + btnHtml + terms + '</div>' +
                 '</div>';
-            }).join('');
+            }).join(''));
         } catch(e) {
-            document.getElementById('catalog-list').innerHTML = '<div class="empty-state"><p>Could not load catalog.</p></div>';
+            if (generation !== catalogRequestGeneration) return;
+            if (e.message === 'authentication_required') {
+                renderCatalog('<div class="empty-state" role="alert"><p>Sign in again to view and retry downloads.</p><a class="btn btn-sm" href="/login">Sign in</a></div>');
+            } else if (e.message === 'models_unavailable') {
+                renderCatalog('<div class="empty-state" role="alert"><p>Model registry is unavailable. Retry to load catalog availability.</p><button class="btn btn-sm" type="button" data-action="catalog-refresh">Retry</button></div>');
+            } else {
+                renderCatalog('<div class="empty-state" role="alert"><p>Download state is unavailable. Local state recovery may be required.</p></div>');
+            }
         }
     }
 
@@ -480,14 +541,14 @@
             });
             var data = await resp.json();
             if (resp.status === 202) {
-                toast('Downloading ' + filename + '. It will be scanned automatically.', 'success');
+                toast('Queued ' + filename + '. Authentication and policy are checked during transfer.', 'success');
                 loadCatalog();
                 /* Poll for progress while downloading */
                 var pollId = setInterval(function() {
                     loadCatalog();
                     fetch('/api/catalog/downloads').then(function(r) { return r.json(); }).then(function(dls) {
                         var dl = dls[filename];
-                        if (!dl || dl.status !== 'downloading') clearInterval(pollId);
+                        if (!dl || ['queued', 'running', 'verified', 'publishing'].indexOf(dl.status) < 0) clearInterval(pollId);
                     });
                 }, 3000);
             } else {
@@ -527,23 +588,46 @@
             fileInput.click();
         }
     });
+    document.getElementById('quarantine-list').addEventListener('click', function(e) {
+        var target = e.target.closest('[data-action]');
+        if (target && target.getAttribute('data-action') === 'quarantine-retry') return loadQuarantine();
+    });
     document.getElementById('models-list').addEventListener('click', function(e) {
         var target = e.target.closest('[data-action]');
         if (!target) return;
+        if (target.getAttribute('data-action') === 'models-retry') return loadModels();
         var name = decodeURIComponent(target.getAttribute('data-name') || '');
         if (target.getAttribute('data-action') === 'verify-model') verifyModel(name);
         if (target.getAttribute('data-action') === 'verify-manifest') verifyManifest(name);
         if (target.getAttribute('data-action') === 'delete-model') deleteModel(name);
     });
     document.getElementById('catalog-list').addEventListener('click', function(e) {
-        var target = e.target.closest('[data-action="catalog-download"]');
+        var target = e.target.closest('[data-action]');
         if (!target) return;
+        var action = target.getAttribute('data-action');
+        if (action === 'catalog-refresh') return loadCatalog();
+        if (action === 'catalog-retry' || action === 'catalog-cancel') {
+            catalogJobAction(target.getAttribute('data-job'), action === 'catalog-retry' ? 'retry' : 'cancel');
+            return;
+        }
+        if (action !== 'catalog-download') return;
         downloadCatalogModel(
             decodeURIComponent(target.getAttribute('data-url') || ''),
             decodeURIComponent(target.getAttribute('data-filename') || ''),
             decodeURIComponent(target.getAttribute('data-type') || '')
         );
     });
+    async function catalogJobAction(identifier, action) {
+        try {
+            var response = await fetch('/api/catalog/jobs/' + encodeURIComponent(identifier) + '/' + action, {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+            });
+            var body = await response.json();
+            if (!response.ok) throw new Error(body.error || 'Job action unavailable');
+            toast(action === 'cancel' ? 'Cancellation requested. Partial files will be retained and started attempts will require maintenance. Published artifacts remain untouched.' : 'Retry queued.', 'success');
+            loadCatalog();
+        } catch (error) { toast(error.message || 'Job action unavailable', 'error'); }
+    }
     catalogFilter.addEventListener('change', loadCatalog);
 
     function refreshAll() { loadModels(); loadQuarantine(); loadIntegrityStatus(); loadCatalog(); loadCatalogAuthStatus(); }

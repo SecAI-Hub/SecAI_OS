@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -22,7 +23,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from flask import Flask, jsonify, request
+from common import runtime_assurance
 
+from .action_catalog import UNAVAILABLE_ACTIONS, action_catalog
+from .approval import approval_snapshot
 from .capabilities import (
     create_budgets,
     create_token,
@@ -38,7 +42,7 @@ from .models import (
     Task,
     TaskStatus,
 )
-from .planner import Planner
+from .planner import ActionUnavailable, Planner
 from .policy import PolicyEngine
 from .sandbox import (
     recycle_worker_state,
@@ -47,7 +51,12 @@ from .sandbox import (
     verify_step_signature,
 )
 from .storage import StorageGateway
-from .task_store import TaskStore
+from .task_store import (
+    TERMINAL_STATUSES,
+    HistoryPolicy,
+    TaskStore,
+    history_policy_from_config,
+)
 
 log = logging.getLogger("agent")
 
@@ -114,16 +123,19 @@ try:
 except ImportError:
     log.warning("audit_chain not available, audit logging disabled")
 
-# Bounded task history is restored on startup. Live capabilities and step
-# signatures are intentionally not persisted; interrupted work is marked as
-# recovery-required by TaskStore.
+# Raw task content/authority lives only in this process. Legacy raw history is
+# rejected before it can enter the live task map or be exposed through the API.
 try:
-    _task_history_limit = int(os.getenv("AGENT_TASK_HISTORY_LIMIT", "500"))
+    _history_policy = history_policy_from_config()
+    _history_configuration_error = None
 except ValueError:
-    _task_history_limit = 500
-_task_store = TaskStore(_TASK_STATE_PATH, max_tasks=_task_history_limit)
+    _history_policy = HistoryPolicy()
+    _history_configuration_error = "invalid history privacy configuration; memory-only operation"
+_task_store = TaskStore(_TASK_STATE_PATH, policy=_history_policy, configuration_error=_history_configuration_error)
 _tasks: dict[str, Task] = _task_store.load()
 _tasks_lock = threading.Lock()
+_history_lock = threading.RLock()
+_history_reaper_stop = threading.Event()
 _containment_frozen = threading.Event()
 _execution_condition = threading.Condition()
 _active_executions = 0
@@ -144,10 +156,42 @@ def _audit_log(event: str, data: dict | None = None):
         _audit.append(event, data or {})
 
 
+def _history_view(snapshot: list[Task]) -> list[Task]:
+    try:
+        return _task_store.retained_tasks(snapshot)
+    except (ValueError, TypeError):
+        _task_store.last_error = "history retention clock is unavailable"
+        return [task for task in snapshot if not task.history_only and (task.status not in TERMINAL_STATUSES or any(step.status == StepStatus.RUNNING for step in task.steps))]
+
+
 def _persist_tasks() -> bool:
-    with _tasks_lock:
-        snapshot = list(_tasks.values())
-    return _task_store.save(snapshot)
+    # Serialize snapshot acquisition with deletion, so an older pending save
+    # cannot resurrect an explicitly deleted terminal record.
+    with _history_lock:
+        with _tasks_lock:
+            snapshot = list(_tasks.values())
+        retained = _history_view(snapshot)
+        saved = _task_store.save(retained)
+        kept = {task.task_id for task in retained}
+        with _tasks_lock:
+            for task in snapshot:
+                if task.task_id not in kept and task.status in TERMINAL_STATUSES:
+                    _tasks.pop(task.task_id, None)
+        return saved
+
+
+def _refresh_history() -> None:
+    with _history_lock:
+        with _tasks_lock:
+            snapshot = list(_tasks.values())
+        retained = _history_view(snapshot)
+        if len(retained) != len(snapshot):
+            _persist_tasks()
+
+
+def _history_retention_worker() -> None:
+    while not _history_reaper_stop.wait(60):
+        _refresh_history()
 
 
 def _json_object() -> tuple[dict[str, Any] | None, tuple[Any, int] | None]:
@@ -188,6 +232,8 @@ def _validate_preferences(value: object) -> tuple[dict[str, str], str | None]:
 
 
 def _verify_task_capability(task: Task) -> tuple[bool, str]:
+    if task.history_only:
+        return False, "historical metadata has no execution authority"
     cap = task.capability
     if cap is None:
         return False, "missing capability token"
@@ -215,7 +261,8 @@ def _load_containment_state() -> None:
             _CONTAINMENT_STATE_PATH,
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
         try:
             info = os.fstat(descriptor)
@@ -352,6 +399,15 @@ def _credential_token(path_env: str, *, allow_legacy_tcp: bool = False) -> str:
     return token if 16 <= len(token) <= 4096 else ""
 
 
+def _require_runtime_assurance() -> None:
+    if os.getenv("SECURE_AI_DEPLOYMENT_MODE", "").strip().lower() == "sandbox":
+        return
+    runtime_assurance.require_runtime(
+        os.getenv("RUNTIME_ATTESTOR_URL", "http://127.0.0.1:8505"),
+        _credential_token("RUNTIME_ATTESTOR_TOKEN_PATH"),
+    )
+
+
 def _request_capability_token() -> str:
     """Select the only credential authorized for the requested route."""
     if request.path in {"/api/v1/freeze", "/v1/containment/freeze"}:
@@ -404,6 +460,7 @@ def reject_task_mutation_while_frozen():
 
 @app.route("/health", methods=["GET"])
 def health():
+    _refresh_history()
     with _tasks_lock:
         active = sum(1 for t in _tasks.values() if t.status == TaskStatus.RUNNING)
         total = len(_tasks)
@@ -416,6 +473,7 @@ def health():
         "total_tasks": total,
         "containment_frozen": _containment_frozen.is_set(),
         "persistence_healthy": persistence_healthy,
+        "history_policy": _task_store.policy_status(),
         "policy_current": policy_current,
     })
 
@@ -586,11 +644,23 @@ def submit_task():
         "token_valid": token_valid,
     })
 
+    # This guard is outside the planner's heuristic fallback exception path.
+    try:
+        _require_runtime_assurance()
+    except runtime_assurance.RuntimeAssuranceUnavailable:
+        try:
+            _audit_log("runtime_assurance_blocked", {"task_id": task.task_id, "action": "plan"})
+        except Exception:
+            log.error("runtime assurance denial audit unavailable")
+        return jsonify({"error": runtime_assurance.UNAVAILABLE}), 503
+
     # Plan the task
     try:
         steps = _planner.plan(intent, cap, max_steps=budgets.max_steps)
-    except Exception as exc:
-        log.error("planning failed: %s", exc)
+    except ActionUnavailable:
+        return jsonify({"error": "requested action is unavailable; choose a supported workflow"}), 400
+    except Exception:
+        log.error("planning failed")
         task.status = TaskStatus.FAILED
         with _tasks_lock:
             _tasks[task.task_id] = task
@@ -659,7 +729,8 @@ def submit_task():
 
 @app.route("/v1/task/<task_id>", methods=["GET"])
 def get_task(task_id: str):
-    """Get task status and step details."""
+    """Get current content or non-executable historical metadata."""
+    _refresh_history()
     with _tasks_lock:
         task = _tasks.get(task_id)
     if not task:
@@ -667,39 +738,48 @@ def get_task(task_id: str):
     return jsonify(task.to_dict())
 
 
+def _approval_selection(body: dict[str, Any], task: Task):
+    if _has_unknown_fields(body, {"step_ids", "expected_plan_revision", "step_hashes"}):
+        return None, (jsonify({"error": "unknown approval or denial field"}), 400)
+    step_ids = body.get("step_ids")
+    if not isinstance(step_ids, list) or not 1 <= len(step_ids) <= 100 or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{12}", item) for item in step_ids) or len(set(step_ids)) != len(step_ids):
+        return None, (jsonify({"error": "explicit unique step_ids are required"}), 400)
+    revision, hashes = body.get("expected_plan_revision"), body.get("step_hashes")
+    if revision is None or hashes is None:
+        return None, (jsonify({"error": "refresh the task before deciding", "code": "review_required"}), 409)
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision) or not isinstance(hashes, dict) or set(hashes) != set(step_ids) or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in hashes.values()):
+        return None, (jsonify({"error": "invalid reviewed plan snapshot"}), 400)
+    try:
+        current = approval_snapshot(task)
+    except (ValueError, TypeError):
+        return None, (jsonify({"error": "plan snapshot unavailable; resubmit with fresh authority"}), 409)
+    if not hmac.compare_digest(revision, current["plan_revision"]) or any(identifier not in current["step_hashes"] or not hmac.compare_digest(hashes[identifier], current["step_hashes"][identifier]) for identifier in step_ids):
+        return None, (jsonify({"error": "plan changed; review the current task", "code": "stale_review"}), 409)
+    return step_ids, None
+
+
 @app.route("/v1/task/<task_id>/approve", methods=["POST"])
 def approve_steps(task_id: str):
     """Approve pending steps in a task (two-phase approval for high-risk).
 
-    Body: {
-        "step_ids": ["abc123", "def456"],  // specific steps, or omit for all
-        "approve_all": false               // approve all pending steps
-    }
+    A decision requires explicit step IDs and the revision/hashes displayed
+    to the user; legacy approve_all is not an authorization surface.
     """
     body, error_response = _json_object()
     if error_response:
         return error_response
     assert body is not None
-    if _has_unknown_fields(body, {"step_ids", "approve_all"}):
-        return jsonify({"error": "unknown approval field"}), 400
-    step_ids = body.get("step_ids", [])
-    approve_all = body.get("approve_all", False)
-    if (
-        not isinstance(step_ids, list)
-        or len(step_ids) > 100
-        or any(not isinstance(step_id, str) or len(step_id) > 64 for step_id in step_ids)
-        or not isinstance(approve_all, bool)
-    ):
-        return jsonify({"error": "invalid approval selection"}), 400
-    if not approve_all and not step_ids:
-        return jsonify({"error": "step_ids or approve_all=true is required"}), 400
-
     with _tasks_lock:
         task = _tasks.get(task_id)
     if not task:
         return jsonify({"error": "task not found"}), 404
 
     with task.runtime_lock:
+        if task.history_only:
+            return jsonify({"error": "historical metadata cannot be approved"}), 409
+        step_ids, error_response = _approval_selection(body, task)
+        if error_response:
+            return error_response
         if task.status != TaskStatus.PENDING_APPROVAL:
             return jsonify({
                 "error": f"task is {task.status.value}, not pending_approval"
@@ -721,7 +801,7 @@ def approve_steps(task_id: str):
             if step.status == StepStatus.PENDING
         }
         requested_ids = set(step_ids)
-        if not approve_all and not requested_ids.issubset(pending_ids):
+        if not requested_ids.issubset(pending_ids):
             return jsonify({"error": "approval contains an unknown or resolved step"}), 400
 
         approved_count = 0
@@ -729,7 +809,7 @@ def approve_steps(task_id: str):
         for step in task.steps:
             if step.status != StepStatus.PENDING:
                 continue
-            if approve_all or step.step_id in requested_ids:
+            if step.step_id in requested_ids:
                 if task.capability is None:
                     task.status = TaskStatus.FAILED
                     integrity_error = (step.step_id, "missing capability token")
@@ -786,34 +866,22 @@ def approve_steps(task_id: str):
 def deny_steps(task_id: str):
     """Deny pending steps in a task.
 
-    Body: {
-        "step_ids": ["abc123"],
-        "deny_all": false
-    }
+    Denial is also bound to the exact displayed plan and selected steps.
     """
     body, error_response = _json_object()
     if error_response:
         return error_response
     assert body is not None
-    if _has_unknown_fields(body, {"step_ids", "deny_all"}):
-        return jsonify({"error": "unknown denial field"}), 400
-    step_ids = body.get("step_ids", [])
-    deny_all = body.get("deny_all", False)
-    if (
-        not isinstance(step_ids, list)
-        or len(step_ids) > 100
-        or any(not isinstance(step_id, str) or len(step_id) > 64 for step_id in step_ids)
-        or not isinstance(deny_all, bool)
-    ):
-        return jsonify({"error": "invalid denial selection"}), 400
-    if not deny_all and not step_ids:
-        return jsonify({"error": "step_ids or deny_all=true is required"}), 400
-
     with _tasks_lock:
         task = _tasks.get(task_id)
     if not task:
         return jsonify({"error": "task not found"}), 404
     with task.runtime_lock:
+        if task.history_only:
+            return jsonify({"error": "historical metadata cannot be denied"}), 409
+        step_ids, error_response = _approval_selection(body, task)
+        if error_response:
+            return error_response
         if task.status != TaskStatus.PENDING_APPROVAL:
             return jsonify({
                 "error": f"task is {task.status.value}, not pending_approval"
@@ -823,14 +891,14 @@ def deny_steps(task_id: str):
             if step.status == StepStatus.PENDING
         }
         requested_ids = set(step_ids)
-        if not deny_all and not requested_ids.issubset(pending_ids):
+        if not requested_ids.issubset(pending_ids):
             return jsonify({"error": "denial contains an unknown or resolved step"}), 400
 
         denied_count = 0
         for step in task.steps:
             if step.status != StepStatus.PENDING:
                 continue
-            if deny_all or step.step_id in requested_ids:
+            if step.step_id in requested_ids:
                 step.status = StepStatus.DENIED
                 step.error = "denied by user"
                 denied_count += 1
@@ -869,6 +937,8 @@ def cancel_task(task_id: str):
         return jsonify({"error": "task not found"}), 404
 
     with task.runtime_lock:
+        if task.history_only:
+            return jsonify({"error": "historical metadata cannot be cancelled"}), 409
         if task.status in (
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
@@ -892,7 +962,8 @@ def cancel_task(task_id: str):
 
 @app.route("/v1/tasks", methods=["GET"])
 def list_tasks():
-    """List all tasks (most recent first)."""
+    """List retained history and active tasks (most recent first)."""
+    _refresh_history()
     try:
         limit = int(request.args.get("limit", 50))
     except (TypeError, ValueError):
@@ -909,6 +980,48 @@ def list_tasks():
     return jsonify({"tasks": [t.to_dict() for t in tasks]})
 
 
+@app.route("/v1/history/policy", methods=["GET"])
+def history_policy():
+    _refresh_history()
+    return jsonify(_task_store.policy_status())
+
+
+@app.route("/v1/history", methods=["DELETE"])
+@app.route("/v1/history/<task_id>", methods=["DELETE"])
+def delete_history(task_id: str | None = None):
+    """Delete terminal history only; never cancel, delete or requeue active work."""
+    if request.get_data(cache=True) or request.args:
+        return jsonify({"error": "history deletion accepts no body or query parameters"}), 400
+    with _history_lock:
+        with _tasks_lock:
+            snapshot = list(_tasks.values())
+        targets = []
+        found = task_id is None
+        active = 0
+        for task in snapshot:
+            with task.runtime_lock:
+                is_active = not task.history_only and (task.status not in TERMINAL_STATUSES or any(step.status == StepStatus.RUNNING for step in task.steps))
+                if is_active:
+                    active += 1
+                if task_id is None or task.task_id == task_id:
+                    found = True
+                    if is_active:
+                        if task_id is not None:
+                            return jsonify({"error": "active work cannot be deleted; cancel it first"}), 409
+                    else:
+                        targets.append(task.task_id)
+        if not found:
+            return jsonify({"error": "history record not found"}), 404
+        remaining = [task for task in snapshot if task.task_id not in targets]
+        if not _task_store.save(remaining):
+            return jsonify({"error": "history deletion could not be committed", "deleted": 0}), 503
+        with _tasks_lock:
+            for identifier in targets:
+                _tasks.pop(identifier, None)
+        return jsonify({"deleted": len(targets), "active_remaining": active,
+                        "external_backups_deleted": False, "audit_evidence_deleted": False})
+
+
 @app.route("/v1/modes", methods=["GET"])
 def list_modes():
     """List available operating modes with descriptions."""
@@ -916,25 +1029,30 @@ def list_modes():
         "modes": [
             {
                 "id": "offline_only",
+                "actions": action_catalog("offline_only"),
                 "name": "Offline Only",
                 "description": "Strongest privacy. No online actions. Local files only.",
             },
             {
                 "id": "standard",
+                "actions": action_catalog("standard"),
                 "name": "Standard / Autopilot",
                 "description": "Default. Low-risk local actions are automatic. Online disabled unless explicitly enabled.",
             },
             {
                 "id": "online_assisted",
+                "actions": action_catalog("online_assisted"),
                 "name": "Online Assisted",
                 "description": "May request online augmentation via airlock. Every outbound action needs approval.",
             },
             {
                 "id": "sensitive",
+                "actions": action_catalog("sensitive"),
                 "name": "Sensitive Session",
                 "description": "Tighter scopes, aggressive recycling, stricter logging. For especially private tasks.",
             },
-        ]
+        ],
+        "unavailable_actions": UNAVAILABLE_ACTIONS,
     })
 
 
@@ -954,6 +1072,8 @@ def _capacity_failure(task: Task) -> None:
 
 
 def _schedule_execution(task: Task) -> bool:
+    if task.history_only:
+        return False
     if not _execution_slots.acquire(blocking=False):
         _capacity_failure(task)
         return False
@@ -979,6 +1099,8 @@ def _schedule_execution(task: Task) -> bool:
 def _execute_task(task: Task, slot_acquired: bool = False):
     """Execute approved steps sequentially in a background thread."""
     global _active_executions
+    if task.history_only:
+        return
     if not slot_acquired:
         slot_acquired = _execution_slots.acquire(blocking=False)
         if not slot_acquired:
@@ -1090,22 +1212,36 @@ def _execute_task(task: Task, slot_acquired: bool = False):
                                     should_stop = True
                                     should_persist = True
                                 else:
-                                    _executor.execute(
-                                        step,
-                                        task.capability,
-                                        task.budgets,
-                                    )
-                                    _audit_log("step_executed", {
-                                        "task_id": task.task_id,
-                                        "step_id": step.step_id,
-                                        "action": step.action.value,
-                                        "status": step.status.value,
-                                        "token_id": task.capability.token_id,
-                                    })
-                                    should_persist = True
-                                    if step.status == StepStatus.FAILED:
+                                    try:
+                                        _require_runtime_assurance()
+                                    except runtime_assurance.RuntimeAssuranceUnavailable:
+                                        step.status = StepStatus.FAILED
+                                        step.error = runtime_assurance.UNAVAILABLE
                                         task.status = TaskStatus.FAILED
                                         should_stop = True
+                                        should_persist = True
+                                        _audit_log("runtime_assurance_blocked", {
+                                            "task_id": task.task_id,
+                                            "step_id": step.step_id,
+                                            "action": "execute",
+                                        })
+                                    else:
+                                        _executor.execute(
+                                            step,
+                                            task.capability,
+                                            task.budgets,
+                                        )
+                                        _audit_log("step_executed", {
+                                            "task_id": task.task_id,
+                                            "step_id": step.step_id,
+                                            "action": step.action.value,
+                                            "status": step.status.value,
+                                            "token_id": task.capability.token_id,
+                                        })
+                                        should_persist = True
+                                        if step.status == StepStatus.FAILED:
+                                            task.status = TaskStatus.FAILED
+                                            should_stop = True
 
             if should_persist:
                 _persist_tasks()
@@ -1218,6 +1354,7 @@ def main():
     log.info("policy: %s", _POLICY_PATH)
     log.info("vault: %s", _VAULT_ROOT)
     _load_containment_state()
+    threading.Thread(target=_history_retention_worker, daemon=True, name="history-retention").start()
 
     if _BIND_ADDR.startswith("unix:"):
         # Production: listen on a Unix domain socket (no TCP attack surface).

@@ -3,23 +3,25 @@ package main
 import (
 	"sync"
 	"time"
+
+	"github.com/SecAI-Hub/gpu-integrity-watch/evidence"
 )
 
 // Severity thresholds for composite anomaly scores.
 const (
-	ThresholdNormal   = 0.3
-	ThresholdWarning  = 0.7
-	ThresholdCritical = 0.9
+	ThresholdNormal   = evidence.ThresholdNormal
+	ThresholdWarning  = evidence.ThresholdWarning
+	ThresholdCritical = evidence.ThresholdCritical
 )
 
 // Verdict is the overall integrity assessment.
-type Verdict string
+type Verdict = evidence.Verdict
 
 const (
-	VerdictHealthy  Verdict = "healthy"
-	VerdictWarning  Verdict = "warning"
-	VerdictCritical Verdict = "critical"
-	VerdictUnknown  Verdict = "unknown"
+	VerdictHealthy  Verdict = evidence.VerdictHealthy
+	VerdictWarning  Verdict = evidence.VerdictWarning
+	VerdictCritical Verdict = evidence.VerdictCritical
+	VerdictUnknown  Verdict = evidence.VerdictUnknown
 )
 
 // ScoreEntry records a single scoring event.
@@ -72,6 +74,7 @@ func (s *ScoringEngine) Score(results []ProbeResult) ScoreEntry {
 	var totalWeight float64
 
 	for _, r := range results {
+		entry.ProbeStatuses[r.Probe] = r.Status
 		if r.Status == StatusSkip {
 			continue
 		}
@@ -102,23 +105,13 @@ func (s *ScoringEngine) Score(results []ProbeResult) ScoreEntry {
 	return entry
 }
 
-// classifyVerdict determines the verdict from score and probe statuses.
+// classifyVerdict shares the wire protocol's verdict classification rules.
 func classifyVerdict(composite float64, results []ProbeResult) Verdict {
-	// Any fail probe -> critical regardless of score
-	for _, r := range results {
-		if r.Status == StatusFail {
-			return VerdictCritical
-		}
+	probes := make([]evidence.Probe, len(results))
+	for i, result := range results {
+		probes[i] = evidence.Probe{Status: result.Status, Score: result.Score}
 	}
-
-	switch {
-	case composite >= ThresholdCritical:
-		return VerdictCritical
-	case composite >= ThresholdNormal:
-		return VerdictWarning
-	default:
-		return VerdictHealthy
-	}
+	return evidence.ClassifyVerdict(composite, probes)
 }
 
 // History returns a copy of the score history.

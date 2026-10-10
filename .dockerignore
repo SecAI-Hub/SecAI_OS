@@ -52,3 +52,7 @@ output
 tests
 docs
 Containerfile
+
+# Temporary dependency resolver outputs and caches are never build inputs.
+.application-locks.*
+files/scripts/.diffusion-locks.*

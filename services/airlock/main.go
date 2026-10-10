@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
@@ -75,8 +76,9 @@ type EgressRequest struct {
 }
 
 type EgressResponse struct {
-	Allowed bool   `json:"allowed"`
-	Reason  string `json:"reason,omitempty"`
+	Allowed           bool   `json:"allowed"`
+	Reason            string `json:"reason,omitempty"`
+	EvidenceAvailable bool   `json:"evidence_available"`
 }
 
 // FetchRequest describes an outbound request that the airlock itself performs.
@@ -98,9 +100,7 @@ var (
 
 	sourcePrefixes []string
 
-	auditFile *os.File
-	auditMu   sync.Mutex
-	auditPath string
+	auditLog *durableAudit
 
 	// Per-caller rate limiting. A single global bucket let one local process
 	// deny egress to every other service.
@@ -121,6 +121,11 @@ var (
 	// does not prevent a caller from opening many slow concurrent downloads.
 	fetchSlots = make(chan struct{}, maxConcurrentFetches)
 )
+
+type airlockSnapshotAudit struct {
+	Policy  AirlockPolicy
+	Sources []string
+}
 
 type airlockSnapshot struct {
 	policy         AirlockPolicy
@@ -448,9 +453,13 @@ func loadConfiguration() error {
 		return err
 	}
 	policyMu.Lock()
+	defer policyMu.Unlock()
+	serialized, _ := json.Marshal(airlockSnapshotAudit{Policy: nextPolicy, Sources: nextSources})
+	if err := auditLog.Append("policy-reload", map[string]string{"policy_hash": auditHash(string(serialized))}); err != nil {
+		return err
+	}
 	policy = nextPolicy
 	sourcePrefixes = append([]string(nil), nextSources...)
-	policyMu.Unlock()
 	log.Printf(
 		"airlock configuration loaded: enabled=%t destinations=%d sources=%d",
 		nextPolicy.Enabled,
@@ -486,44 +495,32 @@ func getSnapshot() airlockSnapshot {
 // ---------------------------------------------------------------------------
 
 type AuditEntry struct {
-	Timestamp   string `json:"timestamp"`
-	Destination string `json:"destination"`
-	Method      string `json:"method"`
-	Allowed     bool   `json:"allowed"`
-	Reason      string `json:"reason,omitempty"`
-	BodySize    int    `json:"body_size"`
+	DestinationHash string `json:"destination_hash"`
+	MethodHash      string `json:"method_hash"`
+	Allowed         bool   `json:"allowed"`
+	ReasonHash      string `json:"reason_hash"`
+	BodySize        int    `json:"body_size"`
 }
 
-func initAuditLog() {
-	auditPath = os.Getenv("AUDIT_LOG_PATH")
-	if auditPath == "" {
-		auditPath = "/var/lib/secure-ai/logs/airlock-audit.jsonl"
+func initAuditLog() error {
+	path := os.Getenv("AUDIT_LOG_PATH")
+	if path == "" {
+		path = "/var/lib/secure-ai/logs/airlock-audit.jsonl"
 	}
-	dir := filepath.Dir(auditPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		log.Printf("warning: cannot create audit log dir: %v", err)
-		return
-	}
-	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	var err error
+	auditLog, err = openDurableAudit(path)
 	if err != nil {
-		log.Printf("warning: cannot open audit log: %v", err)
-		return
+		return err
 	}
-	auditFile = f
+	if err = auditLog.Append("startup", map[string]string{"service": "airlock"}); err != nil {
+		_ = auditLog.Close()
+		return err
+	}
+	return nil
 }
 
-func writeAudit(entry AuditEntry) {
-	if auditFile == nil {
-		return
-	}
-	entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	auditMu.Lock()
-	defer auditMu.Unlock()
-	auditFile.Write(append(data, '\n'))
+func writeAudit(entry AuditEntry) error {
+	return auditLog.Append("decision", entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -947,22 +944,51 @@ func safeAuditDestination(raw string) string {
 	}).String()
 }
 
-func recordDecision(req EgressRequest, allowed bool, reason string) {
-	if allowed {
+func recordDecision(req EgressRequest, allowed bool, reason string) error {
+	err := writeAudit(AuditEntry{DestinationHash: auditHash(req.Destination), MethodHash: auditHash(req.Method), Allowed: allowed, ReasonHash: auditHash(reason), BodySize: len(req.Body)})
+	if allowed && err == nil {
 		allowedRequests.Add(1)
 	} else {
 		blockedRequests.Add(1)
 	}
 	totalRequests.Add(1)
-	destination := safeAuditDestination(req.Destination)
-	log.Printf("airlock: dest=%s method=%s allowed=%t reason=%q", destination, req.Method, allowed, reason)
-	writeAudit(AuditEntry{
-		Destination: destination,
-		Method:      req.Method,
-		Allowed:     allowed,
-		Reason:      reason,
-		BodySize:    len(req.Body),
-	})
+	return err
+}
+
+// Audit each HTTP attempt before transport can resolve or dial, including redirects.
+// Transport errors may mean bytes were sent; never record them as "not sent".
+type auditedFetchTransport struct {
+	base       http.RoundTripper
+	id         string
+	policyHash string
+}
+
+func (a auditedFetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if containmentDisabled.Load() {
+		return nil, fmt.Errorf("airlock disabled by containment")
+	}
+	if err := auditLog.Append("fetch-intent", map[string]any{"request_id": a.id, "destination_hash": auditHash(req.URL.String()), "method_hash": auditHash(req.Method), "policy_hash": a.policyHash}); err != nil {
+		return nil, err
+	}
+	if containmentDisabled.Load() {
+		return nil, fmt.Errorf("airlock disabled by containment")
+	}
+	response, err := a.base.RoundTrip(req)
+	status := 0
+	if response != nil {
+		status = response.StatusCode
+	}
+	outcome := "headers-received"
+	if err != nil {
+		outcome = "possibly-sent-error"
+	}
+	if auditErr := auditLog.Append("fetch-headers", map[string]any{"request_id": a.id, "outcome": outcome, "status": status}); auditErr != nil {
+		if response != nil && response.Body != nil {
+			response.Body.Close()
+		}
+		return nil, auditErr
+	}
+	return response, err
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,9 +1026,15 @@ func handleEgressCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond := func(allowed bool, reason string) {
-		recordDecision(req, allowed, reason)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(EgressResponse{Allowed: allowed, Reason: reason})
+		err := recordDecision(req, allowed, reason)
+		if err != nil && allowed {
+			allowed = false
+			reason = "durable audit evidence unavailable"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(EgressResponse{Allowed: allowed, Reason: reason, EvidenceAvailable: err == nil})
 	}
 
 	if containmentDisabled.Load() {
@@ -1056,12 +1088,13 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 		Body:        req.Body,
 	}
 	if containmentDisabled.Load() {
-		recordDecision(decisionReq, false, "airlock disabled by incident containment")
+		auditErr := recordDecision(decisionReq, false, "airlock disabled by incident containment")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(EgressResponse{
-			Allowed: false,
-			Reason:  "airlock disabled by incident containment",
+			Allowed:           false,
+			Reason:            "airlock disabled by incident containment",
+			EvidenceAvailable: auditErr == nil,
 		})
 		return
 	}
@@ -1073,11 +1106,11 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 		snapshot.sourcePrefixes,
 		rateLimitKey(r),
 	)
-	recordDecision(decisionReq, allowed, reason)
 	if !allowed {
+		err := recordDecision(decisionReq, false, reason)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(EgressResponse{Allowed: false, Reason: reason})
+		json.NewEncoder(w).Encode(EgressResponse{Allowed: false, Reason: reason, EvidenceAvailable: err == nil})
 		return
 	}
 
@@ -1124,20 +1157,41 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamReq.Header.Set("User-Agent", "SecAI-Airlock/1")
 
+	requestID := rand.Text()
 	requestClient := *fetchClient
+	transport := requestClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	serializedPolicy, _ := json.Marshal(airlockSnapshotAudit{Policy: snapshot.policy, Sources: snapshot.sourcePrefixes})
+	requestClient.Transport = auditedFetchTransport{base: transport, id: requestID, policyHash: auditHash(string(serializedPolicy))}
 	requestClient.CheckRedirect = func(
 		redirected *http.Request,
 		via []*http.Request,
 	) error {
 		return validateRedirect(redirected, via, snapshot)
 	}
+	totalRequests.Add(1)
 	resp, err := requestClient.Do(upstreamReq)
 	if err != nil {
-		log.Printf("airlock upstream request failed for %s: %v", safeAuditDestination(req.Destination), err)
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
+		blockedRequests.Add(1)
+		if auditLog.Ready() != nil {
+			http.Error(w, "durable audit evidence unavailable; upstream may have been contacted", http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, "upstream request failed", http.StatusBadGateway)
+		}
 		return
 	}
+	allowedRequests.Add(1)
 	defer resp.Body.Close()
+	var streamed int64
+	outcome := "response-rejected"
+	defer func() {
+		err := auditLog.Append("fetch-finished", map[string]any{"request_id": requestID, "outcome": outcome, "bytes_forwarded": streamed, "status": resp.StatusCode})
+		if err != nil {
+			w.Header().Set("X-SecAI-Audit-Available", "false")
+		}
+	}()
 
 	maxResponse := pol.MaxResponseSize
 	if maxResponse <= 0 {
@@ -1155,16 +1209,19 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-SecAI-Upstream-URL", safeAuditDestination(resp.Request.URL.String()))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Add("Trailer", "X-SecAI-Response-Truncated")
+	w.Header().Add("Trailer", "X-SecAI-Response-Truncated, X-SecAI-Audit-Available")
 	w.WriteHeader(resp.StatusCode)
 
 	written, copyErr := io.CopyN(w, resp.Body, maxResponse)
+	streamed = written
+	outcome = "complete"
 	if copyErr != nil && copyErr != io.EOF {
-		log.Printf("airlock response stream failed after %d bytes: %v", written, copyErr)
+		outcome = "stream-error"
 		return
 	}
 	if written == maxResponse {
 		if resp.ContentLength != maxResponse {
+			outcome = "truncated"
 			w.Header().Set("X-SecAI-Response-Truncated", "true")
 			log.Printf("airlock terminated response at the %d byte policy limit", maxResponse)
 		}
@@ -1174,9 +1231,15 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	pol := getPolicy()
 	w.Header().Set("Content-Type", "application/json")
+	status := "ok"
+	ready := auditLog.Ready() == nil
+	if !ready {
+		status = "unavailable"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":               "ok",
-		"enabled":              pol.Enabled && !containmentDisabled.Load(),
+		"status": status, "audit_ready": ready,
+		"enabled":              pol.Enabled && !containmentDisabled.Load() && ready,
 		"containment_disabled": containmentDisabled.Load(),
 	})
 }
@@ -1219,17 +1282,19 @@ func handleDisable(w http.ResponseWriter, r *http.Request) {
 		Reason:     strings.TrimSpace(req.Reason),
 		DisabledAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := persistContainmentState(state); err != nil {
-		http.Error(w, "cannot persist containment latch", http.StatusInternalServerError)
-		return
-	}
+	// Restrict immediately even if persistence or evidence storage is unavailable.
 	containmentDisabled.Store(true)
-	log.Printf("CONTAINMENT: airlock disabled by incident %s", state.IncidentID)
+	persistErr := persistContainmentState(state)
+	auditErr := auditLog.Append("containment", map[string]any{"disabled": true, "persisted": persistErr == nil, "incident_hash": auditHash(state.IncidentID)})
 	w.Header().Set("Content-Type", "application/json")
+	if persistErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "disabled",
-		"incident_id": state.IncidentID,
-		"persisted":   true,
+		"status":             "disabled",
+		"incident_id":        state.IncidentID,
+		"persisted":          persistErr == nil,
+		"evidence_available": auditErr == nil,
 	})
 }
 
@@ -1269,6 +1334,14 @@ func newAirlockMux() *http.ServeMux {
 }
 
 func main() {
+	if err := initAuditLog(); err != nil {
+		log.Fatalf("audit startup rejected: %v", err)
+	}
+	defer func() {
+		if err := auditLog.Close(); err != nil {
+			log.Printf("audit shutdown failed: %v", err)
+		}
+	}()
 	if err := loadConfiguration(); err != nil {
 		log.Fatalf("failed to load airlock configuration: %v", err)
 	}
@@ -1281,7 +1354,6 @@ func main() {
 		bind = "127.0.0.1:8490"
 	}
 
-	initAuditLog()
 	if err := loadServiceToken(); err != nil {
 		if !allowInsecureLoopbackDev(bind) {
 			log.Fatalf("service authentication required: %v", err)
@@ -1321,6 +1393,8 @@ func main() {
 	log.Println("shutting down airlock...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		_ = server.Close()
+	}
 	log.Println("airlock stopped")
 }

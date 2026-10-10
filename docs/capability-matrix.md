@@ -59,7 +59,7 @@ Last updated: 2026-07-27
 | Agent APIs | Implemented | Policy-bound APIs exist. |
 | Agent task/approval UI | Experimental | Must expose task state, cancellation, approval diffs, policy evidence, and recovery before general availability. |
 | Forensic export | Implemented | Export content, signing, redaction, and recovery handling require release evidence. |
-| Backup/restore | Implemented | A release is not production-ready until an encrypted restore drill demonstrates its stated RPO/RTO. |
+| Backup/restore | Partial; active restore unavailable | Bounded encrypted inspection and inert partial export are available. Native maintenance/quiescence, producer adapters, historical enrollment and rotation reconciliation must qualify before active restore; an independent encrypted replacement-device drill must then establish RPO/RTO. |
 | Fleet administration | Planned | Must remain opt-in and must not transmit prompts, model data, or customer artifacts. |
 
 ## Hardware Qualification

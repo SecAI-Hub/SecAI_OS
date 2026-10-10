@@ -1,64 +1,143 @@
 {
-  "_comment": "Seccomp profile for search mediator (Python). Localhost network to SearXNG, audit log writes. No exec, no raw device access.",
+  "_comment": "Search mediator: fixed-origin HTTP worker with a killable deadline; interpreter execution is constrained by Landlock.",
   "defaultAction": "SCMP_ACT_ERRNO",
   "defaultErrnoRet": 1,
   "archMap": [
-    { "architecture": "SCMP_ARCH_X86_64", "subArchitectures": ["SCMP_ARCH_X86"] },
-    { "architecture": "SCMP_ARCH_AARCH64", "subArchitectures": [] }
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": [
+        "SCMP_ARCH_X86"
+      ]
+    },
+    {
+      "architecture": "SCMP_ARCH_AARCH64",
+      "subArchitectures": []
+    }
   ],
   "syscalls": [
     {
       "_comment": "Core process lifecycle",
       "names": [
-        "read", "write", "close", "fstat", "lstat", "stat", "newfstatat",
-        "lseek", "mmap", "mprotect", "munmap", "brk", "mremap",
-        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
-        "pread64", "pwrite64", "readv", "writev",
-        "access", "pipe", "pipe2", "dup", "dup2", "dup3",
-        "getpid", "getuid", "getgid", "geteuid", "getegid",
-        "getppid", "gettid", "getdents64",
-        "clone", "clone3", "wait4",
-        "exit", "exit_group",
-        "futex", "futex_waitv",
-        "set_robust_list", "get_robust_list",
-        "nanosleep", "clock_nanosleep", "clock_gettime", "clock_getres",
+        "read",
+        "write",
+        "close",
+        "fstat",
+        "lstat",
+        "stat",
+        "newfstatat",
+        "lseek",
+        "mmap",
+        "mprotect",
+        "munmap",
+        "brk",
+        "mremap",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "pread64",
+        "pwrite64",
+        "readv",
+        "writev",
+        "access",
+        "pipe",
+        "pipe2",
+        "dup",
+        "dup2",
+        "dup3",
+        "getpid",
+        "getuid",
+        "getgid",
+        "geteuid",
+        "getegid",
+        "getppid",
+        "gettid",
+        "getdents64",
+        "clone",
+        "clone3",
+        "wait4",
+        "exit",
+        "exit_group",
+        "futex",
+        "futex_waitv",
+        "set_robust_list",
+        "get_robust_list",
+        "nanosleep",
+        "clock_nanosleep",
+        "clock_gettime",
+        "clock_getres",
         "gettimeofday",
-        "sched_yield", "sched_getaffinity",
+        "sched_yield",
+        "sched_getaffinity",
         "set_tid_address",
-        "arch_prctl", "prctl",
-        "getrandom", "rseq"
+        "arch_prctl",
+        "prctl",
+        "getrandom",
+        "rseq",
+        "uname"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
       "_comment": "File operations (config read, audit log write)",
       "names": [
-        "open", "openat", "openat2", "fcntl",
+        "open",
+        "openat",
+        "openat2",
+        "fcntl",
         "fadvise64",
-        "ftruncate", "fsync", "fdatasync",
-        "readlink", "readlinkat",
-        "statx", "statfs", "fstatfs",
-        "getcwd", "umask"
+        "ftruncate",
+        "fsync",
+        "fdatasync",
+        "readlink",
+        "readlinkat",
+        "statx",
+        "statfs",
+        "fstatfs",
+        "getcwd",
+        "umask",
+        "chdir",
+        "fchdir",
+        "utimensat"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
       "_comment": "Event polling",
       "names": [
-        "epoll_create", "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait",
-        "poll", "ppoll", "select", "pselect6",
-        "eventfd", "eventfd2",
-        "timerfd_create", "timerfd_settime", "timerfd_gettime"
+        "epoll_create",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_wait",
+        "epoll_pwait",
+        "poll",
+        "ppoll",
+        "select",
+        "pselect6",
+        "eventfd",
+        "eventfd2",
+        "timerfd_create",
+        "timerfd_settime",
+        "timerfd_gettime"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
       "_comment": "Localhost socket (:8485 + SearXNG on :8888)",
       "names": [
-        "socket", "bind", "listen", "accept", "accept4",
-        "connect", "getsockopt", "setsockopt",
-        "getsockname", "getpeername",
-        "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "socket",
+        "bind",
+        "listen",
+        "accept",
+        "accept4",
+        "connect",
+        "getsockopt",
+        "setsockopt",
+        "getsockname",
+        "getpeername",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
         "shutdown"
       ],
       "action": "SCMP_ACT_ALLOW"
@@ -66,10 +145,43 @@
     {
       "_comment": "Python runtime internals",
       "names": [
-        "madvise", "ioctl",
+        "madvise",
+        "ioctl",
         "sigaltstack",
-        "tgkill", "tkill",
-        "set_thread_area", "get_thread_area"
+        "tgkill",
+        "tkill",
+        "set_thread_area",
+        "get_thread_area"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Bounded worker process lifecycle; only the installed interpreter is invoked",
+      "names": [
+        "execve",
+        "execveat",
+        "fork",
+        "vfork",
+        "waitid",
+        "kill",
+        "close_range"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "_comment": "Private audit append, atomic checkpoint replacement and rotation; filesystem paths are constrained by the deployment",
+      "names": [
+        "mkdir",
+        "mkdirat",
+        "chmod",
+        "fchmod",
+        "fchmodat",
+        "rename",
+        "renameat",
+        "renameat2",
+        "unlink",
+        "unlinkat",
+        "rmdir"
       ],
       "action": "SCMP_ACT_ALLOW"
     }

@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 import requests
+from common import inference_client as inference_http
 
 from .models import (
     CapabilityToken,
@@ -22,6 +23,7 @@ from .models import (
     StepAction,
 )
 from .policy import PolicyEngine, classify_risk
+from .action_catalog import action_catalog, implemented_actions
 
 log = logging.getLogger("agent.planner")
 
@@ -49,18 +51,20 @@ _ACTION_KEYWORDS: dict[str, StepAction] = {
     "create file": StepAction.WRITE_FILE,
     "overwrite": StepAction.OVERWRITE_FILE,
     "replace": StepAction.OVERWRITE_FILE,
-    "tool": StepAction.TOOL_INVOKE,
-    "invoke": StepAction.TOOL_INVOKE,
-    "run": StepAction.TOOL_INVOKE,
     "fetch": StepAction.OUTBOUND_REQUEST,
     "download": StepAction.OUTBOUND_REQUEST,
-    "export": StepAction.EXPORT_DATA,
-    "share": StepAction.EXPORT_DATA,
-    "promote": StepAction.TRUST_CHANGE,
-    "revoke": StepAction.TRUST_CHANGE,
-    "delete all": StepAction.BATCH_DELETE,
-    "bulk delete": StepAction.BATCH_DELETE,
 }
+
+
+class ActionUnavailable(ValueError):
+    """The requested workflow has no executable action contract."""
+
+
+_UNAVAILABLE_INTENT = re.compile(
+    r"^\s*(?:please\s+)?(?:tool\b|mcp\b|invoke\b|export\b|share\b|promote\b|revoke\b|"
+    r"(?:bulk delete|delete all)\b|(?:run|execute|call|use)\s+(?:a\s+|the\s+)?(?:tool|mcp|command|shell|script)\b)",
+    re.IGNORECASE,
+)
 
 # System prompt instructs the LLM to output structured step plans
 _SYSTEM_PROMPT = """\
@@ -77,16 +81,7 @@ RULES:
 - Prefer read-only operations. Only write when the intent requires output.
 
 AVAILABLE ACTIONS:
-  local_search — search/list files in approved scopes (params: path)
-  summarize — summarize file or text content (params: path or content)
-  draft — draft/compose text (params: instruction, path for output)
-  classify — classify/tag content (params: content, categories)
-  report — generate a report from sources (params: instruction, sources, path)
-  explain_security — explain a security decision (params: context, decision_type)
-  read_file — read a specific file (params: path)
-  write_file — write to an approved output path (params: path, content)
-  overwrite_file — overwrite an existing file (params: path, content)
-  tool_invoke — invoke an approved tool (params: tool, args)
+{action_details}
 
 OUTPUT FORMAT (JSON array only, no markdown):
 [
@@ -117,6 +112,9 @@ class Planner:
         Returns a list of Step objects with risk levels classified
         but not yet evaluated for approval.
         """
+        if _UNAVAILABLE_INTENT.search(intent):
+            raise ActionUnavailable("Tool execution, exports and control-plane changes are unavailable. Choose a supported local workflow.")
+
         # Try LLM-based planning first
         steps = self._plan_via_llm(intent, cap, max_steps)
 
@@ -126,6 +124,10 @@ class Planner:
 
         # Classify risk level for each step
         for step in steps:
+            if step.action not in implemented_actions():
+                raise ActionUnavailable("The proposed plan contains an action without an executable handler.")
+            if step.action == StepAction.OUTBOUND_REQUEST and not cap.allow_online:
+                raise ActionUnavailable("Online requests are unavailable in this session mode.")
             step.risk_level = classify_risk(step.action)
 
         return steps[:max_steps]
@@ -139,8 +141,11 @@ class Planner:
         max_steps: int,
     ) -> list[Step]:
         """Use the inference worker to decompose the intent."""
-        actions = ", ".join(a.value for a in StepAction)
-        system = _SYSTEM_PROMPT.format(actions=actions)
+        actions = ", ".join(sorted(a.value for a in implemented_actions()
+                                   if a != StepAction.OUTBOUND_REQUEST or cap.allow_online))
+        details = "\n".join(f"  {entry['action']} — {entry['description']}" for entry in action_catalog(cap.session_mode.value)
+                            if entry["action"] != "outbound_request" or cap.allow_online)
+        system = _SYSTEM_PROMPT.format(actions=actions, action_details=details)
         readable_scopes = ", ".join(self._display_scope(path) for path in cap.readable_paths) or "none"
         writable_scopes = ", ".join(self._display_scope(path) for path in cap.writable_paths) or "none"
 
@@ -155,7 +160,7 @@ class Planner:
         )
 
         try:
-            resp = requests.post(
+            resp = inference_http.post(
                 f"{_INFERENCE_URL}/completion",
                 json={
                     "prompt": prompt,
@@ -166,15 +171,14 @@ class Planner:
                 timeout=60,
             )
 
-            if resp.status_code != 200:
-                log.warning("inference returned %d, falling back to heuristic", resp.status_code)
-                return []
-
-            text = resp.json().get("content", "").strip()
+            data = inference_http.read_json(resp)
+            text = data.get("content")
+            if not isinstance(text, str):
+                raise ValueError("invalid inference content")
             return self._parse_llm_plan(text)
 
-        except requests.RequestException as exc:
-            log.warning("inference unreachable (%s), falling back to heuristic", exc)
+        except (requests.RequestException, ValueError) as error:
+            log.warning("%s; falling back to heuristic", inference_http.backend_error(error))
             return []
 
     def _parse_llm_plan(self, text: str) -> list[Step]:
@@ -320,6 +324,12 @@ class Planner:
 
         if action == StepAction.EXPLAIN_SECURITY:
             params["context"] = intent
+
+        if action == StepAction.OUTBOUND_REQUEST:
+            match = re.search(r"https?://[^\s<>\"']+", intent)
+            if match:
+                params["url"] = match.group(0)
+            params["method"] = "GET"
 
         return params
 

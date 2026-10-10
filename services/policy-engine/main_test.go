@@ -97,6 +97,7 @@ agent:
 
 func setupTestPolicies(t *testing.T) {
 	t.Helper()
+	setupAudit(t)
 	pPath := writeTempPolicy(t, testPolicyYAML)
 	aPath := writeTempAgentPolicy(t, testAgentPolicyYAML)
 	t.Setenv("POLICY_PATH", pPath)

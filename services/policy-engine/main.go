@@ -49,9 +49,10 @@ type DecisionRequest struct {
 
 // DecisionResponse is the unified policy decision result.
 type DecisionResponse struct {
-	Decision string           `json:"decision"` // "allow", "deny", "ask"
-	Reason   string           `json:"reason"`
-	Evidence DecisionEvidence `json:"evidence"`
+	Decision          string           `json:"decision"` // "allow", "deny", "ask"
+	Reason            string           `json:"reason"`
+	Evidence          DecisionEvidence `json:"evidence"`
+	EvidenceAvailable bool             `json:"evidence_available"`
 }
 
 // DecisionEvidence is a structured provenance object attached to every decision.
@@ -147,9 +148,7 @@ var (
 	unifiedPolicy UnifiedPolicy
 	policyDigest  string // SHA-256 of combined policy files
 
-	auditFile *os.File
-	auditMu   sync.Mutex
-	auditPath string
+	auditLog *durableAudit
 
 	serviceToken string
 
@@ -221,9 +220,12 @@ func loadPolicies() error {
 	digest := hex.EncodeToString(h[:])
 
 	policyMu.Lock()
+	defer policyMu.Unlock()
+	if err := auditLog.Append("policy-reload", map[string]string{"policy_digest": digest}); err != nil {
+		return err
+	}
 	unifiedPolicy = combined
 	policyDigest = digest
-	policyMu.Unlock()
 
 	log.Printf("policies loaded: digest=%s tools_allow=%d tools_deny=%d agent_deny=%d",
 		digest[:12], len(combined.Tools.Allow), len(combined.Tools.Deny),
@@ -286,50 +288,36 @@ func requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // =========================================================================
 
 type AuditEntry struct {
-	Timestamp string           `json:"timestamp"`
-	Domain    string           `json:"domain"`
-	Subject   string           `json:"subject"`
-	Action    string           `json:"action,omitempty"`
-	Decision  string           `json:"decision"`
-	Reason    string           `json:"reason"`
-	Evidence  DecisionEvidence `json:"evidence"`
+	DomainHash   string `json:"domain_hash"`
+	SubjectHash  string `json:"subject_hash"`
+	ActionHash   string `json:"action_hash"`
+	Decision     string `json:"decision"`
+	ReasonHash   string `json:"reason_hash"`
+	RuleHash     string `json:"rule_hash"`
+	PolicyDigest string `json:"policy_digest"`
+	InputHash    string `json:"input_hash"`
 }
 
-func initAuditLog() {
-	auditPath = os.Getenv("AUDIT_LOG_PATH")
-	if auditPath == "" {
-		auditPath = "/var/lib/secure-ai/logs/policy-engine-audit.jsonl"
+func initAuditLog() error {
+	path := os.Getenv("AUDIT_LOG_PATH")
+	if path == "" {
+		path = "/var/lib/secure-ai/logs/policy-engine-audit.jsonl"
 	}
-	dir := filepath.Dir(auditPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		log.Printf("warning: cannot create audit log dir: %v", err)
-		return
-	}
-	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	var err error
+	auditLog, err = openDurableAudit(path)
 	if err != nil {
-		log.Printf("warning: cannot open audit log: %v", err)
-		return
+		return err
 	}
-	auditFile = f
+	if err = auditLog.Append("startup", map[string]string{"service": "policy-engine"}); err != nil {
+		_ = auditLog.Close()
+		return err
+	}
+	return nil
 }
 
-func writeAudit(entry AuditEntry) {
-	if auditFile == nil {
-		return
-	}
-	entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	auditMu.Lock()
-	defer auditMu.Unlock()
-	auditFile.Write(append(data, '\n'))
+func writeAudit(entry AuditEntry) error {
+	return auditLog.Append("decision", entry)
 }
-
-// =========================================================================
-// Decision engine — the core evaluator
-// =========================================================================
 
 func evaluate(req DecisionRequest) DecisionResponse {
 	start := time.Now()
@@ -734,6 +722,15 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	totalRequests.Add(1)
 	resp := evaluate(req)
 
+	input, _ := json.Marshal(req)
+	err := writeAudit(AuditEntry{DomainHash: auditHash(string(req.Domain)), SubjectHash: auditHash(req.Subject), ActionHash: auditHash(req.Action), Decision: resp.Decision, ReasonHash: auditHash(resp.Reason), RuleHash: auditHash(resp.Evidence.RuleID), PolicyDigest: resp.Evidence.PolicyDigest, InputHash: auditHash(string(input))})
+	resp.EvidenceAvailable = err == nil
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil && resp.Decision != "deny" {
+		resp.Decision = "deny"
+		resp.Reason = "durable audit evidence unavailable"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	switch resp.Decision {
 	case "allow":
 		allowedCount.Add(1)
@@ -743,18 +740,6 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		askCount.Add(1)
 	}
 
-	log.Printf("policy-engine: domain=%s subject=%s decision=%s reason=%q",
-		req.Domain, req.Subject, resp.Decision, resp.Reason)
-
-	writeAudit(AuditEntry{
-		Domain:   string(req.Domain),
-		Subject:  req.Subject,
-		Action:   req.Action,
-		Decision: resp.Decision,
-		Reason:   resp.Reason,
-		Evidence: resp.Evidence,
-	})
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -762,8 +747,14 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, digest := getPolicy()
 	w.Header().Set("Content-Type", "application/json")
+	status := "ok"
+	ready := auditLog.Ready() == nil
+	if !ready {
+		status = "unavailable"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":        "ok",
+		"status": status, "audit_ready": ready,
 		"policy_digest": digest,
 	})
 }
@@ -818,11 +809,18 @@ func newPolicyMux() *http.ServeMux {
 // =========================================================================
 
 func main() {
+	if err := initAuditLog(); err != nil {
+		log.Fatalf("audit startup rejected: %v", err)
+	}
+	defer func() {
+		if err := auditLog.Close(); err != nil {
+			log.Printf("audit shutdown failed: %v", err)
+		}
+	}()
 	if err := loadPolicies(); err != nil {
 		log.Fatalf("failed to load policies: %v", err)
 	}
 
-	initAuditLog()
 	if err := loadServiceToken(); err != nil {
 		log.Fatalf("service authentication unavailable: %v", err)
 	}
@@ -856,6 +854,8 @@ func main() {
 	log.Println("shutting down policy-engine...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		_ = server.Close()
+	}
 	log.Println("policy-engine stopped")
 }

@@ -11,6 +11,7 @@ readonly GENERATOR="/tmp/files/scripts/generate-release-baseline.py"
 readonly POLICY_JSON="/etc/containers/policy.json"
 readonly REGISTRIES_CONFIG="/etc/containers/registries.d/secai-os.yaml"
 readonly COSIGN_PUBLIC_KEY="/etc/pki/containers/secai-cosign.pub"
+readonly ATTESTATION_POLICY="/etc/secure-ai/policy/attestation.yaml"
 readonly RELEASE_BASELINE="/usr/share/secure-ai/integrity/release-baseline.json"
 readonly IMAGE_REPOSITORY="ghcr.io/secai-hub/secai_os"
 
@@ -79,6 +80,34 @@ if registries != {
     "docker": {repository: {"use-sigstore-attachments": True}}
 }:
     raise SystemExit("registry attachment policy does not match the approved SecAI rule")
+PY
+
+# COPY/file-module permissions depend on the build context. Install the exact
+# shipped policy bytes with the runtime loader's protected metadata before
+# those bytes become a release measurement. Never follow a replacement link.
+python3 - "$ATTESTATION_POLICY" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+try:
+    before = os.fstat(fd)
+    if not stat.S_ISREG(before.st_mode):
+        raise SystemExit("attestation policy is not a regular file")
+    os.fchown(fd, 0, 0)
+    os.fchmod(fd, 0o644)
+    installed = os.fstat(fd)
+    current = os.lstat(path)
+    if (not stat.S_ISREG(current.st_mode)
+            or (installed.st_dev, installed.st_ino) != (current.st_dev, current.st_ino)
+            or installed.st_uid != 0 or installed.st_gid != 0
+            or stat.S_IMODE(installed.st_mode) != 0o644
+            or (current.st_uid, current.st_gid, stat.S_IMODE(current.st_mode)) != (0, 0, 0o644)):
+        raise SystemExit("attestation policy installation metadata is unsafe")
+finally:
+    os.close(fd)
 PY
 
 python3 "$GENERATOR" --source-commit "$source_commit" || \

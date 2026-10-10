@@ -147,7 +147,7 @@ class TestReleaseWorkflowStructure:
     def test_release_signatures_use_pinned_cosign(self):
         content = _read_release_yml()
         assert "*.iso.sig" in content
-        assert content.count("cosign-release: v3.1.1") == 5
+        assert content.count("cosign-release: v3.1.3") == 5
 
     def test_release_verifies_slsa_v1_image_provenance(self):
         content = _read_release_yml()
@@ -187,7 +187,7 @@ class TestReleaseWorkflowStructure:
     def test_release_python_sboms_use_pinned_action(self):
         content = _read_release_yml()
         assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
-        assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
+        assert "anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26" in content
         assert "dist/search-mediator-sbom.cdx.json" in content
 
     def test_release_sandbox_vex_build_retries(self):
@@ -208,7 +208,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "SIGNING_SECRET" not in pr_job
         assert 'cosign_private_key: ""' in pr_job
         assert "push: false" in pr_job
-        assert "cli_version: v0.9.36" in pr_job
+        assert "cli_version: v0.9.37" in pr_job
 
     def test_publish_build_is_non_pr_and_environment_protected(self):
         content = BUILD_YML.read_text(encoding="utf-8")
@@ -222,7 +222,7 @@ class TestBuildWorkflowTrustBoundary:
         assert "attestations: write" not in publish_job
         assert "cosign_private_key: ${{ secrets.SIGNING_SECRET }}" in publish_job
         assert "push: true" in publish_job
-        assert "cli_version: v0.9.36" in publish_job
+        assert "cli_version: v0.9.37" in publish_job
         assert "outputs:" in publish_job
         assert "digest: ${{ steps.digest.outputs.digest }}" in publish_job
         assert "pinned_ref: ${{ steps.digest.outputs.pinned_ref }}" in publish_job
@@ -247,7 +247,7 @@ class TestBuildWorkflowTrustBoundary:
             "sigstore/cosign-installer@"
             "6f9f17788090df1f26f669e9d70d6ae9567deba6" in evidence_job
         )
-        assert "cosign-release: v3.1.1" in evidence_job
+        assert "cosign-release: v3.1.3" in evidence_job
         assert "Reserve disk for rootless OCI materialization" in evidence_job
         assert "cleanup_threshold_kib=$((40 * 1024 * 1024))" in evidence_job
         assert "sudo rm -rf -- \\" in evidence_job
@@ -269,7 +269,7 @@ class TestBuildWorkflowTrustBoundary:
         )
         assert (
             "actions/attest-build-provenance@"
-            "0f67c3f4856b2e3261c31976d6725780e5e4c373" in evidence_job
+            "4d101475d8b20a2381f78447822ac1eab6504dd8" in evidence_job
         )
         assert "create-storage-record: false" not in evidence_job
         assert "Remove GitHub provenance registry credentials" in evidence_job
@@ -564,7 +564,7 @@ class TestCiWorkflowStructure:
         for package, version in (
             ("modelscan", "0.8.8"),
             ("fickling", "0.1.12"),
-            ("modelaudit", "0.2.42"),
+            ("modelaudit", "0.2.52"),
         ):
             assert f"{package}=={version} \\" in lock
         for rel_path in (
@@ -594,8 +594,8 @@ class TestCiWorkflowStructure:
     def test_ci_supply_chain_tools_are_pinned(self):
         content = _read_ci_yml()
         assert "raw.githubusercontent.com/anchore/syft/main/install.sh" not in content
-        assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in content
-        assert content.count("cosign-release: v3.1.1") == 1
+        assert "anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26" in content
+        assert content.count("cosign-release: v3.1.3") == 1
         assert (
             'for keyword in "SYFT_ARCHIVE_SHA256" "UMOCI_BINARY_SHA256" \\' in content
         )
@@ -604,7 +604,7 @@ class TestCiWorkflowStructure:
     def test_ci_govulncheck_install_is_pinned(self):
         content = _read_ci_yml()
         assert "golang.org/x/vuln/cmd/govulncheck@latest" not in content
-        assert "golang.org/x/vuln/cmd/govulncheck@v1.3.0" in content
+        assert "golang.org/x/vuln/cmd/govulncheck@v1.7.0" in content
 
     def test_semgrep_uses_repo_owned_posix_wrapper(self):
         content = _read_ci_yml()

@@ -1,0 +1,59 @@
+[Unit]
+Description=Secure AI approved GPU inference probes (bounded fixed references)
+After=secure-ai-inference.service secure-ai-credentials.service
+Requires=secure-ai-credentials.service
+Wants=secure-ai-inference.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecCondition=/usr/libexec/secure-ai/gpu-integrity-watch policy-enabled
+ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require gpu_probe -- /usr/libexec/secure-ai/gpu-integrity-watch probe-server
+Environment=GPU_PROBE_KEY_PATH=%d/gpu-probe-hmac-key
+Environment=INFERENCE_PROBE_TOKEN_PATH=%d/inference-probe-token
+LoadCredential=gpu-probe-hmac-key:/var/lib/secure-ai/credentials/gpu-probe-hmac.key
+LoadCredential=inference-probe-token:/var/lib/secure-ai/credentials/inference-probe.token
+DynamicUser=yes
+UMask=0077
+ReadOnlyPaths=/etc/secure-ai
+InaccessiblePaths=/var/lib/secure-ai/vault /var/lib/secure-ai/gpu-integrity /var/lib/secure-ai/credentials
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self
+SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=32
+LimitNOFILE=128
+LimitCORE=0
+TimeoutStartSec=30
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

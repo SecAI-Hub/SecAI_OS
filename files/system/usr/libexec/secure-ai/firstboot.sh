@@ -160,17 +160,9 @@ else
     log "Hardware memory encryption: NOT VERIFIED (detection failed)"
 fi
 
-# Verify nftables is loaded
-command -v nft >/dev/null 2>&1 || fatal "nftables is unavailable"
-if nft list ruleset 2>/dev/null | grep -F "table inet secure_ai" >/dev/null; then
-    log "Firewall rules verified: secure_ai table active."
-else
-    log "secure_ai nftables table not found; loading it now"
-    nft -f /etc/nftables/secure-ai.nft 2>/dev/null || \
-        fatal "failed to load firewall rules"
-    nft list ruleset 2>/dev/null | grep -F "table inet secure_ai" >/dev/null || \
-        fatal "secure_ai firewall table is still inactive"
-fi
+# Check the complete nftables policy, including wildcard raw-frame egress.
+/usr/libexec/secure-ai/network-profile.py observe >/dev/null || \
+    fatal "native network enforcement is unavailable"
 
 # Set ptrace scope if available (restrict debugging)
 if [ -e /proc/sys/kernel/yama/ptrace_scope ]; then

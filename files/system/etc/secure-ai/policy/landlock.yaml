@@ -14,6 +14,14 @@
 version: 1
 
 common_paths:
+  # ELF interpreters are executable files, not general executable library trees.
+  # Fedora glibc places x86_64 here and aarch64 in /usr/lib. The other
+  # architecture's absent path is optional; the required launcher still fails
+  # if its actual interpreter cannot execute.
+  - path: /usr/lib64/ld-linux-x86-64.so.2
+    access: exe
+  - path: /usr/lib/ld-linux-aarch64.so.1
+    access: exe
   - path: /run/credentials
     access: ro
 
@@ -21,6 +29,9 @@ services:
   inference:
     description: "Inference worker — read-only model access, no output writes"
     paths:
+      - path: /run/secure-ai-inference
+        access: ro
+        required: true
       - path: /var/lib/secure-ai/vault/models
         access: ro
         required: true
@@ -46,6 +57,9 @@ services:
         access: exe
         required: true
       - path: /usr/bin/systemd-notify
+        access: exe
+        required: true
+      - path: /usr/bin/sleep
         access: exe
         required: true
       - path: /usr/lib
@@ -81,7 +95,7 @@ services:
         access: ro
       - path: /usr/lib64
         access: ro
-      - path: /opt/secure-ai/services
+      - path: /usr/lib/secure-ai/services
         access: ro
         required: true
       - path: /proc
@@ -125,6 +139,12 @@ services:
   ui:
     description: "Web UI — incoming model handoff only, auth/UI state, logs, config"
     paths:
+      # Isolated attempts discard their standard streams through this device.
+      - path: /dev/null
+        access: rw
+      # The current profile is atomically replaced within this state directory.
+      - path: /var/lib/secure-ai/state
+        access: ro
       - path: /var/lib/secure-ai/quarantine/incoming
         access: rw
       - path: /var/lib/secure-ai/auth
@@ -345,9 +365,51 @@ services:
         access: ro
       - path: /usr/lib64
         access: ro
-      - path: /opt/secure-ai/services
+      - path: /usr/lib/secure-ai/services
         access: ro
         required: true
+      - path: /tmp
+        access: rw
+
+  gpu_probe:
+    description: "Approved bounded inference probes; no device, model or vault access"
+    paths:
+      - path: /etc/secure-ai
+        access: ro
+      - path: /usr/libexec/secure-ai/gpu-integrity-watch
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
+      - path: /tmp
+        access: rw
+
+  gpu_bootstrap:
+    description: "Independent GPU bootstrap checks; no model or inference files"
+    paths:
+      - path: /var/lib/secure-ai/logs
+        access: rw
+      - path: /etc/secure-ai
+        access: ro
+      - path: /sys/class/drm
+        access: ro
+      - path: /sys/bus/pci/devices
+        access: ro
+      - path: /sys/module
+        access: ro
+      - path: /dev
+        access: rw
+      - path: /usr/bin/nvidia-smi
+        access: exe
+      - path: /usr/bin/rocm-smi
+        access: exe
+      - path: /usr/libexec/secure-ai/gpu-integrity-watch
+        access: exe
+      - path: /usr/lib
+        access: ro
+      - path: /usr/lib64
+        access: ro
       - path: /tmp
         access: rw
 

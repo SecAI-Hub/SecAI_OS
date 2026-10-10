@@ -1,9 +1,11 @@
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
 
 import pytest
+from common import diffusion_registry
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_PATH = REPO_ROOT / "services" / "diffusion-worker" / "app.py"
@@ -19,6 +21,9 @@ def provision_diffusion_service_credential(tmp_path, monkeypatch):
     token_path.write_text(_DIFFUSION_TEST_TOKEN, encoding="utf-8")
     token_path.chmod(0o600)
     monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv("REGISTRY_DIR", str(tmp_path))
+    # These pipeline behavior tests explicitly exercise the sandbox evaluation.
+    monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
 
 
 def _client(module):
@@ -31,6 +36,13 @@ def _load_module():
     spec = importlib.util.spec_from_file_location("diffusion_app_under_test", str(APP_PATH))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # These behavior tests use explicit verified metadata; the transport and
+    # replacement denial contract is covered by the registry-specific tests.
+    def verified(filename):
+        matches = [m for m in module._find_diffusion_models() if m["name"] == filename]
+        path = matches[0]["path"] if matches else str(module.REGISTRY_DIR / filename)
+        return diffusion_registry.VerifiedModel(filename, filename, "c" * 64, path)
+    module._verified_diffusion_model = verified
     return module
 
 
@@ -77,6 +89,8 @@ def test_load_pipeline_uses_fp16_variant_when_present(monkeypatch, tmp_path):
     assert calls["path"] == str(model_dir)
     assert calls["kwargs"]["variant"] == "fp16"
     assert calls["kwargs"]["local_files_only"] is True
+    assert calls["kwargs"]["use_safetensors"] is True
+    assert calls["kwargs"]["trust_remote_code"] is False
 
 
 def test_find_diffusion_models_classifies_ltx_video_pipeline(monkeypatch, tmp_path):
@@ -615,3 +629,166 @@ def test_generate_video_honors_requested_dimensions_for_image_conditioned_models
     payload = resp.get_json()
     assert payload["parameters"]["image_conditioned"] is True
     assert payload["saved_to"].endswith(".mp4")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo", "directory"])
+def test_outputs_reject_nonprivate_entries(monkeypatch, tmp_path, kind):
+    module = _load_module()
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside-secret")
+    entry = outputs / "unsafe.png"
+    if kind == "symlink":
+        entry.symlink_to(outside)
+    elif kind == "hardlink":
+        os.link(outside, entry)
+    elif kind == "fifo":
+        os.mkfifo(entry)
+    else:
+        entry.mkdir()
+    monkeypatch.setattr(module, "OUTPUTS_DIR", outputs)
+    with _client(module) as client:
+        listing = client.get("/v1/outputs")
+        download = client.get("/v1/outputs/unsafe.png")
+    assert listing.status_code == 200
+    assert listing.get_json() == []
+    assert download.status_code == 404
+    assert b"outside-secret" not in download.data
+
+
+@pytest.mark.parametrize("ancestor", [False, True])
+def test_outputs_reject_linked_root_or_ancestor(monkeypatch, tmp_path, ancestor):
+    module = _load_module()
+    real = tmp_path / "real"
+    outputs = real / "outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "secret.png").write_bytes(b"outside-secret")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real if ancestor else outputs, target_is_directory=True)
+    monkeypatch.setattr(module, "OUTPUTS_DIR", alias / "outputs" if ancestor else alias)
+    with _client(module) as client:
+        assert client.get("/v1/outputs").status_code == 503
+        response = client.get("/v1/outputs/secret.png")
+    assert response.status_code == 404
+    assert b"outside-secret" not in response.data
+
+
+@pytest.mark.parametrize("replacement", ["symlink", "regular", "fifo"])
+def test_output_replacement_before_open_fails_closed(monkeypatch, tmp_path, replacement):
+    module = _load_module()
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    entry = outputs / "saved.png"
+    entry.write_bytes(b"normal")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside-secret")
+    monkeypatch.setattr(module, "OUTPUTS_DIR", outputs)
+    original_open = module.os.open
+    def replace_at_open(path, flags, *args, **kwargs):
+        if path == "saved.png" and kwargs.get("dir_fd") is not None and not flags & os.O_PATH:
+            entry.unlink()
+            if replacement == "symlink":
+                entry.symlink_to(outside)
+            elif replacement == "regular":
+                entry.write_bytes(b"replacement")
+            else:
+                os.mkfifo(entry)
+        return original_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(module.os, "open", replace_at_open)
+    with _client(module) as client:
+        response = client.get("/v1/outputs/saved.png")
+    assert response.status_code == 404
+    assert b"outside-secret" not in response.data
+
+
+def test_output_response_uses_validated_fd_after_path_swap(monkeypatch, tmp_path):
+    module = _load_module()
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    entry = outputs / "saved.png"
+    entry.write_bytes(b"original-output")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside-secret")
+    monkeypatch.setattr(module, "OUTPUTS_DIR", outputs)
+    original_send = module.send_file
+    captured = []
+    def replace_before_send(stream, **kwargs):
+        captured.append(stream)
+        entry.unlink()
+        entry.symlink_to(outside)
+        return original_send(stream, **kwargs)
+    monkeypatch.setattr(module, "send_file", replace_before_send)
+    with _client(module) as client:
+        response = client.get("/v1/outputs/saved.png", buffered=True)
+        assert response.status_code == 200
+        assert response.data == b"original-output"
+        response.close()
+    assert captured[0].closed
+
+
+def test_output_root_replacement_fails_closed(monkeypatch, tmp_path):
+    module = _load_module()
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    (outputs / "saved.png").write_bytes(b"normal")
+    monkeypatch.setattr(module, "OUTPUTS_DIR", outputs)
+    original_open = module._open_output_file
+    def replace_root(root, filename):
+        result = original_open(root, filename)
+        outputs.rename(tmp_path / "old-outputs")
+        outputs.mkdir()
+        (outputs / "saved.png").write_bytes(b"replacement")
+        return result
+    monkeypatch.setattr(module, "_open_output_file", replace_root)
+    with _client(module) as client:
+        response = client.get("/v1/outputs/saved.png")
+    assert response.status_code == 404
+    assert b"replacement" not in response.data
+
+
+def test_output_fd_closed_when_response_construction_fails(monkeypatch, tmp_path):
+    module = _load_module()
+    (tmp_path / "saved.png").write_bytes(b"normal")
+    monkeypatch.setattr(module, "OUTPUTS_DIR", tmp_path)
+    captured = []
+    def fail_send(stream, **kwargs):
+        captured.append(stream)
+        raise OSError("simulated transfer setup failure")
+    monkeypatch.setattr(module, "send_file", fail_send)
+    with _client(module) as client:
+        assert client.get("/v1/outputs/saved.png").status_code == 404
+    assert captured[0].closed
+
+
+@pytest.mark.parametrize("name,mimetype", [("saved.png", "image/png"), ("saved.mp4", "video/mp4")])
+def test_output_file_headers_ranges_and_closure(monkeypatch, tmp_path, name, mimetype):
+    module = _load_module()
+    (tmp_path / name).write_bytes(b"0123456789")
+    monkeypatch.setattr(module, "OUTPUTS_DIR", tmp_path)
+    original_send = module.send_file
+    streams = []
+    def capture_send(stream, **kwargs):
+        streams.append(stream)
+        return original_send(stream, **kwargs)
+    monkeypatch.setattr(module, "send_file", capture_send)
+    with _client(module) as client:
+        response = client.get("/v1/outputs/" + name, buffered=True)
+        assert response.status_code == 200
+        assert response.data == b"0123456789"
+        assert response.content_type == mimetype
+        assert response.content_length == 10
+        etag = response.headers["ETag"]
+        response.close()
+        partial = client.get("/v1/outputs/" + name, headers={"Range": "bytes=2-4"}, buffered=True)
+        assert partial.status_code == 206
+        assert partial.data == b"234"
+        partial.close()
+        cached = client.get("/v1/outputs/" + name, headers={"If-None-Match": etag}, buffered=True)
+        assert cached.status_code == 304
+        cached.close()
+        invalid = client.get("/v1/outputs/" + name, headers={"Range": "bytes=100-200"}, buffered=True)
+        assert invalid.status_code == 416
+        invalid.close()
+    assert len(streams) == 4
+    assert all(stream.closed for stream in streams)

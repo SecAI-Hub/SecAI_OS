@@ -17,7 +17,7 @@
             --border-active: #3d3f5c;
             --text: #c0caf5;
             --text-secondary: #a9b1d6;
-            --text-muted: #565f89;
+            --text-muted: #97a0c5;
             --accent: #7aa2f7;
             --accent-hover: #89b4fa;
             --accent-subtle: rgba(122, 162, 247, 0.1);
@@ -41,6 +41,7 @@
             overflow: hidden;
             display: flex;
         }
+        a { color: var(--accent); }
         img,
         video,
         canvas {
@@ -481,7 +482,11 @@
             align-items: center;
             justify-content: center;
         }
-        .modal-overlay.hidden { display: none; }
+        .modal-overlay:not([open]) { display: none; }
+        .modal-overlay { border: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; color: var(--text); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
         .modal {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -600,37 +605,37 @@
                 <span id="sidebar-system-text">System</span>
             </div>
             <div class="status-indicator" id="sidebar-trust">
-                <span class="status-dot green" id="sidebar-trust-dot"></span>
-                <span id="sidebar-trust-text">Offline</span>
+                <span class="status-dot gray" id="sidebar-trust-dot"></span>
+                <span id="sidebar-trust-text">Runtime evidence unknown</span>
             </div>
         </div>
     </aside>
 
-    <main class="main">
+    <main class="main" id="main-content" tabindex="-1">
         <header class="topbar">
             <div class="topbar-left">
-                <button class="mobile-toggle" id="mobile-toggle" type="button" aria-label="Toggle navigation">
+                <button class="mobile-toggle" id="mobile-toggle" type="button" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false">
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                 </button>
                 <h1>{% block page_title %}{% endblock %}</h1>
             </div>
             <div class="topbar-right">
-                <span class="topbar-badge" id="profile-badge" title="Active profile">offline</span>
+                <span class="topbar-badge" id="profile-badge" title="Configured profile; not runtime network assurance">profile unknown</span>
                 <span class="topbar-badge" id="vault-badge" title="Vault status">vault</span>
                 <span class="topbar-badge" id="system-badge">system</span>
             </div>
         </header>
         <div id="degraded-banner" style="display:none;background:var(--danger-subtle);border:1px solid var(--danger);border-radius:var(--radius);padding:0.5rem 1rem;margin:0 1rem 0.5rem;font-size:0.85rem;color:var(--danger)">
-            <strong>System integrity check failed.</strong> <a href="/security" style="color:var(--danger);text-decoration:underline">View details</a>
+            <strong id="degraded-banner-text">Runtime security evidence is unavailable.</strong> <a href="/security" style="color:var(--danger);text-decoration:underline">View details</a>
         </div>
         <div class="content {% block content_class %}{% endblock %}">
             {% block content %}{% endblock %}
         </div>
     </main>
 
-    <div id="toast-container"></div>
+    <div id="toast-container" role="log" aria-live="polite" aria-relevant="additions" aria-label="Notifications"></div>
 
-    <div id="modal-overlay" class="modal-overlay hidden">
+    <dialog id="modal-overlay" class="modal-overlay" aria-labelledby="modal-title" aria-describedby="modal-body">
         <div class="modal">
             <h3 id="modal-title"></h3>
             <p id="modal-body"></p>
@@ -639,9 +644,10 @@
                 <button class="btn btn-danger" id="modal-confirm" type="button">Confirm</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <script nonce="{{ csp_nonce }}">
+        {% include "_assurance.js.html" %}
         /* -- CSRF: auto-include token on all non-GET fetch requests -- */
         var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
         var _origFetch = window.fetch;
@@ -720,41 +726,65 @@
 
         /* -- Modal system -- */
         var _modalResolve = null;
+        var _modalInvoker = null;
         function showConfirm(title, message, confirmLabel, danger) {
-            if (confirmLabel === undefined) confirmLabel = 'Confirm';
-            if (danger === undefined) danger = true;
+            if (_modalResolve) return Promise.resolve(false);
+            _modalInvoker = document.activeElement;
             return new Promise(function(resolve) {
                 _modalResolve = resolve;
                 document.getElementById('modal-title').textContent = title;
                 document.getElementById('modal-body').textContent = message;
-                var confirmBtn = document.getElementById('modal-confirm');
-                confirmBtn.textContent = confirmLabel;
-                confirmBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
-                document.getElementById('modal-overlay').classList.remove('hidden');
+                var button = document.getElementById('modal-confirm');
+                button.textContent = confirmLabel === undefined ? 'Confirm' : confirmLabel;
+                button.className = danger === false ? 'btn btn-primary' : 'btn btn-danger';
+                document.getElementById('modal-overlay').showModal();
+                document.getElementById('modal-cancel').focus();
             });
         }
-        function closeModal(result) {
-            document.getElementById('modal-overlay').classList.add('hidden');
-            if (_modalResolve) { _modalResolve(result); _modalResolve = null; }
+        function closeModal(accepted) {
+            var dialog = document.getElementById('modal-overlay');
+            if (!dialog.open) return;
+            dialog.close();
+            var resolve = _modalResolve;
+            _modalResolve = null;
+            var target = _modalInvoker;
+            _modalInvoker = null;
+            if (target && target.isConnected && !target.disabled && !target.closest('[inert]')) target.focus();
+            else document.getElementById('main-content').focus();
+            if (resolve) resolve(accepted === true);
         }
+        var navMedia = matchMedia('(max-width: 768px)');
+        function syncNavigation() {
+            var sidebar = document.getElementById('sidebar');
+            var toggle = document.getElementById('mobile-toggle');
+            var expanded = navMedia.matches && sidebar.classList.contains('open');
+            if (navMedia.matches && !expanded && sidebar.contains(document.activeElement)) toggle.focus();
+            sidebar.inert = navMedia.matches && !expanded;
+            toggle.setAttribute('aria-expanded', String(expanded));
+        }
+        navMedia.addEventListener('change', syncNavigation);
         document.getElementById('mobile-toggle').addEventListener('click', function(e) {
             e.stopPropagation();
             document.getElementById('sidebar').classList.toggle('open');
+            syncNavigation();
         });
-        document.getElementById('modal-cancel').addEventListener('click', function() {
-            closeModal(false);
+        document.getElementById('modal-cancel').addEventListener('click', function() { closeModal(false); });
+        document.getElementById('modal-confirm').addEventListener('click', function() { closeModal(true); });
+        document.getElementById('modal-overlay').addEventListener('cancel', function(e) { e.preventDefault(); closeModal(false); });
+        document.getElementById('modal-overlay').addEventListener('keydown', function(e) {
+            if (e.key !== 'Tab') return;
+            var first = document.getElementById('modal-cancel');
+            var last = document.getElementById('modal-confirm');
+            if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
         });
-        document.getElementById('modal-confirm').addEventListener('click', function() {
-            closeModal(true);
-        });
-        document.getElementById('modal-overlay').addEventListener('click', function(e) {
-            if (e.target === e.currentTarget) closeModal(false);
-        });
+        document.getElementById('modal-overlay').addEventListener('click', function(e) { if (e.target === e.currentTarget) closeModal(false); });
         document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape' && !document.getElementById('modal-overlay').classList.contains('hidden')) {
-                closeModal(false);
+            if (e.key === 'Escape' && !document.getElementById('modal-overlay').open) {
+                document.getElementById('sidebar').classList.remove('open'); syncNavigation();
             }
         });
+        syncNavigation();
 
         /* -- HTML escape -- */
         function esc(s) {
@@ -776,6 +806,7 @@
         async function pollVaultStatus() {
             try {
                 var resp = await fetch('/api/vault/status');
+                if (!resp.ok) throw new Error('unavailable');
                 var data = await resp.json();
                 var s = data.state;
                 var badge = document.getElementById('vault-badge');
@@ -824,95 +855,73 @@
         async function pollSystemStatus() {
             try {
                 var resp = await fetch('/api/status');
+                if (!resp.ok) throw new Error('unavailable');
                 var data = await resp.json();
                 var badge = document.getElementById('system-badge');
                 var dot = document.getElementById('sidebar-system-dot');
                 var text = document.getElementById('sidebar-system-text');
                 var inferUp = data.services && data.services.inference && data.services.inference.status === 'ok';
                 if (inferUp) {
-                    badge.textContent = 'local-only';
+                    badge.textContent = 'inference responding';
                     badge.style.borderColor = 'var(--success)';
                     badge.style.color = 'var(--success)';
                     dot.className = 'status-dot green';
-                    text.textContent = 'System online';
+                    text.textContent = 'Inference responding';
                 } else {
-                    badge.textContent = 'no model';
+                    badge.textContent = 'inference unavailable';
                     badge.style.borderColor = 'var(--warning)';
                     badge.style.color = 'var(--warning)';
                     dot.className = 'status-dot yellow';
-                    text.textContent = 'No model loaded';
+                    text.textContent = 'Inference unavailable';
                 }
             } catch(e) {
                 var badge = document.getElementById('system-badge');
-                badge.textContent = 'offline';
+                badge.textContent = 'status unavailable';
                 badge.style.borderColor = 'var(--danger)';
                 badge.style.color = 'var(--danger)';
                 document.getElementById('sidebar-system-dot').className = 'status-dot red';
-                document.getElementById('sidebar-system-text').textContent = 'System offline';
+                document.getElementById('sidebar-system-text').textContent = 'Service status unavailable';
             }
         }
 
+        var profileExpiry = null;
+        var applianceExpiry = null;
+        var profileRequest = 0;
+        var applianceRequest = 0;
+        function renderProfileStatus(data) {
+            var badge = document.getElementById('profile-badge');
+            var names = {offline_private: 'Offline Private', research: 'Research', full_lab: 'Full Lab'};
+            var name = data && names[data.active];
+            var view = networkView(data && data.network_assurance);
+            badge.textContent = name ? name + ' profile' : 'profile unknown';
+            badge.style.borderColor = 'var(--text-muted)';
+            badge.style.color = 'var(--text-secondary)';
+            badge.title = 'Configured profile; runtime network evidence: ' + view.label + '. ' + view.detail;
+            clearTimeout(profileExpiry);
+            if (view.expires) profileExpiry = setTimeout(function() { renderProfileStatus({active: data.active}); }, Math.max(1, view.expires * 1000 - Date.now()));
+            window.dispatchEvent(new CustomEvent('network-evidence', {detail: {data: data, view: view}}));
+        }
         async function pollProfileStatus() {
-            try {
-                var resp = await fetch('/api/profile');
-                var data = await resp.json();
-                var badge = document.getElementById('profile-badge');
-                var trustDot = document.getElementById('sidebar-trust-dot');
-                var trustText = document.getElementById('sidebar-trust-text');
-                var p = data.active || 'unknown';
-                var locked = data.locked || false;
-                if (p === 'offline_private') {
-                    badge.textContent = locked ? 'offline (locked)' : 'offline';
-                    badge.style.borderColor = 'var(--success)';
-                    badge.style.color = 'var(--success)';
-                    badge.title = 'Profile: Maximum isolation - no network';
-                    trustDot.className = 'status-dot green';
-                    trustText.textContent = 'Offline Private';
-                } else if (p === 'research') {
-                    badge.textContent = locked ? 'research (locked)' : 'tor only';
-                    badge.style.borderColor = 'var(--warning)';
-                    badge.style.color = 'var(--warning)';
-                    badge.title = 'Profile: Privacy-preserving research - Tor-routed';
-                    trustDot.className = 'status-dot yellow';
-                    trustText.textContent = 'Tor Only';
-                } else if (p === 'full_lab') {
-                    badge.textContent = locked ? 'full lab (locked)' : 'filtered';
-                    badge.style.borderColor = 'var(--accent)';
-                    badge.style.color = 'var(--accent)';
-                    badge.title = 'Profile: Full capability lab - filtered network';
-                    trustDot.className = 'status-dot yellow';
-                    trustText.textContent = 'Filtered';
-                } else {
-                    badge.textContent = 'unknown';
-                    badge.style.borderColor = 'var(--text-muted)';
-                    badge.style.color = 'var(--text-muted)';
-                    trustDot.className = 'status-dot gray';
-                    trustText.textContent = 'Unknown';
-                }
-            } catch(e) {
-                /* Profile API not available — non-critical */
-            }
+            var sequence = ++profileRequest;
+            var data = null;
+            try { data = await securityJSON('/api/profile'); } catch(e) {}
+            if (sequence === profileRequest) renderProfileStatus(data);
         }
-
+        function renderApplianceStatus(data) {
+            var view = applianceView(data);
+            document.getElementById('degraded-banner').style.display = view.passing ? 'none' : 'block';
+            document.getElementById('degraded-banner-text').textContent = view.label + '.';
+            document.getElementById('sidebar-trust-dot').className = 'status-dot ' + (view.passing ? 'green' : view.failed ? 'red' : 'gray');
+            document.getElementById('sidebar-trust-text').textContent = view.label;
+            clearTimeout(applianceExpiry);
+            if (view.expires) applianceExpiry = setTimeout(function() { renderApplianceStatus(data); }, Math.max(1, view.expires * 1000 - Date.now()));
+            window.dispatchEvent(new CustomEvent('runtime-evidence', {detail: data}));
+        }
         async function pollApplianceState() {
-            try {
-                var resp = await fetch('/api/observability/appliance-state');
-                var data = await resp.json();
-                var banner = document.getElementById('degraded-banner');
-                var trustDot = document.getElementById('sidebar-trust-dot');
-                var trustText = document.getElementById('sidebar-trust-text');
-                var state = data.appliance_state || data.state;
-                if (state && state !== 'trusted') {
-                    banner.style.display = 'block';
-                    trustDot.className = 'status-dot red';
-                    trustText.textContent = 'Degraded';
-                } else {
-                    banner.style.display = 'none';
-                }
-            } catch(e) {
-                /* Observability API not available — hide banner */
-                document.getElementById('degraded-banner').style.display = 'none';
-            }
+            var sequence = ++applianceRequest;
+            var data = null;
+            try { data = await securityJSON('/api/observability/appliance-state'); } catch(e) {}
+            if (sequence === applianceRequest) renderApplianceStatus(data);
         }
 
         pollVaultStatus();
@@ -927,6 +936,7 @@
         /* Close sidebar on mobile when clicking main area */
         document.querySelector('.main').addEventListener('click', function() {
             document.getElementById('sidebar').classList.remove('open');
+            syncNavigation();
         });
     </script>
     {% block scripts %}{% endblock %}

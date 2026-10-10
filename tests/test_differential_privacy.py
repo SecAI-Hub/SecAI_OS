@@ -1,8 +1,8 @@
-"""Tests for M20 — Differential Privacy for Search Queries.
+"""Tests for heuristic query obfuscation (legacy differential_privacy config).
 
 Validates:
 - Decoy query list and generation
-- Query uniqueness / k-anonymity detection
+- Query uniqueness heuristic detection
 - Decoy search dispatching
 - DP config loading from policy.yaml
 - Policy file has differential_privacy section
@@ -12,7 +12,7 @@ Validates:
 import sys
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -42,9 +42,13 @@ def provision_search_test_credentials(tmp_path, monkeypatch):
     token_path.write_text(_SEARCH_TEST_TOKEN, encoding="utf-8")
     token_path.chmod(0o600)
     monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
-    sm._audit_chain = sm.AuditChain(tmp_path / "search-audit.jsonl")
+    monkeypatch.setattr(sm, "_audit_chain", sm.AuditChain(tmp_path / "search-audit.jsonl"))
+    monkeypatch.setattr(sm, "load_policy", lambda: {"search": {"enabled": True, "allowed_engines": ["wikipedia"]}})
+    monkeypatch.setattr(sm, "_get_session_mode", lambda: "normal")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("test did not explicitly mock isolated HTTP transport")
+    monkeypatch.setattr(sm, "_transport_get", forbidden)
     yield
-    sm._audit_chain = None
 
 
 class TestDecoyQueries:
@@ -120,19 +124,21 @@ class TestQueryUniqueness:
 class TestDecoySearchDispatch:
     def test_send_decoy_search_calls_searxng(self):
         import app as sm
-        with patch.object(sm.requests, "get") as mock_get:
-            mock_get.return_value = MagicMock(status_code=200)
-            sm.send_decoy_search("weather forecast today")
-            mock_get.assert_called_once()
-            args, kwargs = mock_get.call_args
-            assert "search" in args[0]
-            assert "weather" in kwargs["params"]["q"]
+        with sm.app.test_request_context("/v1/search", headers=_SEARCH_AUTH_HEADERS):
+            assert sm._egress.begin() is None
+            with patch.object(sm, "_transport_get", return_value=200) as mock_get:
+                assert sm.send_decoy_search("weather forecast today") is True
+                mock_get.assert_called_once()
+                args, kwargs = mock_get.call_args
+                assert args[1] == "/search"
+                assert "weather" in kwargs["params"]["q"]
 
-    def test_send_decoy_search_ignores_errors(self):
+    def test_send_decoy_search_ignores_network_errors(self):
         import app as sm
-        with patch.object(sm.requests, "get", side_effect=Exception("timeout")):
-            # Should not raise
-            sm.send_decoy_search("test query")
+        with sm.app.test_request_context("/v1/search", headers=_SEARCH_AUTH_HEADERS):
+            assert sm._egress.begin() is None
+            with patch.object(sm, "_transport_get", side_effect=sm.requests.Timeout("timeout")):
+                assert sm.send_decoy_search("test query") is False
 
     def test_run_decoy_searches_sends_correct_count(self):
         import app as sm
@@ -264,8 +270,10 @@ class TestBatchTiming:
     def test_send_cover_search_calls_decoy(self):
         import app as sm
         with patch.object(sm, "send_decoy_search") as mock_send:
-            sm.send_cover_search("medical conditions")
-            mock_send.assert_called_once_with("medical conditions")
+            with sm.app.test_request_context("/v1/search", headers=_SEARCH_AUTH_HEADERS):
+                assert sm._egress.begin() is None
+                sm.send_cover_search("medical conditions")
+            mock_send.assert_called_once_with("medical conditions", kind="cover")
 
 
 class TestSearchRouteDP:
@@ -283,11 +291,8 @@ class TestSearchRouteDP:
                      "enabled": True, "decoy_count": 2,
                      "uniqueness_mode": "allow", "batch_window": 5.0,
                  }), \
-                 patch.object(sm.requests, "get") as mock_get:
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {"results": []}
-                mock_get.return_value = mock_resp
+                 patch.object(sm, "_transport_get") as mock_get:
+                mock_get.return_value = {"results": []}
 
                 resp = client.post(
                     "/v1/search",
@@ -329,11 +334,8 @@ class TestSearchRouteDP:
                      "enabled": True, "decoy_count": 0,
                      "uniqueness_mode": "warn", "batch_window": 5.0,
                  }), \
-                 patch.object(sm.requests, "get") as mock_get:
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {"results": []}
-                mock_get.return_value = mock_resp
+                 patch.object(sm, "_transport_get") as mock_get:
+                mock_get.return_value = {"results": []}
 
                 resp = client.post(
                     "/v1/search",
@@ -355,11 +357,8 @@ class TestSearchRouteDP:
                      "uniqueness_mode": "auto-block", "batch_window": 5.0,
                  }), \
                  patch.object(sm, "run_decoy_searches") as mock_decoys, \
-                 patch.object(sm.requests, "get") as mock_get:
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {"results": []}
-                mock_get.return_value = mock_resp
+                 patch.object(sm, "_transport_get") as mock_get:
+                mock_get.return_value = {"results": []}
 
                 resp = client.post(
                     "/v1/search",
@@ -383,11 +382,8 @@ class TestSearchRouteDP:
                      "enabled": True, "decoy_count": 0,
                      "uniqueness_mode": "allow", "batch_window": 5.0,
                  }), \
-                 patch.object(sm.requests, "get") as mock_get:
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {"results": []}
-                mock_get.return_value = mock_resp
+                 patch.object(sm, "_transport_get") as mock_get:
+                mock_get.return_value = {"results": []}
 
                 resp = client.post(
                     "/v1/search",

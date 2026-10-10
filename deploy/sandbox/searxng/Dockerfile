@@ -25,6 +25,9 @@ cfg["search"]["default_lang"] = "en"
 cfg["search"]["autocomplete"] = ""
 cfg["search"]["formats"] = ["html", "json"]
 cfg["engines"] = [engine for engine in cfg.get("engines", []) if engine.get("name") in allowed_engines]
+for engine in cfg["engines"]:
+    if engine["name"] == "wikipedia":
+        engine["display_type"] = ["list"]
 
 cfg["outgoing"]["request_timeout"] = 20
 cfg["outgoing"]["using_tor_proxy"] = True

@@ -1,0 +1,8 @@
+name: pinned-akmods
+shortdesc: Install the reviewed Fedora 44 NVIDIA Open akmods inputs by immutable digest.
+example: |
+  type: pinned-akmods
+  source: local
+  base: main
+  install: []
+  nvidia-driver: nvidia-open

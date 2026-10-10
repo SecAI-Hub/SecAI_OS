@@ -13,18 +13,18 @@ schema_version: 1
 upstreams:
   gguf-guard:
     upstream_url: https://github.com/SecAI-Hub/gguf-guard.git
-    pinned_commit: 71cdf1f811ba9df8a4ba1e56e343aaabb5a4b65d
-    archive_sha256: e0412557c129acc1f79a0d51cf25a4fafe65c2fbceb61a67ef0facba03d8c949
+    pinned_commit: df62fa1dcd665c146edf49be1b55caaaccd81535
+    archive_sha256: 5e45dcd6fbe1ccd577592fcf2638d8c87d223e430effcea877a8ef4136c63c0a
     local_path: upstreams/gguf-guard
     license: Apache-2.0
-    sync_date: "2026-08-03T00:00:00Z"
-    reviewer: secai-release-audit
+    sync_date: "2026-10-10T23:11:12.279558Z"
+    reviewer: secai-vocabulary-boundary-review
   searxng:
     upstream_url: https://github.com/searxng/searxng.git
-    pinned_commit: b060c780d0751a55e75ad22f0d930c8965789db8
-    commit_timestamp: "2026-07-26T16:53:10Z"
-    archive_sha256: 503fb3eb387a7a858d3fa438af54822fce1163803657e775a7dfe7abbf7c8aa6
+    pinned_commit: 23e7e4da008fdc9ac5b27b2625faa9144d46f208
+    commit_timestamp: "2026-09-04T13:16:28Z"
+    archive_sha256: b6622bb036721540ee0e4c1f3570ac653af4527587f0cdc8d48ffd6f55a5b1a0
     local_path: upstreams/searxng
     license: AGPL-3.0-or-later
-    sync_date: "2026-07-27T00:00:00Z"
+    sync_date: "2026-09-04T00:00:00Z"
     reviewer: secai-release-audit

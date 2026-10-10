@@ -5,18 +5,21 @@ Description=Secure AI Runtime Attestor (TPM2 quote verification, startup gating)
 #   runtime-attestor → policy-engine → registry/tool-firewall/agent/airlock/mcp-firewall
 Before=secure-ai-policy-engine.service secure-ai-registry.service secure-ai-tool-firewall.service secure-ai-agent.service secure-ai-airlock.service secure-ai-mcp-firewall.service secure-ai-inference.service
 Requires=secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service secure-ai-tpm-attestation-setup.service
-After=network.target secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service secure-ai-tpm-attestation-setup.service
+Wants=secure-ai-gpu-bootstrap.service
+After=secure-ai-gpu-bootstrap.service network.target secure-ai-credentials.service secure-ai-boot-verify.service secure-ai-firstboot.service secure-ai-tpm-attestation-setup.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=exec
 ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require runtime_attestor -- /usr/libexec/secure-ai/runtime-attestor
-ExecStartPost=/usr/libexec/secure-ai/attestation-gate.sh %d/service-token
+ExecStartPost=/usr/libexec/secure-ai/attestation-gate.sh %d/service-token bootstrap
 Environment=BIND_ADDR=127.0.0.1:8505
 Environment=ATTESTATION_POLICY_PATH=/etc/secure-ai/policy/attestation.yaml
 Environment=AUDIT_LOG_PATH=/var/lib/secure-ai/logs/runtime-attestor-audit.jsonl
 Environment=SERVICE_TOKEN_PATH=%d/service-token
+Environment=GPU_BOOTSTRAP_KEY_PATH=%d/gpu-bootstrap-attestation-key
+Environment=GPU_RUNTIME_KEY_PATH=%d/gpu-runtime-attestation-key
 Environment=HMAC_KEY_PATH=%d/attestation-hmac-key
 Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
 Environment=ATTESTATION_PROFILE_PATH=%d/tpm-attestation-profile
@@ -25,6 +28,8 @@ Environment=EXPECTED_BASELINE_PATH=/usr/share/secure-ai/integrity/release-baseli
 Environment=BOOT_VERIFICATION_PATH=/var/lib/secure-ai/logs/boot-verify-last.json
 LoadCredential=service-token:/var/lib/secure-ai/credentials/runtime-attestor.token
 LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-runtime-attestor.token
+LoadCredential=gpu-bootstrap-attestation-key:/var/lib/secure-ai/credentials/gpu-bootstrap-attestation-hmac.key
+LoadCredential=gpu-runtime-attestation-key:/var/lib/secure-ai/credentials/gpu-runtime-attestation-hmac.key
 LoadCredential=attestation-hmac-key:/var/lib/secure-ai/credentials/attestation-hmac.key
 LoadCredential=tpm-attestation-profile:/var/lib/secure-ai/tpm-attestation/profile.json
 LoadCredential=tpm-ak-public:/var/lib/secure-ai/tpm-attestation/ak-public.pem
@@ -81,7 +86,7 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 
 # Syscall filtering
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM

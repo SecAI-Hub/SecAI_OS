@@ -1,0 +1,24 @@
+The default configuration file for Tor is "/etc/tor/torrc" and is used when you
+run this command:
+
+    # systemctl start tor.service
+
+Simple drop-in configuration snippets can be put under: `/etc/tor/torrc.d/`
+
+Multiple instances of Tor can be run simultaneously using different
+configuration files. For example, tor@custom.service will use the configuration
+file "/etc/tor/custom.torrc".
+
+    # touch /etc/tor/custom.torrc
+    # echo "SOCKSPort 9051" >> /etc/tor/custom.torrc
+    # echo "DataDirectory /var/lib/tor/custom" >> /etc/tor/custom.torrc
+    # mkdir /var/lib/tor/custom
+    # chown toranon:root /var/lib/tor/custom
+    # systemctl start tor@custom.service
+
+To restart, reload, or stop all running instances of Tor (including tor.service
+and any tor@.service), use tor-master.service. For example, to restart all
+instances of Tor, run this command:
+
+    # systemctl restart tor-master.service
+

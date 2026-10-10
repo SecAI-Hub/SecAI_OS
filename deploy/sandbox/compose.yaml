@@ -28,13 +28,19 @@ services:
       REGISTRY_DIR: /var/lib/secure-ai/registry
       PROMOTION_STAGING_DIR: /var/lib/secure-ai/promotion-staging
       SECURE_AI_DEPLOYMENT_MODE: sandbox
-      SERVICE_TOKEN_PATH: /run/secrets/registry.token
+      REGISTRY_READ_TOKEN_PATH: /run/secrets/registry-read.token
+      REGISTRY_VERIFY_TOKEN_PATH: /run/secrets/registry-verify.token
+      REGISTRY_PROMOTE_TOKEN_PATH: /run/secrets/registry-promote.token
+      REGISTRY_ADMIN_TOKEN_PATH: /run/secrets/registry-admin.token
     volumes:
       - secai-registry:/var/lib/secure-ai/registry
       - secai-promotion-staging:/var/lib/secure-ai/promotion-staging
       - secai-logs:/var/lib/secure-ai/logs
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
-      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
+      - ./runtime/credentials/registry-read.token:/run/secrets/registry-read.token:ro,z
+      - ./runtime/credentials/registry-verify.token:/run/secrets/registry-verify.token:ro,z
+      - ./runtime/credentials/registry-promote.token:/run/secrets/registry-promote.token:ro,z
+      - ./runtime/credentials/registry-admin.token:/run/secrets/registry-admin.token:ro,z
     expose:
       - "8470"
     healthcheck:
@@ -142,14 +148,14 @@ services:
       POLICY_PATH: /etc/secure-ai/policy/policy.yaml
       AUDIT_LOG_PATH: /var/lib/secure-ai/logs/quarantine-audit.jsonl
       AUDIT_HMAC_KEY_PATH: /run/secrets/quarantine-audit.token
-      REGISTRY_TOKEN_PATH: /run/secrets/registry.token
+      REGISTRY_TOKEN_PATH: /run/secrets/registry-promote.token
     volumes:
       - secai-quarantine:/var/lib/secure-ai/quarantine
       - secai-quarantine-scanner-jobs:/var/lib/secure-ai/quarantine-scanner-jobs
       - secai-promotion-staging:/var/lib/secure-ai/promotion-staging
       - secai-logs:/var/lib/secure-ai/logs
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/policy:/etc/secure-ai/policy:ro,z
-      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
+      - ./runtime/credentials/registry-promote.token:/run/secrets/registry-promote.token:ro,z
       - ./runtime/credentials/quarantine-audit.token:/run/secrets/quarantine-audit.token:ro,z
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
@@ -340,6 +346,7 @@ services:
       AGENT_POLICY_PATH: /etc/secure-ai/policy/agent.yaml
       VAULT_ROOT: /var/lib/secure-ai/vault
       INFERENCE_URL: http://inference:8465
+      INFERENCE_TOKEN_PATH: /run/secrets/inference-agent.token
       TOOL_FIREWALL_URL: http://tool-firewall:8475
       AIRLOCK_URL: http://airlock:8490
       REGISTRY_URL: http://registry:8470
@@ -351,6 +358,7 @@ services:
       AIRLOCK_TOKEN_PATH: /run/secrets/airlock.token
       TOOL_FIREWALL_TOKEN_PATH: /run/secrets/tool-firewall.token
     volumes:
+      - ./runtime/credentials/inference-agent.token:/run/secrets/inference-agent.token:ro,z
       - secai-vault:/var/lib/secure-ai/vault
       - secai-logs:/var/lib/secure-ai/logs
       - secai-agent-state:/var/lib/secure-ai/agent
@@ -402,8 +410,9 @@ services:
       SEARCH_MEDIATOR_URL: http://search-mediator:8485
       AGENT_SOCKET: /run/secure-ai/agent.sock
       INFERENCE_URL: http://inference:8465
+      INFERENCE_TOKEN_PATH: /run/secrets/inference-ui.token
       DIFFUSION_URL: http://diffusion:8455
-      REGISTRY_TOKEN_PATH: /run/secrets/registry.token
+      REGISTRY_TOKEN_PATH: /run/secrets/registry-admin.token
       TOOL_FIREWALL_TOKEN_PATH: /run/secrets/tool-firewall.token
       AIRLOCK_TOKEN_PATH: /run/secrets/airlock.token
       SEARCH_MEDIATOR_TOKEN_PATH: /run/secrets/search-mediator.token
@@ -428,6 +437,7 @@ services:
       GUNICORN_GRACEFUL_TIMEOUT: 15
       SECURE_AI_TMPDIR: /var/lib/secure-ai/import-staging/.tmp
     volumes:
+      - ./runtime/credentials/inference-ui.token:/run/secrets/inference-ui.token:ro,z
       - secai-ui-root:/var/lib/secure-ai
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/profile.json:/var/lib/secure-ai/state/profile.json:ro,z
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/generation.json:/var/lib/secure-ai/state/generation.json:ro,z
@@ -444,7 +454,7 @@ services:
       - secai-run:/run/secure-ai
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/config:/etc/secure-ai/config:ro,z
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/model-catalog.yaml:/etc/secure-ai/model-catalog.yaml:ro,z
-      - ./runtime/credentials/registry.token:/run/secrets/registry.token:ro,z
+      - ./runtime/credentials/registry-admin.token:/run/secrets/registry-admin.token:ro,z
       - ./runtime/credentials/tool-firewall.token:/run/secrets/tool-firewall.token:ro,z
       - ./runtime/credentials/airlock.token:/run/secrets/airlock.token:ro,z
       - ./runtime/credentials/search-mediator.token:/run/secrets/search-mediator.token:ro,z
@@ -510,17 +520,22 @@ services:
     profiles: ["llm"]
     <<: *secai_runtime_defaults
     build:
-      context: ../../services/inference-worker
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/inference-worker/Dockerfile
       target: ${SECAI_INFERENCE_TARGET:-inference-cpu}
     user: "65534:65534"
     environment:
       BIND_ADDR: 0.0.0.0:8465
+      SECURE_AI_DEPLOYMENT_MODE: sandbox
+      INFERENCE_UI_TOKEN_PATH: /run/secrets/inference-ui.token
+      INFERENCE_AGENT_TOKEN_PATH: /run/secrets/inference-agent.token
       MODEL_PATH: ${SECAI_INFERENCE_MODEL_PATH:-}
       CONTEXT_SIZE: ${SECAI_CONTEXT_SIZE:-8192}
       GPU_LAYERS: ${SECAI_GPU_LAYERS:-0}
       REGISTRY_DIR: /var/lib/secure-ai/registry
     volumes:
+      - ./runtime/credentials/inference-ui.token:/run/secrets/inference-ui.token:ro,z
+      - ./runtime/credentials/inference-agent.token:/run/secrets/inference-agent.token:ro,z
       - secai-registry:/var/lib/secure-ai/registry:ro
     expose:
       - "8465"
@@ -535,7 +550,10 @@ services:
       args:
         COMPUTE: ${SECAI_DIFFUSION_COMPUTE:-cpu}
     environment:
+      SECURE_AI_DEPLOYMENT_MODE: sandbox
       BIND_ADDR: 0.0.0.0:8455
+      REGISTRY_URL: http://registry:8470
+      REGISTRY_VERIFY_TOKEN_PATH: /run/secrets/registry-verify.token
       REGISTRY_DIR: /var/lib/secure-ai/registry
       OUTPUTS_DIR: /var/lib/secure-ai/vault/outputs
       APPLIANCE_CONFIG: /etc/secure-ai/config/appliance.yaml
@@ -551,6 +569,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m
     volumes:
+      - ./runtime/credentials/registry-verify.token:/run/secrets/registry-verify.token:ro,z
       - secai-registry:/var/lib/secure-ai/registry:ro
       - secai-vault:/var/lib/secure-ai/vault
       - ./runtime/generations/${SECAI_RUNTIME_GENERATION:?required}/config:/etc/secure-ai/config:ro,z

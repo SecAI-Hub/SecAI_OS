@@ -42,28 +42,32 @@ const (
 
 // RuntimeStateBundle is the signed evidence emitted at boot and periodically.
 type RuntimeStateBundle struct {
-	Timestamp               string            `json:"timestamp" yaml:"timestamp"`
-	State                   AttestationState  `json:"state" yaml:"state"`
-	AssuranceMode           string            `json:"assurance_mode" yaml:"assurance_mode"`
-	EvidenceVerified        bool              `json:"evidence_verified" yaml:"evidence_verified"`
-	RequestNonce            string            `json:"request_nonce" yaml:"request_nonce"`
-	BootMeasurements        BootMeasurements  `json:"boot_measurements" yaml:"boot_measurements"`
-	DeploymentDigest        string            `json:"deployment_digest" yaml:"deployment_digest"`
-	DeploymentVerified      bool              `json:"deployment_verified" yaml:"deployment_verified"`
-	ReleaseSourceCommit     string            `json:"release_source_commit" yaml:"release_source_commit"`
-	ReleaseBaselineVerified bool              `json:"release_baseline_verified" yaml:"release_baseline_verified"`
-	ServiceDigests          map[string]string `json:"service_digests" yaml:"service_digests"`
-	PolicyDigest            string            `json:"policy_digest" yaml:"policy_digest"`
-	RegistryManifestHash    string            `json:"registry_manifest_hash" yaml:"registry_manifest_hash"`
-	KernelCmdline           string            `json:"kernel_cmdline" yaml:"kernel_cmdline"`
-	KernelLockdown          string            `json:"kernel_lockdown" yaml:"kernel_lockdown"`
-	TPMAvailable            bool              `json:"tpm_available" yaml:"tpm_available"`
-	TPMMeasurementsVerified bool              `json:"tpm_measurements_verified" yaml:"tpm_measurements_verified"`
-	TPMQuoteVerified        bool              `json:"tpm_quote_verified" yaml:"tpm_quote_verified"`
-	TPMAKPublicKeySHA256    string            `json:"tpm_ak_public_key_sha256" yaml:"tpm_ak_public_key_sha256"`
-	TPMQuotePCRSelection    string            `json:"tpm_quote_pcr_selection" yaml:"tpm_quote_pcr_selection"`
-	Failures                []string          `json:"failures,omitempty" yaml:"failures,omitempty"`
-	BundleHMAC              string            `json:"bundle_hmac" yaml:"bundle_hmac"`
+	SchemaVersion            int               `json:"schema_version" yaml:"schema_version"`
+	BootstrapState           AttestationState  `json:"bootstrap_state" yaml:"bootstrap_state"`
+	BootstrapPolicySatisfied bool              `json:"bootstrap_policy_satisfied" yaml:"bootstrap_policy_satisfied"`
+	GPU                      GPUAssurance      `json:"gpu" yaml:"gpu"`
+	Timestamp                string            `json:"timestamp" yaml:"timestamp"`
+	State                    AttestationState  `json:"state" yaml:"state"`
+	AssuranceMode            string            `json:"assurance_mode" yaml:"assurance_mode"`
+	EvidenceVerified         bool              `json:"evidence_verified" yaml:"evidence_verified"`
+	RequestNonce             string            `json:"request_nonce" yaml:"request_nonce"`
+	BootMeasurements         BootMeasurements  `json:"boot_measurements" yaml:"boot_measurements"`
+	DeploymentDigest         string            `json:"deployment_digest" yaml:"deployment_digest"`
+	DeploymentVerified       bool              `json:"deployment_verified" yaml:"deployment_verified"`
+	ReleaseSourceCommit      string            `json:"release_source_commit" yaml:"release_source_commit"`
+	ReleaseBaselineVerified  bool              `json:"release_baseline_verified" yaml:"release_baseline_verified"`
+	ServiceDigests           map[string]string `json:"service_digests" yaml:"service_digests"`
+	PolicyDigest             string            `json:"policy_digest" yaml:"policy_digest"`
+	RegistryManifestHash     string            `json:"registry_manifest_hash" yaml:"registry_manifest_hash"`
+	KernelCmdline            string            `json:"kernel_cmdline" yaml:"kernel_cmdline"`
+	KernelLockdown           string            `json:"kernel_lockdown" yaml:"kernel_lockdown"`
+	TPMAvailable             bool              `json:"tpm_available" yaml:"tpm_available"`
+	TPMMeasurementsVerified  bool              `json:"tpm_measurements_verified" yaml:"tpm_measurements_verified"`
+	TPMQuoteVerified         bool              `json:"tpm_quote_verified" yaml:"tpm_quote_verified"`
+	TPMAKPublicKeySHA256     string            `json:"tpm_ak_public_key_sha256" yaml:"tpm_ak_public_key_sha256"`
+	TPMQuotePCRSelection     string            `json:"tpm_quote_pcr_selection" yaml:"tpm_quote_pcr_selection"`
+	Failures                 []string          `json:"failures,omitempty" yaml:"failures,omitempty"`
+	BundleHMAC               string            `json:"bundle_hmac" yaml:"bundle_hmac"`
 }
 
 // BootMeasurements captures TPM2 PCR values and Secure Boot state.
@@ -76,6 +80,7 @@ type BootMeasurements struct {
 // AttestationPolicy defines what must be verified.
 type AttestationPolicy struct {
 	Version           int               `yaml:"version"`
+	GPU               GPUTrustPolicy    `yaml:"gpu"`
 	RequireTPM        bool              `yaml:"require_tpm"`
 	RequireSecureBoot bool              `yaml:"require_secure_boot"`
 	ExpectedPCRs      map[string]string `yaml:"expected_pcrs"`
@@ -83,6 +88,9 @@ type AttestationPolicy struct {
 	PolicyFiles       []string          `yaml:"policy_files"`
 	RefreshInterval   string            `yaml:"refresh_interval"`
 	HMACKeyPath       string            `yaml:"hmac_key_path"`
+	sourcePath        string
+	sourceSHA256      string
+	sourceSize        int64
 }
 
 // AttestationHardwareProfile is enrolled locally after the signed boot chain,
@@ -132,6 +140,7 @@ type bootVerificationRecord struct {
 // =========================================================================
 
 var (
+	attestRunMu   sync.Mutex
 	stateMu       sync.RWMutex
 	currentState  AttestationState = StatePending
 	currentBundle RuntimeStateBundle
@@ -178,35 +187,30 @@ func attestPolicyPath() string {
 }
 
 func loadAttestPolicy() error {
-	data, err := os.ReadFile(attestPolicyPath())
+	path := attestPolicyPath()
+	data, err := readAttestationPolicyFile(path)
 	if err != nil {
-		// Use defaults if no policy file
-		log.Printf("warning: attestation policy not found (%v) — using defaults", err)
-		attestPolicyMu.Lock()
-		attestPolicy = AttestationPolicy{
-			Version:           1,
-			RequireTPM:        false,
-			RequireSecureBoot: false,
-			RefreshInterval:   "5m",
-			ServiceBinaries: map[string]string{
-				"registry":      "/usr/libexec/secure-ai/registry",
-				"tool-firewall": "/usr/libexec/secure-ai/tool-firewall",
-				"airlock":       "/usr/libexec/secure-ai/airlock",
-				"policy-engine": "/usr/libexec/secure-ai/policy-engine",
-			},
-			PolicyFiles: []string{
-				"/etc/secure-ai/policy/policy.yaml",
-				"/etc/secure-ai/policy/agent.yaml",
-			},
-		}
-		attestPolicyMu.Unlock()
-		return nil
+		return fmt.Errorf("attestation policy unavailable: %w", err)
 	}
 
 	var pol AttestationPolicy
-	if err := yaml.Unmarshal(data, &pol); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&pol); err != nil {
 		return fmt.Errorf("cannot parse attestation policy: %w", err)
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("attestation policy must contain exactly one YAML document")
+	}
+	if err := validateAttestationPolicy(pol); err != nil {
+		return err
+	}
+	if pol.RefreshInterval == "" {
+		pol.RefreshInterval = "5m"
+	}
+	digest := sha256.Sum256(data)
+	pol.sourcePath, pol.sourceSHA256, pol.sourceSize = path, hex.EncodeToString(digest[:]), int64(len(data))
 	attestPolicyMu.Lock()
 	attestPolicy = pol
 	attestPolicyMu.Unlock()
@@ -569,7 +573,7 @@ func verifyReleaseMeasurements(
 	pol AttestationPolicy,
 	serviceDigests map[string]string,
 ) (string, bool, []string) {
-	data, err := os.ReadFile(expectedBaselinePath())
+	data, err := readBoundedRegularFile(expectedBaselinePath(), 32*1024*1024)
 	if err != nil {
 		return "", false, []string{fmt.Sprintf("release baseline unavailable: %v", err)}
 	}
@@ -645,6 +649,22 @@ func verifyReleaseMeasurements(
 		if actualDigest != expectedEntry.SHA256 || info.Size() != expectedEntry.Size {
 			failures = append(failures, fmt.Sprintf("release measurement mismatch: %s", path))
 		}
+	}
+	// The policy selects the other measurements, so it cannot opt out of
+	// measuring itself or relabel newly changed bytes as the loaded policy.
+	if pol.sourcePath == "" || !canonicalSHA256(pol.sourceSHA256) {
+		failures = append(failures, "loaded attestation policy identity is unavailable")
+	} else {
+		current, err := readAttestationPolicyFile(pol.sourcePath)
+		if err != nil {
+			failures = append(failures, "loaded attestation policy is unavailable or unsafe")
+		} else {
+			digest := sha256.Sum256(current)
+			if hex.EncodeToString(digest[:]) != pol.sourceSHA256 || int64(len(current)) != pol.sourceSize {
+				failures = append(failures, "attestation policy changed since loading")
+			}
+		}
+		verifyPath(pol.sourcePath, pol.sourceSHA256)
 	}
 
 	for name, path := range pol.ServiceBinaries {
@@ -890,6 +910,8 @@ func performAttestation() RuntimeStateBundle {
 }
 
 func performAttestationWithNonce(nonce string, nonceErr error) RuntimeStateBundle {
+	attestRunMu.Lock()
+	defer attestRunMu.Unlock()
 	pol := getAttestPolicy()
 	profile := getHardwareProfile()
 	if profile.Mode == "" {
@@ -961,9 +983,27 @@ func performAttestationWithNonce(nonce string, nonceErr error) RuntimeStateBundl
 		failCount.Add(1)
 	}
 
+	bootstrapState := state
+	gpu := collectGPUAssurance(pol.GPU, nonce)
+	bootstrapSatisfied := bootstrapState == StateAttested &&
+		(pol.GPU.Mode == "no_gpu" || pol.GPU.Mode == "optional" || scopeCurrent(gpu.Bootstrap, time.Now().UTC()))
+	if pol.GPU.Mode == "required" && !scopeCurrent(gpu.Bootstrap, time.Now().UTC()) {
+		bootstrapState, state = StateFailed, StateFailed
+		failures = append(failures, "required bootstrap GPU assurance unavailable or rejected")
+	} else if !gpu.PolicySatisfied && state == StateAttested {
+		state = StatePending
+		if gpu.Bootstrap.Status == "rejected" || gpu.Runtime.Status == "rejected" {
+			state = StateDegraded
+		}
+		failures = append(failures, "full runtime GPU assurance unavailable or rejected")
+	}
 	attestCount.Add(1)
 
 	bundle := RuntimeStateBundle{
+		SchemaVersion:            2,
+		BootstrapState:           bootstrapState,
+		BootstrapPolicySatisfied: bootstrapSatisfied,
+		GPU:                      gpu,
 		// This timestamp is deliberately captured only after the fresh quote
 		// and all verification commands complete.
 		Timestamp:               time.Now().UTC().Format(time.RFC3339Nano),
@@ -988,6 +1028,7 @@ func performAttestationWithNonce(nonce string, nonceErr error) RuntimeStateBundl
 		Failures:                failures,
 	}
 	bundle.EvidenceVerified = state == StateAttested &&
+		gpu.PolicySatisfied &&
 		profile.Mode == "hardware" &&
 		boot.SecureBootEnabled &&
 		tpmAvail &&
@@ -1009,6 +1050,8 @@ func performAttestationWithNonce(nonce string, nonceErr error) RuntimeStateBundl
 			failCount.Add(1)
 		}
 		bundle.State = StateFailed
+		bundle.BootstrapState = StateFailed
+		bundle.BootstrapPolicySatisfied = false
 		bundle.EvidenceVerified = false
 		bundle.Failures = append(bundle.Failures,
 			"attestation audit persistence failed")
@@ -1251,23 +1294,27 @@ func handleSecurityStatus(w http.ResponseWriter, r *http.Request) {
 	state, bundle := getCurrentState()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"attestation_state":         state,
-		"assurance_mode":            bundle.AssuranceMode,
-		"evidence_verified":         bundle.EvidenceVerified,
-		"tpm_available":             bundle.TPMAvailable,
-		"tpm_quote_verified":        bundle.TPMQuoteVerified,
-		"secure_boot":               bundle.BootMeasurements.SecureBootEnabled,
-		"deployment_verified":       bundle.DeploymentVerified,
-		"release_baseline_verified": bundle.ReleaseBaselineVerified,
-		"release_source_commit":     bundle.ReleaseSourceCommit,
-		"policy_digest":             bundle.PolicyDigest,
-		"deployment_digest":         bundle.DeploymentDigest,
-		"service_count":             len(bundle.ServiceDigests),
-		"failure_count":             len(bundle.Failures),
-		"last_attested":             bundle.Timestamp,
-		"attest_count":              attestCount.Load(),
-		"degrade_count":             degradeCount.Load(),
-		"fail_count":                failCount.Load(),
+		"schema_version":             bundle.SchemaVersion,
+		"bootstrap_state":            bundle.BootstrapState,
+		"bootstrap_policy_satisfied": bootstrapPolicyCurrent(bundle, time.Now().UTC()),
+		"gpu":                        bundle.GPU,
+		"attestation_state":          state,
+		"assurance_mode":             bundle.AssuranceMode,
+		"evidence_verified":          bundle.EvidenceVerified,
+		"tpm_available":              bundle.TPMAvailable,
+		"tpm_quote_verified":         bundle.TPMQuoteVerified,
+		"secure_boot":                bundle.BootMeasurements.SecureBootEnabled,
+		"deployment_verified":        bundle.DeploymentVerified,
+		"release_baseline_verified":  bundle.ReleaseBaselineVerified,
+		"release_source_commit":      bundle.ReleaseSourceCommit,
+		"policy_digest":              bundle.PolicyDigest,
+		"deployment_digest":          bundle.DeploymentDigest,
+		"service_count":              len(bundle.ServiceDigests),
+		"failure_count":              len(bundle.Failures),
+		"last_attested":              bundle.Timestamp,
+		"attest_count":               attestCount.Load(),
+		"degrade_count":              degradeCount.Load(),
+		"fail_count":                 failCount.Load(),
 	})
 }
 
@@ -1277,19 +1324,48 @@ func newRuntimeMux() *http.ServeMux {
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/api/v1/attest", requireServiceToken(handleAttest))
 	mux.HandleFunc("/api/v1/verify", requireServiceToken(handleVerify))
+	mux.HandleFunc("/api/v1/verify/bootstrap", requireServiceToken(handleVerifyBootstrap))
 	mux.HandleFunc("/api/security/status", requireServiceToken(handleSecurityStatus))
 	mux.HandleFunc("/api/v1/refresh", requireServiceToken(handleRefresh))
 	return mux
 }
 
 func handleVerify(w http.ResponseWriter, r *http.Request) {
-	state, bundle := getCurrentState()
+	_, bundle := getCurrentState()
+	writeVerification(w, r, bundle, "runtime")
+}
+
+func handleVerifyBootstrap(w http.ResponseWriter, r *http.Request) {
+	_, bundle := getCurrentState()
+	writeVerification(w, r, bundle, "bootstrap")
+}
+
+func writeVerification(w http.ResponseWriter, r *http.Request, bundle RuntimeStateBundle, scope string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	now := time.Now().UTC()
+	state := bundle.State
+	gpuSatisfied := gpuScopesCurrent(bundle.GPU, now)
+	if scope == "bootstrap" {
+		state = bundle.BootstrapState
+		gpuSatisfied = bundle.GPU.Mode == "no_gpu" || bundle.GPU.Mode == "optional" || scopeCurrent(bundle.GPU.Bootstrap, now)
+	}
 	verified := state == StateAttested &&
+		bundle.SchemaVersion == 2 && bundleCurrent(bundle, now) &&
 		bundle.AssuranceMode == "hardware" &&
-		bundle.EvidenceVerified
+		bundle.EvidenceVerified && gpuSatisfied
+	if scope == "bootstrap" {
+		verified = bootstrapPolicyCurrent(bundle, now) && bundle.AssuranceMode == "hardware"
+	}
 	policySatisfied := state == StateAttested &&
+		bundle.SchemaVersion == 2 && bundleCurrent(bundle, now) && gpuSatisfied &&
 		((bundle.AssuranceMode == "hardware" && verified) ||
 			bundle.AssuranceMode == "evaluation")
+	if scope == "bootstrap" {
+		policySatisfied = bootstrapPolicyCurrent(bundle, now)
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	status := http.StatusOK
@@ -1298,11 +1374,15 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"verified":          verified,
-		"policy_satisfied":  policySatisfied,
-		"state":             state,
-		"assurance_mode":    bundle.AssuranceMode,
-		"evidence_verified": bundle.EvidenceVerified,
+		"schema_version":       bundle.SchemaVersion,
+		"verification_scope":   scope,
+		"gpu_mode":             bundle.GPU.Mode,
+		"gpu_policy_satisfied": gpuSatisfied,
+		"verified":             verified,
+		"policy_satisfied":     policySatisfied,
+		"state":                state,
+		"assurance_mode":       bundle.AssuranceMode,
+		"evidence_verified":    verified,
 	})
 }
 
@@ -1318,10 +1398,28 @@ func startRefreshLoop() {
 			interval = d
 		}
 	}
+	for _, scope := range []*GPUScopePolicy{pol.GPU.Bootstrap, pol.GPU.Runtime} {
+		if scope != nil {
+			age, _ := time.ParseDuration(scope.MaxAge)
+			if age > 0 && age/2 < interval {
+				interval = age / 2
+			}
+		}
+	}
 
-	ticker := time.NewTicker(interval)
 	go func() {
-		for range ticker.C {
+		for {
+			_, bundle := getCurrentState()
+			delay := interval
+			// A first probe can finish after the initial attestation. Retry
+			// pending enrolled scopes promptly without blocking the HTTP
+			// listener or waiting the normal five-minute refresh period.
+			if bundle.State == StatePending ||
+				(pol.GPU.Bootstrap != nil && canonicalSHA256(pol.GPU.Bootstrap.ProfileSHA256) &&
+					bundle.GPU.Bootstrap.Status == "unavailable") {
+				delay = 5 * time.Second
+			}
+			time.Sleep(delay)
 			performAttestation()
 		}
 	}()
@@ -1348,6 +1446,9 @@ func main() {
 	}
 	if err := loadHMACKey(); err != nil {
 		log.Fatalf("attestation signing unavailable: %v", err)
+	}
+	if err := loadGPUScopeKeys(); err != nil {
+		log.Fatalf("GPU evidence authentication unavailable: %v", err)
 	}
 	if err := loadHardwareProfile(); err != nil {
 		log.Fatalf("hardware attestation profile unavailable: %v", err)

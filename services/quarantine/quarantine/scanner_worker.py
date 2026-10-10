@@ -11,6 +11,7 @@ import ctypes
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import resource
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -31,6 +33,7 @@ MAX_POLICY_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_URL_BYTES = 4096
 MAX_STAGE_OUTPUT_BYTES = 8 * 1024 * 1024
 STAGE_TIMEOUT = int(os.getenv("SCANNER_STAGE_TIMEOUT", "1200"))
+STAGE_CLEANUP_TIMEOUT = 5.0
 MODELS_LOCK_PATH = Path(
     os.getenv("MODELS_LOCK_PATH", "/etc/secure-ai/policy/models.lock.yaml")
 )
@@ -340,42 +343,178 @@ def _protect_coordinator_from_stage_processes() -> bool:
     return libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
 
 
-def _reap_reparented_stage_descendants() -> None:
-    if not sys.platform.startswith("linux"):
-        return
-    children_path = Path(f"/proc/self/task/{os.getpid()}/children")
-    for _ in range(64):
-        try:
-            child_ids = [
-                int(value)
-                for value in children_path.read_text(encoding="ascii").split()
-            ]
-        except (OSError, ValueError):
-            child_ids = []
-        if not child_ids:
-            break
-        for child_id in child_ids:
+class CoordinatorIsolationError(RuntimeError):
+    """The process domain cannot safely establish or finish stage ownership."""
+
+
+@dataclass(eq=False)
+class _CoordinatorDomain:
+    owner_pid: int
+    owner_starttime: int
+    stage: subprocess.Popen | None = None
+    stage_pid: int | None = None
+    stage_starttime: int | None = None
+    closed: bool = False
+
+
+_coordinator_domain: _CoordinatorDomain | None = None
+
+
+def _process_identity(pid: int) -> tuple[int, int, int]:
+    """Return parent PID, process-group ID and kernel process birth identity."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+        return int(fields[1]), int(fields[2]), int(fields[19])
+    except (OSError, ValueError, IndexError) as exc:
+        raise CoordinatorIsolationError("process identity is unavailable") from exc
+
+
+def _single_coordinator_thread() -> None:
+    try:
+        threads = [entry.name for entry in Path("/proc/self/task").iterdir()]
+    except OSError as exc:
+        raise CoordinatorIsolationError("coordinator threads are unavailable") from exc
+    if threads != [str(os.getpid())]:
+        raise CoordinatorIsolationError("coordinator must have one OS thread")
+    # With the default disposition, our unreaped children retain their PIDs.
+    # A caller-installed auto-reaper is incompatible with exclusive ownership.
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise CoordinatorIsolationError("coordinator requires default child reaping")
+
+
+def _coordinator_children() -> list[int]:
+    try:
+        raw = Path(f"/proc/self/task/{os.getpid()}/children").read_text(encoding="ascii")
+        children = [int(value) for value in raw.split()]
+    except (OSError, ValueError) as exc:
+        raise CoordinatorIsolationError("coordinator child enumeration failed") from exc
+    if any(pid <= 0 for pid in children) or len(set(children)) != len(children):
+        raise CoordinatorIsolationError("coordinator child enumeration is invalid")
+    return children
+
+
+def _establish_coordinator_domain() -> _CoordinatorDomain:
+    """Bootstrap only an exclusive executable process, never an ambient caller."""
+    global _coordinator_domain
+    if not sys.platform.startswith("linux") or _coordinator_domain is not None:
+        raise CoordinatorIsolationError("fresh Linux coordinator process required")
+    _single_coordinator_thread()
+    if _coordinator_children():
+        raise CoordinatorIsolationError("coordinator has preexisting children")
+    owner = os.getpid()
+    birth = _process_identity(owner)[2]
+    try:
+        protected = _enable_child_subreaper() and _protect_coordinator_from_stage_processes()
+    except (OSError, ValueError) as exc:
+        raise CoordinatorIsolationError("coordinator process controls unavailable") from exc
+    if not protected:
+        raise CoordinatorIsolationError("coordinator process controls unavailable")
+    domain = _CoordinatorDomain(owner, birth)
+    _coordinator_domain = domain
+    return domain
+
+
+def _require_domain(domain: _CoordinatorDomain | None = None) -> _CoordinatorDomain:
+    current = _coordinator_domain
+    if domain is None:
+        domain = current
+    if (not isinstance(domain, _CoordinatorDomain) or domain is not current
+            or domain.closed or domain.owner_pid != os.getpid()):
+        raise CoordinatorIsolationError("active same-process coordinator domain required")
+    if _process_identity(os.getpid())[2] != domain.owner_starttime:
+        raise CoordinatorIsolationError("coordinator process identity changed")
+    _single_coordinator_thread()
+    return domain
+
+
+def _close_coordinator_domain(domain: _CoordinatorDomain) -> None:
+    global _coordinator_domain
+    domain.closed = True
+    if _coordinator_domain is domain:
+        _coordinator_domain = None
+
+
+def _require_stage(process: subprocess.Popen | None = None,
+                   domain: _CoordinatorDomain | None = None) -> _CoordinatorDomain:
+    domain = _require_domain(domain)
+    if (domain.stage is None or domain.stage_pid is None
+            or domain.stage.pid != domain.stage_pid
+            or (process is not None and process is not domain.stage)):
+        raise CoordinatorIsolationError("exact registered stage process required")
+    return domain
+
+
+def _reap_reparented_stage_descendants(
+    domain: _CoordinatorDomain | None = None, *, deadline: float | None = None,
+) -> None:
+    domain = _require_stage(domain=domain)
+    if domain.stage is None or domain.stage.returncode is None:
+        raise CoordinatorIsolationError("stage leader must be reaped through its owned handle")
+    now = time.monotonic()
+    if deadline is None:
+        deadline = now + STAGE_CLEANUP_TIMEOUT
+    elif not isinstance(deadline, (int, float)) or isinstance(deadline, bool) or not math.isfinite(deadline):
+        raise CoordinatorIsolationError("invalid stage cleanup deadline")
+    else:
+        deadline = min(deadline, now + STAGE_CLEANUP_TIMEOUT)
+    while True:
+        _require_stage(domain=domain)
+        children = _coordinator_children()
+        if not children:
+            if domain.stage is None or domain.stage.returncode is None:
+                raise CoordinatorIsolationError("stage leader has not been reaped")
+            domain.stage = None
+            domain.stage_pid = None
+            domain.stage_starttime = None
+            return
+        for child_id in children:
+            if time.monotonic() >= deadline:
+                raise CoordinatorIsolationError("stage descendants did not drain before deadline")
+            parent, _group, birth = _process_identity(child_id)
+            if parent != domain.owner_pid:
+                raise CoordinatorIsolationError("descendant no longer belongs to coordinator")
+            # No other thread/reaper is allowed in this domain. A child that
+            # exits remains our zombie until this exact waitpid releases it.
+            if _process_identity(child_id) != (parent, _group, birth):
+                raise CoordinatorIsolationError("descendant identity changed")
             try:
                 os.kill(child_id, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        while True:
-            try:
-                waited, _status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if waited == 0:
-                break
-        time.sleep(0.01)
+                os.waitpid(child_id, os.WNOHANG)
+            except OSError as exc:
+                raise CoordinatorIsolationError("owned descendant cleanup failed") from exc
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CoordinatorIsolationError("stage descendants did not drain before deadline")
+        time.sleep(min(0.01, remaining))
 
 
-def _kill_stage_process_group(process: subprocess.Popen) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
-    _reap_reparented_stage_descendants()
+def _kill_stage_process_group(process: subprocess.Popen,
+                              domain: _CoordinatorDomain | None = None) -> None:
+    domain = _require_stage(process, domain)
+    deadline = time.monotonic() + STAGE_CLEANUP_TIMEOUT
+    if process.returncode is None:
+        try:
+            if domain.stage_starttime is None:
+                # Popen has returned and this exact handle/PID was registered,
+                # but /proc identity acquisition failed. Terminate only that
+                # unreaped child through Popen; never infer a process group.
+                process.kill()
+            else:
+                parent, group, birth = _process_identity(process.pid)
+                if (parent, group, birth) != (domain.owner_pid, process.pid, domain.stage_starttime):
+                    raise CoordinatorIsolationError("stage process identity/group changed")
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            raise CoordinatorIsolationError("owned stage termination failed") from exc
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise CoordinatorIsolationError("stage leader did not drain before deadline") from exc
+    # wait() has already reaped a successful leader; its numeric group ID is
+    # no longer ours to signal. Drain only children in this exclusive domain.
+    _reap_reparented_stage_descendants(domain, deadline=deadline)
 
 
 def _run_stage(
@@ -386,8 +525,12 @@ def _run_stage(
     *,
     source_url: str,
     directory: bool,
+    domain: _CoordinatorDomain | None = None,
 ) -> dict:
-    """Run exactly one admission stage in a separately reaped subprocess."""
+    """Run one stage only inside the bootstrapped exclusive process domain."""
+    domain = _require_domain(domain)
+    if domain.stage is not None or _coordinator_children():
+        raise CoordinatorIsolationError("previous children or stage ownership remain")
     command = [
         sys.executable,
         "-m",
@@ -409,27 +552,37 @@ def _run_stage(
         command.append("--directory")
 
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            env=_stage_environment(artifact.parent),
-            close_fds=True,
-            start_new_session=True,
-            preexec_fn=_limit_stage_output,
-        )
         try:
-            return_code = process.wait(timeout=STAGE_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _kill_stage_process_group(process)
-            return {
-                "passed": False,
-                "reason": "stage_timeout",
-                "failure_class": "TimeoutExpired",
-            }
-        else:
-            _kill_stage_process_group(process)
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=_stage_environment(artifact.parent),
+                close_fds=True,
+                start_new_session=True,
+                preexec_fn=_limit_stage_output,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CoordinatorIsolationError("stage process could not start") from exc
+        domain.stage = process
+        domain.stage_pid = process.pid
+        timed_out = False
+        try:
+            parent, group, birth = _process_identity(process.pid)
+            if parent != domain.owner_pid or group != process.pid:
+                raise CoordinatorIsolationError("new stage was not created in its owned group")
+            domain.stage_starttime = birth
+            try:
+                return_code = process.wait(timeout=STAGE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+            except OSError as exc:
+                raise CoordinatorIsolationError("stage wait failed") from exc
+        finally:
+            _kill_stage_process_group(process, domain)
+        if timed_out:
+            return {"passed": False, "reason": "stage_timeout", "failure_class": "TimeoutExpired"}
 
         stdout_file.seek(0)
         raw = stdout_file.read(MAX_STAGE_OUTPUT_BYTES + 1)
@@ -590,14 +743,18 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    if sys.platform.startswith("linux"):
-        if not _enable_child_subreaper():
-            log.error("credentialless scanner could not enable descendant reaping")
-            raise SystemExit(2)
-        if not _protect_coordinator_from_stage_processes():
-            log.error("credentialless scanner could not disable ptrace/core dumps")
-            raise SystemExit(2)
+    try:
+        domain = _establish_coordinator_domain()
+    except CoordinatorIsolationError as exc:
+        log.error("credentialless scanner ownership setup failed (%s)", type(exc).__name__)
+        raise SystemExit(2) from exc
+    try:
+        _main_in_domain(args)
+    finally:
+        _close_coordinator_domain(domain)
 
+
+def _main_in_domain(args) -> None:
     try:
         artifact = _validated_artifact_path(args.artifact)
         policy_evidence = _policy_bundle_evidence(Path(args.policy))
@@ -621,6 +778,9 @@ def main() -> None:
             directory=args.directory,
             policy_path=Path(args.policy),
         )
+    except CoordinatorIsolationError as exc:
+        log.error("credentialless scanner isolation cleanup failed (%s)", type(exc).__name__)
+        raise SystemExit(2) from exc
     except Exception as exc:
         # Parser exceptions are deterministic properties of an untrusted
         # artifact until proven otherwise. Return a normal fail-closed scan

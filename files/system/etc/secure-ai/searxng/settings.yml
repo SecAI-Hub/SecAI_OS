@@ -2,6 +2,12 @@
 # Self-hosted metasearch engine. All outbound requests route through Tor.
 # Listens on localhost only — accessed by the search mediator service.
 
+# The application needs defaults beyond its schema (for example DOI resolvers).
+# Keep the explicitly reviewed engine set while inheriting the pinned defaults.
+use_default_settings:
+  engines:
+    keep_only: [duckduckgo, wikipedia, wikidata, stackoverflow, github, arch wiki]
+
 general:
   instance_name: "SecAI Search"
   debug: false
@@ -22,6 +28,8 @@ search:
   safe_search: 1
   default_lang: "en"
   autocomplete: ""
+  # Explicit API contract; do not inherit changing upstream format defaults.
+  formats: [html, json]
 
 # Route ALL outbound requests through Tor SOCKS5 proxy
 outgoing:
@@ -46,6 +54,8 @@ engines:
     engine: wikipedia
     shortcut: wp
     disabled: false
+    # The mediator consumes the JSON results array, not infoboxes.
+    display_type: [list]
 
   - name: wikidata
     engine: wikidata
@@ -75,12 +85,10 @@ ui:
   default_theme: simple
   results_on_new_tab: false
 
-# Only privacy-focused built-in plugins are active. The mapping uses the
-# pinned SearXNG plugin schema; no external plugin code is loaded.
+# Only these built-in plugins load. Tracker-list downloads at startup are
+# disabled; the mediator strips common tracking parameters using local rules.
 plugins:
   searx.plugins.hash_plugin.SXNGPlugin:
     active: true
   searx.plugins.hostnames.SXNGPlugin:
-    active: true
-  searx.plugins.tracker_url_remover.SXNGPlugin:
     active: true

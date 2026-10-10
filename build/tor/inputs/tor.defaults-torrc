@@ -1,0 +1,5 @@
+DataDirectory /var/lib/tor
+DataDirectoryGroupReadable 1
+User toranon
+Log notice syslog
+%include /etc/torrc.d/*.conf

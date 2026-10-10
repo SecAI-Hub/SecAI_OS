@@ -1,136 +1,192 @@
 {
-  "version": 1,
+  "version": 2,
   "logs": [
     {
       "file": "agent-audit.jsonl",
       "format": "python-hmac-chain",
       "key_file": "agent-audit-hmac-key",
       "security_class": "keyed-tamper-evident",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-agent.service"
+      ]
     },
     {
       "file": "quarantine-audit.jsonl",
       "format": "python-hmac-chain",
       "key_file": "quarantine-audit-hmac-key",
       "security_class": "keyed-tamper-evident",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-quarantine-watcher.service"
+      ]
     },
     {
       "file": "search-audit.jsonl",
       "format": "python-hmac-chain",
       "key_file": "search-audit-hmac-key",
       "security_class": "keyed-tamper-evident",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-search-mediator.service"
+      ]
     },
     {
       "file": "ui-audit.jsonl",
       "format": "python-hmac-chain",
       "key_file": "ui-audit-hmac-key",
       "security_class": "keyed-tamper-evident",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-ui.service"
+      ]
     },
     {
       "file": "mcp-firewall-audit.jsonl",
       "format": "mcp-sha256-chain",
       "security_class": "unkeyed-hash-linked",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-mcp-firewall.service"
+      ]
     },
     {
       "file": "airlock-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-airlock.service"
+      ]
     },
     {
       "file": "audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": []
     },
     {
       "file": "backup-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": []
     },
     {
       "file": "canary-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-canary.service",
+        "secure-ai-canary-watch.service"
+      ]
     },
     {
       "file": "gpu-integrity-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-gpu-integrity-watch.service"
+      ]
     },
     {
       "file": "incident-recorder-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-incident-recorder.service"
+      ]
     },
     {
       "file": "integrity-monitor-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-integrity-monitor.service"
+      ]
     },
     {
       "file": "keystore-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": []
     },
     {
       "file": "panic-audit.jsonl",
       "format": "python-hmac-chain",
       "key_file": "panic-audit-hmac-key",
       "security_class": "keyed-tamper-evident",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-panic.service"
+      ]
     },
     {
       "file": "policy-engine-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-policy-engine.service"
+      ]
     },
     {
       "file": "registry-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-registry.service"
+      ]
     },
     {
       "file": "runtime-attestor-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-runtime-attestor.service"
+      ]
     },
     {
       "file": "tool-firewall-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-tool-firewall.service"
+      ]
     },
     {
       "file": "tpm2-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": []
     },
     {
       "file": "update-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-update-check.service"
+      ]
     },
     {
       "file": "vault-audit.jsonl",
       "format": "structured-jsonl",
       "security_class": "structured-only",
-      "required": false
+      "required": false,
+      "services": [
+        "secure-ai-vault-watchdog.service"
+      ]
     }
   ]
 }

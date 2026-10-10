@@ -4,14 +4,16 @@
 The shell-facing backup and restore commands intentionally delegate archive
 handling to this module.  In particular, this code never calls ``tar`` to
 extract attacker-controlled input: member names and types are validated,
-decompressed sizes are bounded, every payload is matched to the signed
-manifest, and restored ownership/modes are chosen locally rather than trusted
-from the archive.
+decompressed sizes are bounded, and every payload is matched to an unsigned
+content manifest. Age integrity and a separately trusted recovery receipt have
+distinct roles. Active restore is gated until durable recovery is implemented.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+from contextlib import contextmanager
 import grp
 import hashlib
 import json
@@ -22,6 +24,7 @@ import shutil
 import stat
 import sys
 import tarfile
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterator
@@ -40,8 +43,18 @@ SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+@=-]+$")
 CATEGORIES = frozenset({"full", "config", "logs", "keys"})
 
 
-class ArchiveError(RuntimeError):
-    """Raised when an archive or restore plan violates the backup format."""
+_SPEC = importlib.util.spec_from_file_location(
+    "secure_backup_v3", Path(__file__).with_name("secure-backup-v3.py")
+)
+assert _SPEC and _SPEC.loader
+v3 = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(v3)
+ArchiveError = v3.ArchiveError
+
+
+def _limits():
+    return v3.Limits(archive=MAX_ARCHIVE_BYTES, total=MAX_TOTAL_BYTES,
+                     file=MAX_FILE_BYTES, entries=MAX_FILES, manifest=MAX_MANIFEST_BYTES)
 
 
 def _validate_relative_path(value: str) -> str:
@@ -113,19 +126,11 @@ class _HashingReader:
         return data
 
 
-def _open_source_no_follow(path: Path) -> BinaryIO:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    handle = os.fdopen(descriptor, "rb", closefd=True)
-    metadata = os.fstat(handle.fileno())
-    if not stat.S_ISREG(metadata.st_mode):
-        handle.close()
-        raise ArchiveError(f"source changed to a non-regular file: {path}")
-    return handle
+@contextmanager
+def _open_source_no_follow(path: Path) -> Iterator[BinaryIO]:
+    with v3.inventory.pinned_file(path, MAX_FILE_BYTES, allow_empty=True) as (fd, _metadata):
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            yield handle
 
 
 def create_archive(root: Path, output: Path, category: str, luks_uuid: str | None) -> dict:
@@ -147,7 +152,8 @@ def create_archive(root: Path, output: Path, category: str, luks_uuid: str | Non
     )
     try:
         with os.fdopen(output_fd, "wb", closefd=True) as raw_output:
-            with tarfile.open(fileobj=raw_output, mode="w:gz", compresslevel=9) as archive:
+            with tarfile.open(fileobj=v3.BoundedWriter(raw_output, MAX_ARCHIVE_BYTES, v3.Budget(_limits())),
+                              mode="w:gz", compresslevel=9, format=tarfile.USTAR_FORMAT) as archive:
                 for relative, source, original_stat in sources:
                     with _open_source_no_follow(source) as source_handle:
                         opened_stat = os.fstat(source_handle.fileno())
@@ -223,39 +229,6 @@ def create_archive(root: Path, output: Path, category: str, luks_uuid: str | Non
     return manifest
 
 
-def _read_member_bounded(archive: tarfile.TarFile, member: tarfile.TarInfo) -> bytes:
-    if member.size > MAX_MANIFEST_BYTES:
-        raise ArchiveError("manifest exceeds size limit")
-    extracted = archive.extractfile(member)
-    if extracted is None:
-        raise ArchiveError(f"could not read archive member: {member.name}")
-    data = extracted.read(member.size + 1)
-    if len(data) != member.size:
-        raise ArchiveError(f"short archive member: {member.name}")
-    if len(data) > member.size:
-        raise ArchiveError(f"archive member exceeds declared size: {member.name}")
-    return data
-
-
-def _hash_member(archive: tarfile.TarFile, member: tarfile.TarInfo) -> tuple[str, int]:
-    extracted = archive.extractfile(member)
-    if extracted is None:
-        raise ArchiveError(f"could not read archive member: {member.name}")
-    digest = hashlib.sha256()
-    remaining = member.size
-    total = 0
-    while remaining:
-        chunk = extracted.read(min(COPY_CHUNK, remaining))
-        if not chunk:
-            raise ArchiveError(f"short archive member: {member.name}")
-        digest.update(chunk)
-        total += len(chunk)
-        remaining -= len(chunk)
-    if extracted.read(1):
-        raise ArchiveError(f"archive member exceeds declared size: {member.name}")
-    return digest.hexdigest(), total
-
-
 def _validate_manifest(manifest: object, actual: dict[str, dict[str, int | str]]) -> dict:
     if not isinstance(manifest, dict):
         raise ArchiveError("manifest must be a JSON object")
@@ -272,9 +245,9 @@ def _validate_manifest(manifest: object, actual: dict[str, dict[str, int | str]]
     }
     if set(manifest) != required_top:
         raise ArchiveError("manifest has missing or unexpected fields")
-    if manifest["format"] != "secai-backup" or manifest["format_version"] != FORMAT_VERSION:
+    if manifest["format"] != "secai-backup" or type(manifest["format_version"]) is not int or manifest["format_version"] != FORMAT_VERSION:
         raise ArchiveError("unsupported backup format")
-    if manifest["category"] not in CATEGORIES:
+    if not isinstance(manifest["category"], str) or manifest["category"] not in CATEGORIES:
         raise ArchiveError("manifest has an invalid backup category")
     if not isinstance(manifest["created_at"], str) or len(manifest["created_at"]) > 128:
         raise ArchiveError("manifest has an invalid creation time")
@@ -303,9 +276,9 @@ def _validate_manifest(manifest: object, actual: dict[str, dict[str, int | str]]
             raise ArchiveError("manifest exceeds decompressed-size limit")
         normalized[path] = {"sha256": digest, "size": size}
 
-    if manifest["file_count"] != len(normalized):
+    if type(manifest["file_count"]) is not int or manifest["file_count"] != len(normalized):
         raise ArchiveError("manifest file count does not match inventory")
-    if manifest["total_size"] != declared_total:
+    if type(manifest["total_size"]) is not int or manifest["total_size"] != declared_total:
         raise ArchiveError("manifest total size does not match inventory")
     if normalized != actual:
         missing = sorted(set(normalized) - set(actual))
@@ -336,106 +309,56 @@ def _validate_manifest(manifest: object, actual: dict[str, dict[str, int | str]]
     return manifest
 
 
+def _read_v2(archive_path: Path, destination: Path | None = None) -> dict:
+    limits = _limits()
+    budget, stage = v3.Budget(limits), None
+    try:
+        if destination is not None:
+            stage = v3.Stage(destination, limits)
+        with v3.inventory.pinned_file(archive_path, MAX_ARCHIVE_BYTES) as (fd, _metadata):
+            actual, data = v3.parse_tar(fd, limits, budget, _validate_relative_path, stage)
+            manifest = _validate_manifest(v3.inventory.strict_json(data, MAX_MANIFEST_BYTES), actual)
+            if stage:
+                stage.verify({**actual, "manifest.json": {
+                    "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}, budget)
+        return manifest
+    except (OSError, ValueError) as exc:
+        raise ArchiveError("invalid or unsafe compressed archive") from exc
+    finally:
+        if stage:
+            try:
+                if sys.exc_info()[0] is not None:
+                    stage.clear()
+            finally:
+                stage.close()
+
+
 def verify_archive(archive_path: Path) -> dict:
-    archive_stat = archive_path.lstat()
-    if archive_path.is_symlink() or not stat.S_ISREG(archive_stat.st_mode):
-        raise ArchiveError("archive must be a regular file, not a symbolic link")
-    if archive_stat.st_size <= 0 or archive_stat.st_size > MAX_ARCHIVE_BYTES:
-        raise ArchiveError("archive has an invalid compressed size")
-
-    actual: dict[str, dict[str, int | str]] = {}
-    manifest_data: bytes | None = None
-    seen: set[str] = set()
-    member_count = 0
-    total_size = 0
-    try:
-        with tarfile.open(archive_path, mode="r|gz") as archive:
-            for member in archive:
-                member_count += 1
-                if member_count > MAX_FILES + 1:
-                    raise ArchiveError("archive exceeds member-count limit")
-                name = _validate_relative_path(member.name)
-                if name in seen:
-                    raise ArchiveError(f"duplicate archive member: {name}")
-                seen.add(name)
-                if not member.isreg():
-                    raise ArchiveError(f"non-regular archive member is forbidden: {name}")
-                if member.size < 0 or member.size > MAX_FILE_BYTES:
-                    raise ArchiveError(f"archive member has an invalid size: {name}")
-                total_size += member.size
-                if total_size > MAX_TOTAL_BYTES + MAX_MANIFEST_BYTES:
-                    raise ArchiveError("archive exceeds decompressed-size limit")
-                if name == "manifest.json":
-                    if manifest_data is not None:
-                        raise ArchiveError("archive contains multiple manifests")
-                    manifest_data = _read_member_bounded(archive, member)
-                else:
-                    digest, size = _hash_member(archive, member)
-                    actual[name] = {"sha256": digest, "size": size}
-    except (tarfile.TarError, OSError, EOFError) as exc:
-        raise ArchiveError(f"invalid compressed archive: {exc}") from exc
-
-    if manifest_data is None:
-        raise ArchiveError("archive does not contain manifest.json")
-    try:
-        manifest = json.loads(manifest_data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ArchiveError(f"manifest is not valid UTF-8 JSON: {exc}") from exc
-    return _validate_manifest(manifest, actual)
+    """Validate one pinned legacy partial archive, including its closed stream."""
+    return _read_v2(archive_path)
 
 
 def extract_archive(archive_path: Path, destination: Path) -> dict:
-    manifest = verify_archive(archive_path)
-    if destination.is_symlink() or not destination.is_dir():
-        raise ArchiveError("extraction destination must be a real directory")
-    if any(destination.iterdir()):
-        raise ArchiveError("extraction destination must be empty")
+    """Validate exactly the bytes written to inert staging in one pinned pass."""
+    return _read_v2(archive_path, destination)
 
+
+def _validate_apply_stage(staging: Path) -> dict:
+    with v3.inventory.pinned_file(staging / "manifest.json", MAX_MANIFEST_BYTES) as (fd, metadata):
+        data = os.read(fd, metadata.st_size + 1)
+    manifest = v3.inventory.strict_json(data, MAX_MANIFEST_BYTES)
+    if not isinstance(manifest, dict) or manifest.get("format_version") != 2:
+        raise ArchiveError("only the historical v2 partial apply fixture is supported")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ArchiveError("invalid staged manifest")
+    _validate_manifest(manifest, files)
+    stage = v3.Stage(staging, _limits(), empty=False)
     try:
-        with tarfile.open(archive_path, mode="r|gz") as archive:
-            for member in archive:
-                name = _validate_relative_path(member.name)
-                target = destination.joinpath(*PurePosixPath(name).parts)
-                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                for parent in [target.parent, *target.parents]:
-                    if parent == destination.parent:
-                        break
-                    if parent.is_symlink():
-                        raise ArchiveError(f"symbolic link in extraction path: {parent}")
-                    if parent == destination:
-                        break
-                flags = (
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0)
-                )
-                descriptor = os.open(target, flags, 0o600)
-                try:
-                    with os.fdopen(descriptor, "wb", closefd=True) as output:
-                        source = archive.extractfile(member)
-                        if source is None:
-                            raise ArchiveError(f"could not extract archive member: {name}")
-                        remaining = member.size
-                        while remaining:
-                            chunk = source.read(min(COPY_CHUNK, remaining))
-                            if not chunk:
-                                raise ArchiveError(f"short archive member: {name}")
-                            output.write(chunk)
-                            remaining -= len(chunk)
-                        output.flush()
-                        os.fsync(output.fileno())
-                except Exception:
-                    try:
-                        target.unlink()
-                    except FileNotFoundError:
-                        pass
-                    raise
-    except (tarfile.TarError, OSError, EOFError) as exc:
-        if isinstance(exc, ArchiveError):
-            raise
-        raise ArchiveError(f"safe extraction failed: {exc}") from exc
+        stage.verify({**files, "manifest.json": {
+            "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}}, v3.Budget(_limits()))
+    finally:
+        stage.close()
     return manifest
 
 
@@ -613,14 +536,10 @@ def _set_directory_policy(
 def apply_restore(staging: Path, category: str, etc_root: Path, secure_root: Path) -> int:
     if category not in CATEGORIES:
         raise ArchiveError(f"unsupported restore category: {category}")
-    manifest_path = staging / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ArchiveError(f"cannot read extracted manifest: {exc}") from exc
-    files = manifest.get("files")
-    if not isinstance(files, dict):
-        raise ArchiveError("extracted manifest has no file inventory")
+    # Historical synthetic regression API only. Supported CLI apply is disabled;
+    # this in-memory rollback cannot recover from a process crash or reboot.
+    manifest = _validate_apply_stage(staging)
+    files = manifest["files"]
 
     restore_items: list[tuple[str, Path, Path, int]] = []
     for relative in sorted(files):
@@ -708,6 +627,33 @@ def _build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument(
         "--secure-root", type=Path, default=Path("/var/lib/secure-ai")
     )
+    for name in ("verify-v3", "inspect-v3", "extract-v3"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--archive", type=Path, required=True)
+        command.add_argument("--inventory", type=Path, default=Path("/etc/secure-ai/config/backup-inventory.json"))
+        if name == "extract-v3":
+            command.add_argument("--destination", type=Path, required=True)
+    export = subparsers.add_parser("export-inert")
+    export.add_argument("--root", type=Path, required=True)
+    export.add_argument("--staging-root", type=Path, required=True)
+    export.add_argument("--output", type=Path, required=True)
+    export.add_argument("--inventory", type=Path, default=Path("/etc/secure-ai/config/backup-inventory.json"))
+    export.add_argument("--classes", required=True)
+    export.add_argument("--release-sha256", required=True)
+    export.add_argument("--recipient", required=True)
+    for name in ("encrypt", "decrypt"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--archive", type=Path, required=True)
+        command.add_argument("--output", type=Path, required=True)
+        if name == "decrypt":
+            command.add_argument("--identity", type=Path, required=True)
+            command.add_argument("--trusted-sha256")
+            command.add_argument("--transport-sidecar", type=Path)
+        else:
+            command.add_argument("--recipient", required=True)
+    copy = subparsers.add_parser("stage-source")
+    copy.add_argument("--source", type=Path, required=True)
+    copy.add_argument("--destination", type=Path, required=True)
     return parser
 
 
@@ -721,23 +667,61 @@ def main() -> int:
         elif args.command == "extract":
             manifest = extract_archive(args.archive, args.destination)
         elif args.command == "apply":
-            count = apply_restore(
-                args.staging,
-                args.category,
-                args.etc_root,
-                args.secure_root,
-            )
-            print(json.dumps({"restored_files": count}, separators=(",", ":")))
+            raise ArchiveError("active restore unavailable: durable maintenance transaction, producer adapters, historical enrollment and rotation reconciliation are required; use inspect/extract for inert review")
+        elif args.command == "stage-source":
+            v3.copy_legacy_source(args.source, args.destination)
+            print('{"coverage":"legacy_v2_partial","staged":true}')
+            return 0
+        elif args.command in {"decrypt", "encrypt"}:
+            transport = None
+            if args.command == "decrypt" and args.transport_sidecar:
+                with v3.inventory.pinned_file(args.transport_sidecar, 1024) as (fd, metadata):
+                    data = os.read(fd, metadata.st_size + 1)
+                expected_suffix = b"  " + os.fsencode(args.archive.name) + b"\n"
+                if len(data) != 64 + len(expected_suffix) or data[64:] != expected_suffix:
+                    raise ArchiveError("invalid transport sidecar")
+                transport = data[:64].decode("ascii", "strict")
+            result = v3.age_transform(args.archive, args.output, decrypt=args.command == "decrypt",
+                                      identity=getattr(args, "identity", None), recipient=getattr(args, "recipient", None),
+                                      expected_sha256=getattr(args, "trusted_sha256", None), transport_sha256=transport)
+            print(json.dumps(result, separators=(",", ":")))
+            return 0
+        elif args.command in {"verify-v3", "inspect-v3", "extract-v3", "export-inert"}:
+            installed = v3.inventory.load_inventory(args.inventory, trusted=os.geteuid() == 0)
+            if args.command == "export-inert":
+                root_fd = v3.inventory.open_directory(args.staging_root)
+                try:
+                    metadata = os.fstat(root_fd)
+                    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+                        raise ArchiveError("staging root must be private and caller-owned")
+                finally:
+                    os.close(root_fd)
+                with tempfile.TemporaryDirectory(prefix="backup-inert-", dir=args.staging_root) as work:
+                    plaintext = Path(work) / "partial.tar.gz"
+                    manifest = v3.create_archive(args.root, plaintext, installed, args.classes.split(","), args.release_sha256)
+                    result = v3.age_transform(plaintext, args.output, decrypt=False, recipient=args.recipient)
+                    result.update(backup_id=manifest["backup_id"], coverage="partial_unquiesced",
+                                  inventory_sha256=manifest["inventory_sha256"], manifest_sha256=hashlib.sha256(v3.inventory.encode(manifest)).hexdigest(),
+                                  storage_assurance="not_verified")
+            else:
+                manifest = v3.read_archive(args.archive, installed, destination=getattr(args, "destination", None))
+                result = {"coverage": "partial_unquiesced", "active_restore": False,
+                          "origin": "origin_unverified", "manifest": manifest}
+            print(json.dumps(result, indent=2 if args.command == "inspect-v3" else None, sort_keys=True))
             return 0
         else:  # pragma: no cover
             raise ArchiveError("unknown command")
 
         if args.command == "inspect":
-            print(json.dumps(manifest, indent=2, sort_keys=True))
+            print(json.dumps({"coverage": "legacy_v2_partial", "active_restore": False,
+                              "origin": "origin_unverified", "manifest": manifest}, indent=2, sort_keys=True))
         else:
             print(
                 json.dumps(
                     {
+                        "coverage": "legacy_v2_partial",
+                        "origin": "origin_unverified",
+                        "active_restore": False,
                         "category": manifest["category"],
                         "file_count": manifest["file_count"],
                         "total_size": manifest["total_size"],

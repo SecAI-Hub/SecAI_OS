@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "services"))
 
 from common.auth import AuthManager, hash_passphrase, verify_passphrase
+from common.session_store import token_digest
 
 
 class TestPassphraseHashing:
@@ -157,10 +158,10 @@ class TestAuthManagerSessions:
             result = auth.login("test-passphrase-123")
             token = result["token"]
 
-            before = auth._sessions[token]["last_active"]
+            before = auth._store.snapshot()["sessions"][token_digest(token)]["last_active"]
             time.sleep(0.01)
             assert auth.validate_session(token, refresh=False) is True
-            after = auth._sessions[token]["last_active"]
+            after = auth._store.snapshot()["sessions"][token_digest(token)]["last_active"]
             assert after == before
 
     def test_session_info(self):
@@ -183,7 +184,7 @@ class TestAuthManagerSessions:
 
             time.sleep(1.5)
             auth.cleanup_expired()
-            assert len(auth._sessions) == 0
+            assert len(auth._store.snapshot()["sessions"]) == 0
 
 
 class TestAuthManagerChangePassphrase:

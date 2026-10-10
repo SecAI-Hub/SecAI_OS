@@ -145,15 +145,17 @@ def test_pinned_settings_use_current_privacy_and_tor_schema():
     settings = yaml.safe_load(BASE_SETTINGS.read_text(encoding="utf-8"))
 
     assert settings["search"]["autocomplete"] == ""
+    assert settings["search"]["formats"] == ["html", "json"]
     assert settings["outgoing"]["using_tor_proxy"] is True
     assert settings["outgoing"]["proxies"] == {"all://": ["socks5h://127.0.0.1:9050"]}
     assert settings["plugins"] == {
         "searx.plugins.hash_plugin.SXNGPlugin": {"active": True},
         "searx.plugins.hostnames.SXNGPlugin": {"active": True},
-        "searx.plugins.tracker_url_remover.SXNGPlugin": {"active": True},
     }
     assert "enabled_plugins" not in settings
     engines = {engine["name"]: engine for engine in settings["engines"]}
+    assert set(settings["use_default_settings"]["engines"]["keep_only"]) == set(engines)
     assert engines["stackoverflow"]["engine"] == "stackexchange"
     assert engines["stackoverflow"]["api_site"] == "stackoverflow"
+    assert engines["wikipedia"]["display_type"] == ["list"]
     assert {"google", "bing", "yahoo", "brave"}.isdisjoint(engines)

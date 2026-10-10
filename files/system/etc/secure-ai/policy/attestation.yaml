@@ -13,6 +13,35 @@
 
 version: 1
 
+# Explicit release-approved GPU scopes. Empty pins are not enrollment and
+# cannot pass startup/runtime verification. Fill from reviewed protected
+# profiles/baselines before deploying a GPU appliance. A CPU-only release may
+# instead set gpu: {mode: no_gpu}; inference then enforces zero GPU offload.
+gpu:
+  mode: required
+  bootstrap:
+    origin: http://127.0.0.1:8496
+    profile_sha256: ""
+    baseline_sha256: ""
+    required_probes:
+      ecc-status: ecc_status
+      driver-fingerprint: driver_fingerprint
+      device-allowlist: device_allowlist
+    max_age: 90s
+    max_cycle_duration: 30s
+  runtime:
+    origin: http://127.0.0.1:8495
+    profile_sha256: ""
+    baseline_sha256: ""
+    required_probes:
+      tensor-hash-check: tensor_hash
+      sentinel-inference: sentinel_inference
+      ecc-status: ecc_status
+      driver-fingerprint: driver_fingerprint
+      device-allowlist: device_allowlist
+    max_age: 10m
+    max_cycle_duration: 3m
+
 # --- TPM2 ---
 # The root-only first-boot enrollment service writes an explicit hardware or
 # evaluation profile under /var/lib/secure-ai/tpm-attestation. A hardware
@@ -47,6 +76,8 @@ service_binaries:
   policy-engine: /usr/libexec/secure-ai/policy-engine
   tpm-attestation-setup: /usr/libexec/secure-ai/secure-tpm-attestation.py
   gpu-integrity-watch: /usr/libexec/secure-ai/gpu-integrity-watch
+  runtime-attestor: /usr/libexec/secure-ai/runtime-attestor
+  incident-recorder: /usr/libexec/secure-ai/incident-recorder
   mcp-firewall: /usr/libexec/secure-ai/mcp-firewall
 
 # --- Policy files ---
@@ -63,6 +94,24 @@ policy_files:
   - /etc/secure-ai/model-catalog.yaml
   - /usr/lib/systemd/system/secure-ai-tpm-attestation-setup.service
   - /usr/lib/systemd/system/secure-ai-runtime-attestor.service
+  - /usr/lib/systemd/system/secure-ai-gpu-bootstrap.service
+  - /usr/lib/systemd/system/secure-ai-gpu-integrity-watch.service
+  - /usr/lib/systemd/system/secure-ai-gpu-probe.service
+  - /usr/lib/systemd/system/secure-ai-gpu-model-read-check.service
+  - /usr/lib/systemd/system/secure-ai-agent.service
+  - /usr/lib/systemd/system/secure-ai-inference.service
+  - /usr/libexec/secure-ai/verify-vault-mount.py
+  - /usr/libexec/secure-ai/setup-vault.sh
+  - /usr/libexec/secure-ai/prepare-inference-auth.sh
+  - /usr/libexec/secure-ai/provision-service-credentials.sh
+  - /usr/lib/sysusers.d/secure-ai.conf
+  - /usr/libexec/secure-ai/attestation-gate.sh
+  - /usr/libexec/secure-ai/select-model.sh
+  - /usr/libexec/secure-ai/apply-inference-model.py
+  - /etc/secure-ai/gpu-integrity/bootstrap-profile.yaml
+  - /etc/secure-ai/gpu-integrity/bootstrap-baseline.yaml
+  - /etc/secure-ai/gpu-integrity/default-profile.yaml
+  - /etc/secure-ai/gpu-integrity/runtime-baseline.yaml
 
 # --- Refresh interval ---
 # How often the attestor re-checks the system state.

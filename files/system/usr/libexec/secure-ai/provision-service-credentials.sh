@@ -102,12 +102,18 @@ for target in \
     runtime-attestor \
     integrity-monitor \
     gpu-integrity-watch \
+    gpu-bootstrap \
     airlock \
     search-mediator \
     diffusion
 do
     validate_or_create "${target}.token"
 done
+validate_or_create mcp-firewall-admin.token
+validate_or_create inference-ui.token
+validate_or_create inference-agent.token
+# Canonical 256-bit seed; the gateway derives the Ed25519 key in memory.
+validate_or_create mcp-firewall-signing.key
 validate_or_create registry-read.token
 validate_or_create registry-verify.token
 validate_or_create registry-promote.token
@@ -130,6 +136,11 @@ validate_or_create incident-reporter-runtime-attestor.token
 validate_or_create searxng-secret.key
 validate_or_create integrity-hmac.key
 validate_or_create attestation-hmac.key
+# Distinct purpose/scope keys; neither is sent as an HTTP bearer token.
+validate_or_create gpu-bootstrap-attestation-hmac.key
+validate_or_create gpu-runtime-attestation-hmac.key
+validate_or_create gpu-probe-hmac.key
+validate_or_create inference-probe.token
 validate_or_create forensic-hmac.key
 validate_or_create canary-hmac.key
 validate_or_create agent-audit-hmac.key

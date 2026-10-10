@@ -256,7 +256,8 @@ class TestContainerLockCompatibility:
     def test_python314_sandbox_lock_is_hashed(self, backend, torch_suffix):
         lockfile = SCRIPTS_DIR / f"diffusion-{backend}-py314.lock"
         content = lockfile.read_text()
-        assert f"torch==2.13.0+{torch_suffix} \\" in content
+        torch_version = "2.14.0" if backend == "cpu" else "2.13.0"
+        assert f"torch=={torch_version}+{torch_suffix} \\" in content
         packages = re.findall(r"^(\S+==\S+)\s*\\", content, re.MULTILINE)
         assert packages
         for package in packages:
@@ -270,13 +271,13 @@ class TestContainerLockCompatibility:
 
     def test_standard_image_uses_python312_locks(self):
         dockerfile = STANDARD_DOCKERFILE.read_text()
-        assert "python:3.12-slim@" in dockerfile
+        assert "python:3.12.15-slim@" in dockerfile
         assert 'diffusion-${COMPUTE}.lock' in dockerfile
         assert "-py314.lock" not in dockerfile
 
     def test_sandbox_image_uses_python314_locks(self):
         dockerfile = SANDBOX_DOCKERFILE.read_text()
-        assert "PYTHON_VERSION=3.14.5" in dockerfile
+        assert "PYTHON_VERSION=3.14.8" in dockerfile
         assert 'diffusion-${COMPUTE}-py314.lock' in dockerfile
 
     @pytest.mark.parametrize(

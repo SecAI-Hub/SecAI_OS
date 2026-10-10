@@ -141,8 +141,8 @@ func TestSentinelInference_Skip(t *testing.T) {
 		Name: "sentinel-test", Type: ProbeSentinelInfer, Enabled: true,
 	})
 
-	if result.Status != StatusSkip {
-		t.Errorf("expected skip without endpoint, got %s", result.Status)
+	if result.Status != StatusError {
+		t.Errorf("expected error without approved client, got %s", result.Status)
 	}
 }
 
@@ -154,8 +154,8 @@ func TestReferenceDrift_Skip(t *testing.T) {
 		Name: "drift-test", Type: ProbeReferenceDrift, Enabled: true,
 	})
 
-	if result.Status != StatusSkip {
-		t.Errorf("expected skip without baseline, got %s", result.Status)
+	if result.Status != StatusError {
+		t.Errorf("expected error without approved baseline, got %s", result.Status)
 	}
 }
 
@@ -287,7 +287,7 @@ func TestScoring_DriftWarning(t *testing.T) {
 	}
 }
 
-func TestScoring_SkippedIgnored(t *testing.T) {
+func TestScoring_SkippedEvidenceIsUnknown(t *testing.T) {
 	scorer := NewScoringEngine(nil, 10)
 	results := []ProbeResult{
 		{Probe: "a", Type: ProbeTensorHash, Status: StatusSkip, Score: 0.0},
@@ -295,8 +295,8 @@ func TestScoring_SkippedIgnored(t *testing.T) {
 	}
 
 	entry := scorer.Score(results)
-	if entry.Verdict != VerdictHealthy {
-		t.Errorf("skipped probes should not affect verdict, got %s", entry.Verdict)
+	if entry.Verdict != VerdictUnknown {
+		t.Errorf("missing required evidence must be unknown, got %s", entry.Verdict)
 	}
 	if _, ok := entry.ProbeScores["a"]; ok {
 		t.Error("skipped probe should not appear in scores")
@@ -806,11 +806,6 @@ daemon:
 	})
 
 	// Attest-state endpoint
-	mux.HandleFunc("/v1/attest-state", func(w http.ResponseWriter, r *http.Request) {
-		state := buildAttestState(scorer, nil)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(state)
-	})
 
 	return mux
 }
@@ -1126,76 +1121,12 @@ func TestDeviceAllowlist_MissingExpected(t *testing.T) {
 
 // ---------- integration tests ----------
 
-func TestBuildAttestState_Empty(t *testing.T) {
-	scorer := NewScoringEngine(nil, 10)
-	state := buildAttestState(scorer, nil)
-
-	if state.Verdict != VerdictUnknown {
-		t.Errorf("expected unknown verdict with no data, got %s", state.Verdict)
-	}
-	if state.CompositeScore != 0.0 {
-		t.Errorf("expected 0.0 score, got %f", state.CompositeScore)
-	}
-}
-
-func TestBuildAttestState_WithHistory(t *testing.T) {
-	scorer := NewScoringEngine(nil, 10)
-	scorer.Score([]ProbeResult{
-		{Probe: "hash", Type: ProbeTensorHash, Status: StatusPass, Score: 0.0},
-	})
-
-	state := buildAttestState(scorer, nil)
-
-	if state.Verdict != VerdictHealthy {
-		t.Errorf("expected healthy, got %s", state.Verdict)
-	}
-}
-
-func TestBuildAttestState_ExtractsDriverInfo(t *testing.T) {
-	scorer := NewScoringEngine(nil, 10)
-	scorer.Score([]ProbeResult{
-		{Probe: "hash", Type: ProbeTensorHash, Status: StatusPass, Score: 0.0},
-	})
-
-	results := []ProbeResult{
-		{
-			Probe: "driver", Type: ProbeDriverFingerprint, Status: StatusPass,
-			Findings: []Finding{
-				{Description: "driver version detected", Detail: "565.57.01"},
-			},
-		},
-	}
-
-	state := buildAttestState(scorer, results)
-
-	if state.DriverVersion != "565.57.01" {
-		t.Errorf("expected driver version 565.57.01, got %s", state.DriverVersion)
-	}
-}
-
 func TestReportIncident_HealthyNoReport(t *testing.T) {
 	// Should not make any HTTP request for healthy verdict
 	entry := ScoreEntry{Verdict: VerdictHealthy}
 	// This should not panic even with an invalid URL since
 	// healthy verdicts are filtered out before any request.
 	reportIncident("http://invalid-host:9999", "", entry, nil)
-}
-
-func TestHTTP_AttestState(t *testing.T) {
-	mux := buildTestMux(t)
-	req := httptest.NewRequest("GET", "/v1/attest-state", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-
-	var state GPUAttestState
-	json.NewDecoder(w.Body).Decode(&state)
-	if state.Verdict == "" {
-		t.Error("expected verdict in attest state")
-	}
 }
 
 func TestIncidentClassification_TensorHashFail(t *testing.T) {

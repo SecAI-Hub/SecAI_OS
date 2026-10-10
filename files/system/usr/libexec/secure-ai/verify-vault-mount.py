@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import struct
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -240,9 +241,52 @@ def verify() -> dict[str, str]:
     return mount
 
 
+def validate_model_reader_acl(raw: bytes, reader_gid: int) -> None:
+    """Linux POSIX ACL: exactly one named, non-writable reader; no extra grants."""
+    if (len(raw) != 4+5*8 or struct.unpack_from('<I', raw)[0] != 2
+            or type(reader_gid) is not int or not 0 < reader_gid < 2**32-1):
+        raise VaultVerificationError('model reader ACL is absent or invalid')
+    entries = [struct.unpack_from('<HHI', raw, offset) for offset in range(4, len(raw), 8)]
+    expected = {(1, 7, 0xffffffff), (4, 7, 0xffffffff), (8, 5, reader_gid),
+                (16, 7, 0xffffffff), (32, 0, 0xffffffff)}
+    # Five entries: owner, owning group, named reader, mask and other.
+    # Accept only their exact set, including the count (no duplicate grants).
+    if len(entries) != len(expected) or set(entries) != expected:
+        raise VaultVerificationError('model reader ACL grants are not the approved read-only set')
+
+
+def verify_model_reader() -> None:
+    """Inspect only; never migrate a populated vault or grant writable membership."""
+    try:
+        reader = grp.getgrnam('secure-ai-model-read').gr_gid
+        writer = grp.getgrnam('secure-ai-registry').gr_gid
+        if reader == writer:
+            raise VaultVerificationError('model reader and writer roles are not separate')
+        descriptor = os.open(MOUNT_POINT/'models', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            before = os.fstat(descriptor)
+            if before.st_uid != 0 or before.st_gid != writer or stat.S_IMODE(before.st_mode) != 0o2770:
+                raise VaultVerificationError('unsafe model reader directory')
+            for name in ('system.posix_acl_access', 'system.posix_acl_default'):
+                validate_model_reader_acl(os.getxattr(descriptor, name), reader)
+            after = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino, before.st_mode, before.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_mode, after.st_ctime_ns):
+                raise VaultVerificationError('model reader ACL changed while checking')
+        finally:
+            os.close(descriptor)
+    except (OSError, KeyError) as exc:
+        raise VaultVerificationError('model reader ACL requires explicit operator provisioning') from exc
+
+
 def main() -> int:
+    if sys.argv[1:] not in ([], ['--gpu-model-read']):
+        print('[vault-mount] unsupported verification scope', file=sys.stderr)
+        return 1
     try:
         mount = verify()
+        if sys.argv[1:] == ['--gpu-model-read']:
+            verify_model_reader()
     except VaultVerificationError as exc:
         print(f"[vault-mount] FAIL: {exc}", file=sys.stderr)
         return 1

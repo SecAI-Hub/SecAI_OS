@@ -24,6 +24,8 @@ LoadCredential=audit-hmac-key:/var/lib/secure-ai/credentials/search-audit-hmac.k
 
 # Filesystem isolation — only talks to SearXNG on localhost
 DynamicUser=yes
+User=secure-ai-search
+UMask=0077
 SupplementaryGroups=secure-ai-logs
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai
@@ -63,7 +65,7 @@ RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 
 # Syscall filtering
-SystemCallFilter=@system-service @network-io
+SystemCallFilter=@system-service @network-io landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM

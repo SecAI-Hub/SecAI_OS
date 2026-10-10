@@ -1,11 +1,17 @@
 [Unit]
 Description=Secure AI Update Check (cosign-verified)
-After=network-online.target
-Wants=network-online.target
+After=secure-ai-network-boot.service
+Requires=secure-ai-native-admission.service
+After=secure-ai-native-admission.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/secure-ai/update-verify.sh check
+ExecCondition=/usr/libexec/secure-ai/network-profile.py require-maintenance
+ExecStart=/usr/libexec/secure-ai/secure-native-admission.py supervise-update-check
+KillMode=control-group
+Delegate=no
+TimeoutStartSec=240
+TimeoutStopSec=15
 
 User=root
 Group=root
@@ -39,4 +45,5 @@ SystemCallErrorNumber=EPERM
 LimitCORE=0
 
 ReadWritePaths=/var/lib/secure-ai/logs /run/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai-native-admission /run/secure-ai-native-admission
 ReadOnlyPaths=/var/lib/secure-ai/updates /etc/pki/containers

@@ -1,0 +1,40 @@
+{
+  "upstream_index": "ghcr.io/blue-build/modules/akmods@sha256:577c92673de38c03ad654715caf2245b67ed67e7122023745e6aaef8d1409c04",
+  "linux_amd64_manifest": "sha256:5b8d9e202a5d8f39acd922b4754f1447a7e34fa605ff9c13d419bf2cecd90509",
+  "source_layer": {
+    "sha256": "50aa461e338e0665ad4151ac987ce5a68779842cfd056f388514c23dd2b0f06d",
+    "bytes": 4186
+  },
+  "upstream_script_sha256": "315fac949da2c24fda68dc20e2bcb2068135c628a568737c9ab8fcc52e9b6b80",
+  "upstream_script_member": "modules/akmods/akmods.sh",
+  "review_receipt": "/home/cru/Documents/SecOS-implementation-2026-09-04/fedora44-base-review-20261010-01/review-complete/verification-receipt.json",
+  "review_receipt_sha256": "3b47b2d75b01945cff52dbbc4bb7d316b6c70e5a219468edfc5d4a0107930c87",
+  "trusted_ublue_key_sha256": "af78ecfda6eb21c35195af3739341715e9cfc3f2f5911dd9c10b0670547bf6e8",
+  "reviewed_inputs": {
+    "base": "ghcr.io/ublue-os/silverblue-main@sha256:30bb3c773b17a7b912458f937a89a2bb373288cfc6c44751532f8e4f6ab9b51d",
+    "common": "ghcr.io/ublue-os/akmods@sha256:42c7592e3a3bad44d3792f63e521faf39951a77ae48fccea64b6bcb9f928ba87",
+    "nvidia_open": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:5ee11a297bd272e192cd452e362af721181a140d2e403d480ff5e0c26b90b6d9",
+    "kernel": "7.2.9-200.fc44.x86_64"
+  },
+  "signature_verification": "Reviewed base/common/NVIDIA exact digests signed by trusted uBlue key with exact repository identity claims and bundled offline transparency log checks. Upstream module source is bound by OCI manifest/layer SHA, not an independently verified module signature.",
+  "local_changes": [
+    "Distinct local module name/routing; original module script behavior retained.",
+    "Two immutable skopeo references.",
+    "Strict pre-install config/Fedora44/amd64/MULTILIB/kernel-core guard.",
+    "Post-install kernel-core and NVIDIA kernel/userspace/module version plus vermagic guard.",
+    "Explicit INSTALL array initialization and scoped ShellCheck annotation for preserved upstream argument expansion.",
+    "Post-install vermagic checked for nvidia/nvidia_drm/nvidia_modeset/nvidia_uvm; module names supported by current-driver-receipt.json.",
+    "Four preserved RPMFusion URL arguments quoted for ShellCheck0.11; no supported-flow change."
+  ],
+  "current_existing_image_driver_receipt": "/home/cru/Documents/SecOS-implementation-2026-09-04/fedora44-base-review-20261010-01/current-driver-receipt.json",
+  "qualification_limit": "Current existing image RPM/module consistency does not qualify new30bb/42c/5ee build; no loadeddriver/MOK/hardware proof.",
+  "local_script_sha256": "8c17db080a96d5f5ff645cb7de4ad12ad4043651ec00f48bf0e8e18f5cd21fe2",
+  "upstream_license": {
+    "spdx_id": "Apache-2.0",
+    "source": "https://api.github.com/repos/blue-build/modules/git/blobs/d79ba59ce103b08d7eced746dd7f28a2c6ff8676",
+    "source_path": "LICENSE",
+    "sha256": "39b73b1f2197e679ec8af53ba242f2be503b13ae5ab0eee89828a10952a4953a",
+    "local_file": "LICENSE",
+    "notice": "NOTICE"
+  }
+}

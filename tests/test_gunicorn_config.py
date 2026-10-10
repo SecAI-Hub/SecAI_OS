@@ -11,6 +11,7 @@ Covers:
 - Module-level app export for WSGI import
 """
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -147,9 +148,50 @@ class TestOsVmGunicornRuntimeDefaults:
         search_wrapper = content.split(
             "cat > \"${INSTALL_DIR}/search-mediator\" <<'WRAPPER'", 1
         )[1].split("\nWRAPPER", 1)[0]
-        assert f"exec {locked_gunicorn}" in ui_wrapper
+        ui_command = ui_wrapper.split("\nexec ", 1)[1].replace("\\\n", " ")
+        assert shlex.split(ui_command)[:6] == [
+            "/usr/lib/secure-ai/python3.12-venv/bin/python", "-I", "-m",
+            "ui.runtime", "--", locked_gunicorn,
+        ]
         assert f"exec {locked_gunicorn}" in search_wrapper
         assert "/usr/lib/python3/site-packages" not in ui_wrapper
+
+    def test_supervisor_preserves_locked_runtime_and_gunicorn_arguments(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        monkeypatch.syspath_prepend(str(REPO_ROOT / "services"))
+        monkeypatch.syspath_prepend(str(REPO_ROOT / "services/ui"))
+        from ui import runtime
+
+        locked_bin = "/usr/lib/secure-ai/python3.12-venv/bin"
+        monkeypatch.setattr(runtime.sys, "executable", f"{locked_bin}/python")
+        monkeypatch.setattr(runtime.ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(prctl=lambda *args: 0))
+        monkeypatch.setattr(runtime.signal, "signal", lambda *args: None)
+        monkeypatch.setattr(runtime, "auth_manager", lambda: SimpleNamespace(_store=SimpleNamespace(require_current_epoch=lambda: None)))
+        monkeypatch.setattr(runtime, "_terminate", Mock())
+        def no_adopted_children(*args):
+            raise ChildProcessError
+        monkeypatch.setattr(runtime.os, "waitpid", no_adopted_children)
+        children = [Mock(pid=101, poll=lambda: 0), Mock(pid=102, poll=lambda: 0)]
+        launcher = Mock(side_effect=children)
+        monkeypatch.setattr(runtime.subprocess, "Popen", launcher)
+        monkeypatch.setenv("CATALOG_WORKER_ENABLED", "0")
+        command = [f"{locked_bin}/gunicorn", "--workers", "1", "--no-control-socket", "ui.app:app"]
+        with pytest.raises(RuntimeError, match="supervised UI component exited"):
+            runtime.main(["--", *command])
+        coordinator, gunicorn = launcher.call_args_list
+        assert coordinator.args[0][:3] == [
+            f"{locked_bin}/python", "-I", str(Path(runtime.__file__).with_name("catalog_worker.py")),
+        ]
+        assert coordinator.args[0][3] == "coordinator"
+        assert gunicorn.args[0] == [*command, "--config", str(Path(runtime.__file__).resolve())]
+        assert coordinator.kwargs["start_new_session"] is True
+        assert gunicorn.kwargs["start_new_session"] is True
+        assert callable(gunicorn.kwargs["preexec_fn"])
+        assert runtime._terminate.call_count == 2
+        for child in children:
+            child.wait.assert_called_once()
 
     def test_diffusion_wrapper_sets_utf8_locale(self):
         content = BUILD_SCRIPT.read_text(encoding="utf-8")

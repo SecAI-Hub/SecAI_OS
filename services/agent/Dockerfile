@@ -1,12 +1,16 @@
-FROM docker.io/library/python:3.14-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4
+FROM docker.io/library/python:3.14.8-alpine3.24@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+
+# Build from the repository root: docker build -f services/agent/Dockerfile .
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/services
 
 WORKDIR /app
-COPY requirements.lock .
-COPY setup.py .
-COPY agent/ agent/
+COPY services/agent/requirements.lock .
+COPY services/agent/setup.py .
+COPY services/agent/agent/ agent/
+COPY services/common/ services/common/
 
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
-    python -m pip install --no-cache-dir --no-deps .
+    python -m pip install --no-cache-dir --no-deps --no-build-isolation .
 
 USER 65534:65534
 EXPOSE 8476

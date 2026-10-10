@@ -21,16 +21,16 @@ jobs:
     outputs:
       bundle_sha256: ${{ steps.package.outputs.bundle_sha256 }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -75,7 +75,7 @@ jobs:
           # The bootc base can exceed Docker's overlay-layer depth even though
           # BlueBuild/Podman can consume it. Query the same Fedora 44 repos
           # through a shallow, immutable official Fedora package-check image.
-          package_check_ref="docker.io/library/fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898"
+          package_check_ref="docker.io/library/fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80"
           mapfile -t packages < <(
             python3 - <<'PY'
           import yaml
@@ -247,6 +247,19 @@ jobs:
           echo "LLAMA_CPP_VERSION=${LLAMA_CPP_VERSION}" >> "$GITHUB_ENV"
           mv "/tmp/${TARBALL}" ".source-prep/llama-cpp-staged.tar.gz"
 
+      - name: Stage the checksum-pinned native Go compiler
+        run: |
+          GO_TOOLCHAIN_VERSION=$(grep -oP 'GO_TOOLCHAIN_VERSION:-\K[^}]+' files/scripts/build-services.sh | head -1)
+          GO_TOOLCHAIN_SHA256=$(grep -oP 'GO_TOOLCHAIN_SHA256:-\K[^}]+' files/scripts/build-services.sh | head -1)
+          curl -fsSL --retry 3 -o .source-prep/go-toolchain.tar.gz \
+            "https://go.dev/dl/go${GO_TOOLCHAIN_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_TOOLCHAIN_SHA256}  .source-prep/go-toolchain.tar.gz" | sha256sum -c
+          echo "GO_TOOLCHAIN_VERSION=${GO_TOOLCHAIN_VERSION}" >> "$GITHUB_ENV"
+          echo "GO_TOOLCHAIN_SHA256=${GO_TOOLCHAIN_SHA256}" >> "$GITHUB_ENV"
+
+      - name: Stage authenticated current Tor source
+        run: python3 scripts/stage-tor-inputs.py --output .source-prep/tor
+
       - name: Emit SOURCE_PREP_MANIFEST.json
         run: |
           python3 -c "
@@ -264,6 +277,8 @@ jobs:
               'schema_version': 1,
               'timestamp': datetime.now(timezone.utc).isoformat(),
               'commit_sha': os.environ.get('GITHUB_SHA', 'unknown'),
+              'go_toolchain_version': os.environ['GO_TOOLCHAIN_VERSION'],
+              'go_toolchain_tarball_sha256': os.environ['GO_TOOLCHAIN_SHA256'],
               'llama_cpp_version': os.environ.get('LLAMA_CPP_VERSION', 'unknown'),
               'llama_cpp_tarball_sha256': os.environ.get('TARBALL_SHA256', 'unknown'),
           }
@@ -272,6 +287,8 @@ jobs:
               Path('vendor/wheels/SHA256SUMS'),
               Path('vendor/application-requirements.lock'),
               Path('.upstreams.lock.yaml'),
+              Path('.source-prep/tor/TOR_SOURCE_MANIFEST.json'),
+              Path('build/tor/source.lock.json'),
           ]
           missing = [str(path) for path in required_files if not path.is_file()]
           if missing:
@@ -284,6 +301,8 @@ jobs:
           manifest['wheelhouse_sha256sums_digest'] = digest(required_files[0])
           manifest['application_requirements_lock_digest'] = digest(required_files[1])
           manifest['upstreams_lock_digest'] = digest(required_files[2])
+          manifest['tor_source_manifest_sha256'] = digest(required_files[3])
+          manifest['tor_source_contract_sha256'] = digest(required_files[4])
           manifest['wheel_count'] = len(wheel_lines)
           manifest['application_dependency_mode'] = 'staged-offline'
           with required_files[2].open(encoding='utf-8') as handle:
@@ -341,6 +360,7 @@ jobs:
           bundle_dir="${RUNNER_TEMP}/source-prep-bundle"
           mkdir -p "$bundle_dir"
           bundle_path="${bundle_dir}/source-prep.tar.gz"
+          # The restored upstream roots must match the lock; omit the checkout placeholder.
           printf '%s\0' "${archive_paths[@]}" |
             tar \
               --create \
@@ -352,6 +372,7 @@ jobs:
               --group=0 \
               --numeric-owner \
               --hard-dereference \
+              --exclude='upstreams/README.md' \
               --null \
               --verbatim-files-from \
               --files-from=-
@@ -391,11 +412,11 @@ jobs:
         recipe:
           - recipe.yml
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -416,10 +437,10 @@ jobs:
           --checksum "$SOURCE_PREP_CHECKSUM"
 
       - name: Build Custom Image Without Publishing
-        uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
+        uses: blue-build/github-action@836161eb076426a451e6a0054f722b1153b8b3ad # v1.12.0
         with:
           recipe: ${{ matrix.recipe }}
-          cli_version: v0.9.36
+          cli_version: v0.9.37
           skip_checkout: true
           verify_install: true
           # The action declares this input required, but push=false never signs.
@@ -451,11 +472,11 @@ jobs:
           # "recipe.yml" maps to "recipes/recipe.yml" by convention.
           - recipe.yml
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -477,10 +498,10 @@ jobs:
 
       - name: Build Custom Image
         id: build
-        uses: blue-build/github-action@24d146df25adc2cf579e918efe2d9bff6adea408 # v1.11.1
+        uses: blue-build/github-action@836161eb076426a451e6a0054f722b1153b8b3ad # v1.12.0
         with:
           recipe: ${{ matrix.recipe }}
-          cli_version: v0.9.36
+          cli_version: v0.9.37
           skip_checkout: true
           verify_install: true
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
@@ -541,7 +562,7 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -569,14 +590,14 @@ jobs:
           fi
           df -h /
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install pinned cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.1
+          cosign-release: v3.1.3
 
       - name: Authenticate to the image registry
         env:
@@ -1299,7 +1320,7 @@ jobs:
           ' "$default_registry_config" >/dev/null
 
       - name: Generate GitHub image provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ needs.bluebuild_publish.outputs.image_ref }}
           subject-digest: ${{ needs.bluebuild_publish.outputs.digest }}
@@ -1454,11 +1475,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 

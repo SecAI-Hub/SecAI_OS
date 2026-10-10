@@ -1,5 +1,13 @@
 # Recovery Runbook — Operator Procedures
 
+Backup recovery status: active file restore is gated pending the durable
+maintenance transaction, producer adapters, historical enrollment and rotation
+reconciliation. Version 2 inspection is a legacy partial check; version 3 is
+currently an inert, unquiesced partial export. Neither proves complete recovery.
+Use the [backup foundation guide](backup-foundation.md) for supported inspection
+and synthetic rehearsal. This gate also keeps destructive LUKS header repair
+unreachable; a generic confirmation cannot bypass the missing controls.
+
 This runbook documents the operational procedures for responding to security incidents, recovering from degraded states, and exporting forensic evidence. All commands target the Incident Recorder service at `localhost:8515`.
 
 Last updated: 2026-03-14

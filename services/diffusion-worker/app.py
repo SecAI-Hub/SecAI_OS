@@ -3,7 +3,7 @@ Secure AI Appliance - Diffusion Worker
 
 Image and video generation service using the diffusers library.
 Runs locally with no internet access (PrivateNetwork=yes).
-Models are loaded from the trusted registry only.
+Models are loaded locally from the registry; runtime admission does not verify model integrity.
 """
 
 import base64
@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import stat
 import threading
 import time
 import warnings
@@ -20,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from flask import Flask, g, jsonify, request, send_from_directory
+from common import diffusion_registry, runtime_assurance
+from flask import Flask, g, has_request_context, jsonify, request, send_file
 
 log = logging.getLogger("diffusion-worker")
 
@@ -49,6 +51,10 @@ MAX_INPUT_IMAGE_BYTES = int(
 MAX_INPUT_IMAGE_PIXELS = int(
     os.getenv("MAX_INPUT_IMAGE_PIXELS", str(16_777_216))
 )
+REGISTRY_URL = os.getenv("REGISTRY_URL", "http://127.0.0.1:8470")
+REGISTRY_VERIFY_TOKEN_PATH = Path(os.getenv("REGISTRY_VERIFY_TOKEN_PATH", "/run/secure-ai/registry-verify-token"))
+ATTESTOR_URL = os.getenv("ATTESTOR_URL", "http://127.0.0.1:8505")
+ATTESTOR_TOKEN_PATH = Path(os.getenv("ATTESTOR_TOKEN_PATH", "/run/secure-ai/attestor-token"))
 MAX_CONCURRENT_GENERATIONS = max(
     1, int(os.getenv("MAX_CONCURRENT_GENERATIONS", "1"))
 )
@@ -80,6 +86,10 @@ def _protect_generation_endpoints():
         return jsonify({"error": "forbidden"}), 403
 
     if request.path.startswith("/v1/generate/"):
+        try:
+            _require_generation_runtime()
+        except runtime_assurance.RuntimeAssuranceUnavailable:
+            return _runtime_denial()
         if not _generation_slots.acquire(blocking=False):
             return jsonify({"error": "generation capacity exhausted"}), 429
         g.generation_slot_acquired = True
@@ -91,6 +101,79 @@ def _release_generation_slot(_error=None):
     if getattr(g, "generation_slot_acquired", False):
         _generation_slots.release()
         g.generation_slot_acquired = False
+
+
+def _is_sandbox_deployment() -> bool:
+    return os.getenv("SECURE_AI_DEPLOYMENT_MODE", "").strip().lower() == "sandbox"
+
+
+def _require_generation_runtime() -> str | None:
+    """Read a current native decision; sandbox has unsupported host assurance."""
+    if _is_sandbox_deployment():
+        return None
+    try:
+        token = ATTESTOR_TOKEN_PATH.read_text(encoding="utf-8").strip()
+        mode = runtime_assurance.require_runtime(ATTESTOR_URL, token)
+    except (OSError, ValueError, UnicodeError):
+        raise runtime_assurance.RuntimeAssuranceUnavailable() from None
+    if mode not in {"required", "optional", "no_gpu"}:
+        raise runtime_assurance.RuntimeAssuranceUnavailable()
+    return mode
+
+
+def _runtime_denial():
+    return jsonify({"error": runtime_assurance.UNAVAILABLE,
+                    "code": "runtime_assurance_unavailable"}), 503
+
+
+def _pipeline_binding(gpu_mode: str | None) -> tuple[str | None, str, bool]:
+    device = _get_device(gpu_mode)
+    return gpu_mode, device, device in {"cuda", "xpu"} and _cpu_offload_enabled()
+
+
+def _verified_diffusion_model(filename: str):
+    try:
+        token = REGISTRY_VERIFY_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise diffusion_registry.ModelIntegrityUnavailable() from None
+    return diffusion_registry.verify_model(REGISTRY_URL, token, filename, REGISTRY_DIR,
+                                           sandbox=_is_sandbox_deployment())
+
+
+def _model_denial():
+    return jsonify({"error": diffusion_registry.UNAVAILABLE,
+                    "code": "model_integrity_unavailable"}), 503
+
+
+def _select_generation_model(filename: str):
+    verified = _verified_diffusion_model(filename)
+    # Local discovery supplies capability diagnostics only after enrollment has
+    # been verified. Its paths never authorize loading on their own.
+    matches = [model for model in _find_diffusion_models()
+               if model["name"] == verified.filename and model["path"] == verified.path]
+    if len(matches) != 1:
+        raise diffusion_registry.ModelIntegrityUnavailable()
+    g.model_binding = verified
+    return matches[0]
+
+
+def _recheck_model_binding(expected):
+    if _verified_diffusion_model(expected.filename) != expected:
+        raise diffusion_registry.ModelIntegrityUnavailable()
+
+
+def _prepare_generation_pipeline(model_path: str, pipeline_type: str):
+    binding = _pipeline_binding(_require_generation_runtime())
+    _recheck_model_binding(g.model_binding)
+    g.pipeline_binding = binding
+    return _load_pipeline(model_path, pipeline_type, binding=binding, verified=g.model_binding)
+
+
+def _recheck_pipeline_runtime():
+    _recheck_model_binding(g.model_binding)
+    if _pipeline_binding(_require_generation_runtime()) != g.pipeline_binding:
+        raise runtime_assurance.RuntimeAssuranceUnavailable()
+
 
 
 def _env_truthy(value: str) -> bool:
@@ -158,8 +241,10 @@ def _torch_backend_available(torch, backend: str) -> bool:
     return False
 
 
-def _get_device():
-    """Detect best available local compute device."""
+def _get_device(gpu_mode: str | None = None):
+    """Detect compute hardware, respecting explicit no-GPU admission."""
+    if gpu_mode == "no_gpu":
+        return "cpu"
     try:
         import torch
 
@@ -173,7 +258,7 @@ def _get_device():
 
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             return "cuda"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             return "xpu"
@@ -253,9 +338,21 @@ def _decode_input_image(image_b64: str):
     return converted
 
 
-def _load_pipeline(model_path: str, pipeline_type: str = "image"):
+def _load_pipeline(model_path: str, pipeline_type: str = "image", *, binding=None, verified=None):
     """Load a diffusion pipeline from a local model directory or safetensors file."""
-    cache_key = f"{model_path}:{pipeline_type}"
+    if binding is None:
+        # Direct callers also require admission and do not need a Flask context.
+        binding = _pipeline_binding(_require_generation_runtime())
+    if verified is None:
+        verified = _verified_diffusion_model(Path(model_path).name)
+    if verified.path != model_path:
+        raise diffusion_registry.ModelIntegrityUnavailable()
+    gpu_mode, device, offload = binding
+    if has_request_context():
+        g.pipeline_binding = binding
+        g.model_binding = verified
+    cache_key = json.dumps([verified.name, verified.filename, verified.sha256, model_path,
+                            pipeline_type, gpu_mode, device, offload], separators=(",", ":"))
     if cache_key in _pipelines:
         return _pipelines[cache_key]
 
@@ -269,7 +366,6 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
     except ImportError:
         raise RuntimeError("diffusers library not installed")
 
-    device = _get_device()
     # float16 for GPU backends; float32 for CPU (no half-precision support on most CPUs)
     dtype = torch.float16 if device in ("cuda", "mps", "xpu") else torch.float32
 
@@ -281,6 +377,8 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
     load_kwargs = {
         "torch_dtype": dtype,
         "local_files_only": True,
+        "use_safetensors": True,
+        "trust_remote_code": False,
     }
     if any(model_dir.rglob("*.fp16.safetensors")):
         load_kwargs["variant"] = "fp16"
@@ -315,12 +413,14 @@ def _load_pipeline(model_path: str, pipeline_type: str = "image"):
             pipe.enable_attention_slicing()
         except Exception:
             pass
-        if _cpu_offload_enabled():
+        if offload:
             try:
                 pipe.enable_model_cpu_offload()
             except Exception:
                 pass
 
+    # Catch a changed enrollment or on-disk tree while an uncached load ran.
+    _recheck_model_binding(verified)
     _pipelines[cache_key] = pipe
     log.info("pipeline loaded: %s", cache_key)
     return pipe
@@ -509,6 +609,8 @@ def health():
     gpu_info = _get_gpu_info()
     return jsonify({
         "status": "ok",
+        "deployment_mode": "sandbox" if _is_sandbox_deployment() else "appliance",
+        "host_assurance": "unsupported" if _is_sandbox_deployment() else "native",
         "device": device,
         "gpu": gpu_info,
         "loaded_pipelines": list(_pipelines.keys()),
@@ -550,41 +652,132 @@ def list_models():
     return jsonify(_find_diffusion_models())
 
 
+def _open_output_root() -> int:
+    """Anchor the configured output directory without following any component."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        for component in OUTPUTS_DIR.absolute().parts[1:]:
+            if component in {".", ".."}:
+                raise OSError("unsafe output directory")
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _validate_output_root(descriptor: int) -> None:
+    """Reject root/mount replacement before publishing a response."""
+    current = _open_output_root()
+    try:
+        before, after = os.fstat(descriptor), os.fstat(current)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise OSError("output directory replaced")
+    finally:
+        os.close(current)
+
+
+def _open_output_file(root: int, filename: str) -> tuple[int, os.stat_result]:
+    # Hold the checked inode so unlink/recreate cannot recycle its identity.
+    identity = os.open(filename, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
+    descriptor = None
+    try:
+        before = os.fstat(identity)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise OSError("output is not a private regular file")
+        descriptor = os.open(
+            filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=root,
+        )
+        opened = os.fstat(descriptor)
+        current = os.stat(filename, dir_fd=root, follow_symlinks=False)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise OSError("output replaced during open")
+        result = descriptor
+        descriptor = None
+        return result, opened
+    finally:
+        os.close(identity)
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 @app.route("/v1/outputs")
 def list_outputs():
-    """List recently generated image/video outputs saved by the worker."""
-    if not OUTPUTS_DIR.exists():
+    """List only real generated outputs belonging to the anchored directory."""
+    try:
+        root = _open_output_root()
+    except FileNotFoundError:
         return jsonify([])
-
+    except OSError:
+        return jsonify({"error": "outputs unavailable"}), 503
     outputs = []
-    for path in OUTPUTS_DIR.iterdir():
-        if not path.is_file() or path.suffix.lower() not in OUTPUT_EXTENSIONS:
-            continue
-        try:
-            stat_result = path.stat()
-        except OSError:
-            continue
-        kind = "video" if path.suffix.lower() in {".mp4", ".webm"} else "image"
-        outputs.append({
-            "filename": path.name,
-            "kind": kind,
-            "size_bytes": stat_result.st_size,
-            "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat_result.st_mtime)),
-            "url": f"/v1/outputs/{path.name}",
-        })
+    try:
+        for filename in os.listdir(root):
+            suffix = Path(filename).suffix.lower()
+            if suffix not in OUTPUT_EXTENSIONS:
+                continue
+            try:
+                descriptor, info = _open_output_file(root, filename)
+            except OSError:
+                continue
+            os.close(descriptor)
+            outputs.append({
+                "filename": filename,
+                "kind": "video" if suffix in {".mp4", ".webm"} else "image",
+                "size_bytes": info.st_size,
+                "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(info.st_mtime)),
+                "url": f"/v1/outputs/{filename}",
+            })
+        _validate_output_root(root)
+    except OSError:
+        return jsonify({"error": "outputs unavailable"}), 503
+    finally:
+        os.close(root)
     outputs.sort(key=lambda item: item["modified_at"], reverse=True)
     return jsonify(outputs[:50])
 
 
 @app.route("/v1/outputs/<path:filename>")
 def get_output(filename: str):
-    """Serve a generated output file by basename only."""
+    """Serve the validated open file, never reopen its pathname for transfer."""
     if Path(filename).name != filename:
         return jsonify({"error": "invalid output filename"}), 400
-    path = OUTPUTS_DIR / filename
-    if not path.is_file() or path.suffix.lower() not in OUTPUT_EXTENSIONS:
+    if Path(filename).suffix.lower() not in OUTPUT_EXTENSIONS:
         return jsonify({"error": "output not found"}), 404
-    return send_from_directory(OUTPUTS_DIR, filename)
+    root = descriptor = None
+    stream = None
+    try:
+        root = _open_output_root()
+        descriptor, info = _open_output_file(root, filename)
+        _validate_output_root(root)
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = None  # Ownership moved to the response stream.
+        response = send_file(
+            stream, download_name=filename, last_modified=info.st_mtime,
+            etag=f"{info.st_dev}-{info.st_ino}-{info.st_mtime_ns}-{info.st_size}",
+            conditional=False,
+        )
+        response.content_length = info.st_size
+        response.make_conditional(request.environ, accept_ranges=True, complete_length=info.st_size)
+        response.call_on_close(stream.close)
+        stream = None  # WSGI response/wrapper closes the file on success.
+        return response
+    except OSError:
+        return jsonify({"error": "output not found"}), 404
+    finally:
+        if stream is not None:
+            stream.close()
+        if descriptor is not None:
+            os.close(descriptor)
+        if root is not None:
+            os.close(root)
 
 
 # --- Image Generation ---
@@ -603,6 +796,8 @@ def generate_image():
 
     negative_prompt = body.get("negative_prompt", "")
     model_name = body.get("model", "")
+    if not isinstance(model_name, str) or not model_name:
+        return jsonify({"error": "select a registered model before generating"}), 400
     width = _clamp(body.get("width", 512), 256, MAX_RESOLUTION)
     height = _clamp(body.get("height", 512), 256, MAX_RESOLUTION)
     steps = _clamp(body.get("steps", 30), 1, MAX_STEPS)
@@ -610,18 +805,10 @@ def generate_image():
     seed = body.get("seed")
     num_images = _clamp(body.get("num_images", 1), 1, 4)
 
-    # Find model
-    models = _find_diffusion_models()
-    if not models:
-        return jsonify({"error": "no diffusion models available in registry"}), 503
-
-    if model_name:
-        matches = [m for m in models if m["name"] == model_name]
-        if not matches:
-            return jsonify({"error": f"model not found: {model_name}"}), 404
-        model_info = matches[0]
-    else:
-        model_info = models[0]
+    try:
+        model_info = _select_generation_model(model_name)
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
 
     if "txt2img" not in model_info.get("capabilities", ["txt2img"]):
         return jsonify({"error": f"model does not support text-to-image: {model_info['name']}"}), 400
@@ -629,12 +816,13 @@ def generate_image():
     try:
         import torch
 
-        pipe = _load_pipeline(model_info["path"], "image")
+        pipe = _prepare_generation_pipeline(model_info["path"], "image")
         generator = None
         if seed is not None:
-            generator = torch.Generator(device=_get_device()).manual_seed(int(seed))
+            generator = torch.Generator(device=g.pipeline_binding[1]).manual_seed(int(seed))
 
         start = time.monotonic()
+        _recheck_pipeline_runtime()
         result = pipe(
             prompt=prompt,
             negative_prompt=negative_prompt or None,
@@ -679,6 +867,10 @@ def generate_image():
             },
         })
 
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
+    except runtime_assurance.RuntimeAssuranceUnavailable:
+        return _runtime_denial()
     except Exception:
         log.exception("image generation failed")
         return jsonify({"error": "image generation failed"}), 500
@@ -698,6 +890,8 @@ def generate_video():
 
     negative_prompt = body.get("negative_prompt", "")
     model_name = body.get("model", "")
+    if not isinstance(model_name, str) or not model_name:
+        return jsonify({"error": "select a registered model before generating"}), 400
     image_b64 = body.get("image", "")
     requested_width = body.get("width")
     requested_height = body.get("height")
@@ -709,19 +903,10 @@ def generate_video():
     fps = _clamp(body.get("fps", 8), 1, 30)
     seed = body.get("seed")
 
-    # Find a video-capable model
-    models = _find_diffusion_models()
-    video_models = [m for m in models if m["type"] == "video"]
-
-    if model_name:
-        matches = [m for m in models if m["name"] == model_name]
-        if not matches:
-            return jsonify({"error": f"model not found: {model_name}"}), 404
-        model_info = matches[0]
-    elif video_models:
-        model_info = video_models[0]
-    else:
-        return jsonify({"error": "no video generation models available"}), 503
+    try:
+        model_info = _select_generation_model(model_name)
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
 
     image_conditioned = _is_image_conditioned_video_model(model_info)
     if image_conditioned:
@@ -742,10 +927,10 @@ def generate_video():
         import torch
         from diffusers.utils import export_to_video
 
-        pipe = _load_pipeline(model_info["path"], "video")
+        pipe = _prepare_generation_pipeline(model_info["path"], "video")
         generator = None
         if seed is not None:
-            generator = torch.Generator(device=_get_device()).manual_seed(int(seed))
+            generator = torch.Generator(device=g.pipeline_binding[1]).manual_seed(int(seed))
 
         start = time.monotonic()
         if image_conditioned:
@@ -763,6 +948,7 @@ def generate_video():
                 height = init_image.size[1]
             width, height = _normalize_video_dimensions(width, height)
             conditioning_input = _prepare_video_conditioning_input(init_image, pipe, torch)
+            _recheck_pipeline_runtime()
             result = pipe(
                 image=conditioning_input,
                 width=width,
@@ -772,6 +958,7 @@ def generate_video():
                 generator=generator,
             )
         else:
+            _recheck_pipeline_runtime()
             result = pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt or None,
@@ -812,6 +999,10 @@ def generate_video():
             },
         })
 
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
+    except runtime_assurance.RuntimeAssuranceUnavailable:
+        return _runtime_denial()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
@@ -838,6 +1029,8 @@ def generate_img2img():
         return jsonify({"error": "image (base64) is required"}), 400
 
     model_name = body.get("model", "")
+    if not isinstance(model_name, str) or not model_name:
+        return jsonify({"error": "select a registered model before generating"}), 400
     strength = _clamp(body.get("strength", 0.75), 0.0, 1.0)
     steps = _clamp(body.get("steps", 30), 1, MAX_STEPS)
     guidance_scale = _clamp(body.get("guidance_scale", 7.5), 1.0, 30.0)
@@ -850,16 +1043,10 @@ def generate_img2img():
             "error": "strength and steps combination must yield at least one denoising step",
         }), 400
 
-    models = _find_diffusion_models()
-    if model_name:
-        matches = [m for m in models if m["name"] == model_name]
-        if not matches:
-            return jsonify({"error": f"model not found: {model_name}"}), 404
-        model_info = matches[0]
-    elif models:
-        model_info = models[0]
-    else:
-        return jsonify({"error": "no diffusion models available"}), 503
+    try:
+        model_info = _select_generation_model(model_name)
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
 
     if "img2img" not in model_info.get("capabilities", []):
         return jsonify({"error": f"model does not support image-to-image: {model_info['name']}"}), 400
@@ -870,12 +1057,13 @@ def generate_img2img():
         init_image = _decode_input_image(image_b64)
         init_image = _normalize_img2img_input(init_image)
 
-        pipe = _load_pipeline(model_info["path"], "img2img")
+        pipe = _prepare_generation_pipeline(model_info["path"], "img2img")
         generator = None
         if seed is not None:
-            generator = torch.Generator(device=_get_device()).manual_seed(int(seed))
+            generator = torch.Generator(device=g.pipeline_binding[1]).manual_seed(int(seed))
 
         start = time.monotonic()
+        _recheck_pipeline_runtime()
         result = pipe(
             prompt=prompt,
             image=init_image,
@@ -904,6 +1092,10 @@ def generate_img2img():
             "elapsed_seconds": elapsed,
         })
 
+    except diffusion_registry.ModelIntegrityUnavailable:
+        return _model_denial()
+    except runtime_assurance.RuntimeAssuranceUnavailable:
+        return _runtime_denial()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:

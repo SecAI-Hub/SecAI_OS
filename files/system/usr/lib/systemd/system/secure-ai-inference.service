@@ -2,8 +2,8 @@
 Description=Secure AI Inference Worker (llama-server)
 ConditionPathExists=/var/lib/secure-ai/vault/.initialized
 RequiresMountsFor=/var/lib/secure-ai/vault/models
-After=secure-ai-vault-mounted.service secure-ai-registry.service
-Requires=secure-ai-vault-mounted.service secure-ai-registry.service
+After=secure-ai-vault-mounted.service secure-ai-registry.service secure-ai-credentials.service
+Requires=secure-ai-vault-mounted.service secure-ai-registry.service secure-ai-credentials.service
 
 [Service]
 Type=notify
@@ -14,6 +14,13 @@ EnvironmentFile=-/var/lib/secure-ai/inference.env
 Environment=CTX_SIZE=8192
 Environment=THREADS=4
 Environment=PORT=8465
+Environment=INFERENCE_SELECTION_PATH=/var/lib/secure-ai/inference/selection.json
+Environment=INFERENCE_UI_TOKEN_PATH=%d/inference-ui-token
+Environment=INFERENCE_AGENT_TOKEN_PATH=%d/inference-agent-token
+Environment=INFERENCE_PROBE_TOKEN_PATH=%d/inference-probe-token
+LoadCredential=inference-ui-token:/var/lib/secure-ai/credentials/inference-ui.token
+LoadCredential=inference-agent-token:/var/lib/secure-ai/credentials/inference-agent.token
+LoadCredential=inference-probe-token:/var/lib/secure-ai/credentials/inference-probe.token
 WatchdogSec=30
 
 # Filesystem isolation — needs GPU access, no network
@@ -23,6 +30,7 @@ RuntimeDirectory=secure-ai-inference
 RuntimeDirectoryMode=0700
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/var/lib/secure-ai/vault/models
+ReadOnlyPaths=/var/lib/secure-ai/inference
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes

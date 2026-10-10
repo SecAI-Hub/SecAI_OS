@@ -1,0 +1,6 @@
+# Deliberately unenrolled. Supply reviewed model/driver/device/reference bindings
+# in the signed release and pin these exact bytes in attestation.yaml.
+captured_at: 0001-01-01T00:00:00Z
+tensor_hashes: {}
+sentinel_refs: []
+device_allowlist: []

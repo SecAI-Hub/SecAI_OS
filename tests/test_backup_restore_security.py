@@ -14,10 +14,9 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HELPER_PATH = (
-    REPO_ROOT
-    / "files/system/usr/libexec/secure-ai/secure-backup-archive.py"
-)
+HELPER_PATH = Path(os.environ.get("SECAI_BACKUP_HELPER_UNDER_TEST", str(
+    REPO_ROOT / "files/system/usr/libexec/secure-ai/secure-backup-archive.py"
+)))
 SPEC = importlib.util.spec_from_file_location("secure_backup_archive", HELPER_PATH)
 assert SPEC and SPEC.loader
 archive = importlib.util.module_from_spec(SPEC)
@@ -167,15 +166,7 @@ def test_apply_rejects_symlink_target(tmp_path: Path, monkeypatch: pytest.Monkey
     policy = staging / "etc/secure-ai/policy/policy.yaml"
     policy.parent.mkdir(parents=True)
     policy.write_text("version: 1\n", encoding="utf-8")
-    manifest = {
-        "files": {
-            "etc/secure-ai/policy/policy.yaml": {
-                "sha256": "0" * 64,
-                "size": policy.stat().st_size,
-            }
-        }
-    }
-    (staging / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    staging = _validated_stage(staging, tmp_path)
     etc_root = tmp_path / "etc"
     outside = tmp_path / "outside"
     outside.write_text("do not overwrite", encoding="utf-8")
@@ -200,17 +191,7 @@ def test_apply_rolls_back_all_prior_files_on_failure(
     policy.parent.mkdir(parents=True)
     appliance.write_text("new: appliance\n", encoding="utf-8")
     policy.write_text("new: policy\n", encoding="utf-8")
-    files = {
-        "etc/secure-ai/config/appliance.yaml": {
-            "sha256": "0" * 64,
-            "size": appliance.stat().st_size,
-        },
-        "etc/secure-ai/policy/policy.yaml": {
-            "sha256": "0" * 64,
-            "size": policy.stat().st_size,
-        },
-    }
-    (staging / "manifest.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+    staging = _validated_stage(staging, tmp_path)
 
     etc_root = tmp_path / "etc"
     existing = etc_root / "secure-ai/config/appliance.yaml"
@@ -233,3 +214,67 @@ def test_apply_rolls_back_all_prior_files_on_failure(
         archive.apply_restore(staging, "config", etc_root, secure_root)
     assert existing.read_text(encoding="utf-8") == "old: appliance\n"
     assert not (etc_root / "secure-ai/policy/policy.yaml").exists()
+
+
+def _validated_stage(source: Path, tmp_path: Path) -> Path:
+    backup = tmp_path / "fixture.tar.gz"
+    archive.create_archive(source, backup, "full", None)
+    stage = tmp_path / "validated"
+    stage.mkdir(mode=0o700)
+    archive.extract_archive(backup, stage)
+    return stage
+
+
+def test_extract_rejects_path_replacement_after_manifest_validation(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload").write_bytes(b"expected")
+    original, replacement = tmp_path / "original.tar.gz", tmp_path / "replacement.tar.gz"
+    archive.create_archive(source, original, "full", None)
+    (source / "payload").write_bytes(b"attacker")
+    archive.create_archive(source, replacement, "full", None)
+    destination = tmp_path / "destination"
+    destination.mkdir(mode=0o700)
+    validate = archive._validate_manifest
+
+    def swap(manifest, actual):
+        value = validate(manifest, actual)
+        os.replace(replacement, original)
+        return value
+
+    monkeypatch.setattr(archive, "_validate_manifest", swap)
+    with pytest.raises(archive.ArchiveError, match="changed"):
+        archive.extract_archive(original, destination)
+    assert list(destination.iterdir()) == []
+
+
+def test_apply_rejects_changed_inert_tree_before_target_mutation(tmp_path):
+    source = tmp_path / "source"
+    policy = source / "etc/secure-ai/policy/policy.yaml"
+    policy.parent.mkdir(parents=True)
+    policy.write_bytes(b"valid")
+    stage = _validated_stage(source, tmp_path)
+    (stage / "etc/secure-ai/policy/policy.yaml").write_bytes(b"other")
+    with pytest.raises(archive.ArchiveError, match="staged objects"):
+        archive.apply_restore(stage, "config", tmp_path / "target-etc", tmp_path / "target-state")
+    assert not (tmp_path / "target-etc").exists()
+
+
+def test_extract_detects_staged_tree_mutation(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload").write_bytes(b"correct")
+    output = tmp_path / "source.tar.gz"
+    archive.create_archive(source, output, "logs", None)
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    verify = archive.v3.Stage.verify
+
+    def corrupt(self, expected, budget):
+        (self.path / "payload").write_bytes(b"changed")
+        verify(self, expected, budget)
+
+    monkeypatch.setattr(archive.v3.Stage, "verify", corrupt)
+    with pytest.raises(archive.ArchiveError, match="staged objects"):
+        archive.extract_archive(output, stage)
+    assert not list(stage.iterdir())

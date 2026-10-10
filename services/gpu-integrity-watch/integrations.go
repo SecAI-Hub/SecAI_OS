@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,73 +21,16 @@ type IntegrationConfig struct {
 	RuntimeAttestorURL  string `yaml:"runtime_attestor_url"`  // e.g. http://127.0.0.1:8505
 }
 
-// ---------- GPU attestation state (for runtime-attestor) ----------
-
-// GPUAttestState summarises GPU integrity for inclusion in the runtime
-// attestation bundle.  Exported via /v1/attest-state.
-type GPUAttestState struct {
-	Timestamp      time.Time              `json:"timestamp"`
-	Verdict        Verdict                `json:"verdict"`
-	CompositeScore float64                `json:"composite_score"`
-	ProbeStatuses  map[string]ProbeStatus `json:"probe_statuses"`
-	ProbeScores    map[string]float64     `json:"probe_scores"`
-	DriverVersion  string                 `json:"driver_version,omitempty"`
-	DeviceNodes    []string               `json:"device_nodes,omitempty"`
-	Trend          float64                `json:"trend"`
-}
-
-// buildAttestState creates an attestation summary from the current scoring
-// engine state.  The caller is responsible for obtaining any needed locks
-// on latestResults beforehand.
-func buildAttestState(scorer *ScoringEngine, latestResults []ProbeResult) GPUAttestState {
-	latest := scorer.Latest()
-
-	state := GPUAttestState{
-		Timestamp:     time.Now().UTC(),
-		Verdict:       VerdictUnknown,
-		ProbeStatuses: make(map[string]ProbeStatus),
-		ProbeScores:   make(map[string]float64),
-		Trend:         scorer.Trend(10),
-	}
-
-	if latest != nil {
-		state.Verdict = latest.Verdict
-		state.CompositeScore = latest.CompositeScore
-		state.ProbeStatuses = latest.ProbeStatuses
-		state.ProbeScores = latest.ProbeScores
-	}
-
-	// Extract driver version and device nodes from latest probe results.
-	for _, r := range latestResults {
-		if r.Type == ProbeDriverFingerprint {
-			for _, f := range r.Findings {
-				if strings.Contains(f.Description, "driver version") {
-					state.DriverVersion = f.Detail
-				}
-			}
-		}
-		if r.Type == ProbeDeviceAllowlist {
-			for _, f := range r.Findings {
-				if strings.Contains(f.Description, "device nodes detected") {
-					state.DeviceNodes = strings.Split(f.Detail, ", ")
-				}
-			}
-		}
-	}
-
-	return state
-}
-
 // ---------- incident reporting ----------
 
 // IncidentReport is the JSON payload POSTed to the incident-recorder
 // when GPU integrity degrades.
 type IncidentReport struct {
-	Class       string                 `json:"class"`
-	Source      string                 `json:"source"`
-	Description string                 `json:"description"`
-	Severity    string                 `json:"severity,omitempty"`
-	Evidence    map[string]interface{} `json:"evidence,omitempty"`
+	Class       string            `json:"class"`
+	Source      string            `json:"source"`
+	Description string            `json:"description"`
+	Severity    string            `json:"severity,omitempty"`
+	Evidence    map[string]string `json:"evidence,omitempty"`
 }
 
 // reportIncident sends an incident to the incident-recorder service.
@@ -96,14 +41,18 @@ func reportIncident(recorderURL, token string, entry ScoreEntry, results []Probe
 		return
 	}
 
-	// Only report warning or critical verdicts.
-	if entry.Verdict != VerdictWarning && entry.Verdict != VerdictCritical {
+	// Unavailable required evidence must also reach the containment authority.
+	if entry.Verdict == VerdictHealthy {
 		return
 	}
 
 	incidentClass := "model_behavior_anomaly"
 	severity := "high"
 	description := fmt.Sprintf("GPU integrity %s: composite score %.2f", entry.Verdict, entry.CompositeScore)
+	if entry.Verdict == VerdictUnknown {
+		incidentClass = "integrity_violation"
+		description = "Required GPU integrity evidence is unavailable"
+	}
 
 	// Classify the incident based on what probes triggered.
 	for _, r := range results {
@@ -128,10 +77,12 @@ func reportIncident(recorderURL, token string, entry ScoreEntry, results []Probe
 	}
 
 	// Build evidence from probe findings.
-	evidence := map[string]interface{}{
+	statuses, _ := json.Marshal(entry.ProbeStatuses)
+	evidence := map[string]string{
+		"schema_version":  "1",
 		"verdict":         string(entry.Verdict),
-		"composite_score": entry.CompositeScore,
-		"probe_statuses":  entry.ProbeStatuses,
+		"composite_score": fmt.Sprintf("%.6f", entry.CompositeScore),
+		"probe_statuses":  string(statuses),
 	}
 
 	failedProbes := []string{}
@@ -140,7 +91,8 @@ func reportIncident(recorderURL, token string, entry ScoreEntry, results []Probe
 			failedProbes = append(failedProbes, r.Probe)
 		}
 	}
-	evidence["failed_probes"] = failedProbes
+	failed, _ := json.Marshal(failedProbes)
+	evidence["failed_probes"] = string(failed)
 
 	report := IncidentReport{
 		Class:       incidentClass,
@@ -149,6 +101,37 @@ func reportIncident(recorderURL, token string, entry ScoreEntry, results []Probe
 		Severity:    severity,
 		Evidence:    evidence,
 	}
+	// Report each concrete changed artifact separately so the recorder can
+	// execute its existing single-model containment contract without guessing.
+	paths := map[string]bool{}
+	for _, result := range results {
+		for _, path := range result.ModelPaths {
+			if filepath.IsAbs(path) && filepath.Clean(path) == path {
+				paths[path] = true
+			}
+		}
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+	if len(ordered) == 0 {
+		// An unidentified/global integrity fault requires appliance containment,
+		// rather than claiming a model quarantine with an empty target.
+		if report.Class == "manifest_mismatch" || report.Class == "model_behavior_anomaly" {
+			report.Class = "integrity_violation"
+		}
+		sendIncidentReport(recorderURL, token, report)
+		return
+	}
+	for _, path := range ordered {
+		report.Evidence["model_path"] = path
+		sendIncidentReport(recorderURL, token, report)
+	}
+}
+
+func sendIncidentReport(recorderURL, token string, report IncidentReport) {
 
 	body, err := json.Marshal(report)
 	if err != nil {
@@ -174,14 +157,14 @@ func reportIncident(recorderURL, token string, entry ScoreEntry, results []Probe
 		return
 	}
 	defer resp.Body.Close()
-	io.ReadAll(resp.Body) // drain
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("incident reported: class=%s severity=%s", incidentClass, severity)
+		log.Printf("incident reported: class=%s severity=%s", report.Class, report.Severity)
 		auditLog("incident_reported", map[string]interface{}{
-			"class":    incidentClass,
-			"severity": severity,
-			"verdict":  string(entry.Verdict),
+			"class":    report.Class,
+			"severity": report.Severity,
+			"verdict":  report.Evidence["verdict"],
 		})
 	} else {
 		log.Printf("warning: incident-recorder returned %d", resp.StatusCode)

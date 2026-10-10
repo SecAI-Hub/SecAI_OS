@@ -23,7 +23,7 @@ IMPORT_VOLUME="secai-sandbox_secai-import-staging"
 UI_ROOT_VOLUME="secai-sandbox_secai-ui-root"
 AGENT_STATE_VOLUME="secai-sandbox_secai-agent-state"
 RUN_VOLUME="secai-sandbox_secai-run"
-ALPINE_HELPER_IMAGE="docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+ALPINE_HELPER_IMAGE="docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 
 WITH_INFERENCE=0
 WITH_DIFFUSION=0

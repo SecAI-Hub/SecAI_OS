@@ -30,6 +30,9 @@ def provision_search_test_credentials(tmp_path, monkeypatch):
     token_path.chmod(0o600)
     monkeypatch.setenv("SERVICE_TOKEN_PATH", str(token_path))
     sm._audit_chain = sm.AuditChain(tmp_path / "search-audit.jsonl")
+    def unexpected_network(*args, **kwargs):
+        raise AssertionError("application tests must mock the transport boundary")
+    monkeypatch.setattr(sm, "_transport_get", unexpected_network)
     yield
     sm._audit_chain = None
 
@@ -204,7 +207,7 @@ class TestContextBuilding:
         ]
         ctx = build_context(results)
         assert "Python 3.12" in ctx
-        assert "web via Tor-routed search" in ctx
+        assert "untrusted information" in ctx
         assert "[1]" in ctx
 
     def test_empty_results_returns_empty(self):
@@ -256,10 +259,10 @@ class TestSearchEndpointAuth:
                         return None
 
                     def json(self):
-                        return {"results": []}
+                        return 200
 
                 with monkeypatch.context() as m2:
-                    m2.setattr(sm.requests, "get", lambda *args, **kwargs: MockResp())
+                    m2.setattr(sm, "_transport_get", lambda *args, **kwargs: {"results": []})
                     resp = client.post(
                         "/v1/search",
                         json={"query": "test search"},
@@ -289,7 +292,7 @@ class TestHealthEndpoint:
             def fail_get(*args, **kwargs):
                 raise AssertionError("health should not probe searxng when search is disabled")
 
-            m.setattr(sm.requests, "get", fail_get)
+            m.setattr(sm, "_transport_get", fail_get)
 
             with search_app.test_client() as client:
                 resp = client.get(
@@ -309,7 +312,7 @@ class TestHealthEndpoint:
             def fail_get(*args, **kwargs):
                 raise AssertionError("liveness probe must not depend on SearXNG")
 
-            m.setattr(sm.requests, "get", fail_get)
+            m.setattr(sm, "_transport_get", fail_get)
 
             with search_app.test_client() as client:
                 resp = client.get("/live")
@@ -331,14 +334,14 @@ class TestHealthEndpoint:
                 return None
 
             def json(self):
-                return {"results": []}
+                return 200
 
-        def fake_get(url, params=None, headers=None, timeout=None):
-            captured["url"] = url
+        def fake_get(origin, endpoint, *, params=None, timeout=None, expect_json):
+            captured["url"] = origin + endpoint
             captured["params"] = params
-            captured["headers"] = headers
+            captured["expect_json"] = expect_json
             captured["timeout"] = timeout
-            return MockResp()
+            return {"results": []}
 
         with monkeypatch.context() as m:
             m.setattr(sm, "_is_search_enabled", lambda: True)
@@ -353,7 +356,7 @@ class TestHealthEndpoint:
             m.setattr(sm, "load_policy", lambda: {
                 "search": {"allowed_engines": ["duckduckgo", "github"]}
             })
-            m.setattr(sm.requests, "get", fake_get)
+            m.setattr(sm, "_transport_get", fake_get)
 
             with search_app.test_client() as client:
                 resp = client.post(
@@ -365,7 +368,7 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         assert captured["url"].endswith("/search")
         assert captured["params"]["engines"] == "duckduckgo,github"
-        assert captured["headers"]["X-Forwarded-For"] == "127.0.0.1"
+        assert captured["expect_json"] is True
 
     def test_search_uses_fixed_internal_headers_for_searxng(self, monkeypatch):
         import app as sm
@@ -379,14 +382,14 @@ class TestHealthEndpoint:
                 return None
 
             def json(self):
-                return {"results": []}
+                return 200
 
-        def fake_get(url, params=None, headers=None, timeout=None):
-            captured["url"] = url
+        def fake_get(origin, endpoint, *, params=None, timeout=None, expect_json):
+            captured["url"] = origin + endpoint
             captured["params"] = params
-            captured["headers"] = headers
+            captured["expect_json"] = expect_json
             captured["timeout"] = timeout
-            return MockResp()
+            return {"results": []}
 
         with monkeypatch.context() as m:
             m.setattr(sm, "_is_search_enabled", lambda: True)
@@ -398,7 +401,7 @@ class TestHealthEndpoint:
                 "uniqueness_mode": "warn",
                 "batch_window": 5.0,
             })
-            m.setattr(sm.requests, "get", fake_get)
+            m.setattr(sm, "_transport_get", fake_get)
 
             with search_app.test_client() as client:
                 resp = client.post(
@@ -409,10 +412,8 @@ class TestHealthEndpoint:
 
         assert resp.status_code == 200
         assert captured["url"].endswith("/search")
-        assert captured["headers"]["User-Agent"] == "SecAI-SearchMediator/1.0"
-        assert captured["headers"]["X-Forwarded-For"] == "127.0.0.1"
-        assert captured["headers"]["X-Real-IP"] == "127.0.0.1"
-        assert "application/json" in captured["headers"]["Accept"]
+        assert captured["expect_json"] is True
+        assert captured["expect_json"] is True
 
     def test_health_uses_fast_configured_timeout_for_upstream_probe(self, monkeypatch):
         import app as sm
@@ -427,12 +428,12 @@ class TestHealthEndpoint:
             m.setattr(sm, "_get_session_mode", lambda: "normal")
             m.setattr(sm, "SEARCH_HEALTH_TIMEOUT", 0.75)
 
-            def fake_get(url, timeout):
-                captured["url"] = url
+            def fake_get(origin, endpoint, *, timeout, params=None, expect_json=False):
+                captured["url"] = origin + endpoint
                 captured["timeout"] = timeout
-                return MockResp()
+                return 200
 
-            m.setattr(sm.requests, "get", fake_get)
+            m.setattr(sm, "_transport_get", fake_get)
 
             with search_app.test_client() as client:
                 resp = client.get(

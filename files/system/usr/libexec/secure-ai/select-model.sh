@@ -10,6 +10,8 @@ set -euo pipefail
 ENV_FILE="${1:-/run/secure-ai-inference/model.env}"
 REGISTRY_DIR="${REGISTRY_DIR:-/var/lib/secure-ai/vault/models}"
 MANIFEST_FILE="${REGISTRY_MANIFEST_PATH:-/var/lib/secure-ai/registry/manifest.json}"
+SELECTION_FILE="${INFERENCE_SELECTION_PATH:-/var/lib/secure-ai/inference/selection.json}"
+INFERENCE_HELPER_DIR=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 CONFIG_FILE="/etc/secure-ai/config/appliance.yaml"
 
 log() {
@@ -21,6 +23,10 @@ log() {
 # through the unit's EnvironmentFile. Do not let the generic appliance config
 # override the fail-safe CPU/VM decision.
 GPU_LAYERS="${GPU_LAYERS:-0}"
+if ! GPU_LAYERS=$(python3 "$INFERENCE_HELPER_DIR/apply-inference-model.py" gpu-layers "$GPU_LAYERS"); then
+    log "GPU assurance execution policy could not be verified. Inference will not start."
+    exit 1
+fi
 CTX_SIZE="${CTX_SIZE:-8192}"
 THREADS="${THREADS:-4}"
 
@@ -65,56 +71,12 @@ if [[ ! "$THREADS" =~ ^[0-9]+$ ]] \
     exit 1
 fi
 
-# Select only a GGUF entry recorded in the manifest.  The helper rejects path
-# traversal, links, non-regular files, and hash drift before returning a path.
-MODEL_PATH=""
-if [ -f "$MANIFEST_FILE" ]; then
-    MODEL_PATH=$(python3 - "$REGISTRY_DIR" "$MANIFEST_FILE" <<'PY'
-import hashlib
-import json
-import os
-import stat
-import sys
-
-root, manifest_path = sys.argv[1:]
-with open(manifest_path, "r", encoding="utf-8") as handle:
-    manifest = json.load(handle)
-
-root_real = os.path.realpath(root)
-for model in manifest.get("models", []):
-    if model.get("format") != "gguf":
-        continue
-    filename = model.get("filename", "")
-    expected = model.get("sha256", "").lower()
-    if not filename or filename != os.path.basename(filename):
-        continue
-    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
-        continue
-    candidate = os.path.join(root_real, filename)
-    try:
-        st = os.lstat(candidate)
-    except OSError:
-        continue
-    if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
-        continue
-    if os.path.dirname(os.path.realpath(candidate)) != root_real:
-        continue
-    digest = hashlib.sha256()
-    with open(candidate, "rb") as artifact:
-        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-            digest.update(chunk)
-    if digest.hexdigest() == expected:
-        print(candidate)
-        break
-PY
-    )
-fi
-
-if [ -z "$MODEL_PATH" ]; then
-    log "No model found in $REGISTRY_DIR. Inference will not start."
-    log "Import a model via the web UI at http://127.0.0.1:8480"
-    # Write empty env so the service fails gracefully
-    echo "MODEL_PATH=" > "$ENV_FILE"
+# Explicit selections are root-owned and bind one filename/hash. The shared
+# resolver never falls back when that selection is invalid or unavailable.
+if ! MODEL_PATH=$(REGISTRY_DIR="$REGISTRY_DIR" REGISTRY_MANIFEST_PATH="$MANIFEST_FILE" \
+    INFERENCE_SELECTION_PATH="$SELECTION_FILE" \
+    python3 "$INFERENCE_HELPER_DIR/apply-inference-model.py" resolve); then
+    log "Model selection could not be verified. Inference will not start."
     exit 1
 fi
 

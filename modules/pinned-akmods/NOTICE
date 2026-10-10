@@ -1,0 +1,7 @@
+This module derives from BlueBuild modules/akmods/akmods.sh.
+Upstream project: https://github.com/blue-build/modules
+Upstream license: Apache License, Version 2.0; see LICENSE.
+
+SecOS modifications pin the reviewed common and NVIDIA image digests, restrict
+the supported build configuration and validate the installed kernel/modules.
+The original source and local changes are recorded in UPSTREAM_SOURCE.json.

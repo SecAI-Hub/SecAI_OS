@@ -40,7 +40,17 @@ func resetGlobalState(t *testing.T) {
 	}
 	auditFile = nil
 	auditMu.Unlock()
-	incidentStorePath = ""
+	storageDegraded.Store(false)
+	storeDir := t.TempDir()
+	incidentStorePath = filepath.Join(storeDir, "incidents.jsonl")
+	auditPath = filepath.Join(storeDir, "audit.jsonl")
+	f, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditFile = f
+	t.Cleanup(func() { f.Close() })
+	recoveryMgr = NewRecoveryManager()
 	containmentExecutor = func(inc Incident, _ ServiceEndpoints, _ string) ([]ContainmentResult, bool) {
 		results := make([]ContainmentResult, 0, len(inc.ContainmentActions))
 		for _, action := range inc.ContainmentActions {
@@ -69,6 +79,15 @@ func resetGlobalState(t *testing.T) {
 		AirlockURL:  "http://127.0.0.1:1",
 		RegistryURL: "http://127.0.0.1:1",
 	}
+}
+
+func mustCreateIncident(t *testing.T, report IncidentReport) Incident {
+	t.Helper()
+	inc, err := createIncident(report)
+	if err != nil {
+		t.Fatalf("create incident: %v", err)
+	}
+	return inc
 }
 
 func reportIncidentHTTP(t *testing.T, report IncidentReport) (*httptest.ResponseRecorder, Incident) {
@@ -144,7 +163,7 @@ func TestLoadPolicy_InvalidYAML(t *testing.T) {
 
 func TestCreateIncident_Basic(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassPolicyBypass,
 		Source:      "tool-firewall",
 		Description: "Attempted tool call to system.exec",
@@ -165,7 +184,7 @@ func TestCreateIncident_Basic(t *testing.T) {
 
 func TestCreateIncident_AutoContainment(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassAttestationFailure,
 		Source:      "runtime-attestor",
 		Description: "TPM2 quote verification failed",
@@ -191,7 +210,7 @@ func TestCreateIncident_DoesNotClaimFailedContainment(t *testing.T) {
 			CompletedAt: "2026-07-27T00:00:00Z",
 		}}, false
 	}
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassPromptInjection,
 		Source:      "agent",
 		Description: "containment target unavailable",
@@ -209,7 +228,7 @@ func TestCreateIncident_DoesNotClaimFailedContainment(t *testing.T) {
 
 func TestCreateIncident_NoAutoContainment(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassForbiddenAirlock,
 		Source:      "airlock",
 		Description: "Request to blocked destination",
@@ -221,7 +240,7 @@ func TestCreateIncident_NoAutoContainment(t *testing.T) {
 
 func TestCreateIncident_DefaultSeverity(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassAttestationFailure,
 		Source:      "test",
 		Description: "test",
@@ -233,7 +252,7 @@ func TestCreateIncident_DefaultSeverity(t *testing.T) {
 
 func TestCreateIncident_OverrideSeverity(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassForbiddenAirlock,
 		Severity:    SeverityLow,
 		Source:      "test",
@@ -247,7 +266,7 @@ func TestCreateIncident_OverrideSeverity(t *testing.T) {
 func TestCreateIncident_CounterIncremented(t *testing.T) {
 	resetGlobalState(t)
 	before := incidentCount.Load()
-	createIncident(IncidentReport{
+	mustCreateIncident(t, IncidentReport{
 		Class:       ClassPromptInjection,
 		Source:      "test",
 		Description: "test",
@@ -261,7 +280,7 @@ func TestCreateIncident_CounterIncremented(t *testing.T) {
 func TestCreateIncident_ContainedCountIncremented(t *testing.T) {
 	resetGlobalState(t)
 	before := containedCount.Load()
-	createIncident(IncidentReport{
+	mustCreateIncident(t, IncidentReport{
 		Class:       ClassAttestationFailure,
 		Source:      "test",
 		Description: "test",
@@ -274,8 +293,8 @@ func TestCreateIncident_ContainedCountIncremented(t *testing.T) {
 
 func TestCreateIncident_UniqueIDs(t *testing.T) {
 	resetGlobalState(t)
-	inc1 := createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
-	inc2 := createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "b", Description: "b"})
+	inc1 := mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
+	inc2 := mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "b", Description: "b"})
 	if inc1.ID == inc2.ID {
 		t.Error("incidents should have unique IDs")
 	}
@@ -283,7 +302,7 @@ func TestCreateIncident_UniqueIDs(t *testing.T) {
 
 func TestCreateIncident_WithEvidence(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassManifestMismatch,
 		Source:      "integrity-monitor",
 		Description: "Model hash mismatch",
@@ -304,7 +323,7 @@ func TestCreateIncident_WithEvidence(t *testing.T) {
 
 func TestResolveIncident(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class: ClassToolCallBurst, Source: "agent", Description: "burst",
 	})
 	completeRecoveryCeremony(t, recoveryMgr, inc.ID)
@@ -330,7 +349,7 @@ func TestResolveIncident_NotFound(t *testing.T) {
 
 func TestAcknowledgeIncident(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class: ClassForbiddenAirlock, Source: "airlock", Description: "blocked",
 	})
 	ack, found := acknowledgeIncident(inc.ID)
@@ -344,9 +363,9 @@ func TestAcknowledgeIncident(t *testing.T) {
 
 func TestGetOpenIncidents(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
-	inc3 := createIncident(IncidentReport{Class: ClassToolCallBurst, Source: "c", Description: "c"})
+	mustCreateIncident(t, IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
+	inc3 := mustCreateIncident(t, IncidentReport{Class: ClassToolCallBurst, Source: "c", Description: "c"})
 	completeRecoveryCeremony(t, recoveryMgr, inc3.ID)
 	resolveIncident(inc3.ID)
 
@@ -487,8 +506,8 @@ func TestHTTP_Report_MethodNotAllowed(t *testing.T) {
 
 func TestHTTP_List(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
+	mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/incidents", nil)
 	w := httptest.NewRecorder()
@@ -510,8 +529,8 @@ func TestHTTP_List(t *testing.T) {
 
 func TestHTTP_List_FilterByClass(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
+	mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/incidents?class=policy_bypass_attempt", nil)
 	w := httptest.NewRecorder()
@@ -526,8 +545,8 @@ func TestHTTP_List_FilterByClass(t *testing.T) {
 
 func TestHTTP_List_FilterByState(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})   // open
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"}) // contained
+	mustCreateIncident(t, IncidentReport{Class: ClassForbiddenAirlock, Source: "a", Description: "a"})   // open
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"}) // contained
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/incidents?state=open", nil)
 	w := httptest.NewRecorder()
@@ -542,7 +561,7 @@ func TestHTTP_List_FilterByState(t *testing.T) {
 
 func TestHTTP_Get_Found(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{Class: ClassToolCallBurst, Source: "agent", Description: "burst"})
+	inc := mustCreateIncident(t, IncidentReport{Class: ClassToolCallBurst, Source: "agent", Description: "burst"})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/incidents/get?id="+inc.ID, nil)
 	w := httptest.NewRecorder()
@@ -575,7 +594,7 @@ func TestHTTP_Get_MissingID(t *testing.T) {
 
 func TestHTTP_Resolve(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{Class: ClassToolCallBurst, Source: "agent", Description: "burst"})
+	inc := mustCreateIncident(t, IncidentReport{Class: ClassToolCallBurst, Source: "agent", Description: "burst"})
 	completeRecoveryCeremony(t, recoveryMgr, inc.ID)
 
 	body, _ := json.Marshal(map[string]string{"id": inc.ID})
@@ -606,7 +625,7 @@ func TestHTTP_Resolve_NotFound(t *testing.T) {
 
 func TestHTTP_Acknowledge(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "airlock", Description: "blocked"})
+	inc := mustCreateIncident(t, IncidentReport{Class: ClassForbiddenAirlock, Source: "airlock", Description: "blocked"})
 
 	body, _ := json.Marshal(map[string]string{"id": inc.ID})
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/incidents/acknowledge", bytes.NewReader(body))
@@ -620,8 +639,8 @@ func TestHTTP_Acknowledge(t *testing.T) {
 
 func TestHTTP_Stats(t *testing.T) {
 	resetGlobalState(t)
-	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
+	mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "a"})
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "b"})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
 	w := httptest.NewRecorder()
@@ -851,7 +870,7 @@ func TestAuditLog_WritesOnIncident(t *testing.T) {
 		}
 	}()
 
-	createIncident(IncidentReport{
+	mustCreateIncident(t, IncidentReport{
 		Class: ClassPolicyBypass, Source: "test", Description: "test",
 	})
 
@@ -874,9 +893,9 @@ func TestPersistIncidents_RoundTrip(t *testing.T) {
 	incidentStorePath = filepath.Join(dir, "incidents.jsonl")
 
 	// Create several incidents
-	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "first"})
-	createIncident(IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "second"})
-	createIncident(IncidentReport{Class: ClassForbiddenAirlock, Source: "c", Description: "third"})
+	mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "a", Description: "first"})
+	mustCreateIncident(t, IncidentReport{Class: ClassAttestationFailure, Source: "b", Description: "second"})
+	mustCreateIncident(t, IncidentReport{Class: ClassForbiddenAirlock, Source: "c", Description: "third"})
 
 	// Verify the file was written and is non-empty
 	data, err := os.ReadFile(incidentStorePath)
@@ -906,7 +925,7 @@ func TestPersistIncidents_AtomicRename(t *testing.T) {
 	dir := t.TempDir()
 	incidentStorePath = filepath.Join(dir, "incidents.jsonl")
 
-	createIncident(IncidentReport{Class: ClassPolicyBypass, Source: "test", Description: "test"})
+	mustCreateIncident(t, IncidentReport{Class: ClassPolicyBypass, Source: "test", Description: "test"})
 
 	// The temp file should not exist after persistence (renamed to final path)
 	tmpPath := incidentStorePath + ".tmp"
@@ -934,7 +953,7 @@ func TestAuditLog_SyncedToDisk(t *testing.T) {
 	}()
 
 	// Create an incident — triggers writeAudit which now includes Sync
-	createIncident(IncidentReport{
+	mustCreateIncident(t, IncidentReport{
 		Class: ClassIntegrityViolation, Source: "integrity-monitor", Description: "hash mismatch",
 	})
 
@@ -972,7 +991,7 @@ func TestAuditLog_SyncedToDisk(t *testing.T) {
 
 func TestContainmentActions_AttestationFailure(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class: ClassAttestationFailure, Source: "attestor", Description: "failed",
 	})
 	expected := []string{"freeze_agent", "disable_airlock", "force_vault_relock"}
@@ -983,7 +1002,7 @@ func TestContainmentActions_AttestationFailure(t *testing.T) {
 
 func TestContainmentActions_PromptInjection(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class: ClassPromptInjection, Source: "agent", Description: "injection detected",
 	})
 	if len(inc.ContainmentActions) == 0 {
@@ -993,7 +1012,7 @@ func TestContainmentActions_PromptInjection(t *testing.T) {
 
 func TestContainmentActions_ModelAnomaly(t *testing.T) {
 	resetGlobalState(t)
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class: ClassModelAnomaly, Source: "gpu-watch", Description: "model regression",
 	})
 	found := false
@@ -1014,7 +1033,7 @@ func TestContainmentActions_ModelAnomaly(t *testing.T) {
 func TestHTTP_ForensicExport(t *testing.T) {
 	resetGlobalState(t)
 	// Create an incident so the bundle is non-empty
-	createIncident(IncidentReport{
+	mustCreateIncident(t, IncidentReport{
 		Class: ClassPolicyBypass, Source: "test", Description: "test incident for forensic export",
 	})
 
@@ -1095,12 +1114,18 @@ func TestReadAuditLogTail(t *testing.T) {
 	}
 	f.Close()
 
-	lines := readAuditLogTail(3)
+	lines, err := readAuditLogTail(3)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(lines) != 3 {
 		t.Errorf("expected 3 tail lines, got %d", len(lines))
 	}
 
-	all := readAuditLogTail(100)
+	all, err := readAuditLogTail(100)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(all) != 5 {
 		t.Errorf("expected 5 total lines, got %d", len(all))
 	}
@@ -1109,7 +1134,10 @@ func TestReadAuditLogTail(t *testing.T) {
 func TestReadAuditLogTail_NoFile(t *testing.T) {
 	resetGlobalState(t)
 	auditPath = "/nonexistent/audit.jsonl"
-	lines := readAuditLogTail(10)
+	lines, err := readAuditLogTail(10)
+	if err == nil {
+		t.Fatal("missing evidence must return an error")
+	}
 	if lines != nil {
 		t.Errorf("expected nil for nonexistent file, got %v", lines)
 	}

@@ -720,6 +720,8 @@ def test_modelscan_cli_fallback_uses_current_json_flags(tmp_path, monkeypatch):
 
     assert result == {
         "passed": True,
+        "status": "pass",
+        "files_scanned": 1,
         "scanner": "modelscan-cli",
         "scanner_version": "0.8.8",
     }
@@ -1120,6 +1122,14 @@ def test_smoke_test_reports_process_exit_details(tmp_path, monkeypatch):
             self.returncode = -9
 
     def fake_popen(*args, **kwargs):
+        command = args[0]
+        assert command[command.index("--model") + 1] == str(model)
+        assert command[command.index("--host") + 1] == "127.0.0.1"
+        assert command.count("--offline") == command.count("--no-ui") == 1
+        assert command[command.index("--n-gpu-layers") + 1] == "0"
+        assert command[command.index("--ctx-size") + 1] == "512"
+        assert command[command.index("--threads") + 1] == "2"
+        assert not any(arg.startswith(("--hf-", "--model-url")) for arg in command)
         kwargs["stdout"].write(b"fatal startup error\n")
         kwargs["stdout"].flush()
         return FakeProc()

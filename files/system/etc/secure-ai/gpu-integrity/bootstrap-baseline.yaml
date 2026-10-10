@@ -1,0 +1,6 @@
+# Unenrolled placeholder, deliberately unable to establish a healthy baseline.
+# Replace only through a reviewed release; pin its exact bytes in attestation.yaml.
+captured_at: 0001-01-01T00:00:00Z
+tensor_hashes: {}
+sentinel_refs: []
+device_allowlist: []

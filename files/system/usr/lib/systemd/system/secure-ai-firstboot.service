@@ -1,8 +1,8 @@
 [Unit]
 Description=Secure AI Appliance first-boot setup
 ConditionPathExists=!/var/lib/secure-ai/state/firstboot-complete
-Requires=secure-ai-credentials.service
-After=local-fs.target secure-ai-credentials.service
+Requires=secure-ai-credentials.service secure-ai-network-boot.service
+After=local-fs.target secure-ai-credentials.service secure-ai-network-boot.service
 Before=secure-ai-tpm-attestation-setup.service secure-ai-runtime-attestor.service secure-ai-registry.service
 
 [Service]

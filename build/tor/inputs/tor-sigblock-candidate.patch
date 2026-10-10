@@ -1,0 +1,18 @@
+--- a/src/lib/sandbox/sandbox.c
++++ b/src/lib/sandbox/sandbox.c
+@@ -1361,13 +1361,12 @@
+   int rc = 0;
+   (void) filter;
+ 
+-#if defined(ENABLE_FRAGILE_HARDENING) || \
+-    defined(USE_TRACING_INSTRUMENTATION_LTTNG)
++  /* glibc NPTL saves the signal mask with SIG_BLOCK before creating a
++   * thread, and assumes that this operation succeeds.  See tor#41060. */
+   rc = seccomp_rule_add_1(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rt_sigprocmask),
+       SCMP_CMP(0, SCMP_CMP_EQ, SIG_BLOCK));
+   if (rc)
+     return rc;
+-#endif
+ 
+   rc = seccomp_rule_add_1(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rt_sigprocmask),
+       SCMP_CMP(0, SCMP_CMP_EQ, SIG_UNBLOCK));

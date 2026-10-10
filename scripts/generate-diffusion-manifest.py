@@ -89,7 +89,10 @@ def wheel_hash(wheel: dict[str, Any], lock_hashes: set[str]) -> str:
             raise ValueError(f"refusing untrusted wheel redirect: {response.url}")
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    calculated = digest.hexdigest()
+    if calculated not in lock_hashes:
+        raise ValueError(f"downloaded wheel hash is absent from requirements lock: {calculated}")
+    return calculated
 
 
 def select_wheel(package: dict[str, Any]) -> dict[str, Any]:

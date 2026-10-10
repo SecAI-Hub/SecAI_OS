@@ -27,4 +27,19 @@ umask 077
     --credential "$credential_path" \
     --output "$runtime_settings_path"
 export SEARXNG_SETTINGS_PATH="$runtime_settings_path"
-exec /usr/lib/secure-ai/python3.12-venv/bin/python3.12 -m searx.webapp
+export TMPDIR=/run/secure-ai-searxng/cache
+mkdir -p -- "$TMPDIR"
+# Supervised production WSGI server. Keep one engine/cache owner and omit URLs
+# from access logs because they contain search queries. Control is via systemd.
+exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn \
+    --bind 127.0.0.1:8888 \
+    --workers 1 \
+    --threads 4 \
+    --timeout 120 \
+    --graceful-timeout 10 \
+    --worker-tmp-dir /run/secure-ai-searxng \
+    --no-control-socket \
+    --access-logfile - \
+    --access-logformat '%(m)s %(s)s %(L)s' \
+    --error-logfile - \
+    searx.webapp:app

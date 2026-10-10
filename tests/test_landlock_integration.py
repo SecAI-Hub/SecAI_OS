@@ -144,3 +144,14 @@ def test_diffusion_override_confines_worker_and_uses_systemd_env_syntax():
     ) in installer
     assert "--bind \\${BIND_ADDR}" in installer
     assert "BIND_ADDR:-" not in installer
+
+
+def test_common_elf_loaders_are_exact_optional_files():
+    policy = yaml.safe_load(POLICY_PATH.read_text(encoding="utf-8"))
+    loaders = {entry["path"]: entry for entry in policy["common_paths"] if entry["access"] == "exe"}
+    assert set(loaders) == {"/usr/lib64/ld-linux-x86-64.so.2", "/usr/lib/ld-linux-aarch64.so.1"}
+    assert all(not entry.get("required", False) for entry in loaders.values())
+    for service in policy["services"].values():
+        for entry in service.get("paths", []):
+            if entry["path"] in {"/usr/lib", "/usr/lib64"}:
+                assert entry["access"] == "ro"

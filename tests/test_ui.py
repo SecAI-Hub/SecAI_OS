@@ -20,6 +20,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "ui"))
 from ui.app import app, load_model_catalog, _FALLBACK_CATALOG, _slo_tracker
 
 
+@pytest.fixture(autouse=True)
+def private_ui_inference_credential(tmp_path_factory, monkeypatch):
+    # Keep credentials separate from fixtures that use tmp_path as a corpus.
+    path = tmp_path_factory.mktemp("ui-credentials") / "inference.token"
+    path.write_text("7" * 64)
+    path.chmod(0o600)
+    monkeypatch.setenv("INFERENCE_TOKEN_PATH", str(path))
+
+
+@pytest.fixture
+def admitted_runtime(tmp_path_factory, monkeypatch):
+    """These route tests start after native admission; guard denials are tested separately."""
+    import ui.app as ui_app
+
+    monkeypatch.setattr(ui_app.runtime_assurance, "require_runtime", lambda *args, **kwargs: None)
+    for target in ("REGISTRY", "DIFFUSION", "ATTESTOR"):
+        credential = tmp_path_factory.mktemp("ui-" + target.lower()) / "token"
+        credential.write_text(hashlib.sha256(target.encode()).hexdigest())
+        credential.chmod(0o600)
+        monkeypatch.setenv(target + "_TOKEN_PATH", str(credential))
+
+
 @pytest.fixture
 def client(tmp_path):
     import ui.app as ui_app
@@ -149,9 +171,11 @@ def test_sandbox_control_config_requires_exact_lowercase_hex_token(
         ("a" * 64) + "\n",
     ):
         token_path.write_text(value, encoding="utf-8")
+        token_path.chmod(0o600)
         assert ui_app._sandbox_control_config() == ("", "")
 
     token_path.write_text("a" * 64, encoding="utf-8")
+    token_path.chmod(0o600)
     assert ui_app._sandbox_control_config() == (
         "http://ui-ingress:8498",
         "a" * 64,
@@ -476,12 +500,53 @@ class TestHealthAndStatus:
             data = resp.get_json()
             assert "services" in data
 
-    def test_models_endpoint_empty_when_registry_down(self, client):
+    @pytest.mark.parametrize("failure", ["ConnectionError", "Timeout"])
+    def test_models_endpoint_unavailable_when_registry_down(self, client, failure):
         import requests as req_lib
-        with patch("ui.app.requests.get", side_effect=req_lib.ConnectionError("not running")):
+        with patch("ui.app.requests.get", side_effect=getattr(req_lib, failure)("private backend details")):
             resp = client.get("/api/models")
-            assert resp.status_code == 200
-            assert resp.get_json() == []
+        assert resp.status_code == 503
+        assert resp.get_json() == {"error": "Model registry is unavailable. Retry shortly."}
+
+    @pytest.mark.parametrize("status", [401, 403, 404, 500, 503])
+    def test_models_endpoint_rejects_registry_http_failure(self, client, status):
+        from unittest.mock import Mock
+        upstream = Mock(status_code=status)
+        upstream.json.return_value = []
+        with patch("ui.app.requests.get", return_value=upstream):
+            resp = client.get("/api/models")
+        assert resp.status_code == 502
+        assert resp.get_json() == {"error": "Model registry is unavailable. Retry shortly."}
+        upstream.json.assert_not_called()
+
+    @pytest.mark.parametrize("payload", [{"error": "private details"}, None, "[]", [None], ["model"]])
+    def test_models_endpoint_rejects_invalid_registry_payload(self, client, payload):
+        from unittest.mock import Mock
+        upstream = Mock(status_code=200)
+        upstream.json.return_value = payload
+        with patch("ui.app.requests.get", return_value=upstream):
+            resp = client.get("/api/models")
+        assert resp.status_code == 502
+        assert resp.get_json() == {"error": "Model registry returned an invalid response."}
+
+    def test_models_endpoint_rejects_malformed_registry_json(self, client):
+        from unittest.mock import Mock
+        upstream = Mock(status_code=200)
+        upstream.json.side_effect = ValueError("private malformed response")
+        with patch("ui.app.requests.get", return_value=upstream):
+            resp = client.get("/api/models")
+        assert resp.status_code == 502
+        assert resp.get_json() == {"error": "Model registry returned an invalid response."}
+
+    @pytest.mark.parametrize("payload", [[], [{"name": "ready", "filename": "ready.gguf"}]])
+    def test_models_endpoint_returns_successful_registry_list(self, client, payload):
+        from unittest.mock import Mock
+        upstream = Mock(status_code=200)
+        upstream.json.return_value = payload
+        with patch("ui.app.requests.get", return_value=upstream):
+            resp = client.get("/api/models")
+        assert resp.status_code == 200
+        assert resp.get_json() == payload
 
     def test_search_status_requires_reachable_search_backend(self, client):
         class SearchResp:
@@ -501,6 +566,16 @@ class TestHealthAndStatus:
         data = resp.get_json()
         assert data["search_available"] is False
         assert "start --with-search" in data["command"]
+
+    @pytest.mark.parametrize("payload", [{}, {"search_enabled": None, "searxng_reachable": None}, {"search_enabled": "true", "searxng_reachable": "true"}, [], None])
+    def test_search_status_never_treats_unknown_or_invalid_as_ready(self, client, payload):
+        class SearchResp:
+            status_code = 200
+            def json(self): return payload
+        with patch("ui.app.requests.get", return_value=SearchResp()):
+            response = client.get("/api/search/status")
+        assert response.status_code == 200
+        assert response.get_json()["search_available"] is False
 
     def test_profile_status_never_infers_full_lab_from_diffusion(self, client):
         class HealthyResp:
@@ -757,30 +832,36 @@ class TestCatalogDownloads:
         assert data["requires_mode"] == "research"
         assert "--with-search" in data["command"]
 
-    def test_catalog_download_allows_retry_after_failure(self, client, tmp_path):
+    def test_catalog_download_blocks_retry_after_started_failure(self, client, tmp_path):
         import ui.app as ui_app
 
-        class DummyThread:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def start(self):
-                return None
-
         catalog = load_model_catalog()
+        jobs = ui_app.CatalogJobs(tmp_path / "jobs")
+        grant = {"session": "a" * 64, "epoch": "b" * 64, "credential": "c" * 64}
+        profile = {"profile": "research", "mode": "appliance", "generation": "", "session": ""}
         with patch("ui.app._airlock_check_egress", return_value=(True, 200, "")), \
              patch("ui.app.QUARANTINE_DIR", tmp_path), \
-             patch("ui.app.threading.Thread", DummyThread), \
-             patch.dict("ui.app._active_downloads", {
-                 catalog[0]["filename"]: {"status": "failed", "detail": "previous failure"},
-             }, clear=True):
+             patch("ui.app._catalog_jobs", jobs), \
+             patch("ui.app._catalog_profile_binding", return_value=profile), \
+             patch.object(ui_app._auth, "grant", return_value=grant):
             resp = client.post("/api/catalog/download", json={
                 "url": catalog[0]["url"],
                 "filename": catalog[0]["filename"],
             })
 
             assert resp.status_code == 202
-            assert ui_app._active_downloads[catalog[0]["filename"]]["status"] == "downloading"
+            identifier = resp.get_json()["job_id"]
+            assert jobs.claim() == identifier
+            jobs.update(identifier, status="failed", error="transfer_failed")
+            repeated = client.post("/api/catalog/download", json={
+                "url": catalog[0]["url"], "filename": catalog[0]["filename"],
+            })
+            assert repeated.status_code == 409
+            retried = client.post(f"/api/catalog/jobs/{identifier}/retry", json={})
+            assert retried.status_code == 409
+            assert "maintenance" in retried.get_json()["error"]
+            assert jobs.snapshot()[identifier]["status"] == "failed"
+            assert jobs.snapshot()[identifier]["attempt"] == 1
 
     def test_download_status_surfaces_quarantine_rejection_reason(self, tmp_path):
         import ui.app as ui_app
@@ -1059,6 +1140,7 @@ class TestCatalogDownloads:
         assert kwargs["headers"]["Authorization"] == "Bearer svc-token"
 
 
+@pytest.mark.usefixtures("admitted_runtime")
 class TestSearchMediatorIntegration:
     def test_search_proxy_includes_service_token_header(self, client):
         mock_resp = type("Resp", (), {
@@ -1083,6 +1165,7 @@ class TestSearchMediatorIntegration:
             "status_code": 200,
         })()
         chat_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {"choices": [{"message": {"content": "answer"}}]},
             "status_code": 200,
         })()
@@ -1099,7 +1182,8 @@ class TestSearchMediatorIntegration:
 
         with patch("ui.app._read_service_token", return_value="svc-token"), \
              patch("ui.app._verify_active_model", return_value={"safe": True, "detail": ""}), \
-             patch("ui.app.requests.post", side_effect=mock_post):
+             patch("ui.app.requests.post", side_effect=mock_post), \
+             patch("ui.app.inference_http.post", side_effect=mock_post):
             resp = client.post("/api/chat/search", json={
                 "messages": [{"role": "user", "content": "latest AI security guidance"}],
                 "search": True,
@@ -1123,6 +1207,7 @@ class TestSearchMediatorIntegration:
             "status_code": 200,
         })()
         chat_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {"choices": [{"message": {"content": "answer"}}]},
             "status_code": 200,
         })()
@@ -1135,7 +1220,8 @@ class TestSearchMediatorIntegration:
             raise AssertionError(f"unexpected POST {url}")
 
         with patch("ui.app._verify_active_model", return_value={"safe": True, "detail": ""}), \
-             patch("ui.app.requests.post", side_effect=mock_post):
+             patch("ui.app.requests.post", side_effect=mock_post), \
+             patch("ui.app.inference_http.post", side_effect=mock_post):
             resp = client.post("/api/chat/search", json={
                 "messages": [{"role": "user", "content": "latest AI security guidance"}],
                 "search": True,
@@ -1226,6 +1312,7 @@ class TestEnvironmentStatus:
         assert data["deployment_mode"] == "sandbox"
 
 
+@pytest.mark.usefixtures("admitted_runtime")
 class TestIntegrityMonitoring:
     def test_integrity_status_returns_json(self, client):
         import requests as req_lib
@@ -1257,6 +1344,7 @@ class TestIntegrityMonitoring:
             "status_code": 200,
         })()
         mock_inference_models_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {
                 "models": [{"name": "test-model.gguf", "model": "test-model.gguf"}],
             },
@@ -1267,6 +1355,7 @@ class TestIntegrityMonitoring:
             "status_code": 200,
         })()
         mock_chat_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {"choices": [{"message": {"content": "hello"}}]},
             "status_code": 200,
         })()
@@ -1286,7 +1375,9 @@ class TestIntegrityMonitoring:
             raise Exception("unexpected POST")
 
         with patch("ui.app.requests.get", side_effect=mock_get), \
-             patch("ui.app.requests.post", side_effect=mock_post):
+             patch("ui.app.inference_http.get", side_effect=mock_get), \
+             patch("ui.app.requests.post", side_effect=mock_post), \
+             patch("ui.app.inference_http.post", side_effect=mock_post):
             resp = client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
             assert resp.status_code == 200
 
@@ -1299,6 +1390,7 @@ class TestIntegrityMonitoring:
             "status_code": 200,
         })()
         mock_inference_models_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {
                 "models": [{"name": "rogue-model.gguf", "model": "rogue-model.gguf"}],
             },
@@ -1312,7 +1404,8 @@ class TestIntegrityMonitoring:
                 return mock_inference_models_resp
             raise AssertionError(f"unexpected GET {url}")
 
-        with patch("ui.app.requests.get", side_effect=mock_get):
+        with patch("ui.app.requests.get", side_effect=mock_get), \
+             patch("ui.app.inference_http.get", side_effect=mock_get):
             result = ui_app._verify_active_model()
 
         assert result["safe"] is False
@@ -1327,6 +1420,7 @@ class TestIntegrityMonitoring:
             "status_code": 200,
         })()
         mock_inference_models_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {
                 "models": [{"name": "test-model.gguf", "model": "test-model.gguf"}],
             },
@@ -1340,7 +1434,8 @@ class TestIntegrityMonitoring:
                 return mock_inference_models_resp
             raise AssertionError(f"unexpected GET {url}")
 
-        with patch("ui.app.requests.get", side_effect=mock_get):
+        with patch("ui.app.requests.get", side_effect=mock_get), \
+             patch("ui.app.inference_http.get", side_effect=mock_get):
             result = ui_app._verify_active_model({"model": "other-model"})
 
         assert result["safe"] is False
@@ -1352,6 +1447,7 @@ class TestIntegrityMonitoring:
             "status_code": 200,
         })()
         mock_inference_models_resp = type("Resp", (), {
+            "close": lambda self: None,
             "json": lambda self: {
                 "models": [{"name": "test-model.gguf", "model": "test-model.gguf"}],
             },
@@ -1365,7 +1461,8 @@ class TestIntegrityMonitoring:
                 return mock_inference_models_resp
             raise AssertionError(f"unexpected GET {url}")
 
-        with patch("ui.app.requests.get", side_effect=mock_get):
+        with patch("ui.app.requests.get", side_effect=mock_get), \
+             patch("ui.app.inference_http.get", side_effect=mock_get):
             resp = client.post("/api/chat", json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "model": "other-model.gguf",
@@ -1660,21 +1757,78 @@ class TestSandboxUnsupportedFeatures:
         upstream_payload = {"error": "<script>alert(1)</script>", "task_id": "task-123"}
         with patch("ui.app._agent_request", return_value=(upstream_payload, 409)), \
              patch("ui.app._ui_audit.append") as mock_append:
-            resp = client.post("/api/agent/task/task-123/approve", json={"approve_all": True})
+            resp = client.post("/api/agent/task/task-123/approve", json={
+                "step_ids": ["111111111111"], "expected_plan_revision": "a" * 64,
+                "step_hashes": {"111111111111": "b" * 64},
+            })
 
         assert resp.status_code == 409
         assert resp.get_json() == {
-            "error": "&lt;script&gt;alert(1)&lt;/script&gt;",
+            "error": "<script>alert(1)</script>",
             "task_id": "task-123",
         }
-        assert "<script>" not in resp.get_data(as_text=True)
+        assert resp.mimetype == "application/json"
+        assert "no-store" in resp.headers["Cache-Control"]
         mock_append.assert_called_once_with(
             "agent_steps_approve_failed",
             {"task_id": "task-123", "status_code": 409},
         )
 
 
+@pytest.mark.usefixtures("admitted_runtime")
 class TestGenerationProxy:
+    @pytest.mark.parametrize("consume", ["complete", "interrupt", "failure"])
+    def test_output_proxy_releases_upstream_stream(self, client, consume):
+        class OutputResponse:
+            status_code = 200
+            headers = {"Content-Type": "image/png"}
+            closed = False
+
+            def iter_content(self, chunk_size):
+                assert chunk_size == 8192
+                yield b"first output chunk"
+                if consume == "failure":
+                    import requests
+                    raise requests.ConnectionError("stream interrupted")
+                yield b"second output chunk"
+
+            def close(self):
+                self.closed = True
+
+        upstream = OutputResponse()
+        with patch("ui.app.requests.get", return_value=upstream):
+            response = client.get("/api/generate/outputs/result.png", buffered=False)
+            if consume == "complete":
+                assert response.get_data() == b"first output chunksecond output chunk"
+            elif consume == "failure":
+                import requests
+                with pytest.raises(requests.ConnectionError):
+                    response.get_data()
+            elif consume == "interrupt":
+                assert next(iter(response.response)) == b"first output chunk"
+            response.close()
+        assert upstream.closed is True
+
+    def test_output_proxy_closes_even_before_wsgi_iteration(self, client):
+        import ui.app as ui_app
+        from unittest.mock import Mock
+
+        upstream = Mock(status_code=200, headers={"Content-Type": "image/png"})
+        with app.test_request_context("/api/generate/outputs/result.png"), \
+                patch("ui.app.requests.get", return_value=upstream):
+            response = ui_app.generation_output_file("result.png")
+            response.close()
+        upstream.close.assert_called_once()
+        upstream.iter_content.assert_not_called()
+
+    def test_output_proxy_timeout_returns_controlled_unavailable(self, client):
+        import requests
+
+        with patch("ui.app.requests.get", side_effect=requests.Timeout("private backend")):
+            response = client.get("/api/generate/outputs/result.png")
+        assert response.status_code == 503
+        assert response.json == {"error": "diffusion worker not available"}
+
     def test_generation_requires_selected_model(self, client):
         resp = client.post("/api/generate/image", json={"prompt": "test"})
         assert resp.status_code == 400
@@ -1865,7 +2019,7 @@ class TestApplianceState:
             assert resp.status_code == 200
             data = resp.get_json()
             assert "appliance_state" in data
-            assert data["appliance_state"] in ("trusted", "degraded", "recovery_required")
+            assert data["appliance_state"] in ("reported_healthy", "degraded", "recovery_required", "evaluation")
             assert "subsystems" in data
             assert "timestamp" in data
 
@@ -1879,7 +2033,7 @@ class TestApplianceState:
             assert data["subsystems"]["attestor"] == "unknown"
             assert data["subsystems"]["integrity_monitor"] == "unknown"
             assert data["subsystems"]["incidents"]["available"] is False
-            assert data["subsystems"]["incidents"]["status"] == "unavailable"
+            assert data["subsystems"]["incidents"]["status"] == "unknown"
 
     def test_appliance_state_marks_host_attestation_not_available_in_sandbox(self, client, monkeypatch):
         monkeypatch.setenv("SECURE_AI_DEPLOYMENT_MODE", "sandbox")
@@ -1891,7 +2045,7 @@ class TestApplianceState:
         assert data["subsystems"]["attestor"] == "not_available"
         assert data["subsystems"]["integrity_monitor"] == "not_available"
         assert data["subsystems"]["incidents"]["status"] == "not_available"
-        assert data["appliance_state"] == "trusted"
+        assert data["appliance_state"] == "evaluation"
 
 
 class TestSLOEndpoint:
@@ -1926,7 +2080,7 @@ class TestSLOEndpoint:
         data = resp.get_json()
         inference_slo = [s for s in data["slos"] if s["name"] == "inference availability"][0]
         assert inference_slo["status"] == "not_applicable"
-        assert inference_slo["compliant"] is True
+        assert inference_slo["compliant"] is None
 
 
 class TestForensicExportProxy:
@@ -1945,3 +2099,156 @@ class TestForensicExportProxy:
         data = resp.get_json()
         assert "root local-console" in data["error"]
         assert data["command"].startswith("sudo secai-forensic export")
+
+
+@pytest.fixture
+def rejected_request_effects(monkeypatch):
+    """An invalid request must stop before auth work, RPCs, or state writes."""
+    import ui.app as ui_app
+    from unittest.mock import Mock
+
+    sentinels = []
+    for owner, names in (
+        (ui_app._auth, ("login", "setup_passphrase", "change_passphrase")),
+        (ui_app, ("_agent_request", "_publish_runtime_request", "_write_setup_marker", "_stage_quarantine_stream", "_verify_active_model")),
+        (ui_app.requests.sessions.Session, ("request",)),
+    ):
+        for name in names:
+            sentinel = Mock(side_effect=AssertionError("invalid request reached a side effect"))
+            monkeypatch.setattr(owner, name, sentinel)
+            sentinels.append(sentinel)
+    yield sentinels
+    for sentinel in sentinels:
+        sentinel.assert_not_called()
+
+
+@pytest.mark.parametrize("path", [
+    "/api/auth/login", "/api/auth/setup", "/api/auth/change",
+    "/api/setup/complete", "/api/catalog/download", "/api/models/verify",
+    "/api/models/verify-manifest", "/api/models/delete", "/api/models/import",
+    "/api/chat", "/api/chat/stream", "/api/chat/search", "/api/search",
+    "/api/profile/preview", "/api/profile/select", "/api/sandbox/control/apply",
+    "/api/generate/image", "/api/generate/video", "/api/agent/task",
+])
+@pytest.mark.parametrize("value", [None, [], ["value"], "value", 17, True])
+def test_api_json_requires_object_before_effects(client, rejected_request_effects, path, value):
+    response = client.post(path, data=json.dumps(value), content_type="application/json")
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "JSON body must be an object"
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/auth/login", {"passphrase": 17}),
+    ("/api/auth/login", {"passphrase": None}),
+    ("/api/auth/setup", {"passphrase": [], "setup_token": "test"}),
+    ("/api/auth/change", {"current": {}, "new_passphrase": "test"}),
+    ("/api/auth/change", {"current": "test", "new_passphrase": True}),
+    ("/api/setup/complete", {"profile": []}),
+    ("/api/catalog/download", {"url": [], "filename": "model.gguf"}),
+    ("/api/catalog/download", {"url": "https://example.test/model", "filename": {}}),
+    ("/api/models/verify", {"name": []}),
+    ("/api/models/verify-manifest", {"name": False}),
+    ("/api/models/delete", {"name": {}}),
+    ("/api/models/import", {"path": 123}),
+    ("/api/chat", {"messages": "text"}),
+    ("/api/chat/stream", {"messages": [1]}),
+    ("/api/chat/search", {"messages": [{"role": "user", "content": "test"}], "search": "false"}),
+    ("/api/chat/search", {"messages": [{"role": ["user"], "content": "test"}]}),
+    ("/api/chat/search", {"messages": [{"role": "user", "content": {}}]}),
+    ("/api/chat", {"messages": []}),
+    ("/api/profile/preview", {"profile": []}),
+    ("/api/profile/select", {"profile": {}}),
+    ("/api/sandbox/control/apply", {"profile": "offline", "inference": []}),
+    ("/api/sandbox/control/apply", {"profile": "offline", "gpu": {}}),
+    ("/api/generate/image", {"model": None}),
+    ("/api/generate/video", {"model": "test", "prompt": {}}),
+    ("/api/agent/task", {"intent": 17}),
+    ("/api/search", {"query": ["test"]}),
+    ("/api/vm/gpu", {"enabled": 1}),
+    ("/api/emergency/panic", {"level": True}),
+])
+def test_api_json_field_types_precede_effects(client, rejected_request_effects, path, body):
+    response = client.post(path, json=body)
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+@pytest.mark.parametrize("raw", [
+    '{"passphrase":',
+    '{"passphrase":"\\ud800"}',
+    '{"extra":NaN}',
+    '{"extra":1e9999}',
+    '{"extra":' + '[' * 1100 + '0' + ']' * 1100 + '}',
+    '{"extra":' + '[' * 40 + '0' + ']' * 40 + '}',
+])
+def test_invalid_json_encodings_and_depth_are_safe(client, rejected_request_effects, raw):
+    response = client.post("/api/chat", data=raw, content_type="application/json")
+    assert response.status_code == 400
+    assert len(response.data) < 200
+
+
+@pytest.mark.parametrize("path,limit", [
+    ("/api/auth/login", 4096),
+    ("/api/models/import", 1_048_576),
+    ("/api/chat", 1_048_576),
+    ("/api/profile/select", 1_048_576),
+])
+def test_json_size_limit_blocks_side_effects(client, rejected_request_effects, path, limit):
+    response = client.post(path, data=b'{"padding":"' + b'x' * limit + b'"}', content_type="application/json")
+    assert response.status_code == 413
+    assert response.is_json
+
+
+def test_setup_token_unicode_is_rejected_without_auth_work(client, monkeypatch, tmp_path):
+    import ui.app as ui_app
+    from unittest.mock import Mock
+
+    token = tmp_path / "setup-token"
+    token.write_text("a" * 64)
+    monkeypatch.setattr(ui_app, "SETUP_TOKEN_PATH", token)
+    monkeypatch.setattr(ui_app._auth, "is_configured", lambda: False)
+    setup = Mock(side_effect=AssertionError("invalid setup token reached auth"))
+    monkeypatch.setattr(ui_app._auth, "setup_passphrase", setup)
+    response = client.post("/api/auth/setup", json={"passphrase": "a valid passphrase", "setup_token": "é"})
+    assert response.status_code == 403
+    setup.assert_not_called()
+
+
+@pytest.mark.parametrize("path", [
+    "/api/auth/login", "/api/catalog/download", "/api/models/verify",
+    "/api/models/delete", "/api/models/import", "/api/chat", "/api/chat/search",
+    "/api/profile/select", "/api/agent/task",
+])
+def test_non_json_requests_cannot_reach_services(client, rejected_request_effects, path):
+    response = client.post(path, data='{"name":"untyped"}', content_type="text/plain")
+    assert response.status_code == 415
+    assert response.is_json
+
+
+def test_unknown_length_json_cannot_read_past_limit(client, rejected_request_effects):
+    stream = io.BytesIO(b'{"passphrase":"' + b'x' * 5000 + b'"}')
+    response = client.post(
+        "/api/auth/login",
+        content_type="application/json",
+        environ_overrides={
+            "wsgi.input": stream,
+            "wsgi.input_terminated": True,
+            "CONTENT_LENGTH": "",
+        },
+    )
+    # Werkzeug may report malformed JSON after its limited stream truncates
+    # an unknown-length body. Both errors must precede auth work and stay bounded.
+    assert response.status_code in (400, 413)
+    assert 0 < stream.tell() <= 4096
+    assert response.is_json
+
+
+def test_unicode_csrf_header_is_rejected_without_exception(client, rejected_request_effects):
+    with client.session_transaction() as cookie_session:
+        cookie_session["csrf_token"] = "a" * 64
+    response = client.post(
+        "/api/profile/select", json={"profile": "offline"},
+        headers={"X-CSRF-Token": "é"}, environ_overrides={"HTTP_AUTHORIZATION": ""},
+    )
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "CSRF validation failed"

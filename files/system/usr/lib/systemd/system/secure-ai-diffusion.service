@@ -2,8 +2,8 @@
 Description=Secure AI Appliance - Diffusion Worker (Image/Video Generation)
 ConditionPathExists=/var/lib/secure-ai/vault/.initialized
 RequiresMountsFor=/var/lib/secure-ai/vault/models /var/lib/secure-ai/vault/outputs
-After=secure-ai-vault-mounted.service secure-ai-registry.service
-Requires=secure-ai-vault-mounted.service secure-ai-registry.service
+After=secure-ai-credentials.service secure-ai-vault-mounted.service secure-ai-registry.service
+Requires=secure-ai-credentials.service secure-ai-vault-mounted.service secure-ai-registry.service
 
 [Service]
 Type=simple
@@ -15,6 +15,9 @@ Restart=on-failure
 RestartSec=5
 
 Environment=BIND_ADDR=127.0.0.1:8455
+Environment=REGISTRY_URL=http://127.0.0.1:8470
+Environment=REGISTRY_VERIFY_TOKEN_PATH=%d/registry-verify-token
+LoadCredential=registry-verify-token:/var/lib/secure-ai/credentials/registry-verify.token
 Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models
 Environment=OUTPUTS_DIR=/var/lib/secure-ai/vault/outputs
 Environment=APPLIANCE_CONFIG=/etc/secure-ai/config/appliance.yaml
@@ -22,6 +25,10 @@ Environment=MAX_RESOLUTION=2048
 Environment=MAX_STEPS=100
 Environment=SERVICE_TOKEN_PATH=%d/service-token
 LoadCredential=service-token:/var/lib/secure-ai/credentials/diffusion.token
+Environment=SECURE_AI_DEPLOYMENT_MODE=appliance
+Environment=ATTESTOR_URL=http://127.0.0.1:8505
+Environment=ATTESTOR_TOKEN_PATH=%d/attestor-token
+LoadCredential=attestor-token:/var/lib/secure-ai/credentials/runtime-attestor.token
 EnvironmentFile=-/var/lib/secure-ai/inference.env
 
 # Filesystem isolation — needs GPU access, no network

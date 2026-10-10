@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -127,7 +129,9 @@ var (
 	auditMu   sync.Mutex
 	auditPath string
 
-	incidentPersistMu sync.Mutex
+	incidentPersistMu  sync.Mutex
+	incidentMutationMu sync.Mutex
+	storageDegraded    atomic.Bool
 
 	readToken              string
 	operatorToken          string
@@ -254,13 +258,25 @@ func generateIncidentID() string {
 }
 
 func computeIncidentHash(inc Incident) string {
-	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s",
-		inc.ID, inc.CreatedAt, inc.Class, inc.Severity, inc.Source, inc.Description)
-	h := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(h[:16])
+	return incidentHashWithKey(inc, forensicHMACKey)
 }
 
-func createIncident(report IncidentReport) Incident {
+func incidentHashWithKey(inc Incident, key []byte) string {
+	inc.Hash = ""
+	data, err := json.Marshal(inc)
+	if err != nil || len(key) < 32 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("SecAI_OS incident record v1\x00"))
+	mac.Write(data)
+	return "hmac-sha256-v1:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func createIncident(report IncidentReport) (Incident, error) {
+	incidentMutationMu.Lock()
+	defer incidentMutationMu.Unlock()
+	var durabilityErr error
 	pol := getContainmentPolicy()
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -294,20 +310,43 @@ func createIncident(report IncidentReport) Incident {
 	}
 	inc.Hash = computeIncidentHash(inc)
 
-	// Store incident
+	// Store pending intent before containment. At capacity, only terminal
+	// history may be discarded; unresolved recovery gates remain visible.
 	incidentsMu.Lock()
-	incidents = append(incidents, inc)
-	// Trim old incidents if over limit
-	if len(incidents) > maxIncidents {
-		incidents = incidents[len(incidents)-maxIncidents:]
+	if len(incidents) >= maxIncidents {
+		remove := -1
+		for i, old := range incidents {
+			if old.State == StateResolved || old.State == StateAcknowledged {
+				remove = i
+				break
+			}
+		}
+		if remove < 0 {
+			incidentsMu.Unlock()
+			storageDegraded.Store(true)
+			// Full history must not disable emergency containment. This event
+			// cannot be acknowledged durably; retain all existing recovery gates.
+			if len(containmentActions) > 0 {
+				results, ok := containmentExecutor(inc, endpoints, "")
+				inc.ContainmentResults = results
+				inc.State = StateContainmentFailed
+				if ok {
+					inc.State = StateContained
+				}
+				inc.Hash = computeIncidentHash(inc)
+			}
+			_ = writeAudit(inc) // Best effort only; the returned error remains authoritative.
+			return inc, fmt.Errorf("incident capacity exhausted by unresolved events; emergency containment attempted")
+		}
+		incidents = append(incidents[:remove], incidents[remove+1:]...)
 	}
+	incidents = append(incidents, inc)
 	incidentsMu.Unlock()
 
 	incidentCount.Add(1)
 
 	// Persist to disk and audit log
-	persistIncidents()
-	writeAudit(inc)
+	durabilityErr = errors.Join(durabilityErr, persistIncidents(), writeAudit(inc))
 
 	log.Printf("incident created: id=%s class=%s severity=%s state=%s actions=%v",
 		inc.ID, inc.Class, inc.Severity, inc.State, containmentActions)
@@ -324,6 +363,7 @@ func createIncident(report IncidentReport) Incident {
 		} else {
 			inc.State = StateContainmentFailed
 		}
+		inc.Hash = computeIncidentHash(inc)
 		incidentsMu.Lock()
 		for i := range incidents {
 			if incidents[i].ID == inc.ID {
@@ -332,8 +372,7 @@ func createIncident(report IncidentReport) Incident {
 			}
 		}
 		incidentsMu.Unlock()
-		persistIncidents()
-		writeAudit(inc)
+		durabilityErr = errors.Join(durabilityErr, persistIncidents(), writeAudit(inc))
 		if allSucceeded {
 			go fireWebhooks("containment", inc, containmentActions)
 		} else {
@@ -346,10 +385,15 @@ func createIncident(report IncidentReport) Incident {
 			// requirement is absent, so persistence failure cannot release the
 			// incident's containment gate.
 			log.Printf("recovery: failed to persist ceremony for incident %s: %v", inc.ID, err)
+			durabilityErr = errors.Join(durabilityErr, err)
 		}
 	}
 
-	return inc
+	if durabilityErr != nil {
+		storageDegraded.Store(true)
+		return inc, fmt.Errorf("incident durability unavailable: %w", durabilityErr)
+	}
+	return inc, nil
 }
 
 func getIncidents() []Incident {
@@ -383,52 +427,52 @@ func getOpenIncidents() []Incident {
 	return open
 }
 
-func resolveIncident(id string) (Incident, bool) {
+func transitionIncident(id string, state IncidentState) (Incident, bool) {
+	incidentMutationMu.Lock()
+	defer incidentMutationMu.Unlock()
 	incidentsMu.Lock()
-	var resolved Incident
-	found := false
-	for i := range incidents {
-		if incidents[i].ID == id {
-			if allowed, reason := recoveryMgr.CanReleaseIncident(incidents[i]); !allowed {
-				log.Printf("recovery: resolve blocked for incident %s: %s", id, reason)
-				break
+	index := -1
+	var previous Incident
+	for i, inc := range incidents {
+		if inc.ID == id {
+			if allowed, _ := recoveryMgr.CanReleaseIncident(inc); !allowed {
+				incidentsMu.Unlock()
+				return Incident{}, false
 			}
-			incidents[i].State = StateResolved
-			incidents[i].ResolvedAt = time.Now().UTC().Format(time.RFC3339)
-			resolvedCount.Add(1)
-			resolved = incidents[i]
-			found = true
+			index, previous = i, inc
 			break
 		}
 	}
-	incidentsMu.Unlock()
-	if found {
-		persistIncidents()
+	if index < 0 {
+		incidentsMu.Unlock()
+		return Incident{}, false
 	}
-	return resolved, found
+	updated := previous
+	updated.State = state
+	if state == StateResolved {
+		updated.ResolvedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	updated.Hash = computeIncidentHash(updated)
+	incidents[index] = updated
+	incidentsMu.Unlock()
+	if err := errors.Join(persistIncidents(), writeAudit(updated)); err != nil {
+		incidentsMu.Lock()
+		incidents[index] = previous
+		incidentsMu.Unlock()
+		// Restore disk state where possible; an audit failure still latches readiness.
+		_ = persistIncidents()
+		storageDegraded.Store(true)
+		return Incident{}, false
+	}
+	if state == StateResolved {
+		resolvedCount.Add(1)
+	}
+	return updated, true
 }
 
+func resolveIncident(id string) (Incident, bool) { return transitionIncident(id, StateResolved) }
 func acknowledgeIncident(id string) (Incident, bool) {
-	incidentsMu.Lock()
-	var acknowledged Incident
-	found := false
-	for i := range incidents {
-		if incidents[i].ID == id {
-			if allowed, reason := recoveryMgr.CanReleaseIncident(incidents[i]); !allowed {
-				log.Printf("recovery: acknowledge transition blocked for incident %s: %s", id, reason)
-				break
-			}
-			incidents[i].State = StateAcknowledged
-			acknowledged = incidents[i]
-			found = true
-			break
-		}
-	}
-	incidentsMu.Unlock()
-	if found {
-		persistIncidents()
-	}
-	return acknowledged, found
+	return transitionIncident(id, StateAcknowledged)
 }
 
 func severityRank(s IncidentSeverity) int {
@@ -475,29 +519,41 @@ func initAuditLog() {
 	}
 	dir := filepath.Dir(auditPath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
+		storageDegraded.Store(true)
 		log.Printf("warning: cannot create audit log dir: %v", err)
 		return
 	}
 	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
+		storageDegraded.Store(true)
 		log.Printf("warning: cannot open audit log: %v", err)
 		return
 	}
 	auditFile = f
 }
 
-func writeAudit(inc Incident) {
+func writeAudit(inc Incident) error {
+	auditMu.Lock()
+	defer auditMu.Unlock()
 	if auditFile == nil {
-		return
+		return fmt.Errorf("audit log is unavailable")
 	}
 	data, err := json.Marshal(inc)
 	if err != nil {
-		return
+		return err
 	}
-	auditMu.Lock()
-	defer auditMu.Unlock()
-	auditFile.Write(append(data, '\n'))
-	auditFile.Sync() // Security audit entries must be durable — sync each write
+	data = append(data, '\n')
+	n, err := auditFile.Write(data)
+	if err != nil {
+		return fmt.Errorf("write incident audit: %w", err)
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := auditFile.Sync(); err != nil {
+		return fmt.Errorf("sync incident audit: %w", err)
+	}
+	return nil
 }
 
 // =========================================================================
@@ -513,132 +569,125 @@ func initIncidentStore() {
 	}
 	dir := filepath.Dir(incidentStorePath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
+		storageDegraded.Store(true)
 		log.Printf("warning: cannot create incident store dir: %v", err)
 	}
 }
 
-func loadIncidentsFromDisk() {
+func loadIncidentsFromDisk() error {
 	if strings.TrimSpace(incidentStorePath) == "" {
-		return
+		return fmt.Errorf("incident store is not configured")
 	}
 	f, err := os.Open(incidentStorePath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("warning: cannot open incident store: %v", err)
+		if os.IsNotExist(err) {
+			return nil
 		}
-		return
+		return err
 	}
 	defer f.Close()
-
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<20 {
+		return fmt.Errorf("incident store is unsafe or exceeds capacity")
+	}
 	var loaded []Incident
+	seen := map[string]bool{}
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, 64*1024), 256*1024)
 	for scanner.Scan() {
 		var inc Incident
 		if err := json.Unmarshal(scanner.Bytes(), &inc); err != nil {
-			continue
+			return fmt.Errorf("malformed incident record: %w", err)
 		}
+		if !validRecoveryIncidentID(inc.ID) || seen[inc.ID] || !isValidClass(inc.Class) || !isValidSeverity(inc.Severity) {
+			return fmt.Errorf("invalid or duplicate incident record")
+		}
+		expected := computeIncidentHash(inc)
+		if expected == "" || !hmac.Equal([]byte(expected), []byte(inc.Hash)) {
+			return fmt.Errorf("incident authentication failed; preserve history for offline review (legacy records require explicit migration)")
+		}
+		seen[inc.ID] = true
 		loaded = append(loaded, inc)
+		if len(loaded) > maxIncidents {
+			return fmt.Errorf("incident count exceeds capacity")
+		}
 	}
-
-	if len(loaded) > maxIncidents {
-		loaded = loaded[len(loaded)-maxIncidents:]
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("incomplete incident store: %w", err)
 	}
-
 	incidentsMu.Lock()
 	incidents = loaded
 	incidentsMu.Unlock()
-
-	// Restore counters
-	var open, contained, resolved int64
+	var contained, resolved int64
 	for _, inc := range loaded {
-		switch inc.State {
-		case StateOpen:
-			open++
-		case StateContained:
+		if inc.State == StateContained {
 			contained++
-		case StateResolved:
+		}
+		if inc.State == StateResolved {
 			resolved++
 		}
 	}
 	incidentCount.Store(int64(len(loaded)))
 	containedCount.Store(contained)
 	resolvedCount.Store(resolved)
-
-	log.Printf("restored %d incidents from disk", len(loaded))
+	return nil
 }
 
-func persistIncidents() {
+func persistIncidents() error {
 	path := strings.TrimSpace(incidentStorePath)
 	if path == "" {
-		return
+		return fmt.Errorf("incident store is not configured")
 	}
 	incidentPersistMu.Lock()
 	defer incidentPersistMu.Unlock()
-
-	incidentsMu.RLock()
-	snapshot := make([]Incident, len(incidents))
-	copy(snapshot, incidents)
-	incidentsMu.RUnlock()
-
+	snapshot := getIncidents()
 	dirPath := filepath.Dir(path)
 	f, err := os.CreateTemp(dirPath, ".incidents-*.jsonl")
 	if err != nil {
-		log.Printf("warning: cannot write incident store: %v", err)
-		return
+		return fmt.Errorf("create incident store: %w", err)
 	}
+	defer f.Close()
 	tmp := f.Name()
 	defer os.Remove(tmp)
 	if err := f.Chmod(0640); err != nil {
-		f.Close()
-		log.Printf("warning: cannot secure incident store temporary file: %v", err)
-		return
+		return err
 	}
-
 	w := bufio.NewWriter(f)
+	total := 0
 	for _, inc := range snapshot {
 		data, err := json.Marshal(inc)
 		if err != nil {
-			f.Close()
-			log.Printf("warning: cannot encode incident store: %v", err)
-			return
+			return err
+		}
+		total += len(data) + 1
+		if total > 16<<20 {
+			return fmt.Errorf("incident store exceeds 16 MiB capacity")
 		}
 		if _, err := w.Write(data); err != nil {
-			f.Close()
-			log.Printf("warning: cannot write incident store: %v", err)
-			return
+			return err
 		}
 		if err := w.WriteByte('\n'); err != nil {
-			f.Close()
-			log.Printf("warning: cannot write incident store: %v", err)
-			return
+			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
-		log.Printf("warning: cannot flush incident store: %v", err)
-		return
+		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		log.Printf("warning: cannot sync incident store: %v", err)
-		return
+		return err
 	}
 	if err := f.Close(); err != nil {
-		log.Printf("warning: cannot close incident store: %v", err)
-		return
+		return err
 	}
-
 	if err := os.Rename(tmp, path); err != nil {
-		log.Printf("warning: cannot rename incident store: %v", err)
-		return
+		return err
 	}
-	if dir, err := os.Open(dirPath); err == nil {
-		if err := dir.Sync(); err != nil {
-			log.Printf("warning: cannot sync incident store directory: %v", err)
-		}
-		dir.Close()
+	dir, err := os.Open(dirPath)
+	if err != nil {
+		return err
 	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // =========================================================================
@@ -847,26 +896,50 @@ func requireReporterToken(next http.HandlerFunc) http.HandlerFunc {
 // =========================================================================
 
 // readAuditLogTail returns the last n lines from the audit JSONL file.
-func readAuditLogTail(n int) []string {
-	if auditPath == "" {
-		return nil
+func readAuditLogTail(n int) ([]string, error) {
+	if n < 1 || n > 1000 {
+		return nil, fmt.Errorf("audit tail count must be between 1 and 1000")
 	}
 	f, err := os.Open(auditPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("audit log is not a regular file")
+	}
+	// Read only a bounded suffix, rather than allocating the entire growing log.
+	const maxTailBytes = 4 << 20
+	start := int64(0)
+	if info.Size() > maxTailBytes {
+		start = info.Size() - maxTailBytes
+	}
+	reader := bufio.NewReader(io.NewSectionReader(f, start, info.Size()-start))
+	if start > 0 {
+		if _, err := reader.ReadString('\n'); err != nil {
+			return nil, fmt.Errorf("audit tail has no complete bounded record")
+		}
+	}
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 256*1024)
+	lines := make([]string, 0, n)
+	next := 0
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		if len(lines) < n {
+			lines = append(lines, scanner.Text())
+		} else {
+			lines[next] = scanner.Text()
+			next = (next + 1) % n
+		}
 	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("audit tail is incomplete: %w", err)
 	}
-	return lines
+	if len(lines) == n && next != 0 {
+		lines = append(lines[next:], lines[:next]...)
+	}
+	return lines, nil
 }
 
 // =========================================================================
@@ -876,6 +949,11 @@ func readAuditLogTail(n int) []string {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	open := getOpenIncidents()
 	w.Header().Set("Content-Type", "application/json")
+	if storageDegraded.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"status": "degraded", "reason": "incident storage requires operator recovery"})
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
 		"open_incidents":  len(open),
@@ -938,8 +1016,14 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	inc := createIncident(report)
+	inc, err := createIncident(report)
 	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		log.Printf("incident report durability failure: %v", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "incident storage unavailable; containment may have executed", "incident_id": inc.ID})
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(inc)
 }
@@ -1148,13 +1232,24 @@ func newIncidentMux() *http.ServeMux {
 // =========================================================================
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate-history" {
+		if err := runHistoryMigration(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := loadContainmentPolicy(); err != nil {
 		log.Fatalf("failed to load containment policy: %v", err)
 	}
 
+	if err := loadForensicHMACKey(); err != nil {
+		log.Fatalf("incident authentication unavailable: %v", err)
+	}
 	initAuditLog()
 	initIncidentStore()
-	loadIncidentsFromDisk()
+	if err := loadIncidentsFromDisk(); err != nil {
+		log.Fatalf("incident history unavailable: %v", err)
+	}
 	if err := initializeRecoveryState(); err != nil {
 		log.Fatalf("recovery state unavailable: %v", err)
 	}
@@ -1169,9 +1264,6 @@ func main() {
 	}
 	if err := loadContainmentTokens(); err != nil {
 		log.Fatalf("containment authentication unavailable: %v", err)
-	}
-	if err := loadForensicHMACKey(); err != nil {
-		log.Fatalf("forensic signing unavailable: %v", err)
 	}
 	loadServiceEndpoints()
 

@@ -27,6 +27,7 @@ def candidate_paths() -> list[Path]:
     recursive_roots = (
         Path("/usr/libexec/secure-ai"),
         Path("/usr/lib/secure-ai/python3.12-venv"),
+        Path("/usr/lib/secure-ai/services"),
         Path("/etc/secure-ai"),
     )
     for root in recursive_roots:
@@ -50,6 +51,7 @@ def candidate_paths() -> list[Path]:
             Path("/usr/bin/gguf-guard"),
             Path("/usr/bin/secai-registryctl"),
             Path("/usr/bin/securectl"),
+            Path("/usr/lib/sysusers.d/secure-ai.conf"),
         }
     )
     return sorted(paths, key=lambda path: path.as_posix())

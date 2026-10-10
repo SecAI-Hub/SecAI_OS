@@ -1,10 +1,10 @@
 [Unit]
 Description=Secure AI DNS Leak Detection Check
-After=network-online.target secure-ai-tor.service
-Wants=network-online.target
+After=secure-ai-network-boot.service
 
 [Service]
 Type=oneshot
+ExecCondition=/usr/libexec/secure-ai/network-profile.py require-maintenance
 ExecStart=/usr/libexec/secure-ai/check-dns-leak.sh
 
 # Sandboxing
@@ -27,11 +27,10 @@ CapabilityBoundingSet=
 
 LimitCORE=0
 
-# Needs network to test DNS + Tor connectivity
+# Explicit maintenance diagnostic only; no scheduled Tor probe.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
-# Write results to logs
-ReadWritePaths=/var/lib/secure-ai/logs
+# Results go to the local service journal; no persistent success marker.
 ReadOnlyPaths=/etc/secure-ai
 
 # Syscall filtering

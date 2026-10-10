@@ -11,6 +11,11 @@ Type=simple
 ExecStart=/usr/libexec/secure-ai/agent
 Environment=BIND_ADDR=unix:/run/secure-ai/agent/agent.sock
 Environment=INFERENCE_URL=http://127.0.0.1:8465
+Environment=INFERENCE_TOKEN_PATH=%d/inference-token
+LoadCredential=inference-token:/var/lib/secure-ai/credentials/inference-agent.token
+Environment=RUNTIME_ATTESTOR_URL=http://127.0.0.1:8505
+Environment=RUNTIME_ATTESTOR_TOKEN_PATH=%d/runtime-attestor-token
+LoadCredential=runtime-attestor-token:/var/lib/secure-ai/credentials/runtime-attestor.token
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=TOOL_FIREWALL_URL=http://127.0.0.1:8475
 Environment=AIRLOCK_URL=http://127.0.0.1:8490

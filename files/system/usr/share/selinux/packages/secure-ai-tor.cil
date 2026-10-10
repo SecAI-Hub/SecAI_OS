@@ -1,0 +1,6 @@
+; Permit the system manager's no-new-privileges transition into Fedora's
+; existing Tor domain. No access to generic appliance data is added.
+(allow init_t tor_t (process2 (nnp_transition)))
+(filecon "/etc/secure-ai/tor(/.*)?" any (system_u object_r tor_etc_t ((s0) (s0))))
+(filecon "/var/lib/secure-ai/tor(/.*)?" any (system_u object_r tor_var_lib_t ((s0) (s0))))
+(filecon "/var/lib/secure-ai/logs/tor[.]log" file (system_u object_r tor_var_log_t ((s0) (s0))))

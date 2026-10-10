@@ -1,7 +1,7 @@
 ARG COMPUTE=cpu
 ARG TARGETARCH
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:3be081f6cae8f1678609f6ae00b1dfebd6819c3ce75b7c574663af84afe99cc4 AS build
+FROM cgr.dev/chainguard/python:latest-dev@sha256:afdbadf8d697739ab8e10a4d355d0850daa439cba3e6f0e39a73f7f2d3d839b7 AS build
 
 ARG COMPUTE
 ARG TARGETARCH
@@ -13,8 +13,8 @@ WORKDIR /app
 RUN test "$TARGETARCH" = "amd64" || \
     { echo "diffusion locks support only linux/amd64 (got: ${TARGETARCH:-unknown})" >&2; exit 64; }
 
-ENV PYTHON_VERSION=3.14.5 \
-    PYTHON_TARBALL_SHA256=7e32597b99e5d9a39abed35de4693fa169df3e5850d4c334337ffd6a19a36db6 \
+ENV PYTHON_VERSION=3.14.8 \
+    PYTHON_TARBALL_SHA256=c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c274360ce73 \
     PREFIX=/opt/python \
     PATCH_DIR=/build/cpython-patches \
     VIRTUAL_ENV=/opt/venv \
@@ -63,13 +63,14 @@ RUN rm -rf \
     /opt/venv/lib/python3.14/site-packages/wheel \
     /opt/venv/lib/python3.14/site-packages/wheel-*.dist-info
 
+COPY services/common/ /app/common/
 COPY services/diffusion-worker/app.py /app/app.py
 COPY services/diffusion-worker/entrypoint.py /app/entrypoint.py
 
 RUN chmod 0555 /app/entrypoint.py && \
     chown -R 65534:65534 /app /opt/python /opt/venv
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:96ff486b326d15db16aa1fbd41a17043a557bebf76d2c0ac932e717534025940
 
 USER root
 WORKDIR /app

@@ -51,7 +51,12 @@ class TestTorConfig:
 
     def test_isolate_dest_addr(self):
         content = TORRC_PATH.read_text()
-        assert "IsolateDestAddr 1" in content
+        lines = [line.split() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        listeners = [line for line in lines if line[0] == "SocksPort"]
+        assert len(listeners) == 1
+        assert listeners[0][1] == "127.0.0.1:9050"
+        assert {"IsolateDestAddr", "IsolateDestPort"} <= set(listeners[0][2:])
+        assert not any(line[0] in {"IsolateDestAddr", "IsolateDestPort"} for line in lines)
 
     def test_safe_logging(self):
         content = TORRC_PATH.read_text()
@@ -145,24 +150,26 @@ class TestDNSLeakDetection:
         content = (SCRIPTS_DIR / "check-dns-leak.sh").read_text()
         assert "dig" in content or "nslookup" in content
 
-    def test_checks_tor_socks(self):
+    def test_no_automatic_tor_probe(self):
         content = (SCRIPTS_DIR / "check-dns-leak.sh").read_text()
-        assert "socks5" in content or "9050" in content
+        assert "socks5" not in content
+        assert "curl " not in content
 
-    def test_checks_nftables_rules(self):
+    def test_live_scope_guard_replaces_rule_grep(self):
         content = (SCRIPTS_DIR / "check-dns-leak.sh").read_text()
-        assert "nft" in content
-        assert "dport 53" in content
+        assert "require-maintenance" in content
+        assert "nft list ruleset" not in content
 
-    def test_writes_json_result(self):
+    def test_diagnostic_does_not_publish_offline_success(self):
         content = (SCRIPTS_DIR / "check-dns-leak.sh").read_text()
-        assert "dns-leak-check.json" in content
-        assert "dns_leak_detected" in content
+        assert '"dns_leak_detected":None' in content
+        assert "maintenance_diagnostic" in content
+        assert "dns-leak-check.json" not in content
 
-    def test_checks_search_policy(self):
+    def test_selected_search_policy_is_not_runtime_authority(self):
         content = (SCRIPTS_DIR / "check-dns-leak.sh").read_text()
-        assert "policy.yaml" in content
-        assert "search_enabled" in content or "search" in content
+        assert "policy.yaml" not in content
+        assert content.index("require-maintenance") < content.index("dig +short")
 
 
 class TestDNSLeakTimer:
@@ -188,18 +195,20 @@ class TestDNSLeakTimer:
 
 
 class TestNftablesDNS:
-    def test_dns_rate_limited(self):
+    def test_no_implicit_rate_limited_dns_exception(self):
         content = NFTABLES_PATH.read_text()
-        assert "dport 53 limit rate" in content
+        assert "dport 53 limit rate" not in content
+        assert "flags timeout" in content
 
-    def test_dns_excess_logged(self):
+    def test_direct_dns_requires_airlock_identity_and_full_scope(self):
         content = NFTABLES_PATH.read_text()
-        assert "secure-ai-dns-excess" in content
+        assert "meta skuid $AIRLOCK_UID udp dport 53 meta nfproto @full accept" in content
+        assert "meta skuid $AIRLOCK_UID udp dport 53 meta protocol @full accept" in content
 
-    def test_dns_excess_dropped(self):
+    def test_host_dns_requires_maintenance_scope(self):
         content = NFTABLES_PATH.read_text()
-        # After rate limit, excess DNS should be logged and dropped
-        assert 'dport 53 log prefix "secure-ai-dns-excess: " drop' in content
+        assert "udp dport { 53, 123 } meta nfproto @maintenance accept" in content
+        assert "udp dport { 53, 123 } meta protocol @maintenance accept" in content
 
     def test_default_policy_drop(self):
         content = NFTABLES_PATH.read_text()
@@ -237,8 +246,9 @@ class TestApplianceConfig:
 
 
 class TestRecipeIncludes:
-    def test_dns_leak_timer_enabled(self):
+    def test_dns_probe_timer_disabled_by_default(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         systemd_module = next(m for m in recipe["modules"] if m.get("type") == "systemd")
         enabled = systemd_module["system"]["enabled"]
-        assert "secure-ai-dns-leak-check.timer" in enabled
+        assert "secure-ai-dns-leak-check.timer" not in enabled
+        assert "secure-ai-dns-leak-check.timer" in systemd_module["system"]["disabled"]

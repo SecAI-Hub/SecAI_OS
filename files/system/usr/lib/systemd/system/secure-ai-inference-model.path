@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for an authenticated UI inference-model request
+
+[Path]
+PathExists=/run/secure-ai-ui/inference-model-request
+Unit=secure-ai-inference-model.service
+
+[Install]
+WantedBy=multi-user.target

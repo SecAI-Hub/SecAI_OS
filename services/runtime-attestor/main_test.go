@@ -58,6 +58,10 @@ func resetGlobalState(t *testing.T) {
 	serviceToken = ""
 	incidentRecorderToken = ""
 	hmacKey = nil
+	gpuScopeKeys = map[string][]byte{}
+	gpuReplayMu.Lock()
+	gpuReplay = map[string]gpuReplayRecord{}
+	gpuReplayMu.Unlock()
 	auditEnforced = false
 	auditMu.Lock()
 	if auditFile != nil {
@@ -127,6 +131,7 @@ func installTestTrustInputs(t *testing.T) {
 
 const testAttestPolicyYAML = `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 expected_pcrs: {}
@@ -138,6 +143,7 @@ hmac_key_path: ""
 
 const testAttestPolicyRequireTPM = `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: true
 require_secure_boot: false
 expected_pcrs:
@@ -150,6 +156,7 @@ hmac_key_path: ""
 
 const testAttestPolicyRequireSB = `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: true
 expected_pcrs: {}
@@ -163,25 +170,11 @@ hmac_key_path: ""
 // Policy loading tests
 // =========================================================================
 
-func TestLoadAttestPolicy_Defaults(t *testing.T) {
+func TestLoadAttestPolicy_MissingFailsClosed(t *testing.T) {
 	resetGlobalState(t)
-	// Point to a non-existent file → should use defaults
 	t.Setenv("ATTESTATION_POLICY_PATH", "/tmp/nonexistent-attestation-policy-12345.yaml")
-	if err := loadAttestPolicy(); err != nil {
-		t.Fatalf("loadAttestPolicy: %v", err)
-	}
-	pol := getAttestPolicy()
-	if pol.RequireTPM {
-		t.Error("default policy should not require TPM")
-	}
-	if pol.RequireSecureBoot {
-		t.Error("default policy should not require Secure Boot")
-	}
-	if len(pol.ServiceBinaries) == 0 {
-		t.Error("default policy should have service binaries")
-	}
-	if len(pol.PolicyFiles) == 0 {
-		t.Error("default policy should have policy files")
+	if err := loadAttestPolicy(); err == nil {
+		t.Fatal("missing mandatory policy selected weaker defaults")
 	}
 }
 
@@ -361,6 +354,7 @@ func TestVerifyReleaseMeasurements_DetectsPolicyTamper(t *testing.T) {
 	policyFile := writeTempPolicyFile(t, "policy.yaml", "allow: true")
 	policyYAML := `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 service_binaries: {}
@@ -606,6 +600,12 @@ func TestCrossServiceBundleHMACGoldenVector(t *testing.T) {
 		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 	}
 	bundle := RuntimeStateBundle{
+		SchemaVersion:            2,
+		BootstrapState:           StateAttested,
+		BootstrapPolicySatisfied: true,
+		GPU: GPUAssurance{Mode: "no_gpu", PolicySatisfied: true,
+			Bootstrap: GPUScopeOutcome{Scope: "bootstrap", Status: "not_applicable"},
+			Runtime:   GPUScopeOutcome{Scope: "runtime", Status: "not_applicable"}},
 		Timestamp:        "2026-07-27T12:34:56.123456789Z",
 		State:            StateAttested,
 		AssuranceMode:    "hardware",
@@ -638,7 +638,7 @@ func TestCrossServiceBundleHMACGoldenVector(t *testing.T) {
 		TPMQuotePCRSelection:    "sha256:0,2,4,7",
 		Failures:                []string{"golden-vector"},
 	}
-	const expected = "2f79b51e951ec69d0de69a6a36893b9c3802734517942b465f782e643865fff5"
+	const expected = "90738102056953840a31ad65c2375500580f51d59e754d26688dcf007387a94c"
 	if actual := computeBundleHMAC(bundle); actual != expected {
 		t.Fatalf("cross-service HMAC changed: got %s, want %s", actual, expected)
 	}
@@ -779,6 +779,7 @@ func TestPerformAttestation_MissingBinary_Degrades(t *testing.T) {
 	resetGlobalState(t)
 	policyYAML := `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 service_binaries:
@@ -807,6 +808,7 @@ func TestPerformAttestation_ValidBinaries_Attested(t *testing.T) {
 	bin := writeTempBinary(t, "test-service", []byte("test-binary-content"))
 	policyYAML := `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 service_binaries:
@@ -870,6 +872,7 @@ func TestPerformAttestation_DegradeCountIncremented(t *testing.T) {
 	resetGlobalState(t)
 	policyYAML := `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 service_binaries:
@@ -992,6 +995,7 @@ func TestHTTP_Attest_MethodNotAllowed(t *testing.T) {
 
 func TestHTTP_Verify_EvaluationPolicySatisfiedWithoutHardwareVerification(t *testing.T) {
 	resetGlobalState(t)
+	hmacKey = []byte(strings.Repeat("k", 32))
 	path := writeTempAttestPolicy(t, testAttestPolicyYAML)
 	t.Setenv("ATTESTATION_POLICY_PATH", path)
 	loadAttestPolicy()
@@ -1036,6 +1040,7 @@ func TestHTTP_Verify_Degraded(t *testing.T) {
 	resetGlobalState(t)
 	policyYAML := `
 version: 1
+gpu: {mode: no_gpu}
 require_tpm: false
 require_secure_boot: false
 service_binaries:

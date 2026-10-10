@@ -1,19 +1,17 @@
 # Secure AI Appliance - Tor configuration
-# Provides anonymous SOCKS5 proxy for SearXNG search routing.
-# Only SearXNG connects to Tor — no other services have access.
+# SOCKS5 proxy for appliance search routing.
+# The loopback source policy does not authenticate individual local processes.
 
 # SOCKS5 proxy for SearXNG
-SocksPort 127.0.0.1:9050
+SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateDestPort
 
 # Disable direct connections (SOCKS only)
 SocksPolicy accept 127.0.0.1
 SocksPolicy reject *
 
-# Circuit isolation: each destination gets its own circuit
-IsolateDestAddr 1
-IsolateDestPort 1
-
-# New circuit for each SearXNG query batch (rotate every 30s under active use)
+# Destination isolation is configured on SocksPort above. These settings do
+# not create a new circuit for every query or isolate callers by identity.
+# Circuit maintenance intervals are independent of individual queries.
 NewCircuitPeriod 60
 MaxCircuitDirtiness 30
 

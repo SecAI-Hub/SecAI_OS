@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -291,32 +290,8 @@ func requireBearerTokens(next http.HandlerFunc, tokenSources ...func() string) h
 const maxManifestBytes = 16 * 1024 * 1024
 
 func readRegularBounded(path string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > limit {
-		return nil, fmt.Errorf("%s is not a bounded regular file", path)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s exceeds the size limit", path)
-	}
-	openedInfo, err := file.Stat()
-	if err != nil || !os.SameFile(info, openedInfo) ||
-		openedInfo.Size() != info.Size() ||
-		!openedInfo.ModTime().Equal(info.ModTime()) {
-		return nil, fmt.Errorf("%s changed while being read", path)
-	}
-	return data, nil
+	data, _, err := readVerificationControl(context.Background(), path, limit)
+	return data, err
 }
 
 func validateManifest(candidate Manifest) error {
@@ -407,7 +382,7 @@ func loadManifest() error {
 	// A missing runtime manifest is a supported first-boot condition. Any other
 	// access or parse failure is evidence of damaged state and must not be
 	// silently replaced with an empty registry.
-	data, err := readRegularBounded(manifestPath, maxManifestBytes)
+	data, sourceInfo, err := readVerificationControl(context.Background(), manifestPath, maxManifestBytes)
 	if err == nil {
 		candidate, decodeErr := decodeRuntimeManifest(data)
 		if decodeErr != nil {
@@ -416,6 +391,8 @@ func loadManifest() error {
 		manifest = candidate
 		manifestSource = manifestPath
 		manifestDigest = sha256.Sum256(data)
+		manifestSourceInfo = sourceInfo
+		manifestGeneration++
 		return nil
 	}
 	if !os.IsNotExist(err) {
@@ -427,7 +404,7 @@ func loadManifest() error {
 	if lockPath == "" {
 		lockPath = "/etc/secure-ai/policy/models.lock.yaml"
 	}
-	data, err = readRegularBounded(lockPath, maxManifestBytes)
+	data, sourceInfo, err = readVerificationControl(context.Background(), lockPath, maxManifestBytes)
 	if err != nil {
 		return fmt.Errorf("read registry lock %s: %w", lockPath, err)
 	}
@@ -438,27 +415,9 @@ func loadManifest() error {
 	manifest = candidate
 	manifestSource = lockPath
 	manifestDigest = sha256.Sum256(data)
+	manifestSourceInfo = sourceInfo
+	manifestGeneration++
 	return nil
-}
-
-func manifestSourceError() error {
-	if manifestSource == "" {
-		return fmt.Errorf("manifest source is unavailable")
-	}
-	data, err := readRegularBounded(manifestSource, maxManifestBytes)
-	if err != nil {
-		return err
-	}
-	actual := sha256.Sum256(data)
-	if subtle.ConstantTimeCompare(actual[:], manifestDigest[:]) != 1 {
-		return fmt.Errorf("manifest source changed after startup")
-	}
-	if manifestSource == manifestPath {
-		_, err = decodeRuntimeManifest(data)
-	} else {
-		_, err = decodeModelsLock(data)
-	}
-	return err
 }
 
 func saveManifest() error {
@@ -485,12 +444,26 @@ func saveManifest() error {
 		temp.Close()
 		return err
 	}
+	writtenInfo, err := temp.Stat()
+	if err != nil {
+		temp.Close()
+		return err
+	}
 	if err := temp.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(tempPath, manifestPath); err != nil {
 		return err
 	}
+	info, err := os.Lstat(manifestPath)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(writtenInfo, info) {
+		return errEnrollment
+	}
+	manifestSourceInfo = info
+	manifestGeneration++
 	manifestSource = manifestPath
 	manifestDigest = sha256.Sum256(data)
 	return nil
@@ -1156,9 +1129,15 @@ func handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	manifestMu.RLock()
-	defer manifestMu.RUnlock()
+	data, err := json.Marshal(manifest.Models)
+	manifestMu.RUnlock()
+	if err != nil || len(data) > maxManifestBytes {
+		http.Error(w, "diagnostic listing exceeds supported bounds", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(manifest.Models)
+	w.Header().Set("X-Registry-View", "diagnostic; verify before use")
+	w.Write(data)
 }
 
 func handleGetModel(w http.ResponseWriter, r *http.Request) {
@@ -1166,68 +1145,35 @@ func handleGetModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		http.Error(w, "missing ?name= parameter", http.StatusBadRequest)
 		return
 	}
-
+	var data []byte
+	var err error
 	manifestMu.RLock()
-	defer manifestMu.RUnlock()
-	for _, m := range manifest.Models {
-		if m.Name == name {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(m)
-			return
+	for _, model := range manifest.Models {
+		if model.Name == name {
+			data, err = json.Marshal(model)
+			break
 		}
 	}
-	http.Error(w, "model not found", http.StatusNotFound)
-}
-
-func handleModelPath(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	manifestMu.RUnlock()
+	if data == nil {
+		http.Error(w, "model not found", http.StatusNotFound)
 		return
 	}
-
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		http.Error(w, "missing ?name= parameter", http.StatusBadRequest)
+	if err != nil || len(data) > maxManifestBytes {
+		http.Error(w, "diagnostic record unavailable", http.StatusServiceUnavailable)
 		return
 	}
-
-	manifestMu.RLock()
-	defer manifestMu.RUnlock()
-	for _, m := range manifest.Models {
-		if m.Name == name {
-			rel, err := registryRel(m.Filename)
-			if err != nil {
-				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
-				return
-			}
-			root, err := openRegistryRoot()
-			if err != nil {
-				http.Error(w, "registry unavailable", http.StatusInternalServerError)
-				return
-			}
-			defer root.Close()
-			if _, err := root.Stat(rel); err != nil {
-				http.Error(w, "model file not found on disk", http.StatusNotFound)
-				return
-			}
-			path, err := registryPath(rel)
-			if err != nil {
-				http.Error(w, "invalid registry filename", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"path": path})
-			return
-		}
-	}
-	http.Error(w, "model not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Registry-View", "diagnostic; verify before use")
+	w.Write(data)
 }
+
+func handleModelPath(w http.ResponseWriter, r *http.Request) { handleVerifiedOperation(w, r, "path") }
 
 func handlePromote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1634,75 +1580,7 @@ func handleVerifyAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	manifestMu.RLock()
-	models := make([]Artifact, len(manifest.Models))
-	copy(models, manifest.Models)
-	manifestMu.RUnlock()
-
-	results := make([]map[string]string, 0, len(models))
-	allOk := true
-	var root *os.Root
-	if len(models) > 0 {
-		var rootErr error
-		root, rootErr = openRegistryRoot()
-		if rootErr != nil {
-			http.Error(w, "registry unavailable", http.StatusInternalServerError)
-			return
-		}
-		defer root.Close()
-	}
-
-	for _, m := range models {
-		rel, err := registryRel(m.Filename)
-		if err != nil {
-			allOk = false
-			results = append(results, map[string]string{
-				"name":   m.Name,
-				"status": "failed",
-				"error":  "invalid registry filename",
-			})
-			continue
-		}
-		actual, err := verifyArtifactHash(root, rel, m.SHA256)
-		if err != nil {
-			allOk = false
-			results = append(results, map[string]string{
-				"name":     m.Name,
-				"status":   "failed",
-				"expected": m.SHA256,
-				"actual":   actual,
-				"error":    err.Error(),
-			})
-		} else {
-			results = append(results, map[string]string{
-				"name":   m.Name,
-				"status": "verified",
-				"sha256": actual,
-			})
-		}
-	}
-
-	status := "ok"
-	if !allOk {
-		status = "failed"
-	}
-
-	resultBody := map[string]interface{}{
-		"status":      status,
-		"models":      results,
-		"checked":     len(results),
-		"verified_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := writeIntegrityResult(resultBody); err != nil {
-		log.Printf("warning: failed to persist integrity result: %v", err)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if !allOk {
-		w.WriteHeader(http.StatusConflict)
-	}
-	json.NewEncoder(w).Encode(resultBody)
+	writeVerificationReply(w, r, verification.run(r.Context(), verifiedAllReply))
 }
 
 func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
@@ -1710,29 +1588,7 @@ func handleIntegrityStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	resultPath := integrityResultPath()
-
-	data, err := os.ReadFile(resultPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "unknown",
-			"detail": "no integrity check has run yet",
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(data, &payload); err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "unknown",
-			"detail": "integrity status file is not valid JSON",
-		})
-		return
-	}
-	json.NewEncoder(w).Encode(payload)
+	writeVerificationReply(w, r, verification.run(r.Context(), currentIntegrityReply))
 }
 
 func integrityResultPath() string {
@@ -1743,100 +1599,67 @@ func integrityResultPath() string {
 	return resultPath
 }
 
-func writeIntegrityResult(result map[string]interface{}) error {
+func writeIntegrityResult(ctx context.Context, result map[string]interface{}) error {
 	resultPath := integrityResultPath()
-	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(result, "", "  ")
+	data, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(resultPath, data, 0o644)
+	if len(data) > maxVerificationResult {
+		return errOutput
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
+		return err
+	}
+	// Concurrent bounded verifications publish complete historical snapshots;
+	// readers must never observe interleaved reports from separate writers.
+	temp, err := os.CreateTemp(filepath.Dir(resultPath), ".integrity-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	defer temp.Close()
+	if err = temp.Chmod(0644); err != nil {
+		return err
+	}
+	if _, err = temp.Write(data); err != nil {
+		return err
+	}
+	if err = temp.Sync(); err != nil {
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	if err = contextError(ctx); err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), resultPath)
 }
 
-func handleVerifyModel(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		http.Error(w, "missing ?name= parameter", http.StatusBadRequest)
-		return
-	}
-
-	manifestMu.RLock()
-	defer manifestMu.RUnlock()
-
-	for _, m := range manifest.Models {
-		if m.Name == name {
-			rel, err := registryRel(m.Filename)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(map[string]string{
-					"status":      "failed",
-					"name":        name,
-					"error":       "invalid registry filename",
-					"safe_to_use": "false",
-				})
-				return
-			}
-			root, rootErr := openRegistryRoot()
-			if rootErr != nil {
-				http.Error(w, "registry unavailable", http.StatusInternalServerError)
-				return
-			}
-			defer root.Close()
-			actual, err := verifyArtifactHash(root, rel, m.SHA256)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(map[string]string{
-					"status":      "failed",
-					"name":        name,
-					"expected":    m.SHA256,
-					"actual":      actual,
-					"error":       err.Error(),
-					"safe_to_use": "false",
-				})
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"status":      "verified",
-				"name":        name,
-				"sha256":      actual,
-				"safe_to_use": "true",
-			})
-			return
-		}
-	}
-	http.Error(w, "model not found", http.StatusNotFound)
-}
+func handleVerifyModel(w http.ResponseWriter, r *http.Request) { handleVerifiedOperation(w, r, "hash") }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	manifestMu.RLock()
-	count := len(manifest.Models)
-	sourceErr := manifestSourceError()
-	manifestMu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
-	if sourceErr != nil {
+	reply := verification.run(r.Context(), func(ctx context.Context) verificationReply {
+		view, err := enrollmentSnapshot()
+		if err != nil {
+			return verificationReply{err: err}
+		}
+		if err = view.current(ctx); err != nil {
+			return verificationReply{err: err}
+		}
+		return verificationReply{body: map[string]any{"status": "ok", "model_count": len(view.models), "registry_dir": view.dir}}
+	})
+	if reply.err != nil {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":      "degraded",
-			"model_count": count,
-			"error":       "registry enrollment metadata is unavailable or changed",
-		})
+		json.NewEncoder(w).Encode(map[string]string{"status": "degraded", "error": reply.err.Error()})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":       "ok",
-		"model_count":  count,
-		"registry_dir": registryDir,
-	})
+	writeVerificationReply(w, r, reply)
 }
 
 func newRegistryMux() *http.ServeMux {
@@ -1844,7 +1667,7 @@ func newRegistryMux() *http.ServeMux {
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/v1/models", requireReadToken(handleListModels))
 	mux.HandleFunc("/v1/model", requireReadToken(handleGetModel))
-	mux.HandleFunc("/v1/model/path", requireReadToken(handleModelPath))
+	mux.HandleFunc("/v1/model/path", requireVerifyToken(handleModelPath))
 	mux.HandleFunc("/v1/model/verify", requireVerifyToken(handleVerifyModel))
 	mux.HandleFunc("/v1/models/verify-all", requireVerifyToken(handleVerifyAll))
 	mux.HandleFunc("/v1/integrity/status", requireVerifyToken(handleIntegrityStatus))
@@ -1859,75 +1682,7 @@ func newRegistryMux() *http.ServeMux {
 const ggufGuardBin = "/usr/bin/gguf-guard"
 
 func handleVerifyGGUFManifest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		http.Error(w, "missing ?name= parameter", http.StatusBadRequest)
-		return
-	}
-
-	manifestMu.RLock()
-	defer manifestMu.RUnlock()
-
-	for _, m := range manifest.Models {
-		if m.Name == name {
-			if m.GGUFGuardManifest == "" {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{
-					"status": "skipped",
-					"name":   name,
-					"reason": "no gguf-guard manifest available",
-				})
-				return
-			}
-
-			modelPath, err := registryPath(m.Filename)
-			if err != nil {
-				http.Error(w, "invalid registry filename", http.StatusConflict)
-				return
-			}
-			manifestFile, err := registryPath(m.GGUFGuardManifest)
-			if err != nil {
-				http.Error(w, "invalid gguf-guard manifest path", http.StatusConflict)
-				return
-			}
-
-			out, err := runGGUFGuardVerify(modelPath, manifestFile)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(map[string]string{
-					"status": "failed",
-					"name":   name,
-					"error":  out,
-				})
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"status": "verified",
-				"name":   name,
-				"detail": out,
-			})
-			return
-		}
-	}
-	http.Error(w, "model not found", http.StatusNotFound)
-}
-
-// runGGUFGuardVerify runs gguf-guard verify-manifest and returns output and error.
-func runGGUFGuardVerify(modelPath, manifestFile string) (string, error) {
-	out, err := exec.Command(ggufGuardBin, "verify-manifest", modelPath, manifestFile).CombinedOutput()
-	result := strings.TrimSpace(string(out))
-	if err != nil {
-		return result, err
-	}
-	return result, nil
+	handleVerifiedOperation(w, r, "gguf")
 }
 
 func main() {

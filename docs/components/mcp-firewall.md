@@ -1,97 +1,51 @@
-# MCP Firewall
+# MCP gateway
 
-**Service:** `secure-ai-mcp-firewall.service`
-**Binary:** `/usr/libexec/secure-ai/mcp-firewall`
-**Port:** 8496 (loopback only)
-**Language:** Go
+`secure-ai-mcp-firewall.service` serves the authenticated policy API on
+`127.0.0.1:8496`. The binary is `/usr/libexec/secure-ai/mcp-firewall` and the
+policy is `/etc/secure-ai/mcp-firewall/default-policy.yaml`.
 
-## Purpose
+This service evaluates proposed MCP calls and issues signed decisions. It does
+not proxy or execute calls. The current agent has no MCP execution integration.
+An eventual executor must enforce the exact request digest, receipt signature,
+audience, policy digest, expiry, one-use execution, and filesystem boundary in
+its own namespace before it performs an action. `require-approval` is not an
+execution permit. Filesystem checks in the gateway cannot prevent a later
+symlink or mount change at the executor.
 
-Policy gateway for Model Context Protocol (MCP) tool calls. Intercepts, validates, and audits all MCP tool invocations before they reach backend services. Enforces default-deny with explicit allow rules, input redaction, and taint tracking.
+The embedded [API and deployment contract](../../services/mcp-firewall/README.md)
+and [OpenAPI schema](../../services/mcp-firewall/schemas/openapi.yaml) describe
+the authenticated sessions, strict policy, and version 2 receipts.
+[UPSTREAM_SYNC.json](../../services/mcp-firewall/UPSTREAM_SYNC.json) binds the
+reviewed helper source and tests by SHA-256. The native build uses this embedded
+source; a separately downloaded helper cannot shadow it.
 
-## Architecture
+The evaluator credential is `mcp-firewall.token`. Administrative reload and
+session revocation require the distinct `mcp-firewall-admin.token`; the admin
+cannot evaluate calls. `mcp-firewall-signing.key` is a persistent Ed25519 seed.
+The credential service provisions all three as root-only inputs and systemd
+delivers private copies to the gateway. No private key appears in logs or
+environment values. `/health` reports liveness; authenticated `/ready` checks
+audit availability and security-context capacity.
 
-The MCP Firewall sits between the agent (or any MCP client) and MCP tool servers, acting as a transparent policy enforcement point.
+Taint follows the authenticated identity across all server sessions and is
+reserved durably before returning allow. Failed or missing completions retain
+conservative taint. Reconnection, batching, and restart do not reset it. Separate
+trusted credential identities provide separate contexts; a shared service token
+shares taint. The live clear endpoint returns 409. Completion can be retried
+after restart using the original unexpired receipt and session token; completion
+records an outcome and never authorizes another execution.
 
-```
-+--------+     +---------------+     +------------+
-| Agent  | --> | MCP Firewall  | --> | MCP Server |
-| (8476) |    | (8496)        |    | (tool)     |
-+--------+     +---------------+     +------------+
-                  |  policy.yaml
-                  |  audit log
-                  v
-               /var/lib/secure-ai/logs/mcp-firewall-audit.jsonl
-```
+The mode-0600 journal is `/var/lib/secure-ai/logs/mcp-firewall-audit.jsonl`.
+The static `secure-ai-mcp` account preserves ownership across boots, while the
+systemd sandbox retains `DynamicUser=yes` protections. The log directory's
+sticky bit prevents other service users from replacing its file. A single-writer
+lock, file identity checks, bounded indexes, append/fsync checks, and a 256 MiB
+cap fail closed. Free-form payloads are omitted. The hash chain requires an
+external authenticated anchor to detect hostile rewriting or rollback.
 
-## Policy Enforcement
-
-### Default Deny
-
-All MCP tool calls are denied unless explicitly allowed by the policy file. Each rule specifies:
-
-- **Tool name** -- which MCP tool is allowed
-- **Input constraints** -- parameter validation (regex, range, enum)
-- **Sensitivity level** -- required session sensitivity for the tool
-- **Rate limits** -- per-tool and global rate limiting
-
-### Input Redaction
-
-Sensitive values (paths, secrets, PII patterns) are automatically redacted from tool inputs before forwarding. Redaction rules are configurable in the policy file.
-
-### Taint Tracking
-
-Tool outputs are tagged with taint labels based on the tool type and sensitivity level. Tainted outputs that flow into subsequent tool calls trigger escalated policy checks.
-
-## Configuration
-
-- **Policy:** `/etc/secure-ai/mcp-firewall/default-policy.yaml`
-- **Audit log:** `/var/lib/secure-ai/logs/mcp-firewall-audit.jsonl`
-
-## Systemd Hardening
-
-- `DynamicUser=yes` -- no persistent user
-- `PrivateNetwork=yes` -- Unix socket communication only
-- `ProtectSystem=strict` -- read-only root
-- `PrivateDevices=yes` -- no device access
-- Per-service seccomp profile (`/etc/secure-ai/seccomp/mcp-firewall.json`)
-- Landlock filesystem restrictions
-
-## Audit Logging
-
-Every MCP tool call produces a structured audit record:
-
-```json
-{
-  "timestamp": "2026-03-13T12:00:00Z",
-  "tool": "filesystem.read",
-  "decision": "allow",
-  "input_hash": "sha256:abc123...",
-  "redacted_fields": ["path"],
-  "taint_labels": ["filesystem"],
-  "latency_ms": 2,
-  "session_id": "ws-001"
-}
-```
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Liveness check |
-| POST | `/v1/evaluate` | Evaluate one MCP tool call through policy |
-| POST | `/v1/evaluate/batch` | Evaluate multiple MCP tool calls |
-| GET | `/v1/servers` | Configured MCP servers and exposed tools |
-| GET | `/v1/policy` | Current loaded policy summary |
-| GET | `/v1/taint/<session_id>` | Current taint labels for a session |
-| DELETE | `/v1/taint/<session_id>` | Clear taint labels for a session |
-| GET | `/v1/audit` | Recent audit entries |
-| GET | `/v1/audit/verify` | Hash-chain verification result |
-| GET | `/v1/metrics` | Call counts, deny rates, redaction counts |
-| POST | `/v1/reload` | Reload policy; requires service token |
-
-## Related
-
-- [Tool Firewall](tool-firewall.md) -- HTTP-level tool policy gateway
-- [Agent](agent.md) -- policy-bound local autopilot
-- [Architecture](../architecture.md) -- system design overview
+Before upgrading an existing deployment, stop MCP callers and the gateway,
+preserve and verify the old journal, and let version 1 receipts expire. Do not
+delete history to bypass a startup error. Any incompatible legacy journal needs
+an explicit reviewed offline migration before reuse; the new daemon refuses
+invalid chains. No live journal or credentials were migrated by this source
+update. Full systemd/SELinux and executor qualification remain release gates.

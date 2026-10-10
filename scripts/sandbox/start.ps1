@@ -44,7 +44,7 @@ $runningOnLinux = $false
 if (Get-Variable IsLinux -ErrorAction SilentlyContinue) {
     $runningOnLinux = [bool]$IsLinux
 }
-$alpineHelperImage = "docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+$alpineHelperImage = "docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 
 function Test-SandboxRealDirectory {
     param(
@@ -840,7 +840,8 @@ if ($runningOnWindows) {
     Set-SandboxOwnerOnlyAcl $credentialsDir -Directory
     $credentialNames = @(
         "airlock", "agent", "agent-audit", "agent-signing", "diffusion",
-        "policy-engine", "registry", "quarantine-audit", "search-mediator",
+        "policy-engine", "registry-read", "registry-verify", "registry-promote",
+        "registry-admin", "quarantine-audit", "search-mediator",
         "search-mediator-audit", "searxng", "tool-firewall", "ui-audit",
         "ui-flask", "ui-setup"
     )

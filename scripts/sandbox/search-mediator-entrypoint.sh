@@ -15,6 +15,8 @@ exec gunicorn \
     --worker-tmp-dir /tmp \
     --max-requests "${GUNICORN_MAX_REQUESTS:-1000}" \
     --max-requests-jitter "${GUNICORN_MAX_REQUESTS_JITTER:-50}" \
+    --no-control-socket \
     --access-logfile - \
+    --access-logformat '%(m)s %(s)s %(L)s' \
     --error-logfile - \
     app:app

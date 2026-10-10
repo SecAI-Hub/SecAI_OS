@@ -1,17 +1,18 @@
 [Unit]
 Description=SecAI Profile Applicator (one-shot, privileged)
-After=secure-ai-registry.service dbus.service
+Requires=secure-ai-network-boot.service
+After=secure-ai-network-boot.service secure-ai-registry.service dbus.service
 
 [Service]
 Type=oneshot
-SupplementaryGroups=secure-ai-ui-control
+SupplementaryGroups=secure-ai-ui-control secure-ai-services secure-ai-logs
 ExecStart=/usr/libexec/secure-ai/apply-profile.sh
 ExecStopPost=-/bin/rm -f /run/secure-ai-ui/profile-request
 TimeoutStartSec=120
 UMask=0077
 
 # This root broker talks to systemd over its AF_UNIX control socket. It has no
-# network, device, mount, or capability requirement.
+# external IP, device or mount requirement; NET_ADMIN is limited to nftables.
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
@@ -20,6 +21,7 @@ ProtectSystem=strict
 ReadOnlyPaths=/etc/secure-ai /usr/lib/systemd/system
 ReadWritePaths=/var/lib/secure-ai/state /var/lib/secure-ai/logs
 ReadWritePaths=/run/secure-ai /run/secure-ai-ui
+ReadWritePaths=/run/secure-ai-network
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -28,14 +30,16 @@ ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
+BindReadOnlyPaths=/proc/sys/kernel/random/boot_id:/run/secure-ai-network-boot-id
+Environment=SECAI_NETWORK_BOOT_ID_PATH=/run/secure-ai-network-boot-id
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 IPAddressDeny=any
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_NET_ADMIN
 AmbientCapabilities=
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete

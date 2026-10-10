@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# SecAI OS authenticated restore utility.
+# SecAI OS encrypted backup inspection utility; active restore is gated.
 #
-# Restore input is treated as hostile until age authentication, strict manifest
-# verification, bounded type-safe extraction, and a transactional local install
-# have all succeeded.
+# Inspect uses bounded age decryption and a strict closed-stream archive parser.
+# A durable maintenance transaction and producer/evidence adapters are required
+# before active restore can become available.
 #
 set -euo pipefail
 umask 077
 
 SECURE_AI_ROOT="/var/lib/secure-ai"
 AUDIT_LOG="${SECURE_AI_ROOT}/logs/backup-audit.jsonl"
-HEALTH_CHECK="/usr/libexec/secure-ai/first-boot-check.sh"
 ARCHIVE_HELPER="${ARCHIVE_HELPER:-/usr/libexec/secure-ai/secure-backup-archive.py}"
 WORK_ROOT="${WORK_ROOT:-/run/secure-ai/restore-tmp}"
 
 AGE_IDENTITY=""
+TRUSTED_SHA256=""
 RESTORE_LUKS_HEADER=false
 VAULT_DEVICE=""
 CONFIRM_LUKS_UUID=""
@@ -58,7 +58,7 @@ step()  { printf '\n%s%s=== %s ===%s\n' "$BOLD" "$CYAN" "$*" "$NC"; }
 
 usage() {
     cat <<'USAGE'
-SecAI OS — Authenticated Restore
+SecAI OS — Encrypted Backup Inspection
 
 Usage:
   secai-restore.sh full    FILE.age [--identity FILE]
@@ -67,7 +67,11 @@ Usage:
   secai-restore.sh keys    FILE.age [--identity FILE]
   secai-restore.sh inspect FILE.age [--identity FILE]
 
-LUKS header restore is never inferred from archived /etc data and is skipped by
+Active full/config/logs/keys restore is unavailable until the durable maintenance
+transaction, producer adapters, historical enrollment and rotation reconciliation
+are qualified. Inspect validates legacy partial contents only. It does not
+restore services or establish complete recoverability. The preserved future
+LUKS header restore ceremony is never inferred from archived /etc data and is skipped by
 default. It is permitted only when all three explicit options are supplied:
 
   --restore-luks-header
@@ -78,7 +82,8 @@ The archive UUID, current target UUID, and explicit confirmation must all match;
 the target must be a closed, unmounted LUKS block device with no holders.
 
 Options:
-  --identity FILE          age identity used for decryption
+  --identity FILE          private native age identity used for bounded decryption
+  --trusted-sha256 HEX     digest from an independently held recovery receipt
   --restore-luks-header    opt in to the irreversible LUKS header operation
   --vault-device DEVICE    exact underlying LUKS block device
   --confirm-luks-uuid UUID explicit target identity proof
@@ -176,42 +181,16 @@ os.chmod(path, 0o640)
 PY
 }
 
-verify_transport_checksum() {
-    local artifact="$1"
-    local sidecar="${artifact}.sha256"
-    if [ ! -f "$sidecar" ] || [ -L "$sidecar" ]; then
-        fatal "Required transport checksum is missing or unsafe: $sidecar"
-    fi
-    local expected declared extra
-    IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
-    declared="${declared#\\*}"
-    [ -z "${extra:-}" ] || fatal "Checksum sidecar has unexpected fields"
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fatal "Checksum sidecar has an invalid SHA-256"
-    [ "$declared" = "$(basename "$artifact")" ] \
-        || fatal "Checksum sidecar names a different artifact"
-    local actual
-    actual=$(sha256sum -- "$artifact" | awk '{print $1}')
-    [ "$expected" = "$actual" ] || fatal "Encrypted backup transport checksum mismatch"
-}
-
-decrypt_to_tmpfs() {
+decrypt_to_private_stage() {
     local artifact="$1"
     local plaintext="$2"
-    local -a args=(-d)
-    if [ -n "$AGE_IDENTITY" ]; then
-        if [ ! -f "$AGE_IDENTITY" ] || [ -L "$AGE_IDENTITY" ]; then
-            fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
-        fi
-        [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
-            || fatal "Age identity must be owned by root"
-        local identity_mode
-        identity_mode=$(stat -c '%a' "$AGE_IDENTITY")
-        (( (8#$identity_mode & 077) == 0 )) \
-            || fatal "Age identity must not be accessible by group or other users"
-        args+=(-i "$AGE_IDENTITY")
-    fi
-    age "${args[@]}" -- "$artifact" > "$plaintext" || fatal "Age authentication/decryption failed"
-    chmod 0600 "$plaintext"
+    [ -n "$AGE_IDENTITY" ] \
+        || fatal "Bounded inspection requires --identity with a private native age key; passphrase/plugin identity adapters are unavailable"
+    local -a args=(decrypt --archive "$artifact" --output "$plaintext"
+                   --identity "$AGE_IDENTITY" --transport-sidecar "${artifact}.sha256")
+    [ -z "$TRUSTED_SHA256" ] || args+=(--trusted-sha256 "$TRUSTED_SHA256")
+    "$ARCHIVE_HELPER" "${args[@]}" \
+        || fatal "Bounded age integrity/decryption or receipt verification failed"
 }
 
 authenticate_and_extract() {
@@ -220,8 +199,7 @@ authenticate_and_extract() {
     local staging="${WORK_DIR}/staging"
     mkdir -m 0700 -- "$staging"
 
-    verify_transport_checksum "$artifact"
-    decrypt_to_tmpfs "$artifact" "$plaintext"
+    decrypt_to_private_stage "$artifact" "$plaintext" >/dev/null
     "$ARCHIVE_HELPER" extract --archive "$plaintext" --destination "$staging" >/dev/null \
         || fatal "Backup archive failed strict manifest or extraction validation"
     printf '%s\n' "$staging"
@@ -324,7 +302,7 @@ restore_luks_header_if_requested() {
     header_uuid=$(cryptsetup luksUUID "$header" 2>/dev/null || true)
     [ -n "$header_uuid" ] || fatal "Archived LUKS header cannot be parsed by cryptsetup"
     [ "${header_uuid,,}" = "$archived_uuid" ] \
-        || fatal "Archived header UUID does not match its authenticated manifest"
+        || fatal "Archived header UUID does not match its age-integrity-checked manifest"
 
     local block_line_count
     block_line_count=$(lsblk -nrpo NAME "$target" | wc -l | tr -d ' ')
@@ -356,58 +334,14 @@ do_inspect() {
     [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
     prepare_work_dir
     step "Authenticating and inspecting backup"
-    verify_transport_checksum "$artifact"
     local plaintext="${WORK_DIR}/authenticated.tar.gz"
-    decrypt_to_tmpfs "$artifact" "$plaintext"
+    decrypt_to_private_stage "$artifact" "$plaintext"
     "$ARCHIVE_HELPER" inspect --archive "$plaintext"
 }
 
 do_restore() {
-    local category="$1"
-    local artifact="$2"
-    require_root_and_tools
-    if [ ! -f "$artifact" ] || [ -L "$artifact" ]; then
-        fatal "Backup must be a regular encrypted file: $artifact"
-    fi
-    [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
-    prepare_work_dir
+    fatal "Active restore unavailable: durable maintenance transaction, producer adapters, historical enrollment and rotation reconciliation are required. Use inspect for inert legacy review; an approval cannot bypass missing recovery controls."
 
-    step "Authenticating and safely extracting backup"
-    local staging
-    staging=$(authenticate_and_extract "$artifact")
-    local archived_category
-    archived_category=$(manifest_value "${staging}/manifest.json" category)
-    validate_requested_category "$category" "$archived_category"
-
-    step "Stopping active appliance services"
-    stop_active_services
-
-    step "Applying atomic restore transaction"
-    local result
-    result=$(
-        "$ARCHIVE_HELPER" apply \
-            --staging "$staging" \
-            --category "$category" \
-            --etc-root /etc \
-            --secure-root "$SECURE_AI_ROOT"
-    ) || fatal "Restore transaction failed"
-    info "Restore transaction result: $result"
-
-    restore_luks_header_if_requested "$staging"
-
-    step "Restoring previous service state"
-    restart_services || fatal "Files were restored, but one or more prior services did not restart"
-
-    step "Running post-restore health verification"
-    if [ -x "$HEALTH_CHECK" ]; then
-        "$HEALTH_CHECK" || fatal "Restore completed, but post-restore health verification failed"
-    else
-        fatal "Post-restore health checker is missing: $HEALTH_CHECK"
-    fi
-
-    audit_event "$category" "authenticated restore from: $(basename "$artifact")" \
-        || fatal "Restore completed but could not be recorded in the audit chain"
-    info "Authenticated $category restore completed"
 }
 
 COMMAND=""
@@ -423,6 +357,9 @@ while [ "$#" -gt 0 ]; do
             [ -z "$COMMAND" ] || fatal "Only one command may be specified"
             [ "$#" -ge 2 ] || fatal "inspect requires an encrypted backup path"
             COMMAND="inspect"; ARTIFACT="$2"; shift 2 ;;
+        --trusted-sha256)
+            [ "$#" -ge 2 ] || fatal "--trusted-sha256 requires a digest from an independently held receipt"
+            TRUSTED_SHA256="$2"; shift 2 ;;
         --identity)
             [ "$#" -ge 2 ] || fatal "--identity requires a file"
             AGE_IDENTITY="$2"; shift 2 ;;

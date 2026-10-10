@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 import requests
+from common import inference_client as inference_http
 
 from .models import (
     Budgets,
@@ -446,7 +447,7 @@ class Executor:
         if remaining_output <= 0:
             return {"ok": False, "error": "output-size budget would be exceeded"}
         try:
-            resp = requests.post(
+            resp = inference_http.post(
                 f"{_INFERENCE_URL}/completion",
                 json={
                     "prompt": prompt,
@@ -454,15 +455,11 @@ class Executor:
                     "temperature": 0.3,
                 },
                 timeout=60,
-                allow_redirects=False,
             )
 
-            if resp.status_code != 200:
-                return {"ok": False, "error": f"inference error: {resp.status_code}"}
-
-            data = resp.json()
-            text = data.get("content", "")
-            tokens = data.get("tokens_predicted", 0)
+            data = inference_http.read_json(resp)
+            text = data.get("content")
+            tokens = data.get("tokens_predicted")
             if not isinstance(text, str):
                 return {"ok": False, "error": "inference returned invalid content"}
             if (
@@ -480,5 +477,5 @@ class Executor:
 
             return {"ok": True, "text": text, "tokens": tokens}
 
-        except requests.RequestException as exc:
-            return {"ok": False, "error": f"inference unreachable: {exc}"}
+        except (requests.RequestException, ValueError) as error:
+            return {"ok": False, "error": str(inference_http.backend_error(error))}

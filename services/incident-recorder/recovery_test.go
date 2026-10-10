@@ -30,6 +30,7 @@ func validRecoveryAttestation(t *testing.T, rm *RecoveryManager, incidentID stri
 	}
 	attestedAt := requiredAfter.Add(time.Nanosecond)
 	return RecoveryAttestationEvidence{
+		SchemaVersion: 2, BootstrapState: "attested", BootstrapPolicySatisfied: true, GPU: noGPURecoveryAssurance(),
 		RequestedAt:             requiredAfter.Format(time.RFC3339Nano),
 		Timestamp:               attestedAt.Format(time.RFC3339Nano),
 		State:                   "attested",
@@ -82,6 +83,7 @@ func TestCrossServiceBundleHMACGoldenVectorAndTamperRejection(t *testing.T) {
 		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 	}
 	bundle := runtimeAttestationResponse{
+		SchemaVersion: 2, BootstrapState: "attested", BootstrapPolicySatisfied: true, GPU: noGPURecoveryAssurance(),
 		Timestamp:        "2026-07-27T12:34:56.123456789Z",
 		State:            "attested",
 		AssuranceMode:    "hardware",
@@ -113,7 +115,7 @@ func TestCrossServiceBundleHMACGoldenVectorAndTamperRejection(t *testing.T) {
 		TPMAKPublicKeySHA256:    strings.Repeat("88", 32),
 		TPMQuotePCRSelection:    "sha256:0,2,4,7",
 		Failures:                []string{"golden-vector"},
-		BundleHMAC:              "2f79b51e951ec69d0de69a6a36893b9c3802734517942b465f782e643865fff5",
+		BundleHMAC:              "90738102056953840a31ad65c2375500580f51d59e754d26688dcf007387a94c",
 	}
 	if err := verifyRuntimeAttestationHMAC(bundle); err != nil {
 		t.Fatalf("runtime-attestor golden bundle did not verify: %v", err)
@@ -147,6 +149,7 @@ func TestFreshRuntimeAttestationBindsRequestNonceAndVerifiesHMAC(t *testing.T) {
 			refresh.RequestNonce = strings.Repeat("f", 64)
 		}
 		bundle := runtimeAttestationResponse{
+			SchemaVersion: 2, BootstrapState: "attested", BootstrapPolicySatisfied: true, GPU: noGPURecoveryAssurance(),
 			Timestamp:               time.Now().UTC().Format(time.RFC3339Nano),
 			State:                   "attested",
 			AssuranceMode:           "hardware",

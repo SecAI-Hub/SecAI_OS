@@ -322,7 +322,7 @@ $runtimeCmd = Resolve-SandboxRecordedRuntime
 $env:COMPOSE_PROJECT_NAME = "secai-sandbox"
 $podmanControlNetwork = "secai-sandbox_ingress"
 $podmanAnchorScript = Join-Path $repoRoot "scripts\sandbox\podman_anchor.py"
-$alpineHelperImage = "docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+$alpineHelperImage = "docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 $pythonCmd = $null
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pythonCmd = "python"

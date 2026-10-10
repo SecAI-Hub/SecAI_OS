@@ -15,9 +15,15 @@ Environment=MCP_FIREWALL_POLICY=/etc/secure-ai/mcp-firewall/default-policy.yaml
 Environment=AUDIT_LOG=/var/lib/secure-ai/logs/mcp-firewall-audit.jsonl
 Environment=SERVICE_TOKEN_PATH=%d/service-token
 LoadCredential=service-token:/var/lib/secure-ai/credentials/mcp-firewall.token
+Environment=ADMIN_TOKEN_PATH=%d/admin-token
+LoadCredential=admin-token:/var/lib/secure-ai/credentials/mcp-firewall-admin.token
+Environment=SIGNING_KEY_PATH=%d/signing-key
+LoadCredential=signing-key:/var/lib/secure-ai/credentials/mcp-firewall-signing.key
 
 # Filesystem isolation
 DynamicUser=yes
+User=secure-ai-mcp
+UMask=0077
 SupplementaryGroups=secure-ai-logs secure-ai-vault-read
 ReadOnlyPaths=/etc/secure-ai
 ReadOnlyPaths=/run/secure-ai
@@ -58,7 +64,7 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 
 # Syscall filtering
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM

@@ -1,0 +1,26 @@
+version: 1
+# Bootstrap has no model, inference, or action authority.
+model_dir: ""
+inference_url: ""
+baseline_file: /etc/secure-ai/gpu-integrity/bootstrap-baseline.yaml
+probes:
+  - name: ecc-status
+    type: ecc_status
+    enabled: true
+  - name: driver-fingerprint
+    type: driver_fingerprint
+    enabled: true
+  - name: device-allowlist
+    type: device_allowlist
+    enabled: true
+scoring:
+  weights:
+    ecc_status: 0.6
+    driver_fingerprint: 1.0
+    device_allowlist: 0.8
+  max_history: 20
+actions: []
+daemon:
+  bind_addr: 127.0.0.1:8496
+  interval: 30s
+integrations: {}

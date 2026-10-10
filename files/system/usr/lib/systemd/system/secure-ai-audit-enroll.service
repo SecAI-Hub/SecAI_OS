@@ -1,0 +1,76 @@
+[Unit]
+Description=Explicit Administrator Enrollment of Secure AI Audit Evidence
+Requires=secure-ai-credentials.service
+After=local-fs.target secure-ai-credentials.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/libexec/secure-ai/verify-audit-chains.py --initialize
+Environment=AUDIT_LOGS_DIR=/var/lib/secure-ai/logs
+Environment=SERVICES_DIR=/usr/libexec/secure-ai/services
+Environment=AUDIT_FORMAT_MANIFEST=/etc/secure-ai/config/audit-log-formats.json
+Environment=AUDIT_HMAC_KEY_DIR=%d
+Environment=AUDIT_VERIFIER_STATE_DIR=/var/lib/secure-ai/audit-verifier
+LoadCredential=agent-audit-hmac-key:/var/lib/secure-ai/credentials/agent-audit-hmac.key
+LoadCredential=quarantine-audit-hmac-key:/var/lib/secure-ai/credentials/quarantine-audit-hmac.key
+LoadCredential=search-audit-hmac-key:/var/lib/secure-ai/credentials/search-audit-hmac.key
+LoadCredential=ui-audit-hmac-key:/var/lib/secure-ai/credentials/ui-audit-hmac.key
+LoadCredential=panic-audit-hmac-key:/var/lib/secure-ai/credentials/panic-audit-hmac.key
+
+# Filesystem access
+# Cross-writer 0600 evidence requires narrowly bounded DAC read authority.
+# Deliberate local administrator ceremony only; never enable or start at boot.
+User=root
+StateDirectory=secure-ai/audit-verifier
+StateDirectoryMode=0700
+UMask=0077
+SupplementaryGroups=secure-ai-logs
+ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/usr/libexec/secure-ai
+# Initialization creates/adopts only the public report in this directory.
+ReadWritePaths=/var/lib/secure-ai/logs
+InaccessiblePaths=-/var/lib/secure-ai/vault -/var/lib/secure-ai/agent
+InaccessiblePaths=-/var/lib/secure-ai/data -/var/lib/secure-ai/quarantine
+InaccessiblePaths=-/var/lib/secure-ai/import-staging -/var/lib/secure-ai/promotion-staging
+InaccessiblePaths=-/var/lib/secure-ai/credentials -/var/lib/secure-ai/keys
+InaccessiblePaths=-/var/lib/secure-ai/auth -/var/lib/secure-ai/ui
+InaccessiblePaths=-/var/lib/secure-ai/tpm-attestation
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privilege restriction
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+PrivateNetwork=yes
+
+# Capability bounding — read cross-writer audit evidence, no DAC write bypass
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+
+# Syscall filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+MemoryMax=128M
+CPUQuota=15%
+TasksMax=8
+TimeoutStartSec=5min
+LimitCORE=0

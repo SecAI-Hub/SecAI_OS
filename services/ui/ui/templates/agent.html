@@ -2,215 +2,282 @@
 {% block title %}SecAI OS - Agent{% endblock %}
 {% block page_title %}Agent Tasks (Beta){% endblock %}
 {% block content_class %}content-wide{% endblock %}
-
 {% block extra_css %}
 <style nonce="{{ csp_nonce }}">
-    .agent-note { font-size: 0.8rem; line-height: 1.5; color: var(--text-secondary); }
-    .agent-task { border-left: 3px solid var(--border-active); }
-    .agent-task[data-status="completed"] { border-left-color: var(--success); }
-    .agent-task[data-status="failed"],
-    .agent-task[data-status="recovery_required"] { border-left-color: var(--danger); }
-    .agent-task[data-status="pending_approval"] { border-left-color: var(--warning); }
-    .agent-task-head { display:flex; gap:0.75rem; align-items:center; justify-content:space-between; }
-    .agent-task-intent { overflow-wrap:anywhere; font-size:0.9rem; }
-    .agent-task-meta { font-size:0.72rem; color:var(--text-muted); margin-top:0.35rem; }
-    .agent-steps { margin-top:0.75rem; display:grid; gap:0.4rem; }
-    .agent-step { padding:0.55rem 0.65rem; background:var(--bg-raised); border-radius:var(--radius); font-size:0.78rem; }
-    .agent-step-error { color:var(--danger); margin-top:0.25rem; overflow-wrap:anywhere; }
+    .agent-note { font-size:.88rem; line-height:1.6; color:var(--text); }
+    .agent-task { border-left:3px solid var(--border-active); }
+    .agent-task[data-status="pending_approval"] { border-left-color:var(--warning); }
+    .agent-task[data-status="failed"], .agent-task[data-status="recovery_required"] { border-left-color:var(--danger); }
+    .agent-task-head, .agent-history-head { display:flex; gap:1rem; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+    .agent-task h3 { margin:0; overflow-wrap:anywhere; }
+    .agent-task-meta, .agent-policy { font-size:.85rem; line-height:1.6; color:var(--text-secondary); }
+    .agent-step { border:1px solid var(--border); border-radius:var(--radius); padding:1rem; margin-top:1rem; }
+    .agent-step h4 { margin:0 0 .5rem; }
+    .agent-step-error { color:var(--danger); overflow-wrap:anywhere; }
+    .agent-operation, .agent-result { white-space:pre-wrap; overflow-wrap:anywhere; max-height:24rem; overflow:auto; padding:.75rem; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); font-size:.85rem; unicode-bidi:plaintext; }
+    .agent-facts { display:grid; grid-template-columns:minmax(8rem,auto) minmax(0,1fr); gap:.35rem 1rem; margin:.6rem 0; font-size:.85rem; }
+    .agent-facts dt { font-weight:600; }
+    .agent-facts dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; unicode-bidi:plaintext; }
+    .agent-review-label { display:flex; gap:.6rem; align-items:flex-start; margin:1rem 0; line-height:1.5; }
+    .agent-review-label input { margin-top:.35rem; flex-shrink:0; }
+    .agent-task button:focus-visible, .agent-task a:focus-visible, #agent-refresh:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+    #agent-notice { min-height:1.5rem; margin:1rem 0; }
     #agent-intent { min-height:100px; resize:vertical; }
+    @media (max-width:600px) { .agent-facts { grid-template-columns:1fr; } .agent-facts dd { margin-bottom:.5rem; } }
 </style>
 {% endblock %}
-
 {% block content %}
 <div class="alert alert-warning mb-lg">
-    <strong>Beta feature.</strong>
-    <span class="agent-note">Review the plan before approving actions. Interrupted tasks are not resumed after a service restart; they are marked recovery-required and must be resubmitted with a fresh capability.</span>
+    <strong>Beta: bounded local workflows.</strong>
+    <p class="agent-note">Low-risk local actions may run automatically. Other actions wait for individual approval. Review the exact operation, task scope and limits before approving. Cancelling stops remaining work; completed effects are not undone.</p>
 </div>
-
 <div class="card">
-    <div class="card-header">
-        <span class="card-title">New task</span>
-        <span class="badge badge-warning">Human approval enforced</span>
-    </div>
+    <div class="card-header"><span class="card-title">New task</span><span class="badge badge-warning">Automatic and reviewed actions</span></div>
     <form id="agent-form">
         <div class="form-group">
             <label class="form-label" for="agent-intent">What should the agent do?</label>
-            <textarea class="form-input" id="agent-intent" maxlength="2000" required placeholder="Summarize the documents in my workspace"></textarea>
-            <div class="form-hint">Do not paste passwords, API tokens, private keys, or other credentials.</div>
+            <textarea class="form-input" id="agent-intent" maxlength="2000" required placeholder="Summarize the documents in my workspace" aria-describedby="agent-input-help"></textarea>
+            <div class="form-hint" id="agent-input-help">Do not paste passwords, API tokens, private keys, or other credentials.</div>
         </div>
         <div class="form-row">
             <div class="form-group" style="flex:1">
                 <label class="form-label" for="agent-mode">Session mode</label>
-                <select class="form-input" id="agent-mode">
-                    <option value="offline_only">Offline Only</option>
-                    <option value="standard" selected>Standard / Autopilot</option>
-                    <option value="online_assisted">Online Assisted</option>
-                    <option value="sensitive">Sensitive</option>
-                </select>
+                <select class="form-input" id="agent-mode" aria-describedby="agent-mode-description" disabled></select>
             </div>
             <div class="form-group" style="flex:1">
                 <label class="form-label" for="agent-workspace">Workspace</label>
-                <select class="form-input" id="agent-workspace">
-                    <option value="">No file workspace</option>
-                    <option value="user_docs">User documents (read)</option>
-                    <option value="outputs">Outputs</option>
-                </select>
+                <select class="form-input" id="agent-workspace"><option value="">No additional file workspace</option><option value="user_docs">User documents (read)</option><option value="outputs">Outputs</option></select>
             </div>
         </div>
-        <button class="btn btn-primary" id="agent-submit" type="submit">Plan task</button>
+        <p id="agent-mode-description" class="agent-note"></p>
+        <p class="agent-note">Supported actions for this mode:</p><ul id="agent-capabilities" class="agent-note"></ul>
+        <p class="agent-note">General tool execution, exports, trust changes and system changes are unavailable. Model actions also require a working local inference service.</p>
+        <button class="btn btn-primary" id="agent-submit" type="submit" disabled>Plan task</button>
     </form>
 </div>
-
-<div class="section-title">Task history</div>
-<div id="agent-empty" class="empty-state"><p>No agent tasks yet.</p></div>
-<div id="agent-tasks"></div>
+<div class="card" aria-labelledby="agent-privacy-title">
+    <h3 id="agent-privacy-title">What is saved</h3>
+    <p id="agent-history-policy" class="agent-note">Loading the agent's history policy…</p>
+    <p class="agent-note">Full instructions, operation details and results are available only while retained in the current service's memory. After restart, stored history contains metadata only; interrupted work is not resumed. Sensitive tasks must be resubmitted as a fresh task. Removing history does not remove saved output files or essential audit evidence.</p>
+</div>
+<div class="agent-history-head"><h2 id="agent-history-heading" tabindex="-1">Tasks and recent history</h2><div class="btn-group"><button class="btn btn-sm" id="agent-refresh" type="button">Refresh tasks</button><button class="btn btn-sm" id="agent-clear-history" type="button" disabled>Clear finished history</button></div></div>
+<div id="agent-notice" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="agent-empty" class="empty-state"><p>Loading tasks…</p></div><div id="agent-tasks"></div>
 {% endblock %}
-
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
-    var agentTasks = document.getElementById('agent-tasks');
-    var agentEmpty = document.getElementById('agent-empty');
-    var agentSubmit = document.getElementById('agent-submit');
-
-    function badgeClass(status) {
-        if (status === 'completed') return 'badge-success';
-        if (status === 'pending_approval') return 'badge-warning';
-        if (status === 'failed' || status === 'cancelled' || status === 'recovery_required') return 'badge-danger';
-        return 'badge-accent';
+    const taskRoot = document.getElementById('agent-tasks');
+    const emptyRoot = document.getElementById('agent-empty');
+    const submitButton = document.getElementById('agent-submit');
+    const modeSelect = document.getElementById('agent-mode');
+    const taskCards = new Map();
+    const taskData = new Map();
+    let modes = [];
+    let loadingTasks = false;
+    let historyReady = false;
+    const activeStates = ['planning', 'pending_approval', 'running'];
+    const knownStates = activeStates.concat(['completed', 'failed', 'cancelled', 'recovery_required']);
+    const labels = {local_search:'List local files', summarize:'Summarize', draft:'Draft text', classify:'Classify text', report:'Create report', explain_security:'Explain a decision', read_file:'Read a file', write_file:'Create a file', overwrite_file:'Replace a file', outbound_request:'Request online data'};
+    const budgetLabels = {max_steps:'Steps', max_tool_calls:'Service/tool calls', max_tokens:'Model tokens', max_wall_clock_seconds:'Elapsed seconds', max_files_touched:'Files touched', max_output_bytes:'Output bytes'};
+    const hashValid = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+    const identifierValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+    function concreteOperation(action, params) {
+        const text=key=>typeof params[key]==='string';
+        if(['read_file','write_file','overwrite_file'].includes(action) && (!text('path') || !params.path.startsWith('/'))) return false;
+        if(['write_file','overwrite_file'].includes(action) && !text('content')) return false;
+        if(action==='outbound_request' && (!text('url') || !/^https?:\/\//.test(params.url) || ('method' in params && !text('method')) || ('body' in params && !text('body')))) return false;
+        return true;
     }
-
-    function taskAction(taskId, action, body) {
-        return fetch('/api/agent/task/' + encodeURIComponent(taskId) + '/' + action, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body || {}),
-        }).then(async function(resp) {
-            var data = await resp.json();
-            if (!resp.ok) throw new Error(data.error || 'Agent request failed');
-            await loadAgentTasks();
-        }).catch(function(err) {
-            toast(err.message || 'Agent request failed', 'error');
-        });
+    function element(tag, text, className) { const node=document.createElement(tag); if(text!==undefined) node.textContent=String(text); if(className) node.className=className; return node; }
+    function pretty(value) { return JSON.stringify(value, null, 2).replace(/[\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0')); }
+    function notify(text, failed=false) { const node=document.getElementById('agent-notice'); node.textContent=text; node.classList.toggle('agent-step-error',failed); }
+    function fact(list, label, value) { list.append(element('dt',label),element('dd',value)); }
+    async function api(path, method='GET', body) {
+        const options={method, cache:'no-store'};
+        if(body!==undefined) { options.headers={'Content-Type':'application/json'}; options.body=JSON.stringify(body); }
+        const response=await fetch(path,options);
+        let data; try { data=await response.json(); } catch (_) { throw new Error('Agent returned an unreadable response. Refresh before trying again.'); }
+        if(!response.ok) { const error=new Error(typeof data.error==='string' ? data.error : 'Agent request failed.'); error.status=response.status; throw error; }
+        return data;
     }
-
-    function renderTask(task) {
-        var card = document.createElement('div');
-        card.className = 'card agent-task';
-        card.dataset.status = task.status || '';
-
-        var head = document.createElement('div');
-        head.className = 'agent-task-head';
-        var intent = document.createElement('div');
-        intent.className = 'agent-task-intent fw-600';
-        intent.textContent = task.intent || 'Untitled task';
-        var status = document.createElement('span');
-        status.className = 'badge ' + badgeClass(task.status);
-        status.textContent = String(task.status || 'unknown').replaceAll('_', ' ');
-        head.append(intent, status);
-        card.appendChild(head);
-
-        var meta = document.createElement('div');
-        meta.className = 'agent-task-meta';
-        meta.textContent = 'Mode: ' + (task.mode || 'unknown') + ' · Task ' + (task.task_id || '');
-        card.appendChild(meta);
-
-        var steps = document.createElement('div');
-        steps.className = 'agent-steps';
-        (Array.isArray(task.steps) ? task.steps : []).forEach(function(step) {
-            var item = document.createElement('div');
-            item.className = 'agent-step';
-            var summary = document.createElement('div');
-            summary.textContent = (step.description || step.action || 'Step') + ' — ' + (step.status || 'unknown');
-            item.appendChild(summary);
-            if (step.error) {
-                var error = document.createElement('div');
-                error.className = 'agent-step-error';
-                error.textContent = step.error;
-                item.appendChild(error);
+    function release(card) { (card._downloads||[]).forEach(url=>URL.revokeObjectURL(url)); }
+    function output(card, container, result) {
+        if(!result || typeof result!=='object') return;
+        if(result.saved_to) container.appendChild(element('p','Saved to: '+String(result.saved_to),'agent-note'));
+        const text=typeof result.text==='string' ? result.text : (typeof result.content==='string' ? result.content : null);
+        if(text!==null) {
+            const pre=element('pre',text.length>32768 ? text.slice(0,32768)+'\n[Preview limited; download the returned text below.]' : text,'agent-result');
+            pre.tabIndex=0; pre.setAttribute('aria-label','Returned text'); container.appendChild(pre);
+            const link=element('a','Download returned text','btn btn-sm');
+            const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));
+            card._downloads.push(url); link.href=url; link.download='agent-result.txt'; container.appendChild(link);
+        } else {
+            const visible=Object.create(null);
+            ['ok','status_code','size','files','path','bytes_written','error'].forEach(key=>{if(Object.hasOwn(result,key)) visible[key]=result[key];});
+            const summary=pretty(visible);
+            container.appendChild(element('pre',summary.length>32768 ? summary.slice(0,32768)+'\n[Result preview limited.]' : summary,'agent-result'));
+        }
+    }
+    function scopeView(task, card) {
+        const scope=task.approval_scope, limits=task.approval_budgets;
+        if(!scope || typeof scope!=='object' || !limits || typeof limits!=='object') { card.appendChild(element('p','Approval scope or budget limits are unavailable. Approval is disabled.','agent-step-error')); return false; }
+        let valid=pretty({scope,limits}).length<=32768;
+        card.appendChild(element('h4','Task scope and limits'));
+        const list=element('dl',undefined,'agent-facts');
+        for(const [key,label] of [['readable_paths','Readable paths'],['writable_paths','Writable paths'],['allowed_tools','Tool scopes']]) {
+            const values=scope[key]; valid=valid && Array.isArray(values) && values.every(value=>typeof value==='string');
+            fact(list,label,Array.isArray(values) && values.length ? values.map(value=>pretty(value)).join('\n') : 'None');
+        }
+        valid=valid && typeof scope.allow_online==='boolean';
+        fact(list,'Online access',scope.allow_online===true ? 'Only reviewed requests through the airlock' : 'Disabled');
+        fact(list,'Sensitivity limit',scope.sensitivity_ceiling || 'Unavailable');
+        valid=valid && ['low','medium','high'].includes(scope.sensitivity_ceiling);
+        if(typeof scope.expires_at==='number' && Number.isFinite(scope.expires_at) && scope.expires_at>0 && scope.expires_at<8640000000000) { fact(list,'Approval expires',new Date(scope.expires_at*1000).toISOString()); valid=valid && scope.expires_at*1000>Date.now(); }
+        else valid=false;
+        for(const [key,label] of Object.entries(budgetLabels)) { const value=limits[key]; valid=valid && typeof value==='number' && Number.isFinite(value) && value>0; fact(list,label,value===undefined ? 'Unavailable' : value); }
+        card.appendChild(list);
+        if(!valid) card.appendChild(element('p','The scope or limits cannot be fully reviewed. Approval is disabled.','agent-step-error'));
+        return valid;
+    }
+    async function decide(task, step, action, button) {
+        button.disabled=true;
+        const hashes=Object.create(null); hashes[step.step_id]=task.step_hashes[step.step_id];
+        try {
+            await api('/api/agent/task/'+encodeURIComponent(task.task_id)+'/'+action,'POST',{step_ids:[step.step_id],expected_plan_revision:task.plan_revision,step_hashes:hashes});
+            notify(action==='approve' ? 'The reviewed step was approved. Remaining pending steps still need a decision.' : 'The selected step was denied.');
+        } catch(error) {
+            notify(error.status===409 ? 'The plan or approval state changed. Nothing was approved by this request. Review the refreshed operation before deciding again.' : error.message,true);
+            const current=taskCards.get(task.task_id); if(current) current._fingerprint='';
+        }
+        await loadTasks();
+        document.getElementById('agent-history-heading').focus({preventScroll:true});
+    }
+    function renderTask(task, changed) {
+        const card=element('section',undefined,'card agent-task'); card._downloads=[]; card.dataset.status=knownStates.includes(task.status) ? task.status : 'unknown';
+        const head=element('div',undefined,'agent-task-head');
+        head.append(element('h3',task.content_available===false || task.history_only ? 'Stored task summary' : task.intent || 'Task'),element('span',String(task.status||'unknown').replaceAll('_',' '),'badge badge-accent')); card.appendChild(head);
+        card.appendChild(element('p','Mode: '+String(task.mode||'unknown'),'agent-task-meta'));
+        if(changed) card.appendChild(element('p','Plan changed. Review the updated operation, scope and limits; previous review selections were cleared.','alert alert-warning'));
+        if(task.history_only || task.content_available===false) card.appendChild(element('p','Only metadata was retained. Instructions, action arguments and returned content are unavailable. Interrupted work cannot be resumed from history.','agent-note'));
+        const steps=Array.isArray(task.steps) ? task.steps : [];
+        const counts=Object.fromEntries(['completed','failed','denied','skipped'].map(status=>[status,steps.filter(step=>step.status===status).length]));
+        if(!activeStates.includes(task.status)) card.appendChild(element('p',`${counts.completed} completed · ${counts.failed} failed · ${counts.denied} denied · ${counts.skipped} skipped. ${task.status==='cancelled' ? 'Completed effects remain; remaining work was cancelled.' : 'Review each result below.'}`,'agent-note'));
+        const scopeValid=task.history_only || task.content_available===false ? false : scopeView(task,card);
+        const revisionValid=hashValid(task.plan_revision) && task.step_hashes && typeof task.step_hashes==='object';
+        steps.forEach((step,index)=>{
+            const item=element('section',undefined,'agent-step');
+            const label=labels[step.action]||'Unavailable action';
+            item.appendChild(element('h4',`Step ${index+1}: ${label}`));
+            const contentAvailable=!task.history_only && task.content_available!==false;
+            if(contentAvailable && step.description) item.appendChild(element('p',step.description,'agent-note'));
+            const facts=element('dl',undefined,'agent-facts');
+            fact(facts,'Action',step.action||'Unavailable'); fact(facts,'State',step.status||'Unknown'); fact(facts,'Risk',step.risk_level||'Unavailable');
+            const params=contentAvailable && step.params && typeof step.params==='object' && !Array.isArray(step.params) ? step.params : null;
+            const material=Object.create(null);
+            if(params) Object.keys(params).filter(key=>!['_policy_reason','_policy_decision'].includes(key)).forEach(key=>{material[key]=params[key];});
+            fact(facts,'Policy',params ? String(params._policy_decision||'Unavailable')+' — '+String(params._policy_reason||'No rationale supplied') : 'Details not retained');
+            if(params) ['path','scope','url','method','tool'].forEach(key=>{if(Object.hasOwn(params,key)) fact(facts,key==='url' ? 'Destination' : key,pretty(params[key]));});
+            item.appendChild(facts);
+            if(params && ['write_file','overwrite_file'].includes(step.action)) item.appendChild(element('p',step.action==='overwrite_file' ? 'Replaces the entire target with the proposed content below. Current file contents were not fetched for a diff.' : 'Creates a new file with the proposed content below.','agent-note'));
+            if(params && ['draft','report'].includes(step.action) && params.path) item.appendChild(element('p','Generates new text from these instructions and saves it to the specified path. Generated bytes are not known at planning time.','agent-note'));
+            if(params && step.action==='outbound_request') item.appendChild(element('p','Network disclosure: '+String(params.method||'GET')+' to '+String(params.url||'[destination missing]')+'. The proposed body is shown below; the gateway may redact sensitive body values.','agent-note'));
+            const serialized=pretty(material);
+            const bounded=params!==null && serialized.length<=32768;
+            if(params) {
+                item.appendChild(element('p','All material action parameters (exact JSON):','agent-note'));
+                const pre=element('pre',bounded ? serialized : serialized.slice(0,32768)+'\n[Review limit exceeded. Narrow the task and submit again.]','agent-operation'); pre.tabIndex=0; pre.setAttribute('aria-label','Exact operation parameters for step '+(index+1)); item.appendChild(pre);
             }
-            steps.appendChild(item);
+            if(contentAvailable && step.error) item.appendChild(element('p',step.error,'agent-step-error'));
+            if(contentAvailable && step.result) { item.appendChild(element('h5','Result')); output(card,item,step.result); }
+            if(step.status==='pending' && task.status==='pending_approval' && !task.history_only) {
+                const bindingValid=revisionValid && identifierValid(task.task_id) && typeof step.step_id==='string' && /^[0-9a-f]{12}$/.test(step.step_id) && hashValid(task.step_hashes[step.step_id]);
+                const policyValid=params && params._policy_decision==='ask' && typeof params._policy_reason==='string' && params._policy_reason.length>0 && ['auto','configurable','approval_required'].includes(step.risk_level);
+                const reviewable=bounded && scopeValid && bindingValid && policyValid && Object.hasOwn(labels,step.action) && concreteOperation(step.action,material);
+                const review=element('input'); review.type='checkbox'; review.disabled=!reviewable; review.dataset.focusKey=task.task_id+':'+step.step_id+':review';
+                const reviewLabel=element('label',undefined,'agent-review-label'); reviewLabel.append(review,element('span','I reviewed step '+(index+1)+': this exact operation and the task scope and limits.')); item.appendChild(reviewLabel);
+                const actions=element('div',undefined,'btn-group');
+                const approve=element('button','Approve step '+(index+1),'btn btn-sm btn-success'); approve.type='button'; approve.disabled=true; approve.dataset.focusKey=task.task_id+':'+step.step_id+':approve'; approve.setAttribute('aria-label','Approve step '+(index+1)+': '+label);
+                const deny=element('button','Deny step '+(index+1),'btn btn-sm btn-danger'); deny.type='button'; deny.disabled=!bindingValid; deny.dataset.focusKey=task.task_id+':'+step.step_id+':deny'; deny.setAttribute('aria-label','Deny step '+(index+1)+': '+label);
+                review.addEventListener('change',()=>{approve.disabled=!review.checked || !reviewable;});
+                approve.addEventListener('click',()=>decide(task,step,'approve',approve)); deny.addEventListener('click',()=>decide(task,step,'deny',deny)); actions.append(approve,deny); item.appendChild(actions);
+                if(!reviewable) item.appendChild(element('p','Approval is disabled because the complete operation, scope or current review identity is unavailable. Refresh, deny, or cancel the task.','agent-step-error'));
+            } else if(params && params._policy_decision==='allow') item.appendChild(element('p','Automatic under this mode and its policy; no individual approval was requested.','agent-note'));
+            card.appendChild(item);
         });
-        card.appendChild(steps);
-
-        var actions = document.createElement('div');
-        actions.className = 'btn-group mt-md';
-        if (task.status === 'pending_approval') {
-            var approve = document.createElement('button');
-            approve.className = 'btn btn-sm btn-success';
-            approve.type = 'button';
-            approve.textContent = 'Approve pending steps';
-            approve.addEventListener('click', function() {
-                taskAction(task.task_id, 'approve', {approve_all: true});
-            });
-            var deny = document.createElement('button');
-            deny.className = 'btn btn-sm btn-danger';
-            deny.type = 'button';
-            deny.textContent = 'Deny pending steps';
-            deny.addEventListener('click', function() {
-                taskAction(task.task_id, 'deny', {deny_all: true});
-            });
-            actions.append(approve, deny);
+        const actions=element('div',undefined,'btn-group mt-md');
+        if(activeStates.includes(task.status)) {
+            const cancel=element('button','Cancel remaining work','btn btn-sm'); cancel.type='button'; cancel.dataset.focusKey=task.task_id+':cancel';
+            cancel.addEventListener('click',async()=>{cancel.disabled=true; try {await api('/api/agent/task/'+encodeURIComponent(task.task_id)+'/cancel','POST',{}); notify('Remaining work cancelled. Completed effects are retained.');} catch(error) {notify(error.message,true);} await loadTasks();}); actions.appendChild(cancel);
+        } else {
+            const remove=element('button','Remove this history record','btn btn-sm'); remove.type='button'; remove.disabled=!historyReady; remove.dataset.focusKey=task.task_id+':remove'; remove.addEventListener('click',()=>removeHistory(task.task_id)); actions.appendChild(remove);
         }
-        if (['planning', 'pending_approval', 'running'].includes(task.status)) {
-            var cancel = document.createElement('button');
-            cancel.className = 'btn btn-sm';
-            cancel.type = 'button';
-            cancel.textContent = 'Cancel';
-            cancel.addEventListener('click', function() {
-                taskAction(task.task_id, 'cancel', {});
-            });
-            actions.appendChild(cancel);
-        }
-        if (actions.childElementCount) card.appendChild(actions);
+        card.appendChild(actions);
+        const details=element('details'); details.append(element('summary','Task reference'),element('p',task.task_id||'Unavailable','agent-task-meta')); card.appendChild(details);
         return card;
     }
-
-    async function loadAgentTasks() {
+    async function loadTasks() {
+        if(loadingTasks) return; loadingTasks=true;
         try {
-            var resp = await fetch('/api/agent/tasks?limit=50', {cache: 'no-store'});
-            var data = await resp.json();
-            if (!resp.ok) throw new Error(data.error || 'Agent is unavailable');
-            var tasks = Array.isArray(data.tasks) ? data.tasks : [];
-            agentTasks.replaceChildren();
-            tasks.forEach(function(task) { agentTasks.appendChild(renderTask(task)); });
-            agentEmpty.classList.toggle('hidden', tasks.length > 0);
-        } catch (err) {
-            agentTasks.replaceChildren();
-            agentEmpty.classList.remove('hidden');
-            agentEmpty.querySelector('p').textContent = err.message || 'Agent is unavailable.';
-        }
-    }
-
-    document.getElementById('agent-form').addEventListener('submit', async function(event) {
-        event.preventDefault();
-        var intent = document.getElementById('agent-intent').value.trim();
-        if (!intent) return;
-        var workspace = document.getElementById('agent-workspace').value;
-        var payload = {
-            intent: intent,
-            mode: document.getElementById('agent-mode').value,
-            workspace: workspace ? [workspace] : [],
-        };
-        agentSubmit.disabled = true;
-        try {
-            var resp = await fetch('/api/agent/task', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload),
+            const data=await api('/api/agent/tasks?limit=50');
+            if(!Array.isArray(data.tasks)) throw new Error('Agent returned an invalid task list.');
+            const present=new Set();
+            data.tasks.forEach(task=>{
+                if(!identifierValid(task.task_id)) return;
+                present.add(task.task_id); taskData.set(task.task_id,task);
+                const old=taskCards.get(task.task_id), fingerprint=JSON.stringify(task);
+                if(old && old._fingerprint===fingerprint) return;
+                const focus=old && old.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+                const changed=!!(old && old._revision && old._revision!==task.plan_revision);
+                const card=renderTask(task,changed); card._fingerprint=fingerprint; card._revision=task.plan_revision;
+                if(old && !changed) {
+                    const checked=new Set(Array.from(old.querySelectorAll('input[type="checkbox"]:checked')).map(node=>node.dataset.focusKey));
+                    card.querySelectorAll('input[type="checkbox"]').forEach(node=>{if(checked.has(node.dataset.focusKey) && !node.disabled) {node.checked=true; node.dispatchEvent(new Event('change'));}});
+                }
+                if(old) { release(old); old.replaceWith(card); } else taskRoot.appendChild(card);
+                taskCards.set(task.task_id,card);
+                if(focus && !changed) { const target=Array.from(card.querySelectorAll('[data-focus-key]')).find(node=>node.dataset.focusKey===focus); if(target && !target.disabled) target.focus({preventScroll:true}); else document.getElementById('agent-history-heading').focus({preventScroll:true}); }
+                if(focus && changed) { document.getElementById('agent-history-heading').focus({preventScroll:true}); notify('The plan changed. Review the updated operation before approving.'); }
             });
-            var data = await resp.json();
-            if (!resp.ok) throw new Error(data.error || 'Could not plan task');
-            document.getElementById('agent-intent').value = '';
-            toast('Agent task planned.', 'success');
-            await loadAgentTasks();
-        } catch (err) {
-            toast(err.message || 'Could not plan task', 'error');
-        } finally {
-            agentSubmit.disabled = false;
-        }
+            for(const [id,card] of taskCards) if(!present.has(id)) { if(card.contains(document.activeElement)) document.getElementById('agent-history-heading').focus({preventScroll:true}); release(card); card.remove(); taskCards.delete(id); taskData.delete(id); }
+            emptyRoot.classList.toggle('hidden',present.size>0); emptyRoot.querySelector('p').textContent='No tasks retained.';
+            document.getElementById('agent-clear-history').disabled=!historyReady || !Array.from(taskData.values()).some(task=>!activeStates.includes(task.status));
+        } catch(error) { notify(error.message,true); taskCards.forEach(card=>{card.querySelectorAll('button,input').forEach(node=>{node.disabled=true;}); card._fingerprint='';}); emptyRoot.classList.remove('hidden'); emptyRoot.querySelector('p').textContent='Task state unavailable. Refresh before deciding.'; }
+        finally { loadingTasks=false; }
+    }
+    async function removeHistory(id) {
+        if(!window.confirm(id ? 'Remove this finished task record and its in-memory details? Saved files and audit evidence remain.' : 'Remove all finished task records and their in-memory details? Active tasks, saved files and audit evidence remain.')) return;
+        try { const data=await api('/api/agent/history'+(id ? '/'+encodeURIComponent(id) : ''),'DELETE'); notify('Removed '+Number(data.deleted||0)+' history record(s). Active tasks remain: '+Number(data.active_remaining||0)+'.'); await loadTasks(); document.getElementById('agent-history-heading').focus(); } catch(error) { notify(error.message,true); }
+    }
+    function showMode() {
+        const mode=modes.find(item=>item.id===modeSelect.value);
+        document.getElementById('agent-mode-description').textContent=mode ? mode.description : '';
+        const list=document.getElementById('agent-capabilities'); list.replaceChildren();
+        (mode && Array.isArray(mode.actions) ? mode.actions : []).forEach(action=>{if(Object.hasOwn(labels,action.action)) list.appendChild(element('li',action.label+': '+action.description));});
+        submitButton.disabled=!historyReady || !mode || !list.childElementCount;
+    }
+    async function initialize() {
+        try {
+            const policy=await api('/api/agent/history/policy'); historyReady=policy.history_ready===true && policy.legacy_state_blocked!==true && policy.storage_policy==='metadata_only' && typeof policy.persistent==='boolean' && Number.isSafeInteger(policy.ttl_seconds) && policy.ttl_seconds>0 && Number.isSafeInteger(policy.max_tasks) && policy.max_tasks>0;
+            const storage=policy.persistent===true ? 'Stored history: metadata only.' : 'History is kept in memory only; no task history is written to disk.';
+            document.getElementById('agent-history-policy').textContent=storage+' Retention: '+Number(policy.ttl_seconds||0)+' seconds; maximum '+Number(policy.max_tasks||0)+' records. '+(historyReady ? 'History storage is ready.' : 'Saved history is unavailable; administrator review is needed. New tasks are disabled.');
+        } catch(error) { document.getElementById('agent-history-policy').textContent='History policy unavailable. New tasks and history removal are disabled.'; }
+        try {
+            const data=await api('/api/agent/modes'); modes=Array.isArray(data.modes) ? data.modes : [];
+            modes.forEach(mode=>{const option=element('option',mode.name); option.value=mode.id; modeSelect.appendChild(option);}); modeSelect.value=modes.some(mode=>mode.id==='standard') ? 'standard' : modeSelect.value; modeSelect.disabled=!modes.length; showMode();
+        } catch(error) { notify('Capabilities unavailable. New tasks are disabled.',true); }
+        await loadTasks();
+    }
+    document.getElementById('agent-form').addEventListener('submit',async event=>{
+        event.preventDefault(); if(submitButton.disabled) return;
+        const intent=document.getElementById('agent-intent').value.trim(), workspace=document.getElementById('agent-workspace').value; if(!intent) return;
+        submitButton.disabled=true;
+        try { await api('/api/agent/task','POST',{intent,mode:modeSelect.value,workspace:workspace ? [workspace] : []}); document.getElementById('agent-intent').value=''; notify('Task planned. Automatic steps may run; pending steps require individual review.'); await loadTasks(); document.getElementById('agent-history-heading').focus(); }
+        catch(error) { notify(error.message,true); } finally { showMode(); }
     });
-
-    loadAgentTasks();
-    setInterval(loadAgentTasks, 5000);
+    modeSelect.addEventListener('change',showMode);
+    document.getElementById('agent-refresh').addEventListener('click',loadTasks);
+    document.getElementById('agent-clear-history').addEventListener('click',()=>removeHistory(null));
+    window.addEventListener('pagehide',()=>taskCards.forEach(release));
+    initialize(); setInterval(loadTasks,5000);
 </script>
 {% endblock %}

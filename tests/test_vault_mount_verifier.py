@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import stat
+import struct
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -214,3 +218,46 @@ def test_directory_contract_rejects_mode_drift(monkeypatch):
 
     with pytest.raises(verifier.VaultVerificationError):
         verifier.verify_directories()
+
+
+def model_reader_acl(gid=1234, permission=5):
+    entries = [(1,7,0xffffffff), (4,7,0xffffffff), (8,permission,gid),
+               (16,7,0xffffffff), (32,0,0xffffffff)]
+    return struct.pack('<I', 2)+b''.join(struct.pack('<HHI', *entry) for entry in entries)
+
+
+def test_model_reader_acl_is_an_exact_read_only_role():
+    verifier.validate_model_reader_acl(model_reader_acl(), 1234)
+    for raw in [b'', model_reader_acl(permission=7), model_reader_acl(gid=5678),
+                model_reader_acl()+struct.pack('<HHI',2,7,1234),
+                struct.pack('<I',1)+model_reader_acl()[4:]]:
+        with pytest.raises(verifier.VaultVerificationError):
+            verifier.validate_model_reader_acl(raw, 1234)
+
+
+def test_fresh_vault_acl_survives_private_promotion_and_rename(tmp_path):
+    """Real Linux inheritance, including private transaction directories and mode0640."""
+    if not shutil.which('setfacl'):
+        pytest.skip('native ACL tool unavailable')
+    reader = 2**31-17
+    models = tmp_path/'models'
+    models.mkdir(mode=0o2770)
+    models.chmod(0o2770)
+    grants = f'g:{reader}:r-x,m::rwx,d:u::rwx,d:g::rwx,d:g:{reader}:r-x,d:m::rwx,d:o::---'
+    subprocess.run(['setfacl','-m',grants,str(models)], check=True, capture_output=True, timeout=3)
+    for attribute in ['system.posix_acl_access','system.posix_acl_default']:
+        verifier.validate_model_reader_acl(os.getxattr(models, attribute), reader)
+    transaction = models/'.promotion-test'
+    transaction.mkdir(mode=0o700)
+    temporary = transaction/'artifact'
+    descriptor = os.open(temporary, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o640)
+    os.write(descriptor, b'private model fixture')
+    os.close(descriptor)
+    final = models/'approved.gguf'
+    temporary.rename(final)
+    raw = os.getxattr(final,'system.posix_acl_access')
+    grants = [struct.unpack_from('<HHI',raw,offset) for offset in range(4,len(raw),8)]
+    named = next(permission for tag,permission,gid in grants if tag == 8 and gid == reader)
+    mask = next(permission for tag,permission,_gid in grants if tag == 16)
+    assert named & mask == 4  # readable, never writable/executable
+    assert final.stat().st_mode & 0o777 == 0o640

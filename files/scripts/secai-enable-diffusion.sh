@@ -47,6 +47,9 @@ LOCKFILE_DIR="/usr/libexec/secure-ai"
 AUDIT_LOG="/var/lib/secure-ai/logs/diffusion-setup.json"
 LOCK_FILE="/var/lib/secure-ai/.diffusion-install.lock"
 REQUEST_MARKER="/run/secure-ai-ui/diffusion-request"
+# Use the immutable application's interpreter, matching the reviewed native
+# wheel manifest even when Fedora's default python3 moves to a newer series.
+PYTHON_BIN="/usr/lib/secure-ai/python3.12-venv/bin/python3.12"
 
 # Defaults
 MODE="online"            # primary: on-demand download
@@ -100,6 +103,11 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "ERROR: The installed SecAI OS Python runtime is unavailable" >&2
+    exit 1
+fi
+
 if [ -f "$READY_MARKER" ] && [ "$FORCE" = false ]; then
     echo "Diffusion worker already configured. Use --force to reconfigure."
     exit 0
@@ -122,7 +130,7 @@ _progress() {
         _PROG_PHASE="$phase" _PROG_PERCENT="$percent" \
         _PROG_BACKEND="${GPU_BACKEND:-unknown}" _PROG_DETAIL="$detail" \
         _PROG_FILE="$PROGRESS_FILE" \
-        python3 -c '
+        "$PYTHON_BIN" -c '
 import json, os
 progress = {
     "phase": os.environ["_PROG_PHASE"],
@@ -143,7 +151,7 @@ _progress_error() {
     if [ -n "$PROGRESS_FILE" ]; then
         _PROG_BACKEND="${GPU_BACKEND:-unknown}" _PROG_REASON="$reason" \
         _PROG_FILE="$PROGRESS_FILE" \
-        python3 -c '
+        "$PYTHON_BIN" -c '
 import json, os
 reason = os.environ["_PROG_REASON"]
 progress = {
@@ -213,7 +221,7 @@ _audit() {
     local detail="${2:-{}}"
     mkdir -p "$(dirname "$AUDIT_LOG")"
     _AUDIT_EVENT="$event" _AUDIT_DETAIL="$detail" _AUDIT_LOG="$AUDIT_LOG" \
-    python3 -c '
+    "$PYTHON_BIN" -c '
 import json, hashlib, os
 from datetime import datetime, timezone
 entry = {
@@ -248,10 +256,10 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 # Read all manifest metadata in a single safe Python call (no shell interpolation)
-CURRENT_PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+CURRENT_PYTHON_VERSION=$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 CURRENT_ARCH=$(uname -m)
 
-eval "$(_SECAI_MANIFEST="$MANIFEST" python3 -c '
+eval "$(_SECAI_MANIFEST="$MANIFEST" "$PYTHON_BIN" -c '
 import os, sys, yaml
 with open(os.environ["_SECAI_MANIFEST"]) as f:
     m = yaml.safe_load(f)
@@ -289,7 +297,23 @@ echo "  Arch:   ${CURRENT_ARCH}"
 _progress "detecting" 5 "Detecting GPU backend"
 echo "=== Detecting GPU backend ==="
 
-if [ -n "$BACKEND_OVERRIDE" ]; then
+# Reuse the inference launcher's strict reader of the fixed, protected release
+# policy. Device discovery is an observation, not CPU/GPU policy authority.
+if ! APPROVED_GPU_LAYERS=$("$PYTHON_BIN" /usr/libexec/secure-ai/apply-inference-model.py gpu-layers -1); then
+    rollback "The release GPU execution policy could not be verified"
+fi
+case "$APPROVED_GPU_LAYERS" in
+    0|-1) ;;
+    *) rollback "The release GPU execution policy is invalid" ;;
+esac
+
+if [ "$APPROVED_GPU_LAYERS" = "0" ]; then
+    if [ -n "$BACKEND_OVERRIDE" ] && [ "$BACKEND_OVERRIDE" != "cpu" ]; then
+        rollback "The approved CPU-only release cannot install a GPU backend"
+    fi
+    GPU_BACKEND="cpu"
+    echo "  Approved CPU-only release: cpu"
+elif [ -n "$BACKEND_OVERRIDE" ]; then
     GPU_BACKEND="$BACKEND_OVERRIDE"
     echo "  Override: ${GPU_BACKEND}"
 else
@@ -305,7 +329,7 @@ fi
 # Validate backend exists in manifest and read config (single safe Python call)
 eval "$(
     _SECAI_MANIFEST="$MANIFEST" _SECAI_BACKEND="$GPU_BACKEND" \
-    python3 -c '
+    "$PYTHON_BIN" -c '
 import os, sys, yaml
 with open(os.environ["_SECAI_MANIFEST"]) as f:
     m = yaml.safe_load(f)
@@ -370,7 +394,7 @@ else
     export _CURRENT_ARCH="$CURRENT_ARCH"
 
     # Read wheel manifest entries and download/verify each one
-    python3 << 'DOWNLOAD_SCRIPT'
+    "$PYTHON_BIN" << 'DOWNLOAD_SCRIPT'
 import hashlib
 import json
 import os
@@ -689,7 +713,7 @@ _progress "verifying" 70 "Verifying wheel cache"
 echo "=== Verifying wheel cache ==="
 
 _SECAI_MANIFEST="$MANIFEST" _SECAI_BACKEND="$GPU_BACKEND" _SECAI_SOURCE="$INSTALL_SOURCE" \
-python3 - <<'VERIFY_WHEELS' || rollback "wheel cache verification failed"
+"$PYTHON_BIN" - <<'VERIFY_WHEELS' || rollback "wheel cache verification failed"
 import hashlib, os, platform, sys, zipfile
 import yaml
 
@@ -772,7 +796,7 @@ _progress "installing" 75 "Creating temporary venv"
 echo "=== Creating temporary venv ==="
 
 rm -rf "$VENV_TMP"
-python3 -m venv "$VENV_TMP"
+"$PYTHON_BIN" -m venv --copies "$VENV_TMP"
 
 echo "=== Installing from verified cache ==="
 _progress "installing" 80 "Installing packages"
@@ -790,12 +814,14 @@ _progress "installing" 80 "Installing packages"
 _progress "smoke_testing" 85 "Running smoke test"
 echo "=== Running smoke test ==="
 
-_SECAI_BACKEND="$GPU_BACKEND" "${VENV_TMP}/bin/python3" -c '
+PYTHONPATH=/usr/lib/secure-ai/services _SECAI_BACKEND="$GPU_BACKEND" "${VENV_TMP}/bin/python3" -c '
 import os, sys
 print(f"Python {sys.version}")
 
 # Core imports
 import torch
+from common import runtime_assurance
+assert callable(runtime_assurance.require_runtime), "runtime admission client unavailable"
 print(f"PyTorch {torch.__version__}")
 import diffusers
 print(f"Diffusers {diffusers.__version__}")
@@ -853,19 +879,20 @@ cat > "$OVERRIDE_FILE" <<EOF
 [Service]
 ExecStart=
 ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require diffusion -- ${VENV_DIR}/bin/gunicorn \\
-    --chdir /opt/secure-ai/services/diffusion-worker \\
+    --chdir /usr/lib/secure-ai/services/diffusion-worker \\
     --bind \${BIND_ADDR} \\
     --workers 1 \\
     --threads 2 \\
     --timeout \${GUNICORN_TIMEOUT:-1800} \\
     --graceful-timeout 30 \\
-    --max-requests 500 \\
+    --no-control-socket --max-requests 500 \\
     --access-logfile - \\
     --error-logfile - \\
     app:app
 Environment=VIRTUAL_ENV=${VENV_DIR}
 Environment=PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/usr/lib/secure-ai/services:/usr/lib/secure-ai/services/diffusion-worker
 EOF
 
 # ---------------------------------------------------------------------------

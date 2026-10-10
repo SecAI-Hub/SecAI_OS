@@ -121,6 +121,8 @@ audit:
   log_path: /var/lib/secure-ai/mcp-firewall/audit.jsonl
   sign_reports: true
   key_path: /var/lib/secure-ai/mcp-firewall/signing.key
+  receipt_audience: secai-os:mcp-firewall
+  receipt_ttl_seconds: 120
 
 # --- Daemon settings ---
 daemon:

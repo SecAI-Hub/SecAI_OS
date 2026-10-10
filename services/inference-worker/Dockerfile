@@ -1,4 +1,5 @@
 # Inference worker: wraps llama-server (llama.cpp) with optional accelerator images.
+# Build from the repository root with -f services/inference-worker/Dockerfile.
 # Every selectable upstream is pinned independently. Callers select one of the
 # fixed final targets (for example, --target inference-cuda); no build argument
 # is ever interpolated into a FROM instruction.
@@ -11,15 +12,15 @@
 #   inference-vulkan   - Cross-vendor Vulkan compute
 #   inference-intel    - Intel SYCL
 #   inference-openvino - Intel OpenVINO
-FROM ghcr.io/ggml-org/llama.cpp:server@sha256:a576442ad3649c0b5ea74e20ad29a17c121117f32607cfe59ff27cc38066f874 AS server
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:fc26b60b30836e5a12fdb28823a3d4bda984c9386a4b04200c78e5a5150067fb AS server-cuda
-FROM ghcr.io/ggml-org/llama.cpp:server-cuda13@sha256:88b644c232f36da21405f5d849e2d58d333210e79512e7b3efd8bde7345f64fd AS server-cuda13
-FROM ghcr.io/ggml-org/llama.cpp:server-rocm@sha256:36bd528235ab24e0e9d88a11da55a6b142e2f13c1ede97d8f038dc46a5014765 AS server-rocm
-FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@sha256:eddb40b8a348a652c8829ef036df9bbbae537755ae7026bf6d4b403840cd468e AS server-vulkan
-FROM ghcr.io/ggml-org/llama.cpp:server-intel@sha256:ded090960b3a0c4e2be2f47b092a7de276f7a534356675d16cc1280bf7b39c57 AS server-intel
-FROM ghcr.io/ggml-org/llama.cpp:server-openvino@sha256:df1a75e34c7d40dc6d156624dc87258cb9a254cd4f6122461b0b2a6fa31b8ad1 AS server-openvino
+FROM ghcr.io/ggml-org/llama.cpp:server@sha256:fcca4dac388066ca93db561751e8caf5fc7d46d9df5f00a7422026db68468e31 AS server
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:7f87a3bbe3143cdb857f5c84f82d2c15528be70ca0e7c5ade9a47d56b791f93f AS server-cuda
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda13@sha256:873a4e2f20385c10c6e5ea7476c07ff3885fa0f87939a4b8e13259f8c5ba3f08 AS server-cuda13
+FROM ghcr.io/ggml-org/llama.cpp:server-rocm@sha256:c0bbf966565a5c55d06ae938d940a79fa8a60a2d06aed456e2905b0930051ca2 AS server-rocm
+FROM ghcr.io/ggml-org/llama.cpp:server-vulkan@sha256:f862c901a0089bc3dc326bd24f208bfcd147839783328d252e911a004c94ff3c AS server-vulkan
+FROM ghcr.io/ggml-org/llama.cpp:server-intel@sha256:9cc08fd43780a3ed5248feb9f89d20d4b2cf7653c883f0481ee7fe0bf3a67543 AS server-intel
+FROM ghcr.io/ggml-org/llama.cpp:server-openvino@sha256:8371d87bebd1ae867e17b78d31a2dad39189e41e6a16761cb435eb329a12d5bd AS server-openvino
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e AS runtime-base
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:96ff486b326d15db16aa1fbd41a17043a557bebf76d2c0ac932e717534025940 AS runtime-base
 
 RUN apk upgrade --no-cache && \
     apk add --no-cache \
@@ -32,9 +33,11 @@ RUN apk upgrade --no-cache && \
 
 # The entrypoint script reads appliance.yaml and starts llama-server
 # with the correct model path and settings.
-COPY entrypoint.sh /entrypoint.sh
+COPY services/inference-worker/entrypoint.sh /entrypoint.sh
+COPY files/system/usr/libexec/secure-ai/prepare-inference-auth.sh /prepare-inference-auth.sh
 RUN sed -i 's/\r$//' /entrypoint.sh \
-    && chmod +x /entrypoint.sh
+    && sed -i 's/\r$//' /prepare-inference-auth.sh \
+    && chmod +x /entrypoint.sh /prepare-inference-auth.sh
 
 ENV LD_LIBRARY_PATH=/opt/llama-server
 ENV LLAMA_SERVER_BIN=/opt/llama-server/llama-server

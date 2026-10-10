@@ -53,3 +53,7 @@ secai-ks.cfg
 *.qcow2
 *.ova
 *.vmdk
+
+# Atomic dependency refresh staging
+.application-locks.*
+files/scripts/.diffusion-locks.*

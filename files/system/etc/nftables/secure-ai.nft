@@ -1,99 +1,65 @@
 #!/usr/sbin/nft -f
-#
-# Secure AI Appliance — default-deny egress firewall
-#
-# Policy:
-#   - All localhost traffic is allowed (inter-service communication)
-#   - No inbound application ports; the UI is loopback-only
-#   - Outbound internet is BLOCKED by default
-#   - Only DHCP for initial network setup
-#   - DNS rate-limited (needed for DHCP/system updates)
-#   - HTTPS outbound for host-level tools (rpm-ostree, cosign)
-#   - Runtime workload cgroups block direct network use; Airlock and Tor proxy it
-#   - Rate-limited logging to prevent log flooding
-#   - Invalid packets dropped early
+# Native offline default. Only appliance-owned tables are replaced.
+# Online sets are EMPTY at boot. Grants require verified wildcard netdev
+# hooks (nftables >=1.1.6 and kernel support) and expire in the kernel.
+# These placeholder identities grant nothing with empty sets; the root
+# network controller substitutes the installed dedicated service identities.
+define TOR_GID = 65534
+define AIRLOCK_UID = 65534
 
-flush ruleset
-
+add table inet secure_ai
+delete table inet secure_ai
 table inet secure_ai {
-
+    set online { type nf_proto; flags timeout; }
+    set full { type nf_proto; flags timeout; }
+    set maintenance { type nf_proto; flags timeout; }
     chain input {
-        type filter hook input priority 0; policy drop;
-
-        # Drop invalid packets immediately
-        ct state invalid drop
-
-        # Allow established/related connections
+        type filter hook input priority -300; policy drop;
+        iifname "lo" accept
         ct state established,related accept
-
-        # Allow loopback
-        iif "lo" accept
-
-        # Allow ICMP (restricted types only)
-        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
-        ip6 nexthdr icmpv6 icmpv6 type { echo-request, echo-reply, destination-unreachable, time-exceeded, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
-
-        # Allow DHCP client responses
-        udp sport 67 udp dport 68 accept
-
-        # Rate-limited logging for dropped packets
-        limit rate 10/minute log prefix "secure-ai-in-drop: "
-        drop
+        udp sport 67 udp dport 68 meta nfproto @online accept
+        udp sport 547 udp dport 546 meta nfproto @online accept
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } meta nfproto @online accept
     }
-
-    chain output {
-        type filter hook output priority 0; policy drop;
-
-        # Drop invalid packets
-        ct state invalid drop
-
-        # Allow established/related
-        ct state established,related accept
-
-        # Allow all loopback (services talk to each other on localhost)
-        oif "lo" accept
-
-        # Allow ICMP (restricted types only)
-        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
-        ip6 nexthdr icmpv6 icmpv6 type { echo-request, echo-reply, destination-unreachable, time-exceeded, nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
-
-        # Allow DHCP client
-        udp sport 68 udp dport 67 accept
-
-        # Allow DNS (tightly rate-limited, M19)
-        # When search is enabled, DNS goes through Tor SOCKS5 (no direct DNS).
-        # These rules allow minimal direct DNS for DHCP/system operations only.
-        udp dport 53 limit rate 10/minute accept
-        tcp dport 53 limit rate 5/minute accept
-        # Log and drop excess DNS (potential leak indicator)
-        udp dport 53 log prefix "secure-ai-dns-excess: " drop
-        tcp dport 53 log prefix "secure-ai-dns-excess: " drop
-
-        # Allow NTP for time sync (needed for certificate validation)
-        udp dport 123 accept
-
-        # Allow HTTPS for host-level tools (rpm-ostree, cosign). Service-level
-        # cgroup IPAddressDeny policies block normal workload egress. Airlock
-        # and Tor proxy approved runtime traffic; root update/install and
-        # explicit network-diagnostic one-shots remain administrative paths.
-        tcp dport 443 accept
-
-        # Rate-limited logging for dropped packets
-        limit rate 10/minute log prefix "secure-ai-out-drop: "
-        drop
-    }
-
     chain forward {
-        type filter hook forward priority 0; policy drop;
-
-        # Drop invalid
-        ct state invalid drop
-
-        # Allow established/related
-        ct state established,related accept
-
-        # Drop all forwarded traffic — no routing
-        limit rate 5/minute log prefix "secure-ai-fwd-drop: "
-        drop
+        type filter hook forward priority -300; policy drop;
+    }
+    chain output {
+        type filter hook output priority -500; policy drop;
+        oifname "lo" accept
+        meta nfproto @online jump allowed
+    }
+    chain allowed {
+        udp sport 68 udp dport 67 accept
+        udp sport 546 udp dport 547 accept
+        icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+        meta skgid $TOR_GID meta l4proto tcp accept
+        meta skuid $AIRLOCK_UID tcp dport { 53, 443 } meta nfproto @full accept
+        meta skuid $AIRLOCK_UID udp dport 53 meta nfproto @full accept
+        tcp dport { 53, 443 } meta nfproto @maintenance accept
+        udp dport { 53, 123 } meta nfproto @maintenance accept
+    }
+}
+add table netdev secure_ai_link
+delete table netdev secure_ai_link
+table netdev secure_ai_link {
+    set online { type ether_type; flags timeout; }
+    set full { type ether_type; flags timeout; }
+    set maintenance { type ether_type; flags timeout; }
+    chain output {
+        type filter hook egress devices = { "*" } priority -500; policy drop;
+        oifname "lo" accept
+        meta protocol @online jump allowed
+    }
+    chain allowed {
+        ether type arp accept
+        udp sport 68 udp dport 67 accept
+        udp sport 546 udp dport 547 accept
+        icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+        meta skgid $TOR_GID meta l4proto tcp accept
+        meta skuid $AIRLOCK_UID tcp dport { 53, 443 } meta protocol @full accept
+        meta skuid $AIRLOCK_UID udp dport 53 meta protocol @full accept
+        tcp dport { 53, 443 } meta protocol @maintenance accept
+        udp dport { 53, 123 } meta protocol @maintenance accept
     }
 }

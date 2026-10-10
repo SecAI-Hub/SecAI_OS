@@ -1,0 +1,42 @@
+/* Shared, text-only rendering contracts for server-normalized evidence. */
+function evidenceObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+async function securityJSON(url) {
+    var response = await fetch(url, {cache: 'no-store', redirect: 'error'});
+    if (!response.ok) throw new Error('Evidence unavailable');
+    return response.json();
+}
+function evidenceFresh(item) {
+    var now = Date.now() / 1000;
+    return evidenceObject(item) && Number.isFinite(item.valid_until) && item.valid_until > now;
+}
+function applianceView(data) {
+    var unknown = {label: 'Runtime evidence unavailable', detail: 'Required authenticated, current evidence has not established passing checks.', passing: false, failed: false};
+    if (!evidenceObject(data) || !evidenceObject(data.evidence)) return unknown;
+    var names = ['attestor', 'integrity_monitor', 'incidents'];
+    var decisive = names.some(function(name) { var e = data.evidence[name]; return evidenceObject(e) && e.authenticated_read === true && ['failed', 'recovery_required'].includes(e.status); });
+    if (decisive) return {label: 'Recovery required', detail: 'An authenticated producer reports a decisive failure. Inspect the individual evidence.', passing: false, failed: true};
+    if (data.appliance_state === 'evaluation') return {label: 'Evaluation: host assurance unavailable', detail: 'Evaluation or sandbox mode does not establish host hardware verification.', passing: false, failed: false};
+    var now = Date.now() / 1000;
+    var valid = data.schema_version === 1 && data.basis === 'authenticated_producer_reports' && data.ui_verified_attestation_signature === false &&
+        Number.isFinite(data.timestamp) && data.timestamp <= now && evidenceFresh(data) && data.valid_until <= data.timestamp + 30 &&
+        names.every(function(name) { var e = data.evidence[name]; return evidenceObject(e) && e.authenticated_read === true && e.passing === true && e.status === (name === 'attestor' ? 'attested' : 'checked'); });
+    if (!valid || data.appliance_state !== 'reported_healthy') return unknown;
+    return {label: 'Runtime checks reported passing', detail: 'Fresh authenticated producer reports agree. The UI does not independently verify the attestation bundle signature. This does not establish network isolation or every security property.', passing: true, failed: false, expires: data.valid_until};
+}
+function networkView(data) {
+    var unknown = {label: 'Network enforcement unknown', detail: 'A selected profile is configuration, not proof of host network enforcement.', passing: false};
+    if (!evidenceObject(data)) return unknown;
+    if (data.status === 'not_available') return {label: 'Host network evidence unavailable', detail: 'A container cannot establish its host firewall enforcement.', passing: false};
+    if (data.status !== 'verified' || data.passing !== true || data.basis !== 'root_owned_same_boot_runtime_report' || !evidenceFresh(data) || !Array.isArray(data.allowed_egress)) return unknown;
+    if (data.effective_scope === 'offline' && data.host_offline === true && data.lease_expires_at === null && data.allowed_egress.length === 0)
+        return {label: 'Host egress blocking verified', detail: 'Current same-boot native firewall evidence reports no live egress lease. Checked at ' + data.observed_at + '.', passing: true, expires: data.valid_until};
+    if (['research', 'full_lab', 'maintenance'].includes(data.effective_scope) && data.host_offline === false && Number.isFinite(Date.parse(data.lease_expires_at)) && Date.parse(data.lease_expires_at) > Date.now())
+        return {label: 'Network lease active: ' + data.effective_scope.replace(/_/g, ' '), detail: 'The host is not offline. Allowed: ' + data.allowed_egress.join('; ') + '. Lease expires ' + data.lease_expires_at + '.', passing: false, expires: data.valid_until};
+    return unknown;
+}
+function evidenceText(value, fallback) { return typeof value === 'string' && value.length <= 1200 ? value : fallback; }
+function setEvidenceBadge(id, label, passing, failed) {
+    var el = document.getElementById(id);
+    el.textContent = label;
+    el.className = 'badge ' + (passing ? 'badge-success' : failed ? 'badge-danger' : 'badge-muted');
+}

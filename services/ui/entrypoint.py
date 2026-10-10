@@ -24,13 +24,9 @@ def main() -> None:
     os.environ.setdefault("PYTHONPATH", "/app:/app/services")
     tmpdir = _tmpdir()
 
-    workers = max(1, int(os.getenv("GUNICORN_WORKERS", "1")))
-    if workers > 1:
-        print(
-            "warning: forcing GUNICORN_WORKERS=1 because AuthManager session state is process-local",
-            file=sys.stderr,
-        )
-        workers = 1
+    workers = int(os.getenv("GUNICORN_WORKERS", "1"))
+    if workers != 1:
+        raise ValueError("GUNICORN_WORKERS must be 1; shared audit writers are not qualified")
 
     argv = [
         "/opt/venv/bin/gunicorn",
@@ -52,13 +48,15 @@ def main() -> None:
         os.getenv("GUNICORN_MAX_REQUESTS", "1000"),
         "--max-requests-jitter",
         os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "50"),
+        "--no-control-socket",
         "--access-logfile",
         "-",
         "--error-logfile",
         "-",
         "ui.app:app",
     ]
-    os.execv(argv[0], argv)
+    supervisor = [sys.executable, "-I", "/app/ui/runtime.py", "--", *argv]
+    os.execv(supervisor[0], supervisor)
 
 
 if __name__ == "__main__":

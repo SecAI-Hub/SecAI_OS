@@ -172,6 +172,7 @@ def test_model_selector_preserves_typed_cpu_policy(tmp_path: Path):
         encoding="utf-8",
     )
     output = tmp_path / "model.env"
+    manifest.chmod(0o644)  # Match the trusted registry's atomic manifest writer.
     env = {
         **os.environ,
         "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",

@@ -378,6 +378,12 @@ def _parse_safetensors_header(
         length_bytes = handle.read(8)
         if len(length_bytes) != 8:
             raise ValueError("safetensors file is too short")
+        # ModelScan 0.8.8 dispatches ZIP content by this exact initial magic,
+        # independent of extension. A legal 67,324,752-byte JSON header can
+        # otherwise make a safetensors tensor buffer reach pickle/ZIP scanners.
+        # Both file and diffusion-directory gates share this parser.
+        if length_bytes[:4] == b"PK\x03\x04":
+            raise ValueError("safetensors header length has ambiguous ZIP magic")
         header_len = struct.unpack("<Q", length_bytes)[0]
         if header_len < 2:
             raise ValueError("safetensors header is too short")
@@ -1949,53 +1955,72 @@ def _get_fickling_version() -> str:
         return "unknown"
 
 
+def _modelaudit_outcome(data: Any) -> dict:
+    """Validate the pinned ModelAudit JSON contract, including coverage evidence."""
+    base = {"passed": False, "scanner": "modelaudit", "status": "error"}
+    if not isinstance(data, dict):
+        return {**base, "reason": "modelaudit report must be an object"}
+    issues = data.get("issues")
+    if not isinstance(issues, list) or any(not isinstance(i, dict) for i in issues):
+        return {**base, "reason": "modelaudit report has invalid issues"}
+    if data.get("has_errors") is not False or data.get("success") is not True:
+        return {**base, "reason": "modelaudit did not establish successful completion"}
+    for field in ("files_scanned", "bytes_scanned", "total_checks"):
+        if type(data.get(field)) is not int or data[field] <= 0:
+            return {**base, "status": "incomplete", "reason": f"modelaudit has no valid {field} coverage"}
+    if data.get("dry_run", False) is not False:
+        return {**base, "status": "incomplete", "reason": "modelaudit report is a dry run"}
+    # These markers are part of ModelAudit's scan-outcome contract. Inspect
+    # per-file metadata and issue/check details as well as the aggregate.
+    def incomplete(value: Any) -> bool:
+        if isinstance(value, dict):
+            if (value.get("operational_error") or value.get("analysis_incomplete")
+                    or value.get("scan_outcome") == "inconclusive"
+                    or value.get("scan_outcome_reason") or value.get("scan_outcome_reasons")):
+                return True
+            return any(incomplete(v) for v in value.values())
+        if isinstance(value, list):
+            return any(incomplete(v) for v in value)
+        return False
+
+    if incomplete(data):
+        return {**base, "status": "incomplete", "reason": "modelaudit reported incomplete analysis"}
+    allowed_severities = {"debug", "info", "low", "medium", "warning", "high", "critical"}
+    if any(i.get("severity") not in allowed_severities for i in issues):
+        return {**base, "reason": "modelaudit report contains an unknown severity"}
+    findings = [i for i in issues if i["severity"] in {"warning", "high", "critical"}]
+    if findings:
+        return {**base, "status": "reject", "reason": f"modelaudit found {len(findings)} security issue(s)", "issues": findings}
+    return {"passed": True, "status": "pass", "scanner": "modelaudit",
+            "scanner_version": data.get("version", "unknown"),
+            "files_scanned": data["files_scanned"], "total_checks": data["total_checks"]}
+
+
 def _run_modelaudit(filepath: Path, policy: dict | None = None) -> dict:
-    """Run ModelAudit and fail closed when the production policy requires it."""
-    policy = policy or {}
-    required = policy.get("models", {}).get("require_modelaudit", True)
-    if required is not True:
-        return {
-            "passed": False,
-            "scanner": "modelaudit",
-            "reason": "production policy cannot disable ModelAudit",
-        }
+    """Run the required scanner; exit zero without complete evidence is inconclusive."""
+    if (policy or {}).get("models", {}).get("require_modelaudit", True) is not True:
+        return {"passed": False, "status": "error", "scanner": "modelaudit",
+                "reason": "production policy cannot disable ModelAudit"}
     try:
         result = subprocess.run(
             [MODELAUDIT_BIN, "scan", str(filepath), "--format", "json"],
             capture_output=True, text=True, timeout=300,
+            env={**os.environ, "PROMPTFOO_DISABLE_TELEMETRY": "1", "NO_ANALYTICS": "1"},
         )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            issues = data.get("issues", [])
-            critical = [i for i in issues if i.get("severity") in ("critical", "high")]
-            if critical:
-                return {"passed": False, "scanner": "modelaudit", "reason": f"{len(critical)} critical/high issues found", "issues": critical}
-            return {"passed": True, "scanner": "modelaudit", "note": f"{len(issues)} low/info issues", "scanner_version": data.get("version", "unknown")}
-        return {
-            "passed": not required,
-            "scanner": "modelaudit",
-            "reason" if required else "note": (
-                f"modelaudit returned non-zero: {result.stderr.strip()[:200]}"
-            ),
-        }
+        outcome = _modelaudit_outcome(json.loads(result.stdout))
+        if result.returncode != 0 and outcome["passed"]:
+            return {"passed": False, "status": "error", "scanner": "modelaudit",
+                    "reason": f"modelaudit returned exit {result.returncode}"}
+        return outcome
     except FileNotFoundError:
-        return {
-            "passed": not required,
-            "scanner": "modelaudit",
-            "reason" if required else "note": (
-                "required modelaudit scanner is not installed"
-                if required
-                else "modelaudit not installed, skipped"
-            ),
-        }
+        reason = "required modelaudit scanner is not installed"
     except subprocess.TimeoutExpired:
-        return {"passed": False, "scanner": "modelaudit", "reason": "modelaudit scan timed out"}
-    except Exception as e:
-        return {
-            "passed": not required,
-            "scanner": "modelaudit",
-            "reason" if required else "note": f"modelaudit error: {e}",
-        }
+        reason = "modelaudit scan timed out"
+    except (ValueError, TypeError, RecursionError):
+        reason = "modelaudit emitted an invalid report"
+    except Exception as exc:
+        reason = f"modelaudit failed ({type(exc).__name__})"
+    return {"passed": False, "status": "error", "scanner": "modelaudit", "reason": reason}
 
 
 def _run_yara_scan(filepath: Path, policy: dict | None = None) -> dict:
@@ -2632,153 +2657,81 @@ def check_static_scan(artifact_path: Path, policy: dict | None = None) -> dict:
     return {"passed": True, "details": results, "scanner": "all-static"}
 
 
+def _modelscan_outcome(data: Any, path: Path, scanner: str, version: str, returncode: int = 0) -> dict:
+    """One admission contract for both the Python and CLI adapters."""
+    base = {"passed": False, "status": "error", "scanner": scanner, "scanner_version": version}
+    if not isinstance(data, dict) or not isinstance(data.get("summary"), dict):
+        return {**base, "reason": "modelscan report has no valid summary"}
+    summary = data["summary"]
+    base["scanner_version"] = summary.get("modelscan_version", version)
+    for field in ("issues", "errors"):
+        if not isinstance(data.get(field), list):
+            return {**base, "reason": f"modelscan report has invalid {field}"}
+        if data[field]:
+            return {**base, "status": "reject" if field == "issues" else "error",
+                    "reason": f"modelscan reported {len(data[field])} {field}", "details": data[field]}
+    scanned = summary.get("scanned")
+    count = scanned.get("total_scanned") if isinstance(scanned, dict) else None
+    if type(count) is not int or count < 0:
+        return {**base, "status": "incomplete", "reason": "modelscan report has invalid scan coverage"}
+    ext = path.suffix.lower()
+    if count == 0 and returncode in {0, 3} and ext in {".gguf", ".safetensors"}:
+        note = ("GGUF-specific static and behavioral gates still apply" if ext == ".gguf"
+                else "safetensors header, YARA, entropy, modelaudit, and tensor gates still apply")
+        return {**base, "passed": True, "status": "not_applicable",
+                "unsupported_format": ext[1:], "note": f"modelscan does not scan {ext[1:]} artifacts; {note}"}
+    if returncode != 0:
+        return {**base, "reason": f"modelscan CLI error (exit {returncode})"}
+    if count == 0:
+        return {**base, "status": "incomplete", "reason": "modelscan did not scan any files"}
+    skipped = summary.get("skipped", {"total_skipped": 0})
+    if (not isinstance(skipped, dict) or type(skipped.get("total_skipped")) is not int
+            or skipped["total_skipped"] != 0):
+        return {**base, "status": "incomplete", "reason": "modelscan skipped part of the artifact"}
+    return {**base, "passed": True, "status": "pass", "files_scanned": count}
+
+
 def _run_modelscan(artifact_path: Path, policy: dict | None = None) -> dict:
-    """Run modelscan via Python API or CLI.
-
-    If ``policy.models.require_scan`` is True (the default) and modelscan is
-    not installed, this is now a hard failure instead of a silent skip.
-    """
-    if policy is None:
-        policy = {}
-    require_scan = policy.get("models", {}).get("require_scan", True)
-    if require_scan is not True:
-        return {
-            "passed": False,
-            "reason": "production policy cannot disable ModelScan",
-            "scanner": "modelscan",
-        }
-
+    """Run ModelScan with explicit error, coverage and format applicability checks."""
+    if (policy or {}).get("models", {}).get("require_scan", True) is not True:
+        return {"passed": False, "status": "error", "scanner": "modelscan",
+                "reason": "production policy cannot disable ModelScan"}
     try:
         from modelscan.modelscan import ModelScan
         import modelscan as _ms_mod
-
-        scanner = ModelScan()
-        results = scanner.scan(str(artifact_path))
-        issues = results.get("issues", [])
-        version = getattr(_ms_mod, "__version__", "unknown")
-        if issues:
-            return {
-                "passed": False,
-                "reason": f"modelscan found {len(issues)} issue(s)",
-                "details": issues,
-                "scanner": "modelscan-api",
-                "scanner_version": version,
-            }
-        return {"passed": True, "scanner": "modelscan-api", "scanner_version": version}
     except ImportError:
         pass
-    except Exception as e:
-        log.warning("modelscan API error: %s", e)
-
+    else:
+        try:
+            results = ModelScan().scan(str(artifact_path))
+            return _modelscan_outcome(results, artifact_path, "modelscan-api", getattr(_ms_mod, "__version__", "unknown"))
+        except Exception as exc:
+            # An installed but broken scanner is an error, not permission to
+            # retry with a different configuration or accept less evidence.
+            return {"passed": False, "status": "error", "scanner": "modelscan-api",
+                    "reason": f"modelscan API failed ({type(exc).__name__})"}
     try:
-        scan_env = os.environ.copy()
-        scan_env.update({
-            "COLUMNS": "4096",
-            "NO_COLOR": "1",
-            "TERM": "dumb",
-        })
+        scan_env = {**os.environ, "COLUMNS": "4096", "NO_COLOR": "1", "TERM": "dumb"}
         result = subprocess.run(
             [MODELSCAN_BIN, "-p", str(artifact_path), "-r", "json"],
             capture_output=True, text=True, timeout=300, env=scan_env,
         )
-        # Try to extract CLI version
-        cli_version = "unknown"
-        try:
-            ver_result = subprocess.run(
-                [MODELSCAN_BIN, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=scan_env,
-            )
-            if ver_result.returncode == 0:
-                cli_version = ver_result.stdout.strip()
-        except Exception:
-            pass
-
-        scan_data: dict[str, Any] | None = None
+        # ModelScan prints a settings notice before its JSON document.
         stdout = result.stdout.strip()
-        start = stdout.find("{")
-        end = stdout.rfind("}")
-        if start != -1 and end > start:
-            try:
-                scan_data = json.loads(stdout[start : end + 1])
-            except json.JSONDecodeError:
-                scan_data = None
-
-        if scan_data is None:
-            log.warning("modelscan CLI did not emit parseable JSON: %s", result.stderr[:500])
-            return {"passed": False, "reason": "modelscan CLI did not emit parseable JSON"}
-
-        cli_version = scan_data.get("summary", {}).get("modelscan_version", cli_version)
-        issues = scan_data.get("issues", [])
-        errors = scan_data.get("errors", [])
-        scanned = scan_data.get("summary", {}).get("scanned", {})
-        scanned_total = scanned.get("total_scanned") if isinstance(scanned, dict) else None
-        if issues:
-            return {
-                "passed": False,
-                "reason": f"modelscan found {len(issues)} issue(s)",
-                "details": issues,
-                "scanner": "modelscan-cli",
-                "scanner_version": cli_version,
-            }
-        if errors:
-            return {
-                "passed": False,
-                "reason": f"modelscan reported {len(errors)} error(s)",
-                "details": errors,
-                "scanner": "modelscan-cli",
-                "scanner_version": cli_version,
-            }
-        unsupported_scan_formats = {".gguf", ".safetensors"}
-        ext = artifact_path.suffix.lower()
-        if ext in unsupported_scan_formats and (result.returncode == 3 or scanned_total == 0):
-            log.info(
-                "modelscan CLI did not scan %s artifact %s; relying on format-specific gates",
-                ext.lstrip(".").upper(),
-                artifact_path.name,
-            )
-            format_note = (
-                "GGUF-specific static and behavioral gates still apply"
-                if ext == ".gguf"
-                else "safetensors header, YARA, entropy, modelaudit, and tensor gates still apply"
-            )
-            return {
-                "passed": True,
-                "scanner": "modelscan-cli",
-                "scanner_version": cli_version,
-                "note": f"modelscan does not scan {ext.lstrip('.')} artifacts; {format_note}",
-                "unsupported_format": ext.lstrip("."),
-            }
-        if result.returncode != 0:
-            log.warning("modelscan CLI exited %d: %s", result.returncode, result.stderr[:500])
-            return {
-                "passed": False,
-                "reason": f"modelscan CLI error (exit {result.returncode})",
-                "scanner": "modelscan-cli",
-                "scanner_version": cli_version,
-            }
-        if scanned_total == 0:
-            return {
-                "passed": False,
-                "reason": "modelscan did not scan any files",
-                "scanner": "modelscan-cli",
-                "scanner_version": cli_version,
-            }
-        return {"passed": True, "scanner": "modelscan-cli", "scanner_version": cli_version}
+        start, end = stdout.find("{"), stdout.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("missing report")
+        data = json.loads(stdout[start:end + 1])
+        return _modelscan_outcome(data, artifact_path, "modelscan-cli", "unknown", result.returncode)
     except FileNotFoundError:
-        if require_scan:
-            log.warning("modelscan not installed; scan is required by policy — failing")
-            return {"passed": False, "reason": "static scanner required but not installed"}
-        log.warning("modelscan not installed; skipping static scan (not required by policy)")
-        return {"passed": True, "scanner": "skipped"}
+        reason = "static scanner required but not installed"
     except subprocess.TimeoutExpired:
-        log.warning("modelscan timed out after 300s")
-        return {"passed": False, "reason": "modelscan timed out"}
-    except Exception as e:
-        log.warning("modelscan CLI error: %s", e)
-        return {"passed": False, "reason": f"modelscan error: {e}"}
+        reason = "modelscan timed out"
+    except (ValueError, TypeError, RecursionError):
+        reason = "modelscan CLI did not emit parseable JSON"
+    except Exception as exc:
+        reason = f"modelscan failed ({type(exc).__name__})"
+    return {"passed": False, "status": "error", "scanner": "modelscan-cli", "reason": reason}
 
 
 def _check_file_entropy(artifact_path: Path) -> dict:
@@ -3413,6 +3366,8 @@ def check_smoke_test(artifact_path: Path, policy: dict | None = None) -> dict:
                 "--model", str(artifact_path),
                 "--port", str(port),
                 "--host", "127.0.0.1",
+                "--offline",
+                "--no-ui",
                 "--n-gpu-layers", "0",
                 "--ctx-size", "512",
                 "--threads", "2",

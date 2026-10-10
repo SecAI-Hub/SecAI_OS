@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# SecAI OS authenticated backup utility.
+# SecAI OS legacy partial encrypted backup utility.
 #
-# Every backup is encrypted with age before it leaves a root-only tmpfs.
-# Plain tar archives and unauthenticated restores are intentionally unsupported.
+# Private staging is bounded; its underlying storage encryption is not verified.
+# Age provides ciphertext integrity. Public-recipient encryption does not prove origin.
 #
 set -euo pipefail
 umask 077
@@ -28,7 +28,9 @@ REGISTRY_PATHS=("${SECURE_AI_ROOT}/registry/manifest.json")
 
 OUTPUT_DIR=""
 AGE_RECIPIENT=""
+LEGACY_PARTIAL=false
 AGE_IDENTITY=""
+TRUSTED_SHA256=""
 WORK_DIR=""
 LUKS_UUID=""
 
@@ -47,7 +49,7 @@ step()  { printf '\n%s%s=== %s ===%s\n' "$BOLD" "$CYAN" "$*" "$NC"; }
 
 usage() {
     cat <<'USAGE'
-SecAI OS — Authenticated Backup
+SecAI OS — Legacy Partial Encrypted Backup
 
 Usage:
   secai-backup.sh full   [--output DIR] [--recipient AGE_RECIPIENT]
@@ -57,14 +59,21 @@ Usage:
   secai-backup.sh verify FILE [--identity AGE_IDENTITY_FILE]
   secai-backup.sh list [DIR]
 
-All backup categories are encrypted and authenticated with age. Without
---recipient, age prompts for a passphrase using its protected terminal input.
-The plaintext archive exists only in root-owned /run tmpfs and is removed when
-the command exits. The .sha256 sidecar is a transport-corruption check; archive
-authenticity is established by successful age decryption plus manifest checks.
+Creation requires --legacy-partial and a native --recipient. Even the old
+"full" category is a legacy partial selection: user documents, outputs, model
+bytes and much durable state are missing; files are not quiesced. Version 3
+partial object export is available through secure-backup-archive.py export-inert.
+
+Private plaintext staging is removed on exit. Its filesystem encryption and
+secure erasure are not verified. Age verifies ciphertext integrity; a public
+recipient and unsigned manifest do not establish source origin. The sidecar
+only checks transport. Use a digest held independently of the backup medium
+with --trusted-sha256 to bind inspection to that recovery receipt.
 
 Options:
-  --recipient VALUE   Encrypt to an age recipient (recommended for automation)
+  --legacy-partial    Acknowledge the incomplete, unquiesced v2 selection
+  --trusted-sha256 HEX Verify against an independently held ciphertext digest
+  --recipient VALUE   Encrypt to a native public age recipient
   --identity FILE     Identity used to decrypt during verify
   --output DIR        Destination directory
   --encrypt           Accepted for compatibility; encryption is always enabled
@@ -153,10 +162,9 @@ copy_source() {
     local staging="$2"
     [ ! -L "$source" ] || fatal "Refusing symbolic-link backup source: $source"
     [ -e "$source" ] || return 1
-    local destination="${staging}${source}"
-    mkdir -p -- "$(dirname "$destination")"
-    cp -a --reflink=auto -- "$source" "$destination" \
-        || fatal "Failed to stage required backup source: $source"
+    "$ARCHIVE_HELPER" stage-source --source "$source" --destination "$staging" >/dev/null \
+        || fatal "Required source failed bounded descriptor-based staging"
+
 }
 
 collect_paths() {
@@ -239,46 +247,22 @@ write_transport_checksum() {
     mv -- "$temporary" "$sidecar"
 }
 
-verify_transport_checksum() {
-    local artifact="$1"
-    local sidecar="${artifact}.sha256"
-    if [ ! -f "$sidecar" ] || [ -L "$sidecar" ]; then
-        fatal "Required transport checksum is missing or unsafe: $sidecar"
-    fi
-    local expected declared extra
-    IFS=' ' read -r expected declared extra < "$sidecar" || fatal "Cannot read checksum sidecar"
-    declared="${declared#\\*}"
-    [ -z "${extra:-}" ] || fatal "Checksum sidecar has unexpected fields"
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fatal "Checksum sidecar has an invalid SHA-256"
-    [ "$declared" = "$(basename "$artifact")" ] \
-        || fatal "Checksum sidecar names a different artifact"
-    local actual
-    actual=$(sha256sum -- "$artifact" | awk '{print $1}')
-    [ "$expected" = "$actual" ] || fatal "Encrypted backup transport checksum mismatch"
-}
-
-decrypt_to_tmpfs() {
+decrypt_to_private_stage() {
     local artifact="$1"
     local plaintext="$2"
-    local -a args=(-d)
-    if [ -n "$AGE_IDENTITY" ]; then
-        if [ ! -f "$AGE_IDENTITY" ] || [ -L "$AGE_IDENTITY" ]; then
-            fatal "Age identity is missing or unsafe: $AGE_IDENTITY"
-        fi
-        [ "$(stat -c '%u' "$AGE_IDENTITY")" -eq 0 ] \
-            || fatal "Age identity must be owned by root"
-        local identity_mode
-        identity_mode=$(stat -c '%a' "$AGE_IDENTITY")
-        (( (8#$identity_mode & 077) == 0 )) \
-            || fatal "Age identity must not be accessible by group or other users"
-        args+=(-i "$AGE_IDENTITY")
-    fi
-    age "${args[@]}" -- "$artifact" > "$plaintext" || fatal "Age authentication/decryption failed"
-    chmod 0600 "$plaintext"
+    [ -n "$AGE_IDENTITY" ] \
+        || fatal "Bounded inspection requires --identity with a private native age key; passphrase/plugin identity adapters are unavailable"
+    local -a args=(decrypt --archive "$artifact" --output "$plaintext"
+                   --identity "$AGE_IDENTITY" --transport-sidecar "${artifact}.sha256")
+    [ -z "$TRUSTED_SHA256" ] || args+=(--trusted-sha256 "$TRUSTED_SHA256")
+    "$ARCHIVE_HELPER" "${args[@]}" \
+        || fatal "Bounded age integrity/decryption or receipt verification failed"
 }
 
 do_backup() {
     local category="$1"
+    [ "$LEGACY_PARTIAL" = true ] || fatal "Creation requires --legacy-partial; complete backup is unavailable pending recovery prerequisites"
+    [ -n "$AGE_RECIPIENT" ] || fatal "Bounded backup requires --recipient with a native public age recipient"
     require_root
     require_tools
     prepare_work_dir
@@ -319,7 +303,7 @@ do_backup() {
     [ "$total" -gt 0 ] || [ -f "${staging}/luks-header-backup" ] \
         || fatal "No files were available for the requested backup category"
 
-    step "Creating bounded manifest archive in tmpfs"
+    step "Creating bounded legacy partial manifest archive in private staging"
     local plaintext="${WORK_DIR}/${name}.tar.gz"
     local -a create_args=(
         create --root "$staging" --output "$plaintext" --category "$category"
@@ -328,35 +312,19 @@ do_backup() {
     "$ARCHIVE_HELPER" "${create_args[@]}" >/dev/null \
         || fatal "Secure archive creation failed"
 
-    step "Encrypting and authenticating with age"
+    step "Encrypting with age ciphertext integrity"
     local final="${destination_dir}/${name}.tar.gz.age"
     if [ -e "$final" ] || [ -L "$final" ]; then
         fatal "Refusing to overwrite existing backup: $final"
     fi
-    local partial
-    partial=$(mktemp "${destination_dir}/.${name}.partial.XXXXXXXX")
-    if [ -n "$AGE_RECIPIENT" ]; then
-        if ! age -r "$AGE_RECIPIENT" -- "$plaintext" > "$partial"; then
-            rm -f -- "$partial"
-            fatal "Age recipient encryption failed"
-        fi
-    else
-        if ! age -p -- "$plaintext" > "$partial"; then
-            rm -f -- "$partial"
-            fatal "Age passphrase encryption failed"
-        fi
-    fi
-    [ -s "$partial" ] || fatal "Age produced an empty encrypted artifact"
-    chmod 0600 "$partial" 2>/dev/null \
-        || warn "Destination filesystem cannot enforce mode 0600; content remains encrypted"
-    sync -f "$partial"
-    mv -- "$partial" "$final"
+    "$ARCHIVE_HELPER" encrypt --archive "$plaintext" --output "$final" --recipient "$AGE_RECIPIENT" \
+        || fatal "Bounded age encryption failed"
     write_transport_checksum "$final"
     audit_event "$category" "encrypted backup created: $(basename "$final")" \
         || fatal "Backup was created but could not be recorded in the audit chain"
 
-    info "Backup complete: $final"
-    info "Plaintext staging was confined to tmpfs and will be removed on exit"
+    info "Legacy partial export created (not restore-verified): $final"
+    info "Private staging will be removed; filesystem encryption and secure erasure are not verified"
 }
 
 do_verify() {
@@ -369,13 +337,12 @@ do_verify() {
     [[ "$artifact" == *.age ]] || fatal "Plaintext and legacy non-age backups are not accepted"
     prepare_work_dir
     step "Checking encrypted artifact transport integrity"
-    verify_transport_checksum "$artifact"
     local plaintext="${WORK_DIR}/verified.tar.gz"
     step "Authenticating, decrypting, and validating bounded archive contents"
-    decrypt_to_tmpfs "$artifact" "$plaintext"
+    decrypt_to_private_stage "$artifact" "$plaintext"
     "$ARCHIVE_HELPER" verify --archive "$plaintext" \
         || fatal "Backup manifest or archive validation failed"
-    info "Backup verification passed"
+    info "Legacy partial content/integrity checks passed; no complete recovery or freshness claim"
 }
 
 do_list() {
@@ -413,12 +380,17 @@ while [ "$#" -gt 0 ]; do
         --recipient)
             [ "$#" -ge 2 ] || fatal "--recipient requires a value"
             AGE_RECIPIENT="$2"; shift 2 ;;
+        --trusted-sha256)
+            [ "$#" -ge 2 ] || fatal "--trusted-sha256 requires a digest from an independently held receipt"
+            TRUSTED_SHA256="$2"; shift 2 ;;
         --identity)
             [ "$#" -ge 2 ] || fatal "--identity requires a file"
             AGE_IDENTITY="$2"; shift 2 ;;
         --output)
             [ "$#" -ge 2 ] || fatal "--output requires a directory"
             OUTPUT_DIR="$2"; shift 2 ;;
+        --legacy-partial)
+            LEGACY_PARTIAL=true; shift ;;
         --encrypt)
             shift ;;
         --help|-h)
@@ -431,16 +403,18 @@ done
 [ -n "$COMMAND" ] || usage
 case "$COMMAND" in
     backup)
-        [ -z "$AGE_IDENTITY" ] || fatal "--identity is only valid with verify"
+        [ -z "$AGE_IDENTITY$TRUSTED_SHA256" ] || fatal "--identity/--trusted-sha256 are only valid with verify"
         do_backup "$COMMAND_ARG"
         ;;
     verify)
+        [ "$LEGACY_PARTIAL" = false ] || fatal "--legacy-partial is only valid with creation"
         [ -z "$OUTPUT_DIR" ] || fatal "--output is only valid with a backup command"
         [ -z "$AGE_RECIPIENT" ] || fatal "--recipient is only valid with a backup command"
         do_verify "$COMMAND_ARG"
         ;;
     list)
-        [ -z "$OUTPUT_DIR$AGE_RECIPIENT$AGE_IDENTITY" ] \
+        [ "$LEGACY_PARTIAL" = false ] || fatal "--legacy-partial is only valid with creation"
+        [ -z "$OUTPUT_DIR$AGE_RECIPIENT$AGE_IDENTITY$TRUSTED_SHA256" ] \
             || fatal "Encryption/output options are not valid with list"
         do_list "${COMMAND_ARG:-$BACKUP_DIR}"
         ;;

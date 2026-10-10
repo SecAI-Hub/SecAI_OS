@@ -160,6 +160,10 @@ chown root:root "$MOUNT_POINT"
 chmod 0711 "$MOUNT_POINT"
 install -d -m 2770 -o root -g secure-ai-registry \
     "$MOUNT_POINT/models"
+# Only this fresh, empty vault is changed. Existing populated vaults require an
+# explicit operator-reviewed migration; no observer joins the writable group.
+setfacl -m 'g:secure-ai-model-read:r-x,m::rwx,d:u::rwx,d:g::rwx,d:g:secure-ai-model-read:r-x,d:m::rwx,d:o::---' \
+    "$MOUNT_POINT/models"
 install -d -m 2770 -o root -g secure-ai-registry-containment \
     "$MOUNT_POINT/contained-models"
 install -d -m 2750 -o root -g secure-ai-vault-read \

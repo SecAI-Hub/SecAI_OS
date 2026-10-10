@@ -37,6 +37,16 @@ if [ ! -f "$MODEL" ]; then
     exit 1
 fi
 
+# Advertise the selected artifact's exact registry filename to API clients.
+# Commas would create multiple aliases in llama-server.
+MODEL_ALIAS="${MODEL##*/}"
+case "$MODEL_ALIAS" in
+    ''|*,*) echo "ERROR: selected model has an invalid API alias" >&2; exit 1 ;;
+esac
+
+API_KEY_FILE=$("${SECAI_INFERENCE_AUTH_HELPER:-/prepare-inference-auth.sh}")
+unset LLAMA_API_KEY LLAMA_ARG_API_KEY_FILE LLAMA_ARG_ALIAS
+
 echo "Starting llama-server"
 echo "  model:      $MODEL"
 echo "  bind:       $BIND"
@@ -62,8 +72,11 @@ fi
 
 exec "$LLAMA_SERVER_BIN" \
     --model "$MODEL" \
+    --alias "$MODEL_ALIAS" \
+    --no-ui \
     --host "$HOST" \
     --port "$PORT" \
+    --api-key-file "$API_KEY_FILE" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$GPU_LAYERS" \
     --log-disable

@@ -5,13 +5,24 @@ description = "Secure AI Appliance local web UI"
 requires-python = ">=3.11"
 dependencies = [
     "flask==3.1.3",
-    "requests==2.33.1",
+    "requests==2.34.2",
     "pyyaml==6.0.3",
-    "gunicorn==25.3.0",
-    "pip==26.1.2",
-    "setuptools==83.0.0",
-    "wheel==0.46.2",
+    "gunicorn==26.2.0",
+    "pip==26.2.1",
+    "setuptools==84.0.0",
+    "wheel==0.48.0",
 ]
 
 [project.scripts]
 secure-ai-ui = "ui.app:main"
+
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ui"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+ui = ["templates/*.html", "static/*", "static/**/*"]

@@ -1,39 +1,53 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/SecAI-Hub/gpu-integrity-watch/evidence"
+)
+
+const (
+	maxModelFileSize   = 1 << 40
+	maxTotalModelBytes = 2 << 40
+	maxModelFileCount  = 10000
+	maxWalkEntryCount  = 50000
+	modelScanTimeout   = 2 * time.Minute
 )
 
 // ProbeType identifies the kind of integrity probe.
-type ProbeType string
+type ProbeType = evidence.ProbeType
 
 const (
-	ProbeTensorHash        ProbeType = "tensor_hash"
-	ProbeSentinelInfer     ProbeType = "sentinel_inference"
-	ProbeReferenceDrift    ProbeType = "reference_drift"
-	ProbeECCStatus         ProbeType = "ecc_status"
-	ProbeDriverFingerprint ProbeType = "driver_fingerprint"
-	ProbeDeviceAllowlist   ProbeType = "device_allowlist"
+	ProbeTensorHash        ProbeType = evidence.ProbeTensorHash
+	ProbeSentinelInfer     ProbeType = evidence.ProbeSentinelInfer
+	ProbeReferenceDrift    ProbeType = evidence.ProbeReferenceDrift
+	ProbeECCStatus         ProbeType = evidence.ProbeECCStatus
+	ProbeDriverFingerprint ProbeType = evidence.ProbeDriverFingerprint
+	ProbeDeviceAllowlist   ProbeType = evidence.ProbeDeviceAllowlist
 )
 
 // ProbeStatus is the outcome of a single probe run.
-type ProbeStatus string
+type ProbeStatus = evidence.ProbeStatus
 
 const (
-	StatusPass  ProbeStatus = "pass"
-	StatusDrift ProbeStatus = "drift"
-	StatusFail  ProbeStatus = "fail"
-	StatusSkip  ProbeStatus = "skip"
-	StatusError ProbeStatus = "error"
+	StatusPass  ProbeStatus = evidence.StatusPass
+	StatusDrift ProbeStatus = evidence.StatusDrift
+	StatusFail  ProbeStatus = evidence.StatusFail
+	StatusSkip  ProbeStatus = evidence.StatusSkip
+	StatusError ProbeStatus = evidence.StatusError
 )
 
 // Finding records a single observation from a probe.
@@ -45,13 +59,14 @@ type Finding struct {
 
 // ProbeResult is the output of running one probe.
 type ProbeResult struct {
-	Probe     string      `json:"probe"`
-	Type      ProbeType   `json:"type"`
-	Status    ProbeStatus `json:"status"`
-	Score     float64     `json:"score"` // 0.0 = normal, 1.0 = severe
-	Findings  []Finding   `json:"findings,omitempty"`
-	Timestamp time.Time   `json:"timestamp"`
-	Duration  string      `json:"duration"`
+	Probe      string      `json:"probe"`
+	Type       ProbeType   `json:"type"`
+	Status     ProbeStatus `json:"status"`
+	Score      float64     `json:"score"` // 0.0 = normal, 1.0 = severe
+	Findings   []Finding   `json:"findings,omitempty"`
+	ModelPaths []string    `json:"model_paths,omitempty"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Duration   string      `json:"duration"`
 }
 
 // Baseline stores known-good state for comparison.
@@ -72,15 +87,18 @@ type DriverBaseline struct {
 
 // SentinelRef is a known input/output pair for sentinel inference.
 type SentinelRef struct {
-	Name     string `json:"name" yaml:"name"`
-	Input    string `json:"input" yaml:"input"`
-	Expected string `json:"expected" yaml:"expected"`
+	Name          string `json:"name" yaml:"name"`
+	Input         string `json:"input" yaml:"input"`
+	Expected      string `json:"expected" yaml:"expected"`
+	ModelFilename string `json:"model_filename" yaml:"model_filename"`
+	ModelSHA256   string `json:"model_sha256" yaml:"model_sha256"`
 }
 
 // ProbeRunner executes configured probes against the current system state.
 type ProbeRunner struct {
-	profile  *IntegrityProfile
-	baseline *Baseline
+	profile     *IntegrityProfile
+	baseline    *Baseline
+	probeClient *GPUProbeClient
 }
 
 // NewProbeRunner creates a runner with the given profile and baseline.
@@ -91,6 +109,8 @@ func NewProbeRunner(profile *IntegrityProfile, baseline *Baseline) *ProbeRunner 
 // RunAll executes all enabled probes and returns results.
 func (r *ProbeRunner) RunAll() []ProbeResult {
 	var results []ProbeResult
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
 	for _, pc := range r.profile.Probes {
 		if !pc.Enabled {
@@ -103,9 +123,9 @@ func (r *ProbeRunner) RunAll() []ProbeResult {
 		case ProbeTensorHash:
 			result = r.runTensorHash(pc)
 		case ProbeSentinelInfer:
-			result = r.runSentinelInference(pc)
+			result = r.runSentinelInferenceContext(ctx, pc)
 		case ProbeReferenceDrift:
-			result = r.runReferenceDrift(pc)
+			result = r.runReferenceDriftContext(ctx, pc)
 		case ProbeECCStatus:
 			result = r.runECCStatus(pc)
 		case ProbeDriverFingerprint:
@@ -166,7 +186,13 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 		patterns = strings.Split(p, ",")
 	}
 
-	currentHashes := hashModelFiles(modelDir, patterns)
+	currentHashes, err := hashModelFiles(modelDir, patterns)
+	if err != nil {
+		result.Status = StatusError
+		result.Score = 1
+		result.Findings = []Finding{{Description: "model scan incomplete", Severity: "critical", Detail: err.Error()}}
+		return result
+	}
 	if len(currentHashes) == 0 && len(r.baseline.TensorHashes) == 0 {
 		result.Status = StatusError
 		result.Score = 0.5
@@ -179,10 +205,19 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 
 	mismatches := 0
 	missing := 0
+	extras := 0
 	for file, baselineHash := range r.baseline.TensorHashes {
+		if !filepath.IsLocal(file) {
+			result.Status = StatusError
+			result.Score = 1
+			result.Findings = []Finding{{Description: "baseline contains an invalid model path", Severity: "critical"}}
+			return result
+		}
 		currentHash, exists := currentHashes[file]
 		if !exists {
 			missing++
+			modelPath, _ := filepath.Abs(filepath.Join(modelDir, file))
+			result.ModelPaths = append(result.ModelPaths, modelPath)
 			result.Findings = append(result.Findings, Finding{
 				Description: fmt.Sprintf("baseline file missing: %s", file),
 				Severity:    "critical",
@@ -192,6 +227,8 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 		}
 		if currentHash != baselineHash {
 			mismatches++
+			modelPath, _ := filepath.Abs(filepath.Join(modelDir, file))
+			result.ModelPaths = append(result.ModelPaths, modelPath)
 			result.Findings = append(result.Findings, Finding{
 				Description: fmt.Sprintf("hash mismatch: %s", file),
 				Severity:    "critical",
@@ -203,6 +240,9 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 	// Check for new files not in baseline
 	for file := range currentHashes {
 		if _, inBaseline := r.baseline.TensorHashes[file]; !inBaseline {
+			extras++
+			modelPath, _ := filepath.Abs(filepath.Join(modelDir, file))
+			result.ModelPaths = append(result.ModelPaths, modelPath)
 			result.Findings = append(result.Findings, Finding{
 				Description: fmt.Sprintf("new file not in baseline: %s", file),
 				Severity:    "warning",
@@ -214,15 +254,12 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 	if total == 0 {
 		total = 1
 	}
-	failCount := mismatches + missing
+	failCount := mismatches + missing + extras
 
 	switch {
 	case failCount == 0:
 		result.Status = StatusPass
 		result.Score = 0.0
-	case failCount <= total/2:
-		result.Status = StatusDrift
-		result.Score = float64(failCount) / float64(total)
 	default:
 		result.Status = StatusFail
 		result.Score = float64(failCount) / float64(total)
@@ -235,21 +272,65 @@ func (r *ProbeRunner) runTensorHash(pc ProbeConfig) ProbeResult {
 }
 
 // hashModelFiles walks the directory and hashes files matching patterns.
-func hashModelFiles(dir string, patterns []string) map[string]string {
-	hashes := make(map[string]string)
+func hashModelFiles(dir string, patterns []string) (map[string]string, error) {
+	return hashModelFilesContext(context.Background(), dir, patterns)
+}
 
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+func hashModelFilesContext(parent context.Context, dir string, patterns []string) (map[string]string, error) {
+	hashes := make(map[string]string)
+	ctx, cancel := context.WithTimeout(parent, modelScanTimeout)
+	defer cancel()
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	entries := 0
+	var totalBytes int64
+	err = filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("model scan deadline exceeded: %w", err)
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		entries++
+		if entries > maxWalkEntryCount {
+			return fmt.Errorf("model tree exceeds %d total entries", maxWalkEntryCount)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink encountered: %s", path)
+		}
+		if info.IsDir() {
 			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("non-regular entry encountered: %s", path)
 		}
 		name := info.Name()
 		for _, pattern := range patterns {
-			matched, _ := filepath.Match(strings.TrimSpace(pattern), name)
+			matched, matchErr := filepath.Match(strings.TrimSpace(pattern), name)
+			if matchErr != nil {
+				return fmt.Errorf("invalid model pattern: %w", matchErr)
+			}
 			if matched {
-				h, err := hashFile(path)
-				if err == nil {
-					rel, _ := filepath.Rel(dir, path)
-					hashes[rel] = h
+				if info.Size() < 0 || info.Size() > maxModelFileSize {
+					return fmt.Errorf("model exceeds size limit: %s", path)
+				}
+				if info.Size() > maxTotalModelBytes-totalBytes {
+					return fmt.Errorf("model tree exceeds %d total bytes", maxTotalModelBytes)
+				}
+				totalBytes += info.Size()
+				h, err := hashFileBoundedContext(ctx, path, maxModelFileSize)
+				if err != nil {
+					return err
+				}
+				rel, err := filepath.Rel(root, path)
+				if err != nil || !filepath.IsLocal(rel) {
+					return fmt.Errorf("model escaped configured root")
+				}
+				hashes[rel] = h
+				if len(hashes) > maxModelFileCount {
+					return fmt.Errorf("model count exceeds %d", maxModelFileCount)
 				}
 				break
 			}
@@ -257,146 +338,151 @@ func hashModelFiles(dir string, patterns []string) map[string]string {
 		return nil
 	})
 
-	return hashes
+	if err != nil {
+		return nil, err
+	}
+	return hashes, nil
 }
 
 // hashFile computes the SHA-256 hex digest of a file.
 func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	return hashFileBounded(path, maxModelFileSize)
+}
+
+func hashFileBounded(path string, limit int64) (string, error) {
+	return hashFileBoundedContext(context.Background(), path, limit)
+}
+
+// sameModelSnapshot checks the exact stable-file metadata used by registry
+// verification. ctime detects in-place writes even if size and mtime are reset.
+func sameModelSnapshot(a, b os.FileInfo) bool {
+	if a == nil || b == nil || !a.Mode().IsRegular() || !b.Mode().IsRegular() || !os.SameFile(a, b) || a.Mode() != b.Mode() || a.Size() != b.Size() || !a.ModTime().Equal(b.ModTime()) {
+		return false
+	}
+	x, xok := a.Sys().(*syscall.Stat_t)
+	y, yok := b.Sys().(*syscall.Stat_t)
+	return xok && yok && x.Nlink == y.Nlink && x.Uid == y.Uid && x.Gid == y.Gid && x.Ctim == y.Ctim
+}
+
+// O_NONBLOCK prevents a regular-file-to-FIFO race from blocking open before
+// context checks can run. Reject the opened descriptor before reading anything.
+func openStableModelFile(path string, before os.FileInfo, limit int64) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		syscall.Close(fd)
+		return nil, fmt.Errorf("model descriptor unavailable")
+	}
+	opened, err := f.Stat()
+	if err != nil || !sameModelSnapshot(before, opened) || opened.Size() < 0 || opened.Size() > limit {
+		f.Close()
+		return nil, fmt.Errorf("model changed while opening")
+	}
+	return f, nil
+}
+
+func hashFileBoundedContext(ctx context.Context, path string, limit int64) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("hash deadline exceeded: %w", err)
+	}
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 || before.Size() < 0 || before.Size() > limit {
+		return "", fmt.Errorf("unsafe model file")
+	}
+	f, err := openStableModelFile(path, before, limit)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+	buffer := make([]byte, 128<<10)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("hash deadline exceeded: %w", err)
+		}
+		read, readErr := f.Read(buffer)
+		if read > 0 {
+			written += int64(read)
+			if written > limit {
+				return "", fmt.Errorf("file exceeds size limit")
+			}
+			if _, err := h.Write(buffer[:read]); err != nil {
+				return "", err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	after, err := f.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !sameModelSnapshot(before, after) || !sameModelSnapshot(after, current) || written != before.Size() {
+		return "", fmt.Errorf("model changed while hashing")
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // runSentinelInference sends known inputs to the inference endpoint and checks outputs.
 func (r *ProbeRunner) runSentinelInference(pc ProbeConfig) ProbeResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return r.runSentinelInferenceContext(ctx, pc)
+}
+func liveProbeError(result ProbeResult, reason string) ProbeResult {
+	result.Status = StatusError
+	result.Score = 1
+	result.Findings = append(result.Findings, Finding{Description: reason, Severity: "critical"})
+	return result
+}
+func (r *ProbeRunner) runSentinelInferenceContext(ctx context.Context, pc ProbeConfig) ProbeResult {
 	result := ProbeResult{Probe: pc.Name, Type: ProbeSentinelInfer}
-
-	endpoint := pc.Settings["inference_url"]
-	if endpoint == "" {
-		endpoint = r.profile.InferenceURL
+	if r.probeClient == nil || !baselineCoversGPUProbe(r.baseline, ProbeSentinelInfer) {
+		return liveProbeError(result, "approved authenticated probe client or baseline unavailable")
 	}
-	if endpoint == "" {
-		result.Status = StatusSkip
-		result.Score = 0.0
-		result.Findings = append(result.Findings, Finding{
-			Description: "no inference endpoint configured",
-			Severity:    "info",
-		})
-		return result
+	threshold := 0.9
+	if t, ok := pc.Settings["similarity_threshold"]; ok {
+		var err error
+		threshold, err = strconv.ParseFloat(t, 64)
+		if err != nil || threshold < 0 || threshold > 1 || math.IsNaN(threshold) {
+			return liveProbeError(result, "invalid similarity threshold")
+		}
 	}
-
-	if r.baseline == nil || len(r.baseline.SentinelRefs) == 0 {
-		result.Status = StatusSkip
-		result.Score = 0.0
-		result.Findings = append(result.Findings, Finding{
-			Description: "no sentinel references in baseline",
-			Severity:    "info",
-		})
-		return result
-	}
-
-	drifts := 0
-	fails := 0
-	total := len(r.baseline.SentinelRefs)
-
+	drifts, fails := 0, 0
 	for _, ref := range r.baseline.SentinelRefs {
-		actual, err := querySentinel(endpoint, ref.Input)
+		actual, err := r.probeClient.Probe(ctx, ref.Name)
 		if err != nil {
-			fails++
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("sentinel %q: request failed", ref.Name),
-				Severity:    "critical",
-				Detail:      err.Error(),
-			})
-			continue
+			return liveProbeError(result, "authenticated sentinel exchange unavailable")
 		}
-
 		similarity := computeSimilarity(ref.Expected, actual)
-		threshold := 0.9
-		if t, ok := pc.Settings["similarity_threshold"]; ok {
-			fmt.Sscanf(t, "%f", &threshold)
-		}
-
-		if similarity >= threshold {
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("sentinel %q: pass (similarity=%.2f)", ref.Name, similarity),
-				Severity:    "info",
-			})
-		} else if similarity >= 0.5 {
-			drifts++
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("sentinel %q: drift (similarity=%.2f)", ref.Name, similarity),
-				Severity:    "warning",
-				Detail:      fmt.Sprintf("expected=%q got=%q", ref.Expected, actual),
-			})
-		} else {
+		severity := "info"
+		if similarity < 0.5 {
 			fails++
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("sentinel %q: fail (similarity=%.2f)", ref.Name, similarity),
-				Severity:    "critical",
-				Detail:      fmt.Sprintf("expected=%q got=%q", ref.Expected, actual),
-			})
+			severity = "critical"
+		} else if similarity < threshold {
+			drifts++
+			severity = "warning"
 		}
+		result.Findings = append(result.Findings, Finding{Description: fmt.Sprintf("sentinel %q: similarity=%.2f", ref.Name, similarity), Severity: severity})
 	}
-
+	total := float64(len(r.baseline.SentinelRefs))
 	switch {
 	case fails > 0:
 		result.Status = StatusFail
-		result.Score = float64(fails+drifts) / float64(total)
+		result.Score = float64(fails+drifts) / total
 	case drifts > 0:
 		result.Status = StatusDrift
-		result.Score = float64(drifts) / float64(total) * 0.5
+		result.Score = float64(drifts) / total * 0.5
 	default:
 		result.Status = StatusPass
-		result.Score = 0.0
-	}
-
-	if result.Score > 1.0 {
-		result.Score = 1.0
 	}
 	return result
-}
-
-// querySentinel sends a completion request to the inference endpoint.
-func querySentinel(endpoint, input string) (string, error) {
-	payload := fmt.Sprintf(`{"prompt":%q,"n_predict":64,"temperature":0}`, input)
-	resp, err := outboundHTTPClient.Post(endpoint+"/completion", "application/json", strings.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("inference returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Extract content from JSON response (simple extraction)
-	s := string(body)
-	if idx := strings.Index(s, `"content"`); idx >= 0 {
-		s = s[idx:]
-		if start := strings.Index(s, `"`); start >= 0 {
-			s = s[start+1:]
-			if start2 := strings.Index(s, `"`); start2 >= 0 {
-				s = s[start2+1:]
-				if end := strings.Index(s, `"`); end >= 0 {
-					return s[:end], nil
-				}
-			}
-		}
-	}
-	return strings.TrimSpace(string(body)), nil
 }
 
 // computeSimilarity returns a simple word-overlap similarity between two strings.
@@ -447,69 +533,46 @@ func computeSimilarity(expected, actual string) float64 {
 
 // runReferenceDrift checks if outputs have drifted from baseline over time.
 func (r *ProbeRunner) runReferenceDrift(pc ProbeConfig) ProbeResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return r.runReferenceDriftContext(ctx, pc)
+}
+func (r *ProbeRunner) runReferenceDriftContext(ctx context.Context, pc ProbeConfig) ProbeResult {
 	result := ProbeResult{Probe: pc.Name, Type: ProbeReferenceDrift}
-
-	endpoint := pc.Settings["inference_url"]
-	if endpoint == "" {
-		endpoint = r.profile.InferenceURL
+	if r.probeClient == nil || !baselineCoversGPUProbe(r.baseline, ProbeReferenceDrift) {
+		return liveProbeError(result, "approved authenticated probe client or baseline unavailable")
 	}
-	if endpoint == "" || r.baseline == nil || len(r.baseline.SentinelRefs) == 0 {
-		result.Status = StatusSkip
-		result.Score = 0.0
-		result.Findings = append(result.Findings, Finding{
-			Description: "drift check skipped: no endpoint or baseline",
-			Severity:    "info",
-		})
-		return result
-	}
-
-	// Run each sentinel multiple times to detect variance
 	iterations := 3
-	if n, ok := pc.Settings["iterations"]; ok {
-		fmt.Sscanf(n, "%d", &iterations)
+	if value, ok := pc.Settings["iterations"]; ok {
+		var err error
+		iterations, err = strconv.Atoi(value)
+		if err != nil || iterations < 1 || iterations > 3 {
+			return liveProbeError(result, "reference drift iterations outside 1..3")
+		}
 	}
-
 	var totalDrift float64
-	probeCount := 0
-
 	for _, ref := range r.baseline.SentinelRefs {
-		var similarities []float64
+		similarities := make([]float64, 0, iterations)
 		for i := 0; i < iterations; i++ {
-			actual, err := querySentinel(endpoint, ref.Input)
+			actual, err := r.probeClient.Probe(ctx, ref.Name)
 			if err != nil {
-				result.Findings = append(result.Findings, Finding{
-					Description: fmt.Sprintf("drift check %q iteration %d: error", ref.Name, i+1),
-					Severity:    "warning",
-					Detail:      err.Error(),
-				})
-				continue
+				return liveProbeError(result, "authenticated reference exchange unavailable")
 			}
-			sim := computeSimilarity(ref.Expected, actual)
-			similarities = append(similarities, sim)
+			similarities = append(similarities, computeSimilarity(ref.Expected, actual))
 		}
-
-		if len(similarities) == 0 {
-			continue
-		}
-
 		avg := 0.0
-		for _, s := range similarities {
-			avg += s
+		for _, sim := range similarities {
+			avg += sim
 		}
-		avg /= float64(len(similarities))
-
-		// Check variance (inconsistent outputs suggest corruption)
+		avg /= float64(iterations)
 		variance := 0.0
-		for _, s := range similarities {
-			d := s - avg
-			variance += d * d
+		for _, sim := range similarities {
+			delta := sim - avg
+			variance += delta * delta
 		}
-		variance /= float64(len(similarities))
-
-		drift := 1.0 - avg
+		variance /= float64(iterations)
+		drift := 1 - avg
 		totalDrift += drift
-		probeCount++
-
 		severity := "info"
 		if drift > 0.3 {
 			severity = "warning"
@@ -517,31 +580,17 @@ func (r *ProbeRunner) runReferenceDrift(pc ProbeConfig) ProbeResult {
 		if drift > 0.7 || variance > 0.1 {
 			severity = "critical"
 		}
-
-		result.Findings = append(result.Findings, Finding{
-			Description: fmt.Sprintf("drift %q: avg_similarity=%.2f variance=%.4f", ref.Name, avg, variance),
-			Severity:    severity,
-		})
+		result.Findings = append(result.Findings, Finding{Description: fmt.Sprintf("drift %q: avg_similarity=%.2f variance=%.4f", ref.Name, avg, variance), Severity: severity})
 	}
-
-	if probeCount == 0 {
-		result.Status = StatusSkip
-		result.Score = 0.0
-		return result
-	}
-
-	avgDrift := totalDrift / float64(probeCount)
-	result.Score = avgDrift
-
+	result.Score = totalDrift / float64(len(r.baseline.SentinelRefs))
 	switch {
-	case avgDrift < 0.1:
+	case result.Score < 0.1:
 		result.Status = StatusPass
-	case avgDrift < 0.5:
+	case result.Score < 0.5:
 		result.Status = StatusDrift
 	default:
 		result.Status = StatusFail
 	}
-
 	return result
 }
 
@@ -744,29 +793,23 @@ func (r *ProbeRunner) runDriverFingerprint(pc ProbeConfig) ProbeResult {
 		})
 	}
 
-	// Check module hash if configured
-	if baseline.ModuleHash != "" {
-		modulePath := modulePathForName(module)
-		if modulePath != "" {
-			currentHash, err := hashFile(modulePath)
-			if err == nil && currentHash != baseline.ModuleHash {
-				mismatches++
-				result.Findings = append(result.Findings, Finding{
-					Description: "kernel module binary hash changed",
-					Severity:    "critical",
-					Detail:      fmt.Sprintf("expected=%s got=%s", baseline.ModuleHash, currentHash),
-				})
-			}
-		}
-	}
-
-	switch mismatches {
-	case 0:
-		result.Status = StatusPass
-		result.Score = 0.0
-	default:
+	// This runner has no enrolled module-binary measurement source. Sysfs
+	// initstate is a lifecycle status string, not the module binary (nor loaded
+	// kernel memory). Never silently skip an operator-required hash check.
+	switch {
+	case mismatches > 0:
 		result.Status = StatusFail
 		result.Score = 1.0
+	case baseline.ModuleHash != "":
+		result.Status = StatusError
+		result.Score = 0.5
+		result.Findings = append(result.Findings, Finding{
+			Description: "configured kernel module hash cannot be measured by this runner",
+			Severity:    "warning",
+		})
+	default:
+		result.Status = StatusPass
+		result.Score = 0.0
 	}
 
 	return result
@@ -832,19 +875,6 @@ func detectDriverInfo(settings map[string]string) (version, module string) {
 	}
 
 	return version, module
-}
-
-// modulePathForName returns the expected sysfs module path.
-func modulePathForName(name string) string {
-	if name == "" {
-		return ""
-	}
-	// Typical kernel module object path
-	path := fmt.Sprintf("/sys/module/%s/initstate", name)
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return ""
 }
 
 // ---------- device allowlist probe ----------

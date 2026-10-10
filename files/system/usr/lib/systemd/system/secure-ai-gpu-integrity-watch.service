@@ -1,25 +1,33 @@
 [Unit]
 Description=Secure AI GPU Integrity Watch (continuous GPU runtime verification)
-After=secure-ai-registry.service secure-ai-credentials.service
+After=secure-ai-inference.service secure-ai-registry.service secure-ai-credentials.service secure-ai-gpu-probe.service secure-ai-gpu-model-read-check.service
 Requires=secure-ai-credentials.service
-Wants=secure-ai-registry.service
+Requires=secure-ai-gpu-model-read-check.service
+Wants=secure-ai-registry.service secure-ai-inference.service secure-ai-gpu-probe.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=simple
+ExecCondition=/usr/libexec/secure-ai/gpu-integrity-watch policy-enabled
 ExecStart=/usr/libexec/secure-ai/landlock-apply.py --require gpu_integrity_watch -- /usr/libexec/secure-ai/gpu-integrity-watch daemon
 Environment=INTEGRITY_PROFILE=/etc/secure-ai/gpu-integrity/default-profile.yaml
 Environment=AUDIT_LOG=/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl
 Environment=SERVICE_TOKEN_PATH=%d/service-token
 Environment=INCIDENT_RECORDER_TOKEN_PATH=%d/incident-reporter-token
+Environment=GPU_ATTESTATION_SCOPE=runtime
+Environment=GPU_ATTESTATION_KEY_PATH=%d/gpu-runtime-attestation-key
+Environment=GPU_PROBE_KEY_PATH=%d/gpu-probe-hmac-key
 LoadCredential=service-token:/var/lib/secure-ai/credentials/gpu-integrity-watch.token
+LoadCredential=gpu-runtime-attestation-key:/var/lib/secure-ai/credentials/gpu-runtime-attestation-hmac.key
+LoadCredential=gpu-probe-hmac-key:/var/lib/secure-ai/credentials/gpu-probe-hmac.key
 LoadCredential=incident-reporter-token:/var/lib/secure-ai/credentials/incident-reporter-gpu-integrity.token
 
 # Filesystem isolation
 DynamicUser=yes
-SupplementaryGroups=secure-ai-logs secure-ai-gpu-integrity
+SupplementaryGroups=secure-ai-logs secure-ai-gpu-integrity secure-ai-model-read video render
 ReadOnlyPaths=/etc/secure-ai
+ReadOnlyPaths=/var/lib/secure-ai/vault/models
 ReadOnlyPaths=/run/secure-ai
 ReadWritePaths=/var/lib/secure-ai/logs
 ReadWritePaths=/var/lib/secure-ai/gpu-integrity
@@ -60,12 +68,13 @@ RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_INET
 
 # Syscall filtering
-SystemCallFilter=@system-service
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@privileged @mount @clock @debug @swap @reboot @module @cpu-emulation @obsolete
 SystemCallArchitectures=native
 SystemCallErrorNumber=EPERM
 
 # GPU device access — explicit DeviceAllow for integrity verification
+DevicePolicy=closed
 DeviceAllow=/dev/nvidia* rw
 DeviceAllow=/dev/nvidiactl rw
 DeviceAllow=/dev/dri/* rw

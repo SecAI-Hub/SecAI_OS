@@ -356,7 +356,7 @@ func TestCreateIncident_TriggersContainment(t *testing.T) {
 	endpoints.AirlockURL = srv.URL
 
 	// Create an incident that triggers auto-containment with freeze_agent.
-	inc := createIncident(IncidentReport{
+	inc := mustCreateIncident(t, IncidentReport{
 		Class:       ClassPromptInjection,
 		Source:      "agent",
 		Description: "injection detected",

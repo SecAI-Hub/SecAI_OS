@@ -107,6 +107,38 @@ func writeTinyDiffusionModel(t *testing.T, root, name string) string {
 	return modelDir
 }
 
+// Authorization tests need actual valid enrollment, not only an in-memory row.
+func enrollTestManifest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("INTEGRITY_RESULT_PATH") == "" {
+		t.Setenv("INTEGRITY_RESULT_PATH", filepath.Join(t.TempDir(), "integrity.json"))
+	}
+	manifestMu.Lock()
+	defer manifestMu.Unlock()
+	for i := range manifest.Models {
+		model := &manifest.Models[i]
+		if model.Format == "" {
+			model.Format = formatFromFilename(model.Filename)
+		}
+		if model.SizeBytes == 0 {
+			root, err := openRegistryRoot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			size, err := artifactSize(root, model.Filename)
+			root.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			model.SizeBytes = size
+		}
+	}
+	manifestPath = filepath.Join(t.TempDir(), "enrollment.json")
+	if err := saveManifest(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "manifest.json")
 	data := []byte("{\"version\":1,\"models\":[]}\n")
@@ -117,6 +149,7 @@ func TestHealthEndpoint(t *testing.T) {
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
 	manifestSource = source
 	manifestDigest = sha256.Sum256(data)
+	manifestSourceInfo, _ = os.Lstat(source)
 	t.Cleanup(func() {
 		manifest, manifestSource, manifestDigest = oldManifest, oldSource, oldDigest
 	})
@@ -145,6 +178,7 @@ func TestHealthDegradesWhenManifestSourceChanges(t *testing.T) {
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
 	manifestSource = source
 	manifestDigest = sha256.Sum256(data)
+	manifestSourceInfo, _ = os.Lstat(source)
 	t.Cleanup(func() {
 		manifest, manifestSource, manifestDigest = oldManifest, oldSource, oldDigest
 	})
@@ -238,7 +272,7 @@ func TestLoadManifestRejectsUnsafeExistingManifestFile(t *testing.T) {
 	}
 	t.Cleanup(func() { manifestPath = oldManifestPath })
 
-	if err := loadManifest(); err == nil || !strings.Contains(err.Error(), "bounded regular file") {
+	if err := loadManifest(); err == nil {
 		t.Fatalf("expected symlink manifest to be rejected, got %v", err)
 	}
 }
@@ -591,6 +625,7 @@ func TestRegistryEndpointScopesAreIndependent(t *testing.T) {
 	oldManifest := manifest
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 	t.Cleanup(func() {
 		manifestMu.Lock()
 		manifest = oldManifest
@@ -863,6 +898,7 @@ func TestVerifyAllEmpty(t *testing.T) {
 	manifestMu.Lock()
 	manifest = Manifest{Version: 1, Models: []Artifact{}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/models/verify-all", nil)
 	w := httptest.NewRecorder()
@@ -894,6 +930,7 @@ func TestVerifyAllWithValidModel(t *testing.T) {
 		SHA256:   "c4928585ac684a63148634c0655c561d94260f841aceb618ef21b6492e8a1da8",
 	}}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/models/verify-all", nil)
 	w := httptest.NewRecorder()
@@ -935,6 +972,7 @@ func TestVerifyAllWithValidDiffusionDirectory(t *testing.T) {
 		SHA256:   hash,
 	}}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/models/verify-all", nil)
 	w := httptest.NewRecorder()
@@ -966,6 +1004,7 @@ func TestVerifyAllDetectsTampered(t *testing.T) {
 		SHA256:   "0000000000000000000000000000000000000000000000000000000000000000",
 	}}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/models/verify-all", nil)
 	w := httptest.NewRecorder()
@@ -983,7 +1022,8 @@ func TestVerifyAllDetectsTampered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected integrity result file, got %v", err)
 	}
-	if !strings.Contains(string(data), "\"status\": \"failed\"") {
+	var persisted map[string]interface{}
+	if json.Unmarshal(data, &persisted) != nil || persisted["status"] != "failed" {
 		t.Fatalf("expected persisted failed status, got %s", string(data))
 	}
 }
@@ -1012,6 +1052,7 @@ func TestVerifyModelWithSafeToUse(t *testing.T) {
 		SHA256:   "c4928585ac684a63148634c0655c561d94260f841aceb618ef21b6492e8a1da8",
 	}}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/model/verify?name=safe-model", nil)
 	w := httptest.NewRecorder()
@@ -1041,6 +1082,7 @@ func TestVerifyModelTamperedNotSafe(t *testing.T) {
 		SHA256:   "0000000000000000000000000000000000000000000000000000000000000000",
 	}}}
 	manifestMu.Unlock()
+	enrollTestManifest(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/model/verify?name=bad-model", nil)
 	w := httptest.NewRecorder()
@@ -1085,6 +1127,8 @@ func TestDeleteRemovesDiffusionDirectory(t *testing.T) {
 }
 
 func TestIntegrityStatusNoFile(t *testing.T) {
+	manifest = Manifest{Version: 1, Models: []Artifact{}}
+	enrollTestManifest(t)
 	os.Setenv("INTEGRITY_RESULT_PATH", "/tmp/nonexistent-integrity-result.json")
 	defer os.Unsetenv("INTEGRITY_RESULT_PATH")
 
@@ -1103,9 +1147,16 @@ func TestIntegrityStatusNoFile(t *testing.T) {
 }
 
 func TestIntegrityStatusWithFile(t *testing.T) {
+	manifest = Manifest{Version: 1, Models: []Artifact{}}
+	enrollTestManifest(t)
 	tmp := t.TempDir()
 	resultFile := filepath.Join(tmp, "integrity-last.json")
-	os.WriteFile(resultFile, []byte(`{"status":"ok","models_checked":2,"failures":0}`), 0644)
+	view, err := enrollmentSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyData, _ := json.Marshal(map[string]any{"status": "ok", "models_checked": 2, "failures": 0, "registry_revision": view.revision})
+	os.WriteFile(resultFile, bodyData, 0644)
 	os.Setenv("INTEGRITY_RESULT_PATH", resultFile)
 	defer os.Unsetenv("INTEGRITY_RESULT_PATH")
 

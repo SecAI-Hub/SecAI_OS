@@ -14,7 +14,10 @@ Validates:
 - firstboot.sh references M24 tools
 """
 
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -85,6 +88,37 @@ class TestHealthCheckServices:
         assert "missing vault dependency declaration" in content
         assert "vault consumer must be inactive before setup" in content
         assert "secure-ai-vault-mounted.service" in content
+
+
+class TestNativeScannerReadiness:
+    def _select(self, tmp_path, mode, profile):
+        content = (GREENBOOT_DIR / "01-secure-ai-health.sh").read_text()
+        marker = 'critical_service_output=$(python3 - "$SERVICE_PROFILE" "$VAULT_MODE" <<\'PY\'\n'
+        code = content.split(marker, 1)[1].split("\nPY\n", 1)[0]
+        path = tmp_path / "service-profile.json"
+        path.write_text(json.dumps(profile))
+        return subprocess.run([sys.executable, "-c", code, str(path), mode], capture_output=True, text=True)
+
+    def test_configured_vault_requires_scanner_but_initial_setup_does_not(self, tmp_path):
+        path = REPO_ROOT / "files/system/etc/secure-ai/config/service-profile.json"
+        profile = json.loads(path.read_text())
+        configured = self._select(tmp_path, "configured", profile)
+        setup = self._select(tmp_path, "setup_required", profile)
+        assert configured.returncode == setup.returncode == 0
+        assert "secure-ai-quarantine-watcher.service" in configured.stdout.splitlines()
+        assert "secure-ai-quarantine-watcher.service" not in setup.stdout.splitlines()
+
+    def test_missing_or_optional_scanner_cannot_mark_deployment_healthy(self, tmp_path):
+        path = REPO_ROOT / "files/system/etc/secure-ai/config/service-profile.json"
+        for change in ("missing", "optional", "no-vault"):
+            profile = json.loads(path.read_text())
+            if change == "missing":
+                profile["services"] = [x for x in profile["services"] if x["id"] != "quarantine-watcher"]
+            else:
+                watcher = next(x for x in profile["services"] if x["id"] == "quarantine-watcher")
+                watcher["required" if change == "optional" else "requires_vault"] = False
+            result = self._select(tmp_path, "configured", profile)
+            assert result.returncode != 0 and not result.stdout
 
 
 class TestRollbackProtection:
@@ -251,9 +285,10 @@ class TestUpdateSystemdUnits:
         content = (SYSTEMD_DIR / "secure-ai-update-check.service").read_text()
         assert "Type=oneshot" in content
 
-    def test_check_service_uses_script(self):
+    def test_check_service_uses_admission_supervisor(self):
         content = (SYSTEMD_DIR / "secure-ai-update-check.service").read_text()
-        assert "update-verify.sh" in content
+        assert "ExecStart=/usr/libexec/secure-ai/secure-native-admission.py supervise-update-check" in content
+        assert "Requires=secure-ai-native-admission.service" in content
 
     def test_timer_6h_interval(self):
         content = (SYSTEMD_DIR / "secure-ai-update-check.timer").read_text()
@@ -387,11 +422,12 @@ class TestRecipeConfig:
         rpm_module = next(m for m in recipe["modules"] if m.get("type") == "rpm-ostree")
         assert "greenboot" in rpm_module["install"]
 
-    def test_update_check_timer_enabled(self):
+    def test_update_check_timer_requires_explicit_maintenance(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         systemd_module = next(m for m in recipe["modules"] if m.get("type") == "systemd")
         enabled = systemd_module["system"]["enabled"]
-        assert "secure-ai-update-check.timer" in enabled
+        assert "secure-ai-update-check.timer" not in enabled
+        assert "secure-ai-update-check.timer" in systemd_module["system"]["disabled"]
 
     def test_health_check_service_enabled(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())

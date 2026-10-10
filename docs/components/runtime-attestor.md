@@ -53,26 +53,56 @@ HMAC-SHA256-authenticated evidence bundle.
 ## Startup Gating
 
 The attestor starts only after the signed boot check, first-boot hardware
-detection, and TPM enrollment service. The systemd ordering chain is:
+detection, and TPM enrollment service. The systemd ordering chain separates
+independent GPU bootstrap checks from checks that need the loaded model:
 
 ```
-boot-verify + firstboot
+boot-verify + firstboot + gpu-bootstrap
     -> tpm-attestation-setup
         -> runtime-attestor
     -> policy-engine
-        -> registry, tool-firewall, agent, airlock, mcp-firewall, inference
+        -> registry, tool-firewall, airlock, mcp-firewall, inference
+            -> gpu-integrity-watch (full runtime)
 ```
 
-Other services call `/api/v1/verify` during startup. `verified` means
-cryptographically verified hardware evidence only. `policy_satisfied` is the
-startup decision: it requires verified evidence for a hardware profile, while
+The attestor's startup gate calls `/api/v1/verify/bootstrap`, explicitly scoped
+to the existing boot checks and independent GPU prerequisites. Ordinary
+`/api/v1/verify` represents full runtime assurance; bootstrap success cannot
+satisfy it. Chat admission, agent planning and each agent execution step check
+that full result, including fresh GPU cycle evidence. Management and recovery
+endpoints remain available while these actions are blocked.
+
+`verified` means cryptographically verified hardware evidence only.
+`policy_satisfied` requires verified evidence for a hardware profile, while
 an explicitly generated VM evaluation profile may start limited evaluation
 services without claiming hardware assurance. A missing profile is never
 silently treated as evaluation in the production unit.
 
+The release-measured `gpu` policy explicitly chooses `required`, `optional`, or
+`no_gpu`. GPU scopes pin exact reviewed profile/baseline bytes, required probe
+IDs/types and bounded cycle ages. The shipped required policy has empty pins
+and an unenrolled bootstrap baseline: it deliberately cannot pass until a
+reviewed release supplies those approvals. Producer observations never enroll
+themselves. Optional GPU checks can permit bootstrap, but missing or rejected
+live evidence still blocks full runtime trust. A CPU-only release explicitly
+uses `gpu: {mode: no_gpu}` without GPU scopes; the inference selector enforces
+zero GPU offload even if hardware detection requests it. Device absence or
+failed probes never choose this mode automatically.
+
+Bundles use `schema_version: 2`, with separate signed bootstrap state and GPU
+bootstrap/runtime outcomes. Old bundles cannot satisfy current incident
+recovery. A recovery GPU cycle must start and finish after containment; a fresh
+TPM quote or nonce over an older GPU cycle does not qualify. Both full verify
+and recovery gates reject expired evidence. Native GPU access and dependent
+live probe integration require separate qualification; synthetic tests do not
+establish physical GPU assurance.
+
 ## Runtime State Bundle
 
-Each attestation produces a signed bundle containing:
+Each attestation produces a schema-2 signed bundle containing:
+
+- Separate bootstrap and full runtime GPU scope evidence, explicit policy mode,
+  approved input pins, probe coverage, cycle times and authenticated sequence identity
 
 | Field | Description |
 |-------|-------------|
@@ -184,13 +214,27 @@ Extended status with attestation counters and diagnostics.
 
 The attestation policy (`/etc/secure-ai/policy/attestation.yaml`) controls:
 
-| Key | Default | Description |
+The policy is mandatory: a missing or unsafe file stops startup instead of
+selecting defaults. It must be one version-1 YAML document, at most 1 MiB, with
+known fields, canonical measurement paths, valid SHA-256 PCR values and a
+refresh interval between one second and 24 hours. Group- or world-writable
+files, symlinks and special files are rejected.
+
+The image finalizer installs the shipped policy as a regular `root:root` file
+with mode `0644` before generating its release measurement. This does not depend
+on the source checkout's group-write bits or the file-copy module's defaults.
+
+Release verification always includes this policy, even when `policy_files`
+omits it. The release baseline must match the exact bytes loaded by the
+attestor, and changes to the file after loading invalidate verification.
+
+| Key | Shipped value | Description |
 |-----|---------|-------------|
 | `require_tpm` | `false` | Compatibility floor; a hardware enrollment profile always overrides this to true |
 | `require_secure_boot` | `false` | Require UEFI Secure Boot enabled |
 | `expected_pcrs` | `{}` | Map of PCR index to expected SHA-256 value |
-| `service_binaries` | All Go services | Map of service name to binary path |
-| `policy_files` | policy.yaml + agent.yaml | Policy files to hash |
+| `service_binaries` | Explicit service list | Map of service name to binary path |
+| `policy_files` | Explicit policy and unit list | Policy files to hash; the attestation policy is always release-verified |
 | `refresh_interval` | `5m` | How often to re-attest |
 | `hmac_key_path` | systemd credential | Canonical 256-bit HMAC key; missing or malformed credentials stop startup |
 
@@ -236,7 +280,8 @@ Never re-enroll merely to clear an unexplained attestation failure.
 ## Tests
 
 Tests cover:
-- Attestation policy loading (defaults, YAML, validation)
+- Attestation policy loading (required file, bounded strict YAML, unsafe files and validation)
+- Loaded-policy identity, mandatory release inclusion and changes after loading
 - Service digest collection (present, missing, deterministic, different)
 - Policy digest computation (valid, missing, deterministic, order-sensitive)
 - HMAC bundle signing (no key, with key, deterministic, different keys, correctness)
@@ -253,3 +298,27 @@ Run tests:
 ```bash
 cd services/runtime-attestor && go test -v -race ./...
 ```
+
+## Dependent GPU probes
+
+The runtime observer has a distinct `secure-ai-model-read` group and a
+read-only model path, without registry writer membership. Fresh vault setup
+creates exact read-only access/default ACLs; model promotion preserves them.
+A separate native gate inspects the verified encrypted mount and reader ACLs.
+It never repairs or migrates existing populated vaults.
+
+Sentinel/reference probes call only the authenticated `/v1/probe` adapter on
+127.0.0.1:8497. Requests identify an approved reference, not a prompt, path or
+model selection. Protected release-pinned reference data fixes the input,
+expected output and model identity. The adapter alone holds a separate backend
+API credential; the observer holds a different HMAC key. Responses bind the
+request nonce, reference, policy hashes, backend alias and output. The adapter
+limits concurrency, requests, replay, time, body size and generation to64tokens.
+It exposes no reload, shutdown, slot or model-management routes.
+
+The signed `expected_model_sha256` is the enrolled expectation. Pre/post
+backend reads check the alias; they do not measure loaded weights or GPU memory.
+The separate stable tensor-hash probe checks disk bytes and rejects replacements
+or concurrent writes. These software checks cannot establish GPU firmware or
+VRAM authenticity. Hardware qualification and original audit closure remain
+separate from component verification.

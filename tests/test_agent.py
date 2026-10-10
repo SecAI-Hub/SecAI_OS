@@ -7,13 +7,13 @@ planner heuristic fallback, executor dispatch, and Flask API endpoints.
 
 # ruff: noqa: E402
 
+import concurrent.futures
 import json
 import os
 import socket
 import stat
 import sys
 import tempfile
-import concurrent.futures
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -21,11 +21,32 @@ from unittest.mock import patch
 import pytest
 import requests
 
+os.environ.setdefault("AGENT_TASK_STATE_PATH", "")
+
 # Add services/ to path
 _services_root = str(Path(__file__).resolve().parent.parent / "services")
 if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
+import agent.agent.app as agent_app_module
+from agent.agent.app import app
+from agent.agent.capabilities import (
+    _reset_signing_key,
+    clear_nonce_cache,
+    create_budgets,
+    create_token,
+    hash_intent,
+    hash_policy_file,
+    verify_token,
+)
+from agent.agent.executor import Executor
+from agent.agent.keystore import (
+    PKCS11KeyProvider,
+    SoftwareKeyProvider,
+    TPM2KeyProvider,
+    create_provider,
+    load_config,
+)
 from agent.agent.models import (
     Budgets,
     CapabilityToken,
@@ -35,33 +56,23 @@ from agent.agent.models import (
     Step,
     StepAction,
     StepStatus,
-    TaskStatus,
     Task,
+    TaskStatus,
 )
-from agent.agent.policy import PolicyEngine, classify_risk
-from agent.agent.capabilities import (
-    clear_nonce_cache,
-    create_budgets,
-    create_token,
-    hash_intent,
-    hash_policy_file,
-    verify_token,
-    _reset_signing_key,
-)
-from agent.agent.keystore import (
-    SoftwareKeyProvider,
-    TPM2KeyProvider,
-    PKCS11KeyProvider,
-    create_provider,
-    load_config,
-)
-from agent.agent.storage import StorageGateway
 from agent.agent.planner import Planner
-from agent.agent.executor import Executor
+from agent.agent.policy import PolicyEngine, classify_risk
 from agent.agent.sandbox import SubprocessIsolator
+from agent.agent.storage import StorageGateway
 from agent.agent.task_store import TaskStore
-from agent.agent.app import app
-import agent.agent.app as agent_app_module
+
+
+@pytest.fixture(autouse=True)
+def private_inference_credential(tmp_path, monkeypatch):
+    token = tmp_path / "inference.token"
+    token.write_text("8" * 64)
+    token.chmod(0o600)
+    monkeypatch.setenv("INFERENCE_TOKEN_PATH", str(token))
+
 
 _AGENT_TEST_TOKEN = "agent-unit-test-service-credential-32-bytes"
 _AGENT_CONTAINMENT_TEST_TOKEN = "agent-containment-test-credential-32-bytes"
@@ -69,6 +80,7 @@ _AGENT_CONTAINMENT_TEST_TOKEN = "agent-containment-test-credential-32-bytes"
 
 @pytest.fixture(autouse=True)
 def provision_agent_test_service_credential(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_app_module, "_require_runtime_assurance", lambda: None)
     token_path = tmp_path / "agent-service.token"
     token_path.write_text(_AGENT_TEST_TOKEN, encoding="utf-8")
     token_path.chmod(0o600)
@@ -86,6 +98,8 @@ def provision_agent_test_service_credential(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("AIRLOCK_TOKEN_PATH", str(token_path))
     monkeypatch.setenv("TOOL_FIREWALL_TOKEN_PATH", str(token_path))
+    monkeypatch.setattr(agent_app_module, "_task_store", TaskStore(tmp_path / "history" / "tasks.json"))
+    monkeypatch.setattr(agent_app_module, "_tasks", {})
     agent_app_module._audit = agent_app_module.AuditChain(tmp_path / "agent-audit.jsonl")
     yield
     agent_app_module._audit = None
@@ -95,6 +109,13 @@ def _authenticated_agent_client():
     client = app.test_client()
     client.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {_AGENT_TEST_TOKEN}"
     return client
+
+
+def _reviewed_selection(client, task_id):
+    displayed = client.get(f"/v1/task/{task_id}").get_json()
+    identifiers = [step["step_id"] for step in displayed["steps"] if step["status"] == "pending"]
+    return {"step_ids": identifiers, "expected_plan_revision": displayed.get("plan_revision"),
+            "step_hashes": {identifier: displayed["step_hashes"][identifier] for identifier in identifiers}}
 
 
 def _containment_agent_client():
@@ -531,7 +552,7 @@ class TestPlannerHeuristic:
         self.planner = Planner(PolicyEngine())
         self.cap = create_token(SessionMode.STANDARD)
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_summarize_intent(self, mock_post):
         """'summarize' keyword maps to SUMMARIZE action."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -539,44 +560,44 @@ class TestPlannerHeuristic:
         assert len(steps) >= 1
         assert steps[0].action == StepAction.SUMMARIZE
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_search_intent(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("search for reports", self.cap)
         assert steps[0].action == StepAction.LOCAL_SEARCH
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_draft_intent(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("draft a new email", self.cap)
         assert steps[0].action == StepAction.DRAFT
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_read_intent_with_path(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("read /vault/user_docs/notes.txt", self.cap)
         assert steps[0].action == StepAction.READ_FILE
         assert steps[0].params.get("path") == "/vault/user_docs/notes.txt"
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_explain_intent(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("explain why the model was quarantined", self.cap)
         assert steps[0].action == StepAction.EXPLAIN_SECURITY
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_unknown_intent_defaults_to_summarize(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("something completely unrelated", self.cap)
         assert steps[0].action == StepAction.SUMMARIZE
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_risk_levels_classified(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("summarize my notes", self.cap)
         assert steps[0].risk_level == RiskLevel.AUTO
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_max_steps_respected(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         steps = self.planner.plan("summarize all", self.cap, max_steps=1)
@@ -846,7 +867,7 @@ class TestAgentAPI:
         assert "online_assisted" in mode_ids
         assert "sensitive" in mode_ids
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_submit_task(self, mock_post):
         """Submit a task and get back a planned task."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -880,7 +901,7 @@ class TestAgentAPI:
         resp = self.client.get("/v1/task/nonexistent")
         assert resp.status_code == 404
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_task_lifecycle(self, mock_post):
         """Submit → approve → complete lifecycle."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -897,7 +918,7 @@ class TestAgentAPI:
         data = resp.get_json()
         assert data["task_id"] == task_id
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_cancel_pending_task(self, mock_post):
         """Cancel a task that needs approval (read_file is configurable)."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -917,7 +938,7 @@ class TestAgentAPI:
             resp = self.client.post(f"/v1/task/{task_id}/cancel")
             assert resp.status_code == 409
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_list_tasks(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         self.client.post("/v1/task", json={"intent": "task 1"})
@@ -930,9 +951,9 @@ class TestAgentAPI:
 
     def test_approve_nonexistent(self):
         resp = self.client.post("/v1/task/fake/approve", json={})
-        assert resp.status_code == 400
+        assert resp.status_code == 404
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_approve_pending_task_allows_internal_reverification(self, mock_post):
         """Approval should re-check integrity without consuming the token nonce."""
         clear_nonce_cache()
@@ -949,11 +970,11 @@ class TestAgentAPI:
 
         resp = self.client.post(
             f"/v1/task/{data['task_id']}/approve",
-            json={"approve_all": True},
+            json=_reviewed_selection(self.client, data["task_id"]),
         )
         assert resp.status_code == 200
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_approve_rejects_tampered_step(self, mock_post):
         clear_nonce_cache()
         with agent_app_module._tasks_lock:
@@ -973,12 +994,12 @@ class TestAgentAPI:
 
         resp = self.client.post(
             f"/v1/task/{data['task_id']}/approve",
-            json={"approve_all": True},
+            json=_reviewed_selection(self.client, data["task_id"]),
         )
         assert resp.status_code == 409
         assert "integrity" in resp.get_json()["error"]
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_approve_rejects_tampered_capability_token(self, mock_post):
         clear_nonce_cache()
         with agent_app_module._tasks_lock:
@@ -998,12 +1019,12 @@ class TestAgentAPI:
 
         resp = self.client.post(
             f"/v1/task/{data['task_id']}/approve",
-            json={"approve_all": True},
+            json=_reviewed_selection(self.client, data["task_id"]),
         )
         assert resp.status_code == 403
         assert "invalid" in resp.get_json()["error"]
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_concurrent_approval_schedules_exactly_once(self, mock_post):
         clear_nonce_cache()
         with agent_app_module._tasks_lock:
@@ -1015,11 +1036,13 @@ class TestAgentAPI:
         assert submitted.status_code == 201
         task_id = submitted.get_json()["task_id"]
 
+        reviewed = _reviewed_selection(self.client, task_id)
+
         def approve():
             client = _authenticated_agent_client()
             return client.post(
                 f"/v1/task/{task_id}/approve",
-                json={"approve_all": True},
+                json=reviewed,
             ).status_code
 
         with patch("agent.agent.app._schedule_execution", return_value=True) as schedule:
@@ -1029,7 +1052,7 @@ class TestAgentAPI:
         assert statuses == [200, 409]
         schedule.assert_called_once()
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_approval_rejects_unknown_step_id(self, mock_post):
         clear_nonce_cache()
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -1044,11 +1067,11 @@ class TestAgentAPI:
         )
 
         assert response.status_code == 400
-        assert "unknown" in response.get_json()["error"]
+        assert "step_ids" in response.get_json()["error"]
 
     def test_deny_nonexistent(self):
         resp = self.client.post("/v1/task/fake/deny", json={})
-        assert resp.status_code == 400
+        assert resp.status_code == 404
 
     def test_deny_completed_task_returns_conflict(self):
         task = Task(intent="done")
@@ -1057,10 +1080,10 @@ class TestAgentAPI:
         with agent_app_module._tasks_lock:
             agent_app_module._tasks[task.task_id] = task
 
-        resp = self.client.post(f"/v1/task/{task.task_id}/deny", json={"deny_all": True})
+        resp = self.client.post(f"/v1/task/{task.task_id}/deny", json={"step_ids": ["a" * 12], "expected_plan_revision": "a" * 64, "step_hashes": {"a" * 12: "a" * 64}})
 
         assert resp.status_code == 409
-        assert "not pending_approval" in resp.get_json()["error"]
+        assert "unavailable" in resp.get_json()["error"]
         with agent_app_module._tasks_lock:
             assert agent_app_module._tasks[task.task_id].status == TaskStatus.COMPLETED
 
@@ -1070,7 +1093,7 @@ class TestAgentAPI:
         assert resp.headers.get("X-Frame-Options") == "DENY"
         assert resp.headers.get("Cache-Control") == "no-store"
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_workspace_ids_resolved(self, mock_post):
         """Workspace IDs like 'user_docs' are accepted and resolved."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -1111,7 +1134,7 @@ class TestAgentAPI:
         })
         assert resp.status_code == 400
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_submitted_capability_has_finite_ttl_and_signed_budgets(self, mock_post):
         mock_post.side_effect = requests.ConnectionError("no inference")
         response = self.client.post("/v1/task", json={"intent": "read my documents"})
@@ -1666,7 +1689,7 @@ class TestVerifiedSupervisorAPI:
         agent_app_module._containment_frozen.clear()
         self.client = _authenticated_agent_client()
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_submitted_task_redacts_capability_authenticator(self, mock_post):
         """API output exposes metadata, never replayable capability authority."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -1682,19 +1705,20 @@ class TestVerifiedSupervisorAPI:
         assert cap.get("intent_hash") != ""
         assert cap.get("task_id") == data["task_id"]
 
-    @patch("agent.agent.planner.requests.post")
-    def test_high_risk_action_requires_approval(self, mock_post):
-        """Tasks with high-risk steps need user approval (two-phase)."""
+    @patch("agent.agent.planner.inference_http.post")
+    def test_unimplemented_export_is_not_offered_for_approval(self, mock_post):
+        """Unimplemented actions fail before a misleading approval plan."""
         mock_post.side_effect = requests.ConnectionError("no inference")
-        # 'export' maps to EXPORT_DATA which is high-risk
+        # Export has no executable broker and must not become an approval item.
         resp = self.client.post("/v1/task", json={
             "intent": "export my documents",
         })
         data = resp.get_json()
-        # Should be pending approval (export is high-risk)
-        assert data["status"] in ("pending_approval", "running", "completed", "failed")
+        assert resp.status_code == 400
+        assert "unavailable" in data["error"]
+        assert "steps" not in data
 
-    @patch("agent.agent.planner.requests.post")
+    @patch("agent.agent.planner.inference_http.post")
     def test_policy_decisions_in_step_params(self, mock_post):
         """Each step includes _policy_decision in its params."""
         mock_post.side_effect = requests.ConnectionError("no inference")
@@ -1988,7 +2012,7 @@ class TestTaskStore:
         assert store.healthy is False
         assert store.last_error
 
-    def test_missing_state_after_error_clears_health_signal(self, tmp_path):
+    def test_removing_corrupt_state_requires_explicit_process_restart(self, tmp_path):
         state_path = tmp_path / "tasks.json"
         state_path.write_text("{not json", encoding="utf-8")
         store = TaskStore(state_path)
@@ -1997,7 +2021,10 @@ class TestTaskStore:
 
         state_path.unlink()
         assert store.load() == {}
-        assert store.healthy is True
+        assert store.healthy is False
+        fresh = TaskStore(state_path)
+        assert fresh.load() == {}
+        assert fresh.healthy is True
 
 
 def test_legacy_subprocess_isolation_surface_fails_closed():

@@ -16,7 +16,7 @@ COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.yaml"
 NVIDIA_GPU_COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.gpu.nvidia.yaml"
 ROCM_GPU_COMPOSE_PATH = REPO_ROOT / "deploy" / "sandbox" / "compose.gpu.rocm.yaml"
 DOC_PATH = REPO_ROOT / "docs" / "install" / "sandbox.md"
-PINNED_ALPINE_HELPER = "docker.io/library/alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+PINNED_ALPINE_HELPER = "docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 VULNERABLE_CVE_2026_45447_BASE_DIGESTS = {
     "5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11",
     "dd4d2bd5b53d9b25a51da13addf2be586beebd5387e289e798e4083d94ca837a",
@@ -785,8 +785,18 @@ def test_optional_profiles_are_hardened_and_use_production_entrypoints():
     assert "no-new-privileges:true" in inference["security_opt"]
     assert inference["user"] == "65534:65534"
     assert inference["volumes"] == [
+        "./runtime/credentials/inference-ui.token:/run/secrets/inference-ui.token:ro,z",
+        "./runtime/credentials/inference-agent.token:/run/secrets/inference-agent.token:ro,z",
         "secai-registry:/var/lib/secure-ai/registry:ro"
     ]
+    assert inference["build"]["context"] == "../.."
+    assert inference["build"]["dockerfile"] == "services/inference-worker/Dockerfile"
+    assert inference["environment"]["INFERENCE_UI_TOKEN_PATH"] == "/run/secrets/inference-ui.token"
+    assert inference["environment"]["INFERENCE_AGENT_TOKEN_PATH"] == "/run/secrets/inference-agent.token"
+    for client, own, other in (("ui", "ui", "agent"), ("agent", "agent", "ui")):
+        assert services[client]["environment"]["INFERENCE_TOKEN_PATH"] == f"/run/secrets/inference-{own}.token"
+        assert f"./runtime/credentials/inference-{own}.token:/run/secrets/inference-{own}.token:ro,z" in services[client]["volumes"]
+        assert all(f"inference-{other}.token" not in mount for mount in services[client]["volumes"])
     assert inference["environment"]["REGISTRY_DIR"] == "/var/lib/secure-ai/registry"
     inference_containerfile = (REPO_ROOT / "services" / "inference-worker" / "Dockerfile").read_text(
         encoding="utf-8"
@@ -815,7 +825,7 @@ def test_optional_profiles_are_hardened_and_use_production_entrypoints():
     )
     assert 'diffusion-${COMPUTE}-py314.lock' in diffusion_containerfile
     expected_torch = {
-        "cpu": "torch==2.13.0+cpu",
+        "cpu": "torch==2.14.0+cpu",
         "cuda": "torch==2.13.0+cu129",
         "rocm": "torch==2.13.0+rocm7.1",
     }

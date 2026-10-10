@@ -1,7 +1,7 @@
 [Unit]
 Description=Secure AI Appliance - Tor Anonymous Proxy
-After=network-online.target
-Wants=network-online.target
+After=secure-ai-network-boot.service secure-ai-tor-check.service
+Requires=secure-ai-network-boot.service secure-ai-tor-check.service
 
 [Service]
 Type=simple
@@ -10,8 +10,12 @@ Restart=on-failure
 RestartSec=10
 
 # Sandboxing — Tor needs network but nothing else
-DynamicUser=yes
+User=secure-ai-tor
+Group=secure-ai-tor
 SupplementaryGroups=secure-ai-tor secure-ai-logs
+UMask=0077
+RemoveIPC=yes
+SELinuxContext=system_u:system_r:tor_t:s0
 ProtectSystem=strict
 ReadWritePaths=/var/lib/secure-ai/tor /var/lib/secure-ai/logs
 ReadOnlyPaths=/etc/secure-ai/tor
@@ -47,6 +51,8 @@ SystemCallErrorNumber=EPERM
 # Resource limits
 MemoryMax=256M
 TasksMax=64
+LimitCORE=0
+LimitFSIZE=64M
 
 # Production timeouts
 TimeoutStopSec=15

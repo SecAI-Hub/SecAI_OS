@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh native network assurance without sending external probes
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

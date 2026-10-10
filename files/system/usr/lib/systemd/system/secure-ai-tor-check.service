@@ -1,0 +1,34 @@
+[Unit]
+Description=Verify Tor private state and enforcing SELinux before startup
+Requires=secure-ai-network-boot.service
+After=secure-ai-network-boot.service systemd-tmpfiles-setup.service
+Before=secure-ai-tor.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/libexec/secure-ai/tor-start-check.py
+TimeoutStartSec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+LimitCORE=0
+MemoryMax=64M
+TasksMax=16

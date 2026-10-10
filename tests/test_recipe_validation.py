@@ -70,7 +70,7 @@ class TestBuildPreflight:
 
     def test_nvidia_akmods_runs_without_multilib(self, recipe):
         modules = recipe.get("modules", [])
-        akmods_index = next(i for i, module in enumerate(modules) if module.get("type") == "akmods")
+        akmods_index = next(i for i, module in enumerate(modules) if module.get("type") == "pinned-akmods")
         before = modules[akmods_index - 1]
         after = modules[akmods_index + 1]
         assert before["type"] == "containerfile"
@@ -171,7 +171,7 @@ class TestCoreServicesEnabled:
         "secure-ai-quarantine-watcher.service",
         "secure-ai-gpu-integrity-watch.service",
         "secure-ai-mcp-firewall.service",
-        "nftables.service",
+        "secure-ai-network-boot.service",
     ]
 
     @pytest.mark.parametrize("service", CORE_SERVICES)
@@ -203,6 +203,15 @@ class TestRuntimeImageTooling:
             "cmake-data",
             "gcc-c++",
             "gcc",
+            "gcc-plugin-annobin",
+            "annobin-plugin-gcc",
+            "redhat-rpm-config",
+            "python-srpm-macros",
+            "go-srpm-macros",
+            "R-srpm-macros",
+            "fonts-srpm-macros",
+            "forge-srpm-macros",
+            "zlib-ng-compat-devel",
             "git",
             "git-core",
             "python3-pip",

@@ -18,6 +18,7 @@ RESULT_FILE="${RESULT_FILE:-/run/secure-ai/profile-result.json}"
 AUDIT_LOG="${AUDIT_LOG:-/var/lib/secure-ai/logs/audit.jsonl}"
 UNIT_ROOT="${UNIT_ROOT:-/usr/lib/systemd/system}"
 PROFILE_HELPER="${PROFILE_HELPER:-/usr/libexec/secure-ai/secure-profile-plan.py}"
+NETWORK_HELPER="${NETWORK_HELPER:-/usr/libexec/secure-ai/network-profile.py}"
 WORK_ROOT="${WORK_ROOT:-/run/secure-ai/profile-control}"
 LOCK_FILE="${LOCK_FILE:-/run/secure-ai/profile-control.lock}"
 
@@ -35,6 +36,10 @@ fatal() {
 }
 
 cleanup() {
+    local status=$?
+    if [ "$status" -ne 0 ] && [ -x "$NETWORK_HELPER" ]; then
+        "$NETWORK_HELPER" close >/dev/null 2>&1 || true
+    fi
     if [ -n "$PROCESSING_REQUEST" ] && [ -f "$PROCESSING_REQUEST" ] \
         && [[ "$PROCESSING_REQUEST" == "$WORK_DIR/"* ]]; then
         rm -f -- "$PROCESSING_REQUEST"
@@ -98,7 +103,7 @@ write_audit() {
     local profile="$2"
     local previous="$3"
     local detail="${4:-}"
-    install -d -m 2770 -o root -g secure-ai-logs -- "$(dirname "$AUDIT_LOG")"
+    install -d -m 3770 -o root -g secure-ai-logs -- "$(dirname "$AUDIT_LOG")"
     python3 - "$AUDIT_LOG" "$event" "$profile" "$previous" "$detail" <<'PY'
 import fcntl
 import json
@@ -268,6 +273,10 @@ main() {
     chmod 0600 "$LOCK_FILE"
     flock -n 9 || fatal "another profile change is already in progress"
 
+    # Restrict first, including established/raw frames. No failed transaction
+    # or service rollback restores an earlier online lease.
+    "$NETWORK_HELPER" close >/dev/null || fatal "cannot verify closed host networking"
+
     local current_file="${WORK_DIR}/current.json"
     if ! "$PROFILE_HELPER" current \
         --state "$PROFILE_STATE" \
@@ -305,7 +314,8 @@ main() {
         changed_by="${2:-cli}"
         [[ "$changed_by" =~ ^[a-z0-9_-]{1,32}$ ]] || fatal "invalid changed_by value"
     else
-        requested="$previous"
+        # Persisted selection is not consent to a new online lease at boot.
+        requested="offline_private"
     fi
 
     local plan_file="${WORK_DIR}/plan.json"
@@ -332,7 +342,16 @@ main() {
         || fatal "cannot audit profile transition; no state was changed"
 
     log "Applying profile $requested (previous=$previous, source=$source, by=$changed_by)"
-    apply_plan "$plan_file"
+    if [ "$requested" = full_lab ]; then
+        # A running service pins its old bind-mount inode. Restart it after
+        # preparation; grant checks the new invocation's actual-file receipt.
+        if ! systemctl stop secure-ai-airlock.service || ! "$NETWORK_HELPER" prepare-resolver >/dev/null; then
+            APPLY_ERRORS=1
+        fi
+    fi
+    if [ "$APPLY_ERRORS" -eq 0 ]; then
+        apply_plan "$plan_file"
+    fi
 
     if [ "$APPLY_ERRORS" -eq 0 ] && [ "$source" != operator_override ]; then
         if ! "$PROFILE_HELPER" write-state \
@@ -345,9 +364,32 @@ main() {
         fi
     fi
 
+    # Publish durable transition evidence before opening a bounded scope.
+    if [ "$APPLY_ERRORS" -eq 0 ]; then
+        if ! write_audit profile_changed "$requested" "$previous" "services validated; network lease requested"; then
+            APPLY_ERRORS=$((APPLY_ERRORS + 1))
+        elif [ "$requested" != offline_private ]; then
+            if ! "$NETWORK_HELPER" grant --scope "$requested" --seconds 3600 >/dev/null; then
+                APPLY_ERRORS=$((APPLY_ERRORS + 1))
+            fi
+        fi
+    fi
+
     if [ "$APPLY_ERRORS" -gt 0 ]; then
+        local recovery_errors=0
+        if ! "$NETWORK_HELPER" close >/dev/null; then
+            log "ERROR: closed networking could not be verified"
+            recovery_errors=$((recovery_errors + 1))
+        fi
+        if [ "$source" != operator_override ]; then
+            if ! "$PROFILE_HELPER" write-state --file "$PROFILE_STATE" --profile "$previous" --changed-by rollback >/dev/null; then
+                log "ERROR: previous selected profile could not be restored"
+                recovery_errors=$((recovery_errors + 1))
+            fi
+        fi
         log "Profile transaction failed with $APPLY_ERRORS error(s); restoring exact prior state"
-        if restore_snapshot "$snapshot_file"; then
+        restore_snapshot "$snapshot_file" || recovery_errors=$((recovery_errors + 1))
+        if [ "$recovery_errors" -eq 0 ]; then
             write_result rolled_back "$previous" "$previous" \
                 "$APPLY_ERRORS apply/validation error(s); exact service state restored"
             write_audit profile_change_rolled_back "$requested" "$previous" \
@@ -361,7 +403,6 @@ main() {
         exit 2
     fi
 
-    write_audit profile_changed "$requested" "$previous" "success"
     write_result success "$requested" "$previous" ""
     log "Profile applied and validated successfully: $requested"
 }

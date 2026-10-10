@@ -16,7 +16,14 @@ Covers:
 - No dnf install/yum install in build script
 """
 
+import hashlib
+import json
+import os
 import re
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -106,12 +113,18 @@ class TestLlamaCppChecksum:
             or "sha256" in build_script_content.lower()
         ), "build-services.sh must verify llama.cpp tarball checksum"
 
+    def test_llama_release_pin_and_reported_build_identity_agree(self, build_script_content):
+        assert 'LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-v0.6.0}"' in build_script_content
+        assert "09b36dba235fcac180efff18514da7038e65d8e5b9e4aefa59238468abfdec12" in build_script_content
+        assert "-DLLAMA_BUILD_NUMBER=11429" in build_script_content
+        assert build_script_content.count("d81235049384534c167caea52b85a694f6103d14") == 2
+
 
 class TestNoBareNetworkFetches:
     """Build script must not use bare curl/wget for dependency fetches."""
 
     def test_no_bare_curl(self, build_script_content):
-        """curl calls must only exist inside hermetic guard or for checksum-verified llama.cpp."""
+        """curl calls must be guarded or fetch checksum-verified source/toolchain archives."""
         lines = _non_comment_lines(build_script_content)
         for line in lines:
             # Skip hermetic guard override
@@ -122,6 +135,7 @@ class TestNoBareNetworkFetches:
                 "llama.cpp" in line.lower()
                 or "LLAMA_CPP" in line
                 or "LLAMA_TARBALL" in line
+                or "GO_TARBALL" in line
             ):
                 continue
             if "curl()" in line:  # function definition
@@ -215,12 +229,16 @@ class TestPythonApplicationRuntime:
     def test_service_entrypoints_use_the_exact_runtime(self, build_script_content):
         shebang = "#!/usr/lib/secure-ai/python3.12-venv/bin/python3.12"
         assert build_script_content.count(shebang) == 3
-        assert (
-            build_script_content.count(
-                "exec /usr/lib/secure-ai/python3.12-venv/bin/gunicorn"
-            )
-            == 2
-        )
+
+        runtime = "/usr/lib/secure-ai/python3.12-venv/bin"
+        ui_wrapper = build_script_content.split(
+            "cat > \"${INSTALL_DIR}/ui\" <<'WRAPPER'", 1
+        )[1].split("\nWRAPPER", 1)[0]
+        search_wrapper = build_script_content.split(
+            "cat > \"${INSTALL_DIR}/search-mediator\" <<'WRAPPER'", 1
+        )[1].split("\nWRAPPER", 1)[0]
+        assert f"exec {runtime}/python -I -B -m ui.runtime -- \\\n    {runtime}/gunicorn" in ui_wrapper
+        assert f"exec {runtime}/gunicorn" in search_wrapper
 
     def test_shared_security_primitives_are_installed(self, build_script_content):
         common_project = (
@@ -246,6 +264,75 @@ class TestFinalReleaseBaseline:
         assert 'python3 "$GENERATOR" --source-commit "$source_commit"' in finalizer
         assert "container signing policy is not reject-by-default" in finalizer
         assert "container signing policy does not contain the approved SecAI rule" in finalizer
+
+    @pytest.mark.parametrize("kind", ["writable", "missing", "symlink", "directory", "fifo"])
+    def test_attestation_policy_installation_precedes_measurement(self, tmp_path, kind):
+        finalizer = RELEASE_BASELINE_FINALIZER.read_text(encoding="utf-8")
+        marker = 'python3 - "$ATTESTATION_POLICY" <<\'PY\'\n'
+        assert finalizer.index(marker) < finalizer.index('python3 "$GENERATOR"')
+        operation = finalizer.split(marker, 1)[1].split("\nPY\n", 1)[0]
+        assert 'readonly ATTESTATION_POLICY="/etc/secure-ai/policy/attestation.yaml"' in finalizer
+        policy = tmp_path / "etc/secure-ai/policy/attestation.yaml"
+        policy.parent.mkdir(parents=True)
+        original = RELEASE_BASELINE_FINALIZER.parents[2] / "files/system/etc/secure-ai/policy/attestation.yaml"
+        data = original.read_bytes()
+        outside = tmp_path / "outside-policy"
+        outside.write_bytes(data)
+        outside.chmod(0o666)
+        if kind == "writable":
+            policy.write_bytes(data)
+            policy.chmod(0o666)
+        elif kind == "symlink":
+            policy.symlink_to(outside)
+        elif kind == "directory":
+            policy.mkdir()
+        elif kind == "fifo":
+            os.mkfifo(policy, 0o600)
+
+        # The production operation runs unchanged on a disposable image root.
+        # Namespace root exercises actual fchown/fchmod without host privileges.
+        command = [sys.executable, "-", str(policy), str(tmp_path), str(RELEASE_BASELINE_SCRIPT)]
+        if os.geteuid() != 0:
+            unshare = shutil.which("unshare")
+            if not unshare:
+                pytest.skip("requires root or unshare user namespace support")
+            available = subprocess.run([unshare, "--user", "--map-root-user", "true"],
+                                       check=False, capture_output=True)
+            if available.returncode:
+                pytest.skip("requires an enabled root user namespace")
+            command = [unshare, "--user", "--map-root-user", *command]
+        verification = '\nprint(f"installed:{installed.st_uid}:{installed.st_gid}:{stat.S_IMODE(installed.st_mode):o}")\n'
+        if kind == "writable":
+            # Execute the real generator after installation, with its absolute
+            # image paths resolved solely inside this disposable process root.
+            verification += '''
+import importlib.util
+root, generator_path = sys.argv[2:4]
+spec = importlib.util.spec_from_file_location("release_baseline", generator_path)
+generator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(generator)
+sys.argv = [generator_path, "--source-commit", "a" * 40]
+generator.parse_args()  # Load argparse dependencies before entering the image.
+os.chroot(root)
+os.chdir("/")
+raise SystemExit(generator.main())
+'''
+        result = subprocess.run(command, input=operation + verification, text=True,
+                                capture_output=True, check=False, timeout=5)
+        if kind == "writable":
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.splitlines()[0] == "installed:0:0:644"
+            assert stat.S_ISREG(policy.lstat().st_mode)
+            assert stat.S_IMODE(policy.stat().st_mode) == 0o644
+            assert policy.read_bytes() == data
+            baseline = json.loads((tmp_path / "usr/share/secure-ai/integrity/release-baseline.json").read_text())
+            assert baseline["files"] == [{"path": "/etc/secure-ai/policy/attestation.yaml",
+                                          "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}]
+        else:
+            assert result.returncode != 0
+            assert result.stdout == ""
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o666
+        assert outside.read_bytes() == data
 
     def test_candidates_use_immutable_image_paths(self, build_script_content):
         baseline_script = RELEASE_BASELINE_SCRIPT.read_text(encoding="utf-8")

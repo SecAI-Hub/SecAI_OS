@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -31,6 +33,23 @@ type TrustEnforcement struct {
 	AllowNetwork      bool     // Can make network calls
 	RequireApproval   bool     // Every call needs user approval
 	AllowedNamespaces []string // Filesystem namespace restrictions
+}
+
+// Create issues an unpredictable server-generated session identifier and
+// binding token. HTTP callers cannot choose or overwrite session identities.
+func (sbm *SessionBindingManager) Create(serverName string, maxCalls, ttlSeconds int64) (*SessionBinding, error) {
+	for attempts := 0; attempts < 4; attempts++ {
+		randomID := make([]byte, 24)
+		if _, err := rand.Read(randomID); err != nil {
+			return nil, fmt.Errorf("generate session identifier: %w", err)
+		}
+		sessionID := base64.RawURLEncoding.EncodeToString(randomID)
+		binding, err := sbm.Bind(sessionID, serverName, maxCalls, ttlSeconds)
+		if err == nil {
+			return binding, nil
+		}
+	}
+	return nil, fmt.Errorf("could not allocate a unique session")
 }
 
 // DefaultTrustEnforcement returns enforcement rules for each trust tier.
@@ -79,6 +98,9 @@ func EnforceTrustTier(serverTrust string, toolAction string, hasWriteArg bool, h
 	// Check sensitive data restriction
 	if hasSensitiveArg && !enforcement.AllowSensitive {
 		return false, fmt.Sprintf("trust tier %q does not allow sensitive data access", serverTrust)
+	}
+	if enforcement.RequireApproval && toolAction != "require-approval" {
+		return false, fmt.Sprintf("trust tier %q requires approval", serverTrust)
 	}
 
 	return true, "trust tier check passed"
@@ -180,25 +202,41 @@ type SessionBinding struct {
 
 // SessionBindingManager tracks and validates session bindings.
 type SessionBindingManager struct {
-	mu       sync.RWMutex
-	bindings map[string]*SessionBinding // session_id -> binding
-	key      []byte                     // HMAC signing key
+	mu          sync.RWMutex
+	bindings    map[string]*SessionBinding // session_id -> binding
+	key         []byte                     // HMAC signing key
+	maxBindings int
 }
 
-func NewSessionBindingManager(key []byte) *SessionBindingManager {
-	return &SessionBindingManager{
-		bindings: make(map[string]*SessionBinding),
-		key:      key,
+func NewSessionBindingManager(key []byte) (*SessionBindingManager, error) {
+	if len(key) < 32 {
+		return nil, fmt.Errorf("session-binding key must contain at least 32 bytes")
 	}
+	keyCopy := append([]byte(nil), key...)
+	return &SessionBindingManager{
+		bindings:    make(map[string]*SessionBinding),
+		key:         keyCopy,
+		maxBindings: 10_000,
+	}, nil
 }
 
 // Bind creates a new session binding, or returns the existing one.
-func (sbm *SessionBindingManager) Bind(sessionID, serverName string, maxCalls int64, ttlSeconds int64) *SessionBinding {
+func (sbm *SessionBindingManager) Bind(sessionID, serverName string, maxCalls int64, ttlSeconds int64) (*SessionBinding, error) {
+	if !safePathIdentifier(sessionID) || !safePathIdentifier(serverName) || maxCalls <= 0 || ttlSeconds <= 0 || ttlSeconds > 86400 {
+		return nil, fmt.Errorf("invalid session binding parameters")
+	}
 	sbm.mu.Lock()
 	defer sbm.mu.Unlock()
+	sbm.pruneExpiredLocked(time.Now().Unix())
 
 	if existing, ok := sbm.bindings[sessionID]; ok {
-		return existing
+		if existing.ServerName != serverName || existing.MaxCalls != maxCalls {
+			return nil, fmt.Errorf("session is already bound with different constraints")
+		}
+		return cloneSessionBinding(existing), nil
+	}
+	if len(sbm.bindings) >= sbm.maxBindings {
+		return nil, fmt.Errorf("session binding capacity exhausted")
 	}
 
 	now := time.Now().Unix()
@@ -214,14 +252,14 @@ func (sbm *SessionBindingManager) Bind(sessionID, serverName string, maxCalls in
 	binding.BindingToken = sbm.computeToken(binding)
 	sbm.bindings[sessionID] = binding
 
-	log.Printf("session-binding: created for session=%s server=%s maxCalls=%d ttl=%ds",
-		sessionID, serverName, maxCalls, ttlSeconds)
+	log.Printf("session-binding: created for session_hash=%s server=%s maxCalls=%d ttl=%ds",
+		auditFingerprint(sessionID), serverName, maxCalls, ttlSeconds)
 
-	return binding
+	return cloneSessionBinding(binding), nil
 }
 
 // Validate checks if a request is allowed under the current session binding.
-func (sbm *SessionBindingManager) Validate(sessionID, serverName string) (bool, string) {
+func (sbm *SessionBindingManager) Validate(sessionID, serverName, bindingToken string) (bool, string) {
 	sbm.mu.Lock()
 	defer sbm.mu.Unlock()
 
@@ -236,7 +274,7 @@ func (sbm *SessionBindingManager) Validate(sessionID, serverName string) (bool, 
 	}
 
 	// Check expiry
-	if time.Now().Unix() > binding.ExpiresAt {
+	if time.Now().Unix() >= binding.ExpiresAt {
 		delete(sbm.bindings, sessionID)
 		return false, "session binding expired"
 	}
@@ -248,11 +286,70 @@ func (sbm *SessionBindingManager) Validate(sessionID, serverName string) (bool, 
 
 	// Verify token integrity
 	expected := sbm.computeToken(binding)
-	if binding.BindingToken != expected {
+	if !hmac.Equal([]byte(binding.BindingToken), []byte(expected)) ||
+		!hmac.Equal([]byte(bindingToken), []byte(expected)) {
 		return false, "session binding token tampered"
 	}
 
 	binding.CallCount++
+	return true, "session binding valid"
+}
+
+// ValidateBatch atomically validates and reserves the call allowance for every
+// request. A bad later element never partially consumes earlier allowances.
+func (sbm *SessionBindingManager) ValidateBatch(requests []EvalRequest) (bool, string) {
+	if len(requests) == 0 || len(requests) > 100 {
+		return false, "invalid session batch"
+	}
+	sbm.mu.Lock()
+	defer sbm.mu.Unlock()
+	now := time.Now().Unix()
+	sbm.pruneExpiredLocked(now)
+	requestedCalls := make(map[string]int64)
+	for _, request := range requests {
+		binding, ok := sbm.bindings[request.SessionID]
+		if !ok || binding.ServerName != request.Server || now >= binding.ExpiresAt {
+			return false, "session binding context is invalid"
+		}
+		expected := sbm.computeToken(binding)
+		if !hmac.Equal([]byte(binding.BindingToken), []byte(expected)) ||
+			!hmac.Equal([]byte(request.SessionToken), []byte(expected)) {
+			return false, "session binding token is invalid"
+		}
+		requestedCalls[request.SessionID]++
+	}
+	for sessionID, count := range requestedCalls {
+		binding := sbm.bindings[sessionID]
+		if binding.MaxCalls > 0 && binding.CallCount+count > binding.MaxCalls {
+			return false, "session call limit exceeded"
+		}
+	}
+	for sessionID, count := range requestedCalls {
+		sbm.bindings[sessionID].CallCount += count
+	}
+	return true, "session batch valid"
+}
+
+// Check validates a binding without consuming its policy-call allowance. It is
+// used only to authenticate execution completion for an already-evaluated call.
+func (sbm *SessionBindingManager) Check(sessionID, serverName, bindingToken string) (bool, string) {
+	sbm.mu.Lock()
+	defer sbm.mu.Unlock()
+	binding, ok := sbm.bindings[sessionID]
+	if !ok {
+		return false, "no session binding found"
+	}
+	if binding.ServerName != serverName || time.Now().Unix() >= binding.ExpiresAt {
+		if time.Now().Unix() >= binding.ExpiresAt {
+			delete(sbm.bindings, sessionID)
+		}
+		return false, "session binding context is invalid"
+	}
+	expected := sbm.computeToken(binding)
+	if !hmac.Equal([]byte(binding.BindingToken), []byte(expected)) ||
+		!hmac.Equal([]byte(bindingToken), []byte(expected)) {
+		return false, "session binding token is invalid"
+	}
 	return true, "session binding valid"
 }
 
@@ -270,10 +367,27 @@ func (sbm *SessionBindingManager) computeToken(b *SessionBinding) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func cloneSessionBinding(binding *SessionBinding) *SessionBinding {
+	if binding == nil {
+		return nil
+	}
+	copy := *binding
+	return &copy
+}
+
+func (sbm *SessionBindingManager) pruneExpiredLocked(now int64) {
+	for sessionID, binding := range sbm.bindings {
+		if now >= binding.ExpiresAt {
+			delete(sbm.bindings, sessionID)
+		}
+	}
+}
+
 // ActiveBindings returns the count of active session bindings.
 func (sbm *SessionBindingManager) ActiveBindings() int {
-	sbm.mu.RLock()
-	defer sbm.mu.RUnlock()
+	sbm.mu.Lock()
+	defer sbm.mu.Unlock()
+	sbm.pruneExpiredLocked(time.Now().Unix())
 	return len(sbm.bindings)
 }
 

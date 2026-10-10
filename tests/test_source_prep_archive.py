@@ -27,16 +27,32 @@ def _sha256(content: bytes) -> str:
 def _bundle_members(application_lock: bytes) -> dict[str, bytes | None]:
     upstream_lock = b"upstreams: {}\n"
     llama_tarball = b"verified llama.cpp source"
+    go_tarball = b"verified Go compiler"
     wheel = b"verified wheel"
     wheel_sums = f"{_sha256(wheel)}  verified.whl\n".encode()
+    tor_contract = b'{"version":"0.4.9.14"}\n'
+    tor_source = b'verified Tor source'
+    tor_template = b'[Service]\nExecStart=/usr/bin/tor\n'
+    tor_manifest = json.dumps({
+        'schema_version': 1, 'version': '0.4.9.14', 'contract_sha256': _sha256(tor_contract),
+        'inputs': {
+            'source.lock.json': {'sha256': _sha256(tor_contract), 'bytes': len(tor_contract)},
+            'tor.tar.gz': {'sha256': _sha256(tor_source), 'bytes': len(tor_source)},
+            'tor@.service': {'sha256': _sha256(tor_template), 'bytes': len(tor_template)},
+        },
+    }).encode()
     manifest = {
         "schema_version": 1,
         "commit_sha": COMMIT_SHA,
-        "llama_cpp_version": "b5200",
+        "llama_cpp_version": "v0.4.0",
+        "go_toolchain_version": "1.27.2",
+        "go_toolchain_tarball_sha256": _sha256(go_tarball),
         "llama_cpp_tarball_sha256": _sha256(llama_tarball),
         "wheelhouse_sha256sums_digest": _sha256(wheel_sums),
         "application_requirements_lock_digest": _sha256(application_lock),
         "upstreams_lock_digest": _sha256(upstream_lock),
+        "tor_source_manifest_sha256": _sha256(tor_manifest),
+        "tor_source_contract_sha256": _sha256(tor_contract),
         "wheel_count": 1,
         "application_dependency_mode": "staged-offline",
         "upstream_paths": ["upstreams/searxng"],
@@ -46,6 +62,12 @@ def _bundle_members(application_lock: bytes) -> dict[str, bytes | None]:
         ".source-prep": None,
         ".source-prep/SOURCE_PREP_MANIFEST.json": json.dumps(manifest).encode(),
         ".source-prep/llama-cpp-staged.tar.gz": llama_tarball,
+        ".source-prep/go-toolchain.tar.gz": go_tarball,
+        ".source-prep/tor": None,
+        ".source-prep/tor/TOR_SOURCE_MANIFEST.json": tor_manifest,
+        ".source-prep/tor/source.lock.json": tor_contract,
+        ".source-prep/tor/tor.tar.gz": tor_source,
+        ".source-prep/tor/tor@.service": tor_template,
         ".upstreams.lock.yaml": upstream_lock,
         "upstreams": None,
         "upstreams/searxng": None,
@@ -68,6 +90,8 @@ def _write_bundle(
     application_lock_path.write_bytes(application_lock)
     (workspace / ".upstreams.lock.yaml").write_text("upstreams: {}\n", encoding="utf-8")
     (workspace / "services/demo").mkdir(parents=True)
+    (workspace / 'build/tor').mkdir(parents=True)
+    (workspace / 'build/tor/source.lock.json').write_bytes(b'{"version":"0.4.9.14"}\n')
 
     members = _bundle_members(application_lock)
     if extra_members:
@@ -116,6 +140,30 @@ def _run_restore(
         capture_output=True,
         text=True,
     )
+
+
+def test_source_prep_rejects_undeclared_upstream_shadow(tmp_path: Path):
+    archive, checksum, digest = _write_bundle(tmp_path, {
+        "upstreams/ai-quarantine": None,
+        "upstreams/ai-quarantine/setup.py": b"# shadow payload\n",
+    })
+    result = _run_restore(tmp_path, archive, checksum, digest)
+    assert result.returncode != 0
+    assert "upstream contents do not exactly match" in result.stderr
+    assert not (tmp_path / "upstreams").exists()
+
+
+def test_source_prep_rejects_nested_upstream_declarations(tmp_path: Path):
+    members = _bundle_members(b"verified application lock\n")
+    manifest = json.loads(members[".source-prep/SOURCE_PREP_MANIFEST.json"])
+    manifest["upstream_paths"] = ["upstreams/searxng/nested"]
+    archive, checksum, digest = _write_bundle(tmp_path, {
+        ".source-prep/SOURCE_PREP_MANIFEST.json": json.dumps(manifest).encode(),
+        "upstreams/searxng/nested": None,
+    })
+    result = _run_restore(tmp_path, archive, checksum, digest)
+    assert result.returncode != 0
+    assert "invalid upstream root" in result.stderr
 
 
 def _searxng_fixture(workspace: Path) -> tuple[Path, Path]:
@@ -290,3 +338,12 @@ def test_restore_rejects_member_outside_allowlist(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "non-canonical path" in result.stderr
     assert not (tmp_path.parent / "escape").exists()
+
+
+def test_restore_rejects_compiler_tampering(tmp_path: Path) -> None:
+    archive, checksum, digest = _write_bundle(
+        tmp_path, {".source-prep/go-toolchain.tar.gz": b"substituted compiler"}
+    )
+    result = _run_restore(tmp_path, archive, checksum, digest)
+    assert result.returncode != 0
+    assert "Go compiler digest" in result.stderr

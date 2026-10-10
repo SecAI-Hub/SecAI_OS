@@ -1,0 +1,27 @@
+[Unit]
+Description=Secure AI GPU model reader permissions check (no migration)
+After=secure-ai-vault-mounted.service
+Requires=secure-ai-vault-mounted.service
+Before=secure-ai-gpu-integrity-watch.service
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/libexec/secure-ai/gpu-integrity-watch policy-enabled
+ExecStart=/usr/libexec/secure-ai/verify-vault-mount.py --gpu-model-read
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+ProtectSystem=strict
+ReadOnlyPaths=/etc/crypttab /var/lib/secure-ai/vault
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=128M
+TasksMax=16
+TimeoutStartSec=20

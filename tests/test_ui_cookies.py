@@ -22,12 +22,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services" / "ui
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "services"))
 
 
+@pytest.fixture(autouse=True)
+def private_cookie_state(tmp_path, monkeypatch):
+    """Keep credentials, runtime epochs and import-time state private per test."""
+    for name, path in {
+        "AUTH_DATA_DIR": tmp_path / "auth",
+        "SESSION_RUNTIME_DIR": tmp_path / "runtime",
+        "SECURE_AI_ROOT": tmp_path,
+        "AUDIT_LOG_PATH": tmp_path / "logs/ui-audit.jsonl",
+        "CATALOG_JOBS_DIR": tmp_path / "catalog-jobs",
+        "QUARANTINE_DIR": tmp_path / "incoming",
+        "SLO_STATE_PATH": tmp_path / "slo.json",
+    }.items():
+        monkeypatch.setenv(name, str(path))
+    saved = {name: sys.modules.get(name) for name in ("ui.app", "ui.slo_tracker")}
+    yield
+    for name, module in saved.items():
+        package, attribute = name.rsplit(".", 1)
+        if module is None:
+            sys.modules.pop(name, None)
+            if package in sys.modules:
+                vars(sys.modules[package]).pop(attribute, None)
+        else:
+            sys.modules[name] = module
+            setattr(sys.modules[package], attribute, module)
+
+
 def _make_app(cookie_secure="false", session_timeout="1800"):
     """Create a fresh UI app instance with the given env vars."""
     with mock.patch.dict(os.environ, {
         "COOKIE_SECURE": cookie_secure,
         "SESSION_TIMEOUT": session_timeout,
-        "AUTH_DATA_DIR": "/tmp/secai-test-auth",
         "BIND_ADDR": "127.0.0.1:18480",
     }, clear=False):
         # Force reimport to pick up new env
@@ -96,24 +121,34 @@ class TestSessionTimeout:
             if hasattr(lifetime, "total_seconds"):
                 assert lifetime.total_seconds() == 1800
 
-    def test_passive_get_does_not_refresh_session(self):
-        import shutil
+    def test_passive_get_does_not_refresh_session(self, monkeypatch):
+        from common import runtime_clock
+        from common.session_store import token_digest
 
-        shutil.rmtree("/tmp/secai-test-auth", ignore_errors=True)
+        elapsed = [runtime_clock.now()]
+        monkeypatch.setattr(runtime_clock, "now", lambda: elapsed[0])
         app = _make_app(session_timeout="900")
         import ui.app as ui_app
 
-        ui_app._auth.setup_passphrase("test-passphrase-123")
-        token = ui_app._auth.login("test-passphrase-123")["token"]
-        before = ui_app._auth._sessions[token]["last_active"]
+        assert ui_app._auth.setup_passphrase("test-passphrase-123")
+        login = ui_app._auth.login("test-passphrase-123")
+        assert login.get("success") is True, login
+        token = login["token"]
+        state = ui_app._auth._store.snapshot()
+        assert state["version"] == 2
+        assert state["clock"] == runtime_clock.DOMAIN
+        session_key = token_digest(token)
+        before = state["sessions"][session_key]["last_active"]
 
         with app.test_client() as client:
             client.set_cookie("session_token", token)
+            elapsed[0] += 450
             resp = client.get("/api/vault/status")
             assert resp.status_code == 200
-
-        after = ui_app._auth._sessions[token]["last_active"]
-        assert after == before
+            after = ui_app._auth._store.snapshot()
+            assert after["sessions"][session_key]["last_active"] == before
+            elapsed[0] += 451
+            assert client.get("/api/vault/status").status_code == 401
 
 
 def _parse_set_cookies(response):

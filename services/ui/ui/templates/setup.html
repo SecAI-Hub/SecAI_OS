@@ -14,7 +14,7 @@
             --line: #303642;
             --text: #edf2f7;
             --muted: #a9b4c0;
-            --quiet: #778391;
+            --quiet: #9ba8b8;
             --blue: #7aa2f7;
             --green: #8bd17c;
             --amber: #e4b86b;
@@ -22,6 +22,7 @@
             --radius: 8px;
         }
 
+        :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
@@ -299,8 +300,9 @@
         }
 
         input[type="file"] {
-            position: absolute;
-            left: -9999px;
+            position: static;
+            max-width: 100%;
+            color: var(--text);
         }
 
         .aside {
@@ -415,7 +417,7 @@
                         <div class="num">1</div>
                         <div>
                             <h2>Privacy Level</h2>
-                            <p id="profile-copy">Select the posture that matches this session.</p>
+                            <p id="profile-copy">Select the posture that matches this session. Catalog downloads require an active sign-in and an online profile throughout each transfer.</p>
                         </div>
                     </div>
 
@@ -446,7 +448,7 @@
                     <div class="actions">
                         <button class="primary" id="profile-button" type="button" disabled>Confirm Level</button>
                     </div>
-                    <div class="message" id="profile-message">Loading current profile...</div>
+                    <div class="message" role="status" aria-live="polite" aria-atomic="true" id="profile-message">Loading current profile...</div>
                 </section>
 
                 <section class="step" id="services-step">
@@ -457,7 +459,7 @@
                             <p>Core services need to be reachable before the workspace opens.</p>
                         </div>
                     </div>
-                    <div class="message" id="services-message">Checking registry, policy, and UI services...</div>
+                    <div class="message" role="status" aria-live="polite" aria-atomic="true" id="services-message">Checking registry, policy, and UI services...</div>
                 </section>
 
                 <section class="step" id="model-step">
@@ -474,7 +476,7 @@
                         <input type="file" id="model-file" accept=".gguf,.safetensors">
                         <a class="link-button secondary" href="/models">Open Models</a>
                     </div>
-                    <div class="message" id="model-message">Looking for promoted models...</div>
+                    <div class="message" role="status" aria-live="polite" aria-atomic="true" id="model-message">Looking for promoted models...</div>
                 </section>
             </div>
 
@@ -527,13 +529,13 @@
         function setChip(id, state, text) {
             var el = document.getElementById(id);
             el.className = 'chip ' + state;
-            el.querySelector('span:last-child').textContent = text;
+            if (el.querySelector('span:last-child').textContent !== text) el.querySelector('span:last-child').textContent = text;
         }
 
         function setMessage(id, state, text) {
             var el = document.getElementById(id);
             el.className = 'message ' + (state || '');
-            el.textContent = text;
+            if (el.textContent !== text) el.textContent = text;
         }
 
         function markDone(stepId) {

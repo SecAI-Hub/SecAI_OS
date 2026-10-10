@@ -62,6 +62,22 @@ patch_fix_already_present() {
             grep -F 'self._check_url(url.replace("%action", action))' Lib/webbrowser.py >/dev/null 2>&1 &&
                 grep -F 'arg.replace("%action", action).replace("%s", url)' Lib/webbrowser.py >/dev/null 2>&1
             ;;
+        0008-cve-2026-6019-cookie-js-output-base64.patch)
+            # 3.14.7 supersedes the backport with percent encoding. Check the
+            # encoding, control-character guard and decoding template together.
+            grep -F "urllib.parse.quote(output_string, safe='', encoding='utf-8')" Lib/http/cookies.py >/dev/null 2>&1 &&
+                grep -F 'if _has_control_character(output_string):' Lib/http/cookies.py >/dev/null 2>&1 &&
+                grep -F 'document.cookie = decodeURIComponent(' Lib/http/cookies.py >/dev/null 2>&1
+            ;;
+        0009-cve-2026-7210-expat-hash-salt-16bytes.patch)
+            # Release tarballs no longer contain the original NEWS fragment.
+            grep -F 'uint8_t hashsalt16[16];' Include/internal/pycore_pyhash.h >/dev/null 2>&1 &&
+                grep -F 'XML_Bool (*SetHashSalt16Bytes)(' Include/pyexpat.h >/dev/null 2>&1 &&
+                grep -F 'XML_SetHashSalt16Bytes(self->itself, _Py_HashSecret.expat.hashsalt16);' Modules/pyexpat.c >/dev/null 2>&1 &&
+                grep -F 'capi->SetHashSalt16Bytes = XML_SetHashSalt16Bytes;' Modules/pyexpat.c >/dev/null 2>&1 &&
+                grep -F 'EXPAT(st, SetHashSalt16Bytes)(self->parser,' Modules/_elementtree.c >/dev/null 2>&1 &&
+                grep -F '_Py_HashSecret.expat.hashsalt16);' Modules/_elementtree.c >/dev/null 2>&1
+            ;;
         *)
             return 1
             ;;
@@ -96,7 +112,11 @@ fi
     --prefix="${PREFIX}" \
     --enable-ipv6 \
     --with-ensurepip=install
-make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+make -j"${BUILD_JOBS:-4}"
+# Exercise the affected standard-library behavior before publishing a runtime.
+./python -m test -j"${BUILD_JOBS:-4}" --timeout=90 \
+    test_imaplib test_poplib test_base64 test_http_cookies test_httplib \
+    test_webbrowser test_bz2 test_lzma test_pyexpat test_xml_etree
 make install
 
 mkdir -p "${PREFIX}/share"

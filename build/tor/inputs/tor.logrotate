@@ -1,0 +1,13 @@
+/var/log/tor/*.log {
+    daily
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 toranon toranon
+    sharedscripts
+    postrotate
+        /bin/systemctl reload tor-master.service >/dev/null 2>/dev/null || :
+    endscript
+}

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SecAI-Hub/gpu-integrity-watch/evidence"
 )
 
 // =========================================================================
@@ -38,24 +40,28 @@ const (
 // evidence directly from the authenticated loopback service; callers cannot
 // submit their own bundle.
 type RecoveryAttestationEvidence struct {
-	RequestedAt             string `json:"requested_at"`
-	Timestamp               string `json:"timestamp"`
-	State                   string `json:"state"`
-	AssuranceMode           string `json:"assurance_mode"`
-	EvidenceVerified        bool   `json:"evidence_verified"`
-	SecureBootEnabled       bool   `json:"secure_boot_enabled"`
-	TPMAvailable            bool   `json:"tpm_available"`
-	TPMMeasurementsVerified bool   `json:"tpm_measurements_verified"`
-	TPMQuoteVerified        bool   `json:"tpm_quote_verified"`
-	DeploymentVerified      bool   `json:"deployment_verified"`
-	ReleaseBaselineVerified bool   `json:"release_baseline_verified"`
-	DeploymentDigest        string `json:"deployment_digest"`
-	PolicyDigest            string `json:"policy_digest"`
-	TPMAKPublicKeySHA256    string `json:"tpm_ak_public_key_sha256"`
-	BundleHMAC              string `json:"bundle_hmac"`
-	BundleHMACVerified      bool   `json:"bundle_hmac_verified"`
-	RequestNonce            string `json:"request_nonce"`
-	RecoveryBinding         string `json:"recovery_binding"`
+	SchemaVersion            int          `json:"schema_version"`
+	BootstrapState           string       `json:"bootstrap_state"`
+	BootstrapPolicySatisfied bool         `json:"bootstrap_policy_satisfied"`
+	GPU                      GPUAssurance `json:"gpu"`
+	RequestedAt              string       `json:"requested_at"`
+	Timestamp                string       `json:"timestamp"`
+	State                    string       `json:"state"`
+	AssuranceMode            string       `json:"assurance_mode"`
+	EvidenceVerified         bool         `json:"evidence_verified"`
+	SecureBootEnabled        bool         `json:"secure_boot_enabled"`
+	TPMAvailable             bool         `json:"tpm_available"`
+	TPMMeasurementsVerified  bool         `json:"tpm_measurements_verified"`
+	TPMQuoteVerified         bool         `json:"tpm_quote_verified"`
+	DeploymentVerified       bool         `json:"deployment_verified"`
+	ReleaseBaselineVerified  bool         `json:"release_baseline_verified"`
+	DeploymentDigest         string       `json:"deployment_digest"`
+	PolicyDigest             string       `json:"policy_digest"`
+	TPMAKPublicKeySHA256     string       `json:"tpm_ak_public_key_sha256"`
+	BundleHMAC               string       `json:"bundle_hmac"`
+	BundleHMACVerified       bool         `json:"bundle_hmac_verified"`
+	RequestNonce             string       `json:"request_nonce"`
+	RecoveryBinding          string       `json:"recovery_binding"`
 }
 
 // RecoveryRequirement defines what must happen before returning to trusted
@@ -290,6 +296,9 @@ func (rm *RecoveryManager) Acknowledge(incidentID, operator string) (bool, strin
 }
 
 func validateRecoveryEvidence(req *RecoveryRequirement, evidence RecoveryAttestationEvidence) error {
+	if evidence.SchemaVersion != 2 || evidence.BootstrapState != "attested" || !evidence.BootstrapPolicySatisfied {
+		return fmt.Errorf("runtime attestation lacks schema 2 bootstrap assurance")
+	}
 	requestedAt, err := time.Parse(time.RFC3339Nano, evidence.RequestedAt)
 	if err != nil {
 		return fmt.Errorf("runtime attestation request time is invalid")
@@ -311,6 +320,20 @@ func validateRecoveryEvidence(req *RecoveryRequirement, evidence RecoveryAttesta
 	}
 	if attestedAt.After(now.Add(5 * time.Second)) {
 		return fmt.Errorf("runtime attestation timestamp is in the future")
+	}
+	if now.Sub(attestedAt) > 10*time.Minute {
+		return fmt.Errorf("runtime attestation is no longer current")
+	}
+	if err := validateRecoveryGPU(evidence.GPU, evidence.RequestNonce, now); err != nil {
+		return err
+	}
+	if evidence.GPU.Mode != "no_gpu" {
+		snapshot := evidence.GPU.Runtime.Evidence.Snapshot
+		started, _ := time.Parse(time.RFC3339Nano, snapshot.StartedAt)
+		completed, _ := time.Parse(time.RFC3339Nano, snapshot.CompletedAt)
+		if !started.After(requiredAfter) || !completed.After(requiredAfter) {
+			return fmt.Errorf("runtime GPU cycle is not newer than the containment transaction")
+		}
 	}
 	if evidence.State != "attested" ||
 		evidence.AssuranceMode != "hardware" ||
@@ -362,6 +385,7 @@ func (rm *RecoveryManager) RecordVerifiedAttestation(
 	}
 
 	previous := cloneRequirement(req)
+	evidence.GPU = cloneGPUAssurance(evidence.GPU)
 	evidence.RecoveryBinding = req.ContainmentBinding
 	req.ReAttestedAt = evidence.Timestamp
 	req.AttestationEvidence = &evidence
@@ -406,7 +430,8 @@ func (rm *RecoveryManager) IsRecoveryComplete(incidentID string) bool {
 	if !ok {
 		return true // No requirement = no ceremony needed
 	}
-	return req.RecoveryComplete
+	return req.RecoveryComplete && (!req.RequireReattest || req.AttestationEvidence != nil &&
+		req.AttestationEvidence.RecoveryBinding == req.ContainmentBinding && validateRecoveryEvidence(req, *req.AttestationEvidence) == nil)
 }
 
 // CanReleaseIncident is the fail-closed lifecycle gate. Unlike
@@ -429,7 +454,8 @@ func (rm *RecoveryManager) CanReleaseIncident(inc Incident) (bool, string) {
 	if req.ContainmentBinding != binding {
 		return false, "containment transaction changed; a new recovery ceremony is required"
 	}
-	if !req.RecoveryComplete || req.ContainmentLatchActive {
+	if !req.RecoveryComplete || req.ContainmentLatchActive || req.RequireReattest &&
+		(req.AttestationEvidence == nil || req.AttestationEvidence.RecoveryBinding != req.ContainmentBinding || validateRecoveryEvidence(req, *req.AttestationEvidence) != nil) {
 		return false, "recovery ceremony is incomplete"
 	}
 	return true, ""
@@ -471,6 +497,7 @@ func cloneRequirement(req *RecoveryRequirement) *RecoveryRequirement {
 	copyReq.ContainmentResults = append([]ContainmentResult(nil), req.ContainmentResults...)
 	if req.AttestationEvidence != nil {
 		copyEvidence := *req.AttestationEvidence
+		copyEvidence.GPU = cloneGPUAssurance(copyEvidence.GPU)
 		copyReq.AttestationEvidence = &copyEvidence
 	}
 	return &copyReq
@@ -505,14 +532,21 @@ func (rm *RecoveryManager) persistLocked() error {
 	if err != nil {
 		return fmt.Errorf("create recovery state: %w", err)
 	}
+	defer file.Close()
 	tempPath := file.Name()
 	defer os.Remove(tempPath)
 	if err := file.Chmod(0640); err != nil {
 		file.Close()
 		return fmt.Errorf("secure recovery state: %w", err)
 	}
-	encoder := json.NewEncoder(file)
-	if err := encoder.Encode(state); err != nil {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if len(data)+1 > maxRecoveryStateFileSize {
+		return fmt.Errorf("recovery state capacity reached; preserve unresolved requirements and archive completed history")
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
 		file.Close()
 		return fmt.Errorf("encode recovery state: %w", err)
 	}
@@ -578,12 +612,7 @@ func (rm *RecoveryManager) Load() error {
 		return fmt.Errorf("read recovery state: %w", err)
 	}
 	var state recoveryStateFile
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return fmt.Errorf("decode recovery state: %w", err)
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
+	if err := evidence.StrictJSON(data, &state); err != nil {
 		return fmt.Errorf("decode recovery state: %w", err)
 	}
 	if state.Version != recoveryStateVersion {
@@ -672,29 +701,182 @@ type runtimeBootMeasurements struct {
 // Keep this schema in exact lockstep with runtime-attestor's
 // RuntimeStateBundle. The HMAC covers every field, not merely the recovery
 // subset.
+type GPUAssurance struct {
+	Mode            string          `json:"mode"`
+	PolicySatisfied bool            `json:"policy_satisfied"`
+	Bootstrap       GPUScopeOutcome `json:"bootstrap"`
+	Runtime         GPUScopeOutcome `json:"runtime"`
+}
+
+type GPUScopeOutcome struct {
+	Scope           string                        `json:"scope"`
+	Status          string                        `json:"status"`
+	Authenticated   bool                          `json:"authenticated"`
+	Verified        bool                          `json:"verified"`
+	ProfileSHA256   string                        `json:"profile_sha256"`
+	BaselineSHA256  string                        `json:"baseline_sha256"`
+	RequiredProbes  map[string]evidence.ProbeType `json:"required_probes"`
+	MaxAgeSeconds   int64                         `json:"max_age_seconds"`
+	MaxCycleSeconds int64                         `json:"max_cycle_seconds"`
+	Evidence        *evidence.Evidence            `json:"evidence"`
+}
+
 type runtimeAttestationResponse struct {
-	Timestamp               string                  `json:"timestamp"`
-	State                   string                  `json:"state"`
-	AssuranceMode           string                  `json:"assurance_mode"`
-	EvidenceVerified        bool                    `json:"evidence_verified"`
-	RequestNonce            string                  `json:"request_nonce"`
-	BootMeasurements        runtimeBootMeasurements `json:"boot_measurements"`
-	DeploymentDigest        string                  `json:"deployment_digest"`
-	DeploymentVerified      bool                    `json:"deployment_verified"`
-	ReleaseSourceCommit     string                  `json:"release_source_commit"`
-	ReleaseBaselineVerified bool                    `json:"release_baseline_verified"`
-	ServiceDigests          map[string]string       `json:"service_digests"`
-	PolicyDigest            string                  `json:"policy_digest"`
-	RegistryManifestHash    string                  `json:"registry_manifest_hash"`
-	KernelCmdline           string                  `json:"kernel_cmdline"`
-	KernelLockdown          string                  `json:"kernel_lockdown"`
-	TPMAvailable            bool                    `json:"tpm_available"`
-	TPMMeasurementsVerified bool                    `json:"tpm_measurements_verified"`
-	TPMQuoteVerified        bool                    `json:"tpm_quote_verified"`
-	TPMAKPublicKeySHA256    string                  `json:"tpm_ak_public_key_sha256"`
-	TPMQuotePCRSelection    string                  `json:"tpm_quote_pcr_selection"`
-	Failures                []string                `json:"failures,omitempty"`
-	BundleHMAC              string                  `json:"bundle_hmac"`
+	SchemaVersion            int                     `json:"schema_version"`
+	BootstrapState           string                  `json:"bootstrap_state"`
+	BootstrapPolicySatisfied bool                    `json:"bootstrap_policy_satisfied"`
+	GPU                      GPUAssurance            `json:"gpu"`
+	Timestamp                string                  `json:"timestamp"`
+	State                    string                  `json:"state"`
+	AssuranceMode            string                  `json:"assurance_mode"`
+	EvidenceVerified         bool                    `json:"evidence_verified"`
+	RequestNonce             string                  `json:"request_nonce"`
+	BootMeasurements         runtimeBootMeasurements `json:"boot_measurements"`
+	DeploymentDigest         string                  `json:"deployment_digest"`
+	DeploymentVerified       bool                    `json:"deployment_verified"`
+	ReleaseSourceCommit      string                  `json:"release_source_commit"`
+	ReleaseBaselineVerified  bool                    `json:"release_baseline_verified"`
+	ServiceDigests           map[string]string       `json:"service_digests"`
+	PolicyDigest             string                  `json:"policy_digest"`
+	RegistryManifestHash     string                  `json:"registry_manifest_hash"`
+	KernelCmdline            string                  `json:"kernel_cmdline"`
+	KernelLockdown           string                  `json:"kernel_lockdown"`
+	TPMAvailable             bool                    `json:"tpm_available"`
+	TPMMeasurementsVerified  bool                    `json:"tpm_measurements_verified"`
+	TPMQuoteVerified         bool                    `json:"tpm_quote_verified"`
+	TPMAKPublicKeySHA256     string                  `json:"tpm_ak_public_key_sha256"`
+	TPMQuotePCRSelection     string                  `json:"tpm_quote_pcr_selection"`
+	Failures                 []string                `json:"failures,omitempty"`
+	BundleHMAC               string                  `json:"bundle_hmac"`
+}
+
+// Signed GPU policy is rechecked independently of the attestor's summary bits.
+func validateRecoveryGPU(gpu GPUAssurance, nonce string, now time.Time) error {
+	if !gpu.PolicySatisfied || !canonicalSHA256String(nonce) {
+		return fmt.Errorf("GPU policy is not satisfied")
+	}
+	if gpu.Mode != "no_gpu" && gpu.Mode != "required" && gpu.Mode != "optional" {
+		return fmt.Errorf("GPU assurance mode is not enrolled")
+	}
+	for scope, outcome := range map[string]GPUScopeOutcome{"bootstrap": gpu.Bootstrap, "runtime": gpu.Runtime} {
+		if outcome.Scope != scope {
+			return fmt.Errorf("GPU scope binding mismatch")
+		}
+		if gpu.Mode == "no_gpu" {
+			if outcome.Status != "not_applicable" || outcome.Authenticated || outcome.Verified || outcome.ProfileSHA256 != "" || outcome.BaselineSHA256 != "" || len(outcome.RequiredProbes) != 0 || outcome.MaxAgeSeconds != 0 || outcome.MaxCycleSeconds != 0 || outcome.Evidence != nil {
+				return fmt.Errorf("CPU-only GPU assurance contains unexpected evidence")
+			}
+			continue
+		}
+		if outcome.Status != "verified" || !outcome.Authenticated || !outcome.Verified || outcome.Evidence == nil || outcome.Evidence.SchemaVersion != 1 || outcome.Evidence.Scope != scope || outcome.Evidence.RequestNonce != nonce || !canonicalSHA256String(outcome.Evidence.ResponseMAC) {
+			return fmt.Errorf("GPU evidence is not authenticated or bound to the refresh")
+		}
+		// Bound seconds before converting them into durations, preventing overflow.
+		if outcome.MaxAgeSeconds < 1 || outcome.MaxAgeSeconds > 600 || outcome.MaxCycleSeconds < 1 || outcome.MaxCycleSeconds > outcome.MaxAgeSeconds {
+			return fmt.Errorf("GPU freshness policy is invalid")
+		}
+		if err := evidence.ValidateEnvelopeShape(*outcome.Evidence); err != nil {
+			return err
+		}
+		policy := evidence.Policy{Scope: scope, ProfileSHA256: outcome.ProfileSHA256, BaselineSHA256: outcome.BaselineSHA256, RequiredProbes: outcome.RequiredProbes, MaxAge: time.Duration(outcome.MaxAgeSeconds) * time.Second, MaxCycleDuration: time.Duration(outcome.MaxCycleSeconds) * time.Second}
+		if err := evidence.Validate(*outcome.Evidence, policy, now); err != nil {
+			return fmt.Errorf("GPU %s assurance rejected: %w", scope, err)
+		}
+	}
+	return nil
+}
+
+func cloneGPUAssurance(gpu GPUAssurance) GPUAssurance {
+	clone := func(outcome GPUScopeOutcome) GPUScopeOutcome {
+		if outcome.RequiredProbes != nil {
+			probes := make(map[string]evidence.ProbeType, len(outcome.RequiredProbes))
+			for id, kind := range outcome.RequiredProbes {
+				probes[id] = kind
+			}
+			outcome.RequiredProbes = probes
+		}
+		if outcome.Evidence != nil {
+			reply := *outcome.Evidence
+			if reply.Snapshot != nil {
+				snapshot := *reply.Snapshot
+				snapshot.Probes = append([]evidence.Probe(nil), snapshot.Probes...)
+				reply.Snapshot = &snapshot
+			}
+			outcome.Evidence = &reply
+		}
+		return outcome
+	}
+	gpu.Bootstrap, gpu.Runtime = clone(gpu.Bootstrap), clone(gpu.Runtime)
+	return gpu
+}
+
+func recoveryJSONFields(data []byte, fields []string, nullable ...string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil || object == nil || len(object) != len(fields) {
+		return nil, fmt.Errorf("attestation fields missing or unexpected")
+	}
+	for _, field := range fields {
+		value, ok := object[field]
+		allowNull := false
+		for _, allowed := range nullable {
+			if field == allowed {
+				allowNull = true
+			}
+		}
+		if !ok || !allowNull && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return nil, fmt.Errorf("attestation required field missing or null")
+		}
+	}
+	return object, nil
+}
+
+func decodeRuntimeAttestationResponse(data []byte) (runtimeAttestationResponse, error) {
+	var bundle runtimeAttestationResponse
+	if err := evidence.StrictJSON(data, &bundle); err != nil {
+		return bundle, err
+	}
+	fields := []string{"schema_version", "bootstrap_state", "bootstrap_policy_satisfied", "gpu", "timestamp", "state", "assurance_mode", "evidence_verified", "request_nonce", "boot_measurements", "deployment_digest", "deployment_verified", "release_source_commit", "release_baseline_verified", "service_digests", "policy_digest", "registry_manifest_hash", "kernel_cmdline", "kernel_lockdown", "tpm_available", "tpm_measurements_verified", "tpm_quote_verified", "tpm_ak_public_key_sha256", "tpm_quote_pcr_selection", "bundle_hmac"}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return bundle, err
+	}
+	if _, ok := raw["failures"]; ok {
+		fields = append(fields, "failures")
+	}
+	object, err := recoveryJSONFields(data, fields)
+	if err != nil {
+		return bundle, err
+	}
+	if bundle.SchemaVersion != 2 {
+		return bundle, fmt.Errorf("unsupported runtime attestation schema")
+	}
+	bootFields := []string{"secure_boot_enabled", "measured_at"}
+	var boot map[string]json.RawMessage
+	if err := json.Unmarshal(object["boot_measurements"], &boot); err != nil {
+		return bundle, err
+	}
+	if _, ok := boot["pcr_values"]; ok {
+		bootFields = append(bootFields, "pcr_values")
+	}
+	if _, err := recoveryJSONFields(object["boot_measurements"], bootFields); err != nil {
+		return bundle, err
+	}
+	gpu, err := evidence.ExactFields(object["gpu"], []string{"mode", "policy_satisfied", "bootstrap", "runtime"}, "")
+	if err != nil {
+		return bundle, err
+	}
+	for _, scope := range []string{"bootstrap", "runtime"} {
+		outcome, err := recoveryJSONFields(gpu[scope], []string{"scope", "status", "authenticated", "verified", "profile_sha256", "baseline_sha256", "required_probes", "max_age_seconds", "max_cycle_seconds", "evidence"}, "required_probes", "evidence")
+		if err != nil {
+			return bundle, err
+		}
+		if !bytes.Equal(bytes.TrimSpace(outcome["evidence"]), []byte("null")) {
+			if _, err := evidence.DecodeResponse(outcome["evidence"]); err != nil {
+				return bundle, err
+			}
+		}
+	}
+	return bundle, nil
 }
 
 var (
@@ -726,6 +908,9 @@ func loadRuntimeAttestationHMACKey() error {
 }
 
 func verifyRuntimeAttestationHMAC(bundle runtimeAttestationResponse) error {
+	if bundle.SchemaVersion != 2 {
+		return fmt.Errorf("unsupported runtime attestation schema")
+	}
 	if len(runtimeAttestationHMACKey) != sha256.Size {
 		return fmt.Errorf("runtime attestation HMAC verification key is unavailable")
 	}
@@ -812,6 +997,8 @@ func requestFreshRuntimeAttestation(ctx context.Context) (RecoveryAttestationEvi
 	if err != nil {
 		return evidence, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
 	requestedAt := time.Now().UTC()
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -826,8 +1013,11 @@ func requestFreshRuntimeAttestation(ctx context.Context) (RecoveryAttestationEvi
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
+	transport := &http.Transport{Proxy: nil, DisableCompression: true, MaxResponseHeaderBytes: 16 << 10}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout: 35 * time.Second,
+		Transport: transport,
+		Timeout:   35 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -837,44 +1027,54 @@ func requestFreshRuntimeAttestation(ctx context.Context) (RecoveryAttestationEvi
 		return evidence, fmt.Errorf("request fresh runtime attestation: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Encoding") != "" {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return evidence, fmt.Errorf("runtime-attestor refresh returned status %d", resp.StatusCode)
 	}
 
-	var bundle runtimeAttestationResponse
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxAttestationBodySize+1))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&bundle); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAttestationBodySize+1))
+	if err != nil || len(data) > maxAttestationBodySize {
+		return evidence, fmt.Errorf("runtime attestation response incomplete or oversized")
+	}
+	bundle, err := decodeRuntimeAttestationResponse(data)
+	if err != nil {
 		return evidence, fmt.Errorf("decode runtime attestation: %w", err)
 	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return evidence, fmt.Errorf("decode runtime attestation: %w", err)
-	}
+
 	if err := verifyRuntimeAttestationHMAC(bundle); err != nil {
 		return evidence, err
 	}
 	if !hmac.Equal([]byte(bundle.RequestNonce), []byte(requestNonce)) {
 		return evidence, fmt.Errorf("runtime attestation response is not bound to the refresh request")
 	}
+	if bundle.BootstrapState != "attested" || !bundle.BootstrapPolicySatisfied {
+		return evidence, fmt.Errorf("runtime attestation bootstrap policy is not satisfied")
+	}
+	if err := validateRecoveryGPU(bundle.GPU, bundle.RequestNonce, time.Now().UTC()); err != nil {
+		return evidence, err
+	}
 	evidence = RecoveryAttestationEvidence{
-		RequestedAt:             requestedAt.Format(time.RFC3339Nano),
-		Timestamp:               bundle.Timestamp,
-		State:                   bundle.State,
-		AssuranceMode:           bundle.AssuranceMode,
-		EvidenceVerified:        bundle.EvidenceVerified,
-		SecureBootEnabled:       bundle.BootMeasurements.SecureBootEnabled,
-		TPMAvailable:            bundle.TPMAvailable,
-		TPMMeasurementsVerified: bundle.TPMMeasurementsVerified,
-		TPMQuoteVerified:        bundle.TPMQuoteVerified,
-		DeploymentVerified:      bundle.DeploymentVerified,
-		ReleaseBaselineVerified: bundle.ReleaseBaselineVerified,
-		DeploymentDigest:        bundle.DeploymentDigest,
-		PolicyDigest:            bundle.PolicyDigest,
-		TPMAKPublicKeySHA256:    bundle.TPMAKPublicKeySHA256,
-		BundleHMAC:              bundle.BundleHMAC,
-		BundleHMACVerified:      true,
-		RequestNonce:            bundle.RequestNonce,
+		SchemaVersion:            bundle.SchemaVersion,
+		BootstrapState:           bundle.BootstrapState,
+		BootstrapPolicySatisfied: bundle.BootstrapPolicySatisfied,
+		GPU:                      bundle.GPU,
+		RequestedAt:              requestedAt.Format(time.RFC3339Nano),
+		Timestamp:                bundle.Timestamp,
+		State:                    bundle.State,
+		AssuranceMode:            bundle.AssuranceMode,
+		EvidenceVerified:         bundle.EvidenceVerified,
+		SecureBootEnabled:        bundle.BootMeasurements.SecureBootEnabled,
+		TPMAvailable:             bundle.TPMAvailable,
+		TPMMeasurementsVerified:  bundle.TPMMeasurementsVerified,
+		TPMQuoteVerified:         bundle.TPMQuoteVerified,
+		DeploymentVerified:       bundle.DeploymentVerified,
+		ReleaseBaselineVerified:  bundle.ReleaseBaselineVerified,
+		DeploymentDigest:         bundle.DeploymentDigest,
+		PolicyDigest:             bundle.PolicyDigest,
+		TPMAKPublicKeySHA256:     bundle.TPMAKPublicKeySHA256,
+		BundleHMAC:               bundle.BundleHMAC,
+		BundleHMACVerified:       true,
+		RequestNonce:             bundle.RequestNonce,
 	}
 	return evidence, nil
 }
@@ -1000,7 +1200,7 @@ type forensicPayload struct {
 
 const (
 	minForensicHMACKeyBytes = 32
-	maxForensicPayloadBytes = 128 << 20
+	maxForensicPayloadBytes = 8 << 20
 )
 
 var forensicHMACKey []byte
@@ -1229,7 +1429,11 @@ func handleForensicExport(w http.ResponseWriter, r *http.Request) {
 	incidentsMu.RUnlock()
 
 	// Read audit log tail (last 1000 entries)
-	auditEntries := readAuditLogTail(1000)
+	auditEntries, tailErr := readAuditLogTail(1000)
+	if tailErr != nil {
+		http.Error(w, `{"error":"audit evidence unavailable or incomplete"}`, http.StatusServiceUnavailable)
+		return
+	}
 	if auditEntries == nil {
 		auditEntries = []string{}
 	}
@@ -1248,6 +1452,7 @@ func handleForensicExport(w http.ResponseWriter, r *http.Request) {
 		map[string]string{
 			"export_time":     time.Now().UTC().Format(time.RFC3339),
 			"service":         "incident-recorder",
+			"audit_scope":     "up to 1000 complete records from the last 4 MiB",
 			"total_incidents": fmt.Sprintf("%d", len(allIncidents)),
 			"open_incidents":  fmt.Sprintf("%d", len(openInc)),
 		},

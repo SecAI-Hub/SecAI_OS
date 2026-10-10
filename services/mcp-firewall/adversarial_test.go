@@ -74,7 +74,7 @@ func TestAdversarial_TaintBypassAttempt(t *testing.T) {
 	engine := NewPolicyEngine(pol)
 	ts := NewTaintState()
 
-	// Apply external taint via search
+	// Evaluate an external-data source.
 	searchReq := EvalRequest{
 		Server:    "web-search",
 		Method:    "tools/call",
@@ -83,10 +83,14 @@ func TestAdversarial_TaintBypassAttempt(t *testing.T) {
 		Arguments: map[string]string{"query": "test"},
 	}
 	searchDecision := engine.Evaluate(searchReq, ts)
-	if searchDecision.Action == "allow" {
-		// Taint is applied automatically by the engine via TaintLabel
-		t.Logf("search allowed, taint should be applied automatically")
+	if searchDecision.Action != "allow" || len(searchDecision.TaintApplied) != 1 || searchDecision.TaintApplied[0] != "external-data" {
+		t.Fatalf("search did not produce the required post-execution taint instruction: %#v", searchDecision)
 	}
+	if ts.HasTaint(searchReq.SessionID, "external-data") {
+		t.Fatal("evaluation applied taint before authenticated successful completion")
+	}
+	// Model the trusted completion endpoint after the search executes successfully.
+	ts.Add(searchReq.SessionID, "external-data", "web-search/search")
 
 	// Now try to write (should be blocked by taint rule)
 	writeReq := EvalRequest{
@@ -99,24 +103,8 @@ func TestAdversarial_TaintBypassAttempt(t *testing.T) {
 
 	writeDecision := engine.Evaluate(writeReq, ts)
 
-	// Check taint rules should block this
-	taintEntries := ts.Entries("taint-bypass-session")
-	if len(taintEntries) > 0 {
-		for _, rule := range pol.TaintRules {
-			for _, entry := range taintEntries {
-				for _, srcLabel := range rule.Match.SourceTaint {
-					if entry.Label == srcLabel {
-						for _, targetTool := range rule.Match.TargetTools {
-							if targetTool == writeReq.Tool {
-								// Taint rule should block this
-								t.Logf("taint rule %q correctly blocks write after external taint (decision=%s)", rule.Name, writeDecision.Action)
-								return
-							}
-						}
-					}
-				}
-			}
-		}
+	if writeDecision.Action != "deny" || writeDecision.Rule != "no-external-to-write" {
+		t.Fatalf("post-completion taint bypassed write rule: %#v", writeDecision)
 	}
 }
 
@@ -213,7 +201,7 @@ func testAdversarialPolicy() *FirewallPolicy {
 				TrustLevel: "untrusted",
 				RateLimit:  30,
 				AllowedTools: []ToolPolicy{
-					{Name: "search", Action: "allow", TaintLabel: "external-data"},
+					{Name: "search", Action: "allow", TaintLabel: "external-data", ArgRules: []ArgRule{{Name: "query", Required: true, MaxLen: 1000}}},
 				},
 			},
 		},

@@ -22,6 +22,7 @@ import ctypes.util
 import logging
 import os
 import platform
+import stat
 import struct
 import sys
 
@@ -166,6 +167,22 @@ def _access_for_mode(mode: str, abi_version: int = 1) -> int:
         return ACCESS_RO
 
 
+def _access_for_inode(mode: str, inode_mode: int, abi_version: int) -> int:
+    """Remove directory-only rights from the exact opened inode's rule.
+
+    Landlock file rules accept EXECUTE, READ_FILE, WRITE_FILE, TRUNCATE and
+    IOCTL_DEV only. Intersect both requested and ABI-supported rights; this
+    never adds authority or changes the policy's handled-rights mask.
+    """
+    requested = _access_for_mode(mode, abi_version) & _handled_access_for_abi(abi_version)
+    if stat.S_ISDIR(inode_mode):
+        return requested
+    file_rights = (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE
+                   | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE
+                   | LANDLOCK_ACCESS_FS_IOCTL_DEV)
+    return requested & file_rights
+
+
 def apply_landlock(service_name: str) -> bool:
     """Apply Landlock restrictions for the named service.
 
@@ -236,12 +253,18 @@ def apply_landlock(service_name: str) -> bool:
                 log.debug("optional path does not exist, skipping: %s", path)
             continue
 
-        access_flags = _access_for_mode(access_mode, abi_version)
-
         try:
             fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
         except OSError as e:
             log.error("cannot open path %s: %s", path, e)
+            rule_failed = True
+            continue
+
+        try:
+            access_flags = _access_for_inode(access_mode, os.fstat(fd).st_mode, abi_version)
+        except OSError as e:
+            os.close(fd)
+            log.error("cannot inspect opened path %s: %s", path, e)
             rule_failed = True
             continue
 

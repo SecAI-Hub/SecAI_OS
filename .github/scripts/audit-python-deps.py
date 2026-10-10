@@ -18,9 +18,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 REQUIREMENT_FILES = [
     Path("requirements-ci.lock"),
+    Path(".github/requirements-windows-sandbox.lock"),
     Path("services/agent/requirements.lock"),
     Path("services/search-mediator/requirements.lock"),
     Path("services/ui/requirements.lock"),
@@ -78,7 +82,7 @@ def pip_audit_cmd() -> list[str]:
 
 
 def load_waivers() -> set[str]:
-    today = dt.date.today().isoformat()
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
     data = json.loads(WAIVERS_FILE.read_text(encoding="utf-8"))
     return {
         item["id"]
@@ -87,147 +91,169 @@ def load_waivers() -> set[str]:
     }
 
 
-def extract_findings(data: Any) -> list[tuple[str, str, str]]:
-    deps = data if isinstance(data, list) else data.get("dependencies", [])
-    findings: list[tuple[str, str, str]] = []
-    for dep in deps:
-        for vuln in dep.get("vulns", []):
-            findings.append(
-                (
-                    dep.get("name", "unknown"),
-                    vuln.get("id", "unknown"),
-                    vuln.get("description", ""),
-                )
+def target_environment(req: Path) -> dict[str, str]:
+    """Select the lock generator's target, never the auditor host's markers."""
+    python = "3.14.8" if req.name.endswith("-py314.lock") else "3.12.15"
+    windows = req.name == "requirements-windows-sandbox.lock"
+    return {
+        "implementation_name": "cpython", "implementation_version": python,
+        "os_name": "nt" if windows else "posix",
+        "platform_machine": "AMD64" if windows else "x86_64",
+        "platform_python_implementation": "CPython",
+        "platform_system": "Windows" if windows else "Linux",
+        "python_full_version": python, "python_version": python.rsplit(".", 1)[0],
+        "sys_platform": "win32" if windows else "linux",
+    }
+
+
+def expected_requirements(
+    req: Path, local_packages: frozenset[str] = frozenset(),
+    *, environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Validate pinned artifact entries and select their exact advisory pairs.
+
+    Artifact hashes remain in the real lock. The temporary advisory input has
+    no resolver options, hashes, markers, URLs or dependency installation.
+    """
+    environment = target_environment(req) if environment is None else environment
+    text = req.read_text(encoding="utf-8")
+    text = re.sub(r"\\\r?\n", " ", text)
+    selected: dict[str, str] = {}
+    seen_local: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # These artifact retrieval options are never forwarded to pip-audit.
+        if re.fullmatch(r"--(?:index-url|find-links) https://[^\s]+", line):
+            continue
+        hashes = re.findall(r"\s+--hash=sha256:([0-9a-f]{64})(?=\s|$)", line)
+        if not hashes:
+            raise ValueError(f"{req}: requirement has no valid SHA256 artifact hash")
+        requirement_text = re.sub(r"\s+--hash=sha256:[0-9a-f]{64}(?=\s|$)", "", line).strip()
+        requirement = Requirement(requirement_text)
+        specifiers = list(requirement.specifier)
+        if (requirement.url or requirement.extras or len(specifiers) != 1
+                or specifiers[0].operator != "==" or "*" in specifiers[0].version):
+            raise ValueError(f"{req}: dependency must be one exact version without extras or URL")
+        name = str(canonicalize_name(requirement.name))
+        version = Version(specifiers[0].version)
+        if name in local_packages:
+            seen_local.add(name)
+        elif version.local is not None:
+            raise ValueError(f"{req}: local version has no reviewed advisory mapping: {name}")
+        if requirement.marker:
+            # Release/kernel and optional-extra markers lack a fixed target in
+            # this gate. Refuse to borrow a value from the auditing machine.
+            expression = re.sub(r'"[^"\n]*"', '', str(requirement.marker))
+            if re.search(r"\b(platform_release|platform_version|extra|extras|dependency_groups)\b", expression):
+                raise ValueError(f"{req}: marker needs an explicit unsupported target value")
+            if not requirement.marker.evaluate(environment=environment):
+                continue
+        if name in local_packages:
+            name = CANONICAL_ADVISORY_NAMES.get(name, name)
+            version = Version(version.public)
+        if name in selected:
+            raise ValueError(f"{req}: duplicate selected advisory package: {name}")
+        selected[name] = str(version)
+    if local_packages - seen_local:
+        raise ValueError(f"{req}: expected local package blocks missing: {sorted(local_packages - seen_local)}")
+    if not selected:
+        raise ValueError(f"{req}: no dependencies selected for target environment")
+    return selected
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _invalid_constant(value: str) -> None:
+    raise ValueError(f"non-JSON constant: {value}")
+
+
+def run_audit(expected: dict[str, str]) -> tuple[int, Any | None, str]:
+    # A new private input prevents pip/requirements evaluation from omitting
+    # already installed build tools, resolving new dependencies or fetching URLs.
+    with tempfile.TemporaryDirectory(prefix="secai-advisories-") as directory:
+        req = Path(directory) / "selected.txt"
+        req.write_text("".join(f"{name}=={version}\n" for name, version in sorted(expected.items())))
+        try:
+            proc = subprocess.run(
+                [*pip_audit_cmd(), "--strict", "--desc", "--no-deps", "--disable-pip",
+                 "--progress-spinner", "off", "-r", str(req), "-f", "json"],
+                check=False, capture_output=True, text=True, timeout=180,
             )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return 2, None, f"audit tool failed: {exc}"
+    try:
+        data = json.loads(proc.stdout, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
+    except (ValueError, TypeError):
+        data = None
+    return proc.returncode, data, proc.stderr.strip()
+
+
+def validate_coverage(data: Any, expected: dict[str, str], code: int) -> list[tuple[str, str, str]]:
+    if not isinstance(data, dict) or not isinstance(data.get("dependencies"), list):
+        raise ValueError("audit JSON must contain a dependencies array")  # noqa: TRY004
+    seen: dict[str, str] = {}
+    findings: list[tuple[str, str, str]] = []
+    for dep in data["dependencies"]:
+        if (not isinstance(dep, dict) or not isinstance(dep.get("name"), str)
+                or not dep["name"] or not isinstance(dep.get("version"), str)
+                or not dep["version"] or "skip_reason" in dep
+                or not isinstance(dep.get("vulns"), list)):
+            raise ValueError("malformed or skipped audit dependency")
+        name = str(canonicalize_name(dep["name"], validate=True))
+        version = str(Version(dep["version"]))
+        if name in seen:
+            raise ValueError(f"duplicate audit dependency: {name}")
+        seen[name] = version
+        ids: set[str] = set()
+        for vuln in dep["vulns"]:
+            if (not isinstance(vuln, dict) or not isinstance(vuln.get("id"), str)
+                    or not vuln["id"].strip() or not isinstance(vuln.get("description", ""), str)
+                    or vuln["id"] in ids):
+                raise ValueError("malformed or duplicate vulnerability record")
+            ids.add(vuln["id"])
+            findings.append((name, vuln["id"], vuln.get("description", "")))
+    if seen != expected:
+        missing = sorted(set(expected) - set(seen))
+        unexpected = sorted(set(seen) - set(expected))
+        wrong = sorted(name for name in seen.keys() & expected.keys() if seen[name] != expected[name])
+        raise ValueError(f"audit coverage mismatch: missing={missing}, unexpected={unexpected}, wrong_version={wrong}")
+    if code != (1 if findings else 0):
+        raise ValueError(f"audit exit code {code} is inconsistent with {len(findings)} finding(s)")
     return findings
 
 
-def split_local_advisory_requirements(
-    req: Path,
-    package_names: frozenset[str],
-) -> tuple[Path, Path]:
-    """Build hash-complete and canonical-advisory temporary inputs.
-
-    ``pip-audit`` cannot query advisories for versions such as
-    ``2.13.0+cu129`` because those artifacts are not published on PyPI. It also
-    enables hash mode for the whole file when any requirement has a hash, so a
-    canonical unhashed line cannot coexist with the remaining hashed lock.
-
-    Return one hash-complete copy for all ordinary packages and one small,
-    unhashed advisory-only copy containing canonical base releases. Both are
-    audited, so backend-local packages cannot silently disappear from coverage.
-    """
-    if not package_names:
-        return req, req
-
-    package_re = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)")
-    remaining = tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        delete=False,
-        prefix=f"{req.stem}-audit-",
-        suffix=".txt",
-    )
-    advisory = tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        delete=False,
-        prefix=f"{req.stem}-local-advisory-",
-        suffix=".txt",
-    )
-    canonicalized: set[str] = set()
-    selected = False
-    with remaining, advisory:
-        advisory.write("--index-url https://pypi.org/simple\n")
-        for line in req.read_text(encoding="utf-8").splitlines():
-            if line.startswith("--find-links https://download.pytorch.org/"):
-                continue
-            match = package_re.match(line)
-            if match:
-                name = match.group(1).lower().replace("_", "-")
-                selected = name in package_names
-                if selected:
-                    version = match.group(2).split("+", 1)[0]
-                    advisory_name = CANONICAL_ADVISORY_NAMES.get(name, name)
-                    advisory.write(f"{advisory_name}=={version}\n")
-                    canonicalized.add(name)
-                    continue
-            if selected:
-                continue
-            remaining.write(line + "\n")
-    missing = package_names - canonicalized
-    if missing:
-        Path(remaining.name).unlink(missing_ok=True)
-        Path(advisory.name).unlink(missing_ok=True)
-        raise ValueError(
-            f"{req}: expected local package block(s) missing: "
-            + ", ".join(sorted(missing))
-        )
-    return Path(remaining.name), Path(advisory.name)
-
-
-def run_audit(req: Path, *, no_deps: bool = False) -> tuple[int, Any | None, str]:
-    extra_args = ["--no-deps", "--disable-pip"] if no_deps else []
-    proc = subprocess.run(
-        [
-            *pip_audit_cmd(),
-            "--strict",
-            "--desc",
-            *extra_args,
-            "-r",
-            str(req),
-            "-f",
-            "json",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def audit_one(req: Path, waivers: set[str], *, local_packages: frozenset[str] = frozenset()) -> int:
+    stderr = ""
     try:
-        data = json.loads(proc.stdout) if proc.stdout.strip() else None
-    except json.JSONDecodeError:
-        data = None
-    stderr = proc.stderr.strip()
-    return proc.returncode, data, stderr
-
-
-def audit_one(
-    req: Path,
-    waivers: set[str],
-    *,
-    no_deps: bool = False,
-    label: str | Path | None = None,
-) -> int:
-    display = label or req
-    code, data, stderr = run_audit(req, no_deps=no_deps)
-    if data is None:
-        print(f"::error::{display}: pip-audit produced no parseable JSON")
+        expected = expected_requirements(req, local_packages)
+        code, data, stderr = run_audit(expected)
+        findings = validate_coverage(data, expected, code)
+    except (ValueError, OSError) as exc:
+        print(f"::error::{req}: {exc}")
         if stderr:
             print(stderr)
         return 1
-
     errors = 0
-    findings = extract_findings(data)
     for package, vuln_id, description in findings:
         if vuln_id in waivers:
-            print(f"WAIVED: {display}: {package} {vuln_id}")
+            print(f"WAIVED: {req}: {package} {vuln_id}")
         else:
-            print(f"::error::{display}: {package}: {vuln_id} - {description}")
+            print(f"::error::{req}: {package}: {vuln_id} - {description}")
             errors += 1
-
-    if errors:
-        return errors
-    if findings:
-        print(f"OK: all findings waived for {display}")
-    else:
-        print(f"OK: no vulnerabilities in {display}")
-
-    if code not in (0, 1):
-        print(f"::error::{display}: pip-audit failed with exit code {code}")
-        if stderr:
-            print(stderr)
-        return 1
-    return 0
+    if not errors:
+        print(f"OK: {req}: coverage {len(expected)}/{len(expected)}, "
+              f"{len(findings)} finding(s), all waived" if findings else
+              f"OK: {req}: coverage {len(expected)}/{len(expected)}, no vulnerabilities")
+    return errors
 
 
 def main() -> int:
@@ -249,30 +275,7 @@ def main() -> int:
             print(f"::error::{req} is missing")
             errors += 1
             continue
-        audit_path, advisory_path = split_local_advisory_requirements(
-            req,
-            local_packages,
-        )
-        if local_packages:
-            canonicalized = ", ".join(sorted(local_packages))
-            print(
-                f"NOTE: {req}: separately auditing canonical local "
-                f"version(s): {canonicalized}"
-            )
-        try:
-            errors += audit_one(audit_path, waivers, no_deps=True, label=req)
-            if advisory_path != req:
-                errors += audit_one(
-                    advisory_path,
-                    waivers,
-                    no_deps=True,
-                    label=f"{req} (canonical local-version advisories)",
-                )
-        finally:
-            if audit_path != req:
-                audit_path.unlink(missing_ok=True)
-            if advisory_path != req:
-                advisory_path.unlink(missing_ok=True)
+        errors += audit_one(req, waivers, local_packages=local_packages)
 
     if errors:
         print(f"FAIL: {errors} Python dependency audit error(s)")

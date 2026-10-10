@@ -5,28 +5,31 @@ Tor-routed web search via local SearXNG instance.
 Sanitizes outbound queries (strips PII) and inbound results (strips HTML/scripts,
 detects injection attempts, enforces size limits).
 
-The LLM never touches the network. This service is the only bridge between
-inference and online information, and it routes everything through Tor.
+This bridge limits requests to a configured SearXNG origin. Tor routing and
+execution isolation need independent OS enforcement and verification.
 """
 
 # ruff: noqa: E402
 
-import hashlib
 import hmac
 import html
 import ipaddress
 import logging
+import math
 import os
 import re
 import secrets
+import stat
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 import yaml
 from flask import Flask, Response, jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
 # Add services/ to path so we can import common.audit_chain
 _services_root = str(Path(__file__).resolve().parent.parent)
@@ -34,6 +37,12 @@ if _services_root not in sys.path:
     sys.path.insert(0, _services_root)
 
 from common.audit_chain import AuditChain
+
+from search_privacy import contains_credentials, decoded_url_text, normalized_query, strip_tracking_parameters
+
+from search_boundary import AuditUnavailable, EgressDenied, SearchEgress
+from search_transport import request_bounded as _transport_get
+from flask import g, has_request_context
 
 log = logging.getLogger("search-mediator")
 
@@ -55,6 +64,8 @@ MAX_QUERY_LENGTH = 200
 MAX_RESULTS = 5
 MAX_SNIPPET_LENGTH = 500
 MAX_CONTEXT_LENGTH = 4000
+MAX_RESULT_URL_LENGTH = 2048
+app.config["MAX_CONTENT_LENGTH"] = MAX_SEARCH_BODY_BYTES
 
 # Traffic analysis protection (M19)
 QUERY_DELAY_MIN = float(os.getenv("QUERY_DELAY_MIN", "0.5"))   # seconds
@@ -196,10 +207,14 @@ _last_batch_time = 0.0
 # Traffic analysis protection (M19)
 # ---------------------------------------------------------------------------
 
+def _upstream_get(endpoint, *, params=None, timeout, expect_json, kind="search"):
+    return _egress.get(endpoint, params=params, timeout=timeout, expect_json=expect_json, kind=kind)
+
+
 def _random_delay() -> float:
     """Sleep a random duration to decorrelate query timing."""
     delay = _privacy_random.uniform(QUERY_DELAY_MIN, QUERY_DELAY_MAX)
-    time.sleep(delay)
+    _egress.sleep(delay)
     return delay
 
 
@@ -235,12 +250,19 @@ def _load_dp_config() -> dict:
     policy = load_policy()
     search = policy.get("search", {})
     dp = search.get("differential_privacy", {})
-    return {
+    value = {
         "enabled": dp.get("enabled", True),
         "decoy_count": dp.get("decoy_count", 2),
         "uniqueness_mode": dp.get("uniqueness_mode", "warn"),  # auto-block | warn | allow
         "batch_window": dp.get("batch_window", 5.0),  # seconds
     }
+    if (not isinstance(value["enabled"], bool)
+            or type(value["decoy_count"]) is not int or not 0 <= value["decoy_count"] <= 10
+            or value["uniqueness_mode"] not in {"auto-block", "warn", "allow"}
+            or type(value["batch_window"]) not in {int, float}
+            or not math.isfinite(value["batch_window"]) or not 0 <= value["batch_window"] <= 30):
+        raise EgressDenied("service privacy policy unavailable", 503)
+    return value
 
 
 def check_query_uniqueness(query: str) -> dict:
@@ -264,39 +286,36 @@ def generate_decoy_queries(count: int) -> list:
     return _privacy_random.sample(DECOY_QUERIES, count)
 
 
-def send_decoy_search(query: str) -> None:
-    """Fire-and-forget a decoy search to SearXNG. Results are discarded."""
+def send_decoy_search(query: str, *, kind="decoy") -> bool:
+    """Best-effort, audited cover traffic within the real search's deadline."""
+    if has_request_context() and _egress.remaining() <= 10:
+        return False
     try:
-        padded = pad_query(query)
-        params = {
-            "q": padded,
-            "format": "json",
-            "categories": "general",
-            "language": "en",
-            "safesearch": "1",
-        }
-        engines = _allowed_engines_param()
-        if engines:
-            params["engines"] = engines
-        requests.get(
-            f"{SEARXNG_URL}/search",
-            params=params,
-            headers=_searxng_request_headers(),
-            timeout=15,
-        )
-        log.debug("decoy search sent: %d chars", len(query))
-    except Exception:
-        pass  # decoys are best-effort
+        params = {"q": pad_query(query), "format": "json", "categories": "general", "language": "en", "safesearch": "1"}
+        engines = _decoy_engines_param()
+        if not engines:
+            return False
+        params["engines"] = engines
+        status = _upstream_get("/search", params=params, timeout=2, expect_json=False, kind=kind)
+        return status == 200
+    except (AuditUnavailable, EgressDenied):
+        raise
+    except (requests.RequestException, OSError, ValueError):
+        log.info("cover request failed; details omitted")
+        return False
 
 
 def run_decoy_searches(count: int) -> int:
-    """Send decoy searches with random timing. Returns count sent."""
-    decoys = generate_decoy_queries(count)
-    for dq in decoys:
-        delay = _privacy_random.uniform(0.2, 1.5)
-        time.sleep(delay)
-        send_decoy_search(dq)
-    return len(decoys)
+    """Return successful decoys, not attempts, while reserving real-search time."""
+    succeeded = 0
+    for query in generate_decoy_queries(max(0, min(count, 10))):
+        if has_request_context() and _egress.remaining() <= 10:
+            break
+        _egress.sleep(_privacy_random.uniform(0.2, 0.5))
+        if has_request_context():
+            g.decoys_attempted = getattr(g, "decoys_attempted", 0) + 1
+        succeeded += int(send_decoy_search(query))
+    return succeeded
 
 
 def generalize_query(query: str) -> str | None:
@@ -312,9 +331,8 @@ def generalize_query(query: str) -> str | None:
     return None
 
 
-def send_cover_search(category_term: str) -> None:
-    """Send a cover search for a broad category term. Results are discarded."""
-    send_decoy_search(category_term)
+def send_cover_search(category_term: str) -> bool:
+    return send_decoy_search(category_term, kind="cover")
 
 
 def apply_batch_delay(batch_window: float) -> float:
@@ -335,7 +353,7 @@ def apply_batch_delay(batch_window: float) -> float:
         elapsed = now - _last_batch_time
         if elapsed < batch_window:
             wait = batch_window - elapsed
-            time.sleep(wait)
+            _egress.sleep(wait)
             _last_batch_time = time.time()
             return wait
         else:
@@ -394,20 +412,49 @@ HTML_TAG_RE = re.compile(r"<[^>]+>")
 MULTI_SPACE_RE = re.compile(r"\s+")
 
 
-def load_config() -> dict:
+def _read_mapping(path: str) -> dict:
+    """Read one bounded, stable, non-writable policy/configuration file."""
     try:
-        with open(APPLIANCE_CONFIG) as f:
-            return yaml.safe_load(f) or {}
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return {}
+    except OSError:
+        raise EgressDenied("service policy unavailable", 503) from None
+    try:
+        with os.fdopen(fd, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o022 or before.st_size > 1024 * 1024:
+                raise ValueError("unsafe policy file")
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+            if len(raw) > 1024 * 1024 or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError("policy changed")
+        value = yaml.safe_load(raw) or {}
+        if not isinstance(value, dict):
+            raise ValueError("configuration root must be an object")
+        return value
+    except (OSError, ValueError, yaml.YAMLError):
+        raise EgressDenied("service policy unavailable", 503) from None
+
+
+def load_config() -> dict:
+    config = _read_mapping(APPLIANCE_CONFIG)
+    if not isinstance(config.get("session", {}), dict):
+        raise EgressDenied("service session configuration unavailable", 503)
+    return config
 
 
 def load_policy() -> dict:
-    try:
-        with open(POLICY_PATH) as f:
-            return yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        return {}
+    policy = _read_mapping(POLICY_PATH)
+    search = policy.get("search", {})
+    if (not isinstance(search, dict) or not isinstance(search.get("enabled", False), bool)
+            or not isinstance(search.get("differential_privacy", {}), dict)):
+        raise EgressDenied("service search policy unavailable", 503)
+    for key in ("allowed_engines", "allowed_categories"):
+        values = search.get(key, [])
+        if not isinstance(values, list) or len(values) > 64 or any(not isinstance(v, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", v) for v in values):
+            raise EgressDenied("service search policy unavailable", 503)
+    return policy
 
 
 def _read_service_token() -> str:
@@ -461,7 +508,10 @@ def _is_search_enabled() -> bool:
 def _get_session_mode() -> str:
     """Get current session mode from config."""
     config = load_config()
-    return config.get("session", {}).get("mode", "normal")
+    mode = config.get("session", {}).get("mode", "offline-only")
+    if mode not in {"normal", "sensitive", "offline-only"}:
+        raise EgressDenied("service session configuration unavailable", 503)
+    return mode
 
 
 def _allowed_engines_param() -> str | None:
@@ -494,42 +544,27 @@ def _decoy_engines_param() -> str | None:
     return ",".join(selected)
 
 
-def _searxng_request_headers() -> dict[str, str]:
-    """Return a fixed, privacy-preserving header set for SearXNG requests."""
-    return {
-        "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "en-US,en;q=0.9",
-        "User-Agent": "SecAI-SearchMediator/1.0",
-        "X-Forwarded-For": "127.0.0.1",
-        "X-Real-IP": "127.0.0.1",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Query sanitization (outbound)
-# ---------------------------------------------------------------------------
-
 def sanitize_query(raw_query: str) -> dict:
     """Strip PII and sensitive data from an outbound search query.
 
     Returns:
         {"query": sanitized_string, "redactions": [...], "blocked": bool, "reason": str}
     """
-    if not raw_query or not raw_query.strip():
+    if not isinstance(raw_query, str) or not raw_query.strip():
         return {"query": "", "redactions": [], "blocked": True, "reason": "empty query"}
 
-    query = raw_query.strip()
-
-    # Enforce length limit
-    if len(query) > MAX_QUERY_LENGTH:
-        query = query[:MAX_QUERY_LENGTH]
+    try:
+        query = normalized_query(raw_query)
+    except (ValueError, UnicodeError):
+        return {"query": "", "redactions": [], "blocked": True, "reason": "invalid query encoding or length"}
+    if contains_credentials(query):
+        return {"query": "[API_KEY]", "redactions": ["credential"], "blocked": True, "reason": "remove credentials from the query"}
 
     redactions = []
     for pattern, replacement in PII_PATTERNS:
         matches = pattern.findall(query)
         if matches:
-            redactions.extend(matches)
+            redactions.extend([replacement] * len(matches))
             query = pattern.sub(replacement, query)
 
     pii_placeholders = {
@@ -570,6 +605,9 @@ def sanitize_query(raw_query: str) -> dict:
             "reason": "query contains too much PII",
         }
 
+    if len(query) > MAX_QUERY_LENGTH or len(raw_query) > MAX_QUERY_LENGTH:
+        return {"query": "", "redactions": redactions, "blocked": True, "reason": "query exceeds maximum length"}
+
     return {"query": query, "redactions": redactions, "blocked": False, "reason": ""}
 
 
@@ -579,16 +617,19 @@ def sanitize_query(raw_query: str) -> dict:
 
 def sanitize_snippet(raw_text: str) -> str:
     """Clean a search result snippet: strip HTML, decode entities, remove injection."""
-    if not raw_text:
+    if not isinstance(raw_text, str) or not raw_text:
         return ""
 
-    # Strip HTML tags
     text = HTML_TAG_RE.sub(" ", raw_text)
-    # Decode HTML entities
     text = html.unescape(text)
-    # Collapse whitespace
+    text = unicodedata.normalize("NFKC", text)
+    # Remove controls, bidi overrides, zero-width format characters, and
+    # unpaired surrogates before pattern matching and JSON serialization.
+    text = "".join(
+        " " if unicodedata.category(character).startswith("C") else character
+        for character in text
+    )
     text = MULTI_SPACE_RE.sub(" ", text).strip()
-    # Truncate
     if len(text) > MAX_SNIPPET_LENGTH:
         text = text[:MAX_SNIPPET_LENGTH] + "..."
 
@@ -605,31 +646,51 @@ def check_injection(text: str) -> bool:
 
 def sanitize_results(raw_results: list) -> list:
     """Sanitize a list of search results from SearXNG."""
+    if not isinstance(raw_results, list):
+        return []
     clean = []
     for r in raw_results[:MAX_RESULTS]:
+        if not isinstance(r, dict):
+            continue
         title = sanitize_snippet(r.get("title", ""))
         snippet = sanitize_snippet(r.get("content", ""))
         url = r.get("url", "")
 
-        # Validate URL
         try:
+            if not isinstance(url, str) or len(url.encode("utf-8")) > MAX_RESULT_URL_LENGTH:
+                raise ValueError("invalid URL")
+            decoded_url = decoded_url_text(url)
+            if (
+                "\\" in decoded_url
+                or any(character.isspace() for character in url)
+                or any(
+                    unicodedata.category(character).startswith("C")
+                    for character in decoded_url
+                )
+            ):
+                raise ValueError("invalid URL")
             parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https"):
-                url = ""
-        except Exception:
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("invalid URL")
+            _ = parsed.port
+        except (TypeError, UnicodeError, ValueError):
             url = ""
 
-        # Check for injection in title and snippet
-        if check_injection(title) or check_injection(snippet):
-            log.warning("injection detected in result from %s, skipping", url)
+        if check_injection(title) or check_injection(snippet) or (url and check_injection(decoded_url)):
+            log.warning("search result rejected by content policy")
             continue
 
         if title or snippet:
             clean.append({
                 "title": title,
                 "snippet": snippet,
-                "url": url,
-                "source": parsed.netloc if url else "unknown",
+                "url": strip_tracking_parameters(url),
+                "source": parsed.hostname if url else "unknown",
             })
 
     return clean
@@ -640,7 +701,7 @@ def build_context(results: list) -> str:
     if not results:
         return ""
 
-    parts = ["The following information was retrieved from the web via Tor-routed search:\n"]
+    parts = ["The following untrusted information was retrieved from web search:\n"]
     for i, r in enumerate(results, 1):
         parts.append(f"[{i}] {r['title']}")
         if r["snippet"]:
@@ -663,9 +724,7 @@ def build_context(results: list) -> str:
 def audit_search(query: str, redactions: list, num_results: int, blocked: bool,
                  *, uniqueness_detected: bool = False):
     """Write a privacy-preserving audit record for every search attempt."""
-    query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
-    _audit_chain.append("web_search", {
-        "query_hash": query_hash,
+    _egress.audit("web_search", {
         "query_length": len(query),
         "redactions_count": len(redactions),
         "results_returned": num_results,
@@ -691,18 +750,22 @@ def health():
     searxng_ok = False
     if enabled and session_mode != "offline-only":
         try:
-            resp = requests.get(f"{SEARXNG_URL}/healthz", timeout=SEARCH_HEALTH_TIMEOUT)
-            searxng_ok = resp.status_code == 200
+            status = _upstream_get("/healthz", timeout=SEARCH_HEALTH_TIMEOUT, expect_json=False, kind="health")
+            searxng_ok = status == 200
+        except (AuditUnavailable, EgressDenied):
+            raise
         except Exception:
             pass
 
+    healthy = not enabled or session_mode == "offline-only" or searxng_ok
     return jsonify({
-        "status": "ok",
+        "status": "ok" if healthy else "degraded",
         "search_enabled": enabled,
         "session_mode": session_mode,
         "searxng_reachable": searxng_ok,
-        "tor_routed": True,
-    })
+        "tor_routed": None,
+        "routing_verified": False,
+    }), 200 if healthy else 503
 
 
 @app.route("/live")
@@ -713,7 +776,7 @@ def live():
         "search_enabled": _is_search_enabled(),
         "session_mode": _get_session_mode(),
         "searxng_reachable": None,
-        "tor_routed": True,
+        "tor_routed": None,
     })
 
 
@@ -737,11 +800,16 @@ def search():
         return jsonify({"error": "web search blocked in offline-only mode"}), 403
 
     body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "JSON body required"}), 400
+    if not isinstance(body, dict) or set(body) - {"query", "categories"}:
+        return jsonify({"error": "JSON object with query and optional categories required"}), 400
 
     raw_query = body.get("query", "")
     categories = body.get("categories", "general")
+    if not isinstance(raw_query, str):
+        return jsonify({"error": "query must be a string"}), 400
+    allowed_categories = load_policy().get("search", {}).get("allowed_categories", ["general"])
+    if not isinstance(categories, str) or categories not in allowed_categories:
+        return jsonify({"error": "search category is not allowed"}), 400
 
     # Sanitize the outbound query
     san = sanitize_query(raw_query)
@@ -752,13 +820,13 @@ def search():
             "redactions": len(san["redactions"]),
         }), 422
 
-    # Differential privacy checks (M20)
+    # Optional cover-traffic heuristics
     dp_config = _load_dp_config()
     uniqueness_warning = None
     decoys_sent = 0
 
     if dp_config["enabled"]:
-        # Check query uniqueness (k-anonymity)
+        # Heuristic identifier check
         uq = check_query_uniqueness(san["query"])
         if uq["unique"]:
             mode = dp_config["uniqueness_mode"]
@@ -772,19 +840,18 @@ def search():
                 )
                 return jsonify({
                     "error": "query blocked: contains highly unique/identifying terms",
-                    "unique_matches": uq["matches"],
+                    "unique_match_count": len(uq["matches"]),
                 }), 422
             elif mode == "warn":
                 uniqueness_warning = (
-                    f"This query contains potentially identifying terms: "
-                    f"{', '.join(uq['matches'][:3])}"
+                    "This query contains potentially identifying terms"
                 )
-                log.warning("unique query detected (warn mode): %s", uq["matches"][:3])
+                log.warning("unique query detected (warn mode; matches=%d)", len(uq["matches"]))
 
         # Query generalization: send a broader cover search first
         category = generalize_query(san["query"])
         if category:
-            log.debug("cover search for category: %s", category)
+            log.debug("cover search requested")
             send_cover_search(category)
 
         # Send decoy searches before the real query
@@ -811,19 +878,14 @@ def search():
         engines = _allowed_engines_param()
         if engines:
             params["engines"] = engines
-        resp = requests.get(
-            f"{SEARXNG_URL}/search",
-            params=params,
-            headers=_searxng_request_headers(),
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        data = _upstream_get("/search", params=params, timeout=30, expect_json=True)
+    except (AuditUnavailable, EgressDenied):
+        raise
     except requests.Timeout:
         audit_search(raw_query, san["redactions"], 0, False)
         return jsonify({"error": "search timed out (Tor may be connecting)"}), 504
     except Exception:
-        log.exception("SearXNG request failed")
+        log.warning("SearXNG request failed; upstream details omitted")
         audit_search(raw_query, san["redactions"], 0, False)
         return jsonify({"error": "search failed"}), 502
 
@@ -848,8 +910,12 @@ def search():
         "context": context,
         "query_used": san["query"],
         "redactions": len(san["redactions"]),
-        "tor_routed": True,
+        "tor_routed": None,
+        "routing_verified": False,
         "decoys_sent": decoys_sent,
+        "decoys_attempted": getattr(g, "decoys_attempted", 0),
+        "privacy_method": "heuristic cover traffic; no formal differential privacy guarantee",
+        **_egress.metadata(),
         "untrusted_external_data": True,
     }
     if uniqueness_warning:
@@ -860,7 +926,7 @@ def search():
 
 @app.route("/v1/search/test", methods=["GET"])
 def search_test():
-    """Quick connectivity test: verify Tor circuit is working."""
+    """Check SearXNG connectivity; this does not attest a Tor circuit."""
     authorized, auth_response = _require_service_token()
     if not authorized:
         return auth_response
@@ -868,24 +934,25 @@ def search_test():
     if not _is_search_enabled():
         return jsonify({"error": "web search is disabled"}), 403
 
+    if _get_session_mode() == "offline-only":
+        return jsonify({"error": "web search blocked in offline-only mode"}), 403
+
     try:
         params = {"q": "test", "format": "json"}
         engines = _allowed_engines_param()
         if engines:
             params["engines"] = engines
-        resp = requests.get(
-            f"{SEARXNG_URL}/search",
-            params=params,
-            headers=_searxng_request_headers(),
-            timeout=30,
-        )
+        status = _upstream_get("/search", params=params, timeout=30, expect_json=False, kind="test")
         return jsonify({
             "status": "ok",
-            "searxng_status": resp.status_code,
-            "tor_routed": True,
+            "searxng_status": status,
+            "tor_routed": None,
+            "routing_verified": False,
         })
+    except (AuditUnavailable, EgressDenied):
+        raise
     except Exception:
-        log.exception("SearXNG health check failed")
+        log.warning("SearXNG health check failed; upstream details omitted")
         return jsonify({
             "status": "error",
             "error": "search health check failed",
@@ -900,8 +967,35 @@ def main():
     )
     host, port = BIND_ADDR.rsplit(":", 1)
     log.warning("Running Flask dev server — use gunicorn in production")
-    log.info("search-mediator starting on %s (SearXNG=%s)", BIND_ADDR, SEARXNG_URL)
+    log.info("search-mediator starting on %s", BIND_ADDR)
     app.run(host=host, port=int(port), debug=False, threaded=True)
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def request_too_large(_error):
+    return jsonify({"error": "request body too large"}), 413
+
+
+def _authorize_egress(endpoint, params):
+    if not _is_search_enabled():
+        raise EgressDenied("web search is disabled in policy")
+    if _get_session_mode() == "offline-only":
+        raise EgressDenied("web search blocked in offline-only mode")
+    search = load_policy().get("search", {})
+    if params.get("categories", "general") not in search.get("allowed_categories", ["general"]):
+        raise EgressDenied("search category is not allowed")
+    configured = search.get("allowed_engines", [])
+    selected = params.get("engines", "").split(",")
+    if configured and (selected == [""] or any(engine not in configured for engine in selected)) and endpoint == "/search":
+        raise EgressDenied("search engines changed; retry with current policy")
+
+
+_egress = SearchEgress(
+    app, authenticate=lambda: _require_service_token(), authorize=_authorize_egress,
+    audit=lambda event, payload: _audit_chain.append(event, payload),
+    transport=lambda *args, **kwargs: _transport_get(*args, **kwargs),
+    origin=lambda: SEARXNG_URL,
+)
 
 
 if __name__ == "__main__":

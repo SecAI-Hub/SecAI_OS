@@ -1,12 +1,16 @@
-FROM docker.io/library/python:3.14-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4
+FROM docker.io/library/python:3.14.8-alpine3.24@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+
+# Build from the repository root: docker build -f services/ui/Dockerfile .
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/services
 
 WORKDIR /app
-COPY pyproject.toml .
-COPY requirements.lock .
-COPY ui/ ui/
+COPY services/ui/pyproject.toml .
+COPY services/ui/requirements.lock .
+COPY services/ui/ui/ ui/
+COPY services/common/ services/common/
 
 RUN python -m pip install --no-cache-dir --require-hashes -r requirements.lock && \
-    python -m pip install --no-cache-dir --no-deps .
+    python -m pip install --no-cache-dir --no-deps --no-build-isolation .
 
 USER 65534:65534
 EXPOSE 8480

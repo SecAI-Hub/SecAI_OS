@@ -3,11 +3,11 @@ version: 1
 # Directory containing model weight files to monitor.
 model_dir: /var/lib/secure-ai/vault/models
 
-# Inference endpoint for sentinel probes (llama-server).
-inference_url: "http://127.0.0.1:8465"
+# Bounded authenticated fixed-reference probe adapter; never llama-server directly.
+inference_url: "http://127.0.0.1:8497"
 
-# File to store/load baseline hashes.
-baseline_file: /var/lib/secure-ai/gpu-integrity/baseline.yaml
+# Reviewed protected baseline; approval pins are in measured attestation policy.
+baseline_file: /etc/secure-ai/gpu-integrity/runtime-baseline.yaml
 
 # Probe configuration — probes run in order listed.
 probes:
@@ -57,14 +57,12 @@ scoring:
     device_allowlist: 0.8
   max_history: 200
 
-# Automated response actions.
+# Observation alerts only. Runtime admission blocks failed evidence; the
+# authenticated incident recorder owns containment. The probe adapter has no
+# reload, shutdown, file, model-selection or slot-management actions.
 actions:
   - name: alert-warning
     type: alert
-    trigger: warning
-
-  - name: reload-on-drift
-    type: reload
     trigger: warning
 
   # Registry quarantine is performed by the authenticated incident-recorder
@@ -72,10 +70,6 @@ actions:
   # access to the trusted model directory.
   - name: report-critical
     type: alert
-    trigger: critical
-
-  - name: fail-closed
-    type: fail_closed
     trigger: critical
 
 # Daemon settings.

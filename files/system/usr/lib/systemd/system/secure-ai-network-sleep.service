@@ -1,0 +1,47 @@
+[Unit]
+Description=Close managed network grants across system sleep
+Before=sleep.target
+StopWhenUnneeded=yes
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=secure-ai-network
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/libexec/secure-ai/network-profile.py sleep-close
+ExecStopPost=/usr/libexec/secure-ai/network-profile.py sleep-release
+TimeoutStartSec=30
+TimeoutStopSec=30
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=-/var/lib/secure-ai/vault -/var/lib/secure-ai/credentials -/var/lib/secure-ai/keys
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+LimitCORE=0
+MemoryMax=96M
+TasksMax=16
+ReadOnlyPaths=/etc/nftables
+ReadWritePaths=/run/secure-ai /run/secure-ai-network
+
+[Install]
+RequiredBy=sleep.target

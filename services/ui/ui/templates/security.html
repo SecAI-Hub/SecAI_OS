@@ -9,10 +9,10 @@
 <!-- Appliance Health Banner -->
 <div class="card" id="appliance-banner" style="margin-bottom:1rem;border-left:4px solid var(--text-muted)">
     <div class="card-header">
-        <span class="card-title" style="font-size:1.1rem">Appliance State</span>
+        <span class="card-title" style="font-size:1.1rem">Runtime Evidence</span>
         <span class="badge badge-muted" id="appliance-state-badge">checking...</span>
     </div>
-    <p class="meta" id="appliance-state-detail">Aggregating subsystem states...</p>
+    <p class="meta" id="appliance-state-detail" role="status" aria-live="polite" aria-atomic="true">Aggregating subsystem states...</p>
     <div id="appliance-subsystems" style="margin-top:0.5rem;display:none">
         <table class="data-table">
             <thead><tr><th>Subsystem</th><th>State</th></tr></thead>
@@ -24,12 +24,12 @@
 <!-- Stats overview -->
 <div class="stats-grid" id="stats-grid">
     <div class="stat-card">
-        <div class="stat-value text-success" id="stat-services">--</div>
-        <div class="stat-label">Services Online</div>
+        <div class="stat-value" id="stat-services">--</div>
+        <div class="stat-label">Services Responding</div>
     </div>
     <div class="stat-card">
         <div class="stat-value text-accent" id="stat-models">--</div>
-        <div class="stat-label">Trusted Models</div>
+        <div class="stat-label">Registered Models</div>
     </div>
     <div class="stat-card">
         <div class="stat-value" id="stat-integrity" style="color:var(--text-muted)">--</div>
@@ -37,7 +37,7 @@
     </div>
     <div class="stat-card">
         <div class="stat-value" id="stat-audit" style="color:var(--text-muted)">--</div>
-        <div class="stat-label">Audit Chain</div>
+        <div class="stat-label">Audit Evidence</div>
     </div>
 </div>
 
@@ -59,12 +59,13 @@
 </div>
 
 <!-- SLO Compliance -->
-<div class="section-title">SLO Compliance</div>
+<div class="section-title">Service Observations</div>
 <div class="card">
     <div class="card-header">
-        <span class="card-title">Service Level Objectives</span>
+        <span class="card-title">Browser-triggered SLO Samples</span>
         <span class="badge badge-muted" id="slo-badge">loading</span>
     </div>
+    <p class="meta">These samples are collected when browsers request status. Coverage and continuous service availability are not verified.</p>
     <table class="data-table" id="slo-table">
         <thead>
             <tr><th>Metric</th><th>Target</th><th>Current</th><th>Status</th></tr>
@@ -87,7 +88,7 @@
     </div>
     <div class="card" id="tpm2-card">
         <div class="card-header">
-            <span class="card-title">TPM2 Vault Sealing</span>
+            <span class="card-title">TPM2 Vault Enrollment</span>
             <span class="badge badge-muted" id="tpm2-badge">checking</span>
         </div>
         <p class="meta" id="tpm2-detail">Checking TPM2 status...</p>
@@ -98,8 +99,8 @@
 <div class="section-title">Audit Log Integrity</div>
 <div class="card">
     <div class="card-header">
-        <span class="card-title">Hash-Chained Audit Logs</span>
-        <button class="btn btn-sm" id="verify-audit-btn" type="button">Verify Now</button>
+        <span class="card-title">Audit Evidence Coverage</span>
+        <button class="btn btn-sm" id="verify-audit-btn" type="button">Verification Instructions</button>
     </div>
     <p class="meta" id="audit-detail">Loading audit status...</p>
 </div>
@@ -140,8 +141,8 @@
     <div class="card-header">
         <span class="card-title">Forensic Export</span>
     </div>
-    <p class="meta mb-md">Download a signed forensic bundle containing all incidents, audit log entries, system state, and policy digest for offline analysis or external audit.</p>
-    <button class="btn btn-sm" id="download-forensic-btn" type="button">Download Bundle</button>
+    <p class="meta mb-md">Forensic export requires a root local-console session. Review the export contents and signing evidence locally before sharing the bundle.</p>
+    <button class="btn btn-sm" id="download-forensic-btn" type="button">Show Export Instructions</button>
 </div>
 
 <!-- Emergency Controls -->
@@ -152,13 +153,13 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;color:var(--danger)"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             Emergency Panic
         </span>
-        <span class="badge" id="panic-badge">normal</span>
+        <span class="badge" id="panic-badge">unknown</span>
     </div>
-    <p class="meta mb-md" id="panic-detail">System operating normally.</p>
+    <p class="meta mb-md" id="panic-detail">No current panic status loaded.</p>
     <div class="btn-group">
         <button class="btn btn-warning btn-sm" type="button" data-panic-level="1">Level 1: Lock</button>
-        <button class="btn btn-danger btn-sm" type="button" data-panic-level="2">Level 2: Shred Keys</button>
-        <button class="btn btn-danger btn-sm" type="button" data-panic-level="3">Level 3: Wipe All</button>
+        <button class="btn btn-danger btn-sm" type="button" data-panic-level="2">Level 2: Remove Hardware Unlock</button>
+        <button class="btn btn-danger btn-sm" type="button" data-panic-level="3">Level 3: Erase Vault Keys</button>
     </div>
     <p class="form-hint mt-sm">Level 1 is reversible. Levels 2-3 require passphrase and are irreversible.</p>
 </div>
@@ -166,475 +167,159 @@
 
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">
+    var evidenceTimers = {};
+    var lastModelFailure = false;
+    function expireEvidence(key, data, render) {
+        clearTimeout(evidenceTimers[key]);
+        if (evidenceFresh(data)) evidenceTimers[key] = setTimeout(function() { render(data); }, Math.max(1, data.valid_until * 1000 - Date.now()));
+    }
+    function textCell(row, value) { var cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); return cell; }
+    function emptyTable(id, count, message) {
+        var row = document.createElement('tr'); var cell = textCell(row, message); cell.colSpan = count;
+        document.getElementById(id).replaceChildren(row);
+    }
     async function loadServiceHealth() {
         try {
-            var resp = await fetch('/api/status');
-            var data = await resp.json();
-            var services = data.services || {};
-            var deploymentMode = data.deployment_mode || 'appliance';
-            var tbody = document.getElementById('services-tbody');
-            var onlineCount = 0;
-            var optionalCount = 0;
-            var rows = '';
-
-            var svcList = [
-                {key: 'inference', name: 'Inference (llama-server)'},
-                {key: 'registry', name: 'Model Registry'},
-                {key: 'tool_firewall', name: 'Tool Firewall'},
-                {key: 'diffusion', name: 'Diffusion Worker'},
-                {key: 'airlock', name: 'Airlock'},
-                {key: 'search_mediator', name: 'Search Mediator'},
-            ];
-
-            svcList.forEach(function(svc) {
-                var s = services[svc.key] || {};
-                var ok = s.status === 'ok';
-                var policyDisabled = ok && (
-                    (svc.key === 'airlock' && s.enabled === false) ||
-                    (svc.key === 'search_mediator' && s.search_enabled === false)
-                );
-                var optionalDisabled =
-                    deploymentMode === 'sandbox' &&
-                    (svc.key === 'inference' || svc.key === 'diffusion') &&
-                    (s.status === 'unreachable' || s.status === 'circuit_open' || s.status === 'not_available');
-                if (ok && !policyDisabled) onlineCount++;
-                if (optionalDisabled) optionalCount++;
-                var statusLabel = optionalDisabled ? 'not available' : (policyDisabled ? 'policy off' : (ok ? 'online' : 'offline'));
-                var statusClass = ok && !policyDisabled ? 'badge-success' : 'badge-muted';
-                var detail = ok ? 'Healthy' : 'Not responding';
-                if (optionalDisabled) {
-                    detail = s.detail || 'Optional in sandbox mode. Use Settings to start the matching profile.';
-                } else if (policyDisabled && svc.key === 'airlock') {
-                    detail = 'Airlock service is healthy, but outbound downloads are disabled by the active offline policy. Start Web-Assisted Research mode to allow approved downloads.';
-                } else if (policyDisabled && svc.key === 'search_mediator') {
-                    detail = 'Search mediator is healthy, but web search is disabled by the active offline policy. Start Web-Assisted Research mode to enable Tor-routed search.';
-                } else if (s.detail) {
-                    detail = s.detail;
-                }
-                rows += '<tr>' +
-                    '<td style="font-weight:500">' + esc(svc.name) + '</td>' +
-                    '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>' +
-                    '<td title="' + esc(detail) + '">' + esc(detail) + '</td>' +
-                '</tr>';
+            var data = await securityJSON('/api/status');
+            if (!evidenceObject(data) || !evidenceObject(data.services)) throw new Error('invalid');
+            var rows = []; var responding = 0;
+            [['inference','Inference'],['registry','Model Registry'],['tool_firewall','Tool Firewall'],['diffusion','Diffusion Worker'],['airlock','Airlock'],['search_mediator','Search Mediator']].forEach(function(pair) {
+                var state = data.services[pair[0]] || {}; var row = document.createElement('tr');
+                var ok = state.status === 'ok'; if (ok) responding++;
+                textCell(row, pair[1]); textCell(row, ok ? 'Responding' : 'Unavailable');
+                textCell(row, ok ? 'Liveness response only; not a security verification.' : 'No successful current liveness response.'); rows.push(row);
             });
-
-            tbody.innerHTML = rows;
-            document.getElementById('stat-services').textContent =
-                deploymentMode === 'sandbox' && optionalCount > 0
-                    ? onlineCount + ' + ' + optionalCount + ' opt'
-                    : onlineCount + '/' + svcList.length;
+            document.getElementById('services-tbody').replaceChildren(...rows);
+            document.getElementById('stat-services').textContent = responding + '/6';
+            document.getElementById('stat-services').style.color = responding === 6 ? 'var(--success)' : 'var(--warning)';
         } catch(e) {
-            document.getElementById('services-tbody').innerHTML = '<tr><td colspan="3" class="text-muted">Could not reach status endpoint</td></tr>';
+            emptyTable('services-tbody', 3, 'Service status unavailable.');
+            document.getElementById('stat-services').textContent = '?';
+            document.getElementById('stat-services').style.color = 'var(--text-muted)';
         }
     }
-
     async function loadModelsCount() {
-        try {
-            var resp = await fetch('/api/models');
-            var models = await resp.json();
-            document.getElementById('stat-models').textContent = models.length;
-        } catch(e) {
-            document.getElementById('stat-models').textContent = '?';
-        }
+        try { var models = await securityJSON('/api/models'); if (!Array.isArray(models)) throw new Error('invalid'); document.getElementById('stat-models').textContent = models.length; }
+        catch(e) { document.getElementById('stat-models').textContent = '?'; }
     }
-
-    async function loadIntegrity() {
-        try {
-            var resp = await fetch('/api/integrity/status');
-            var data = await resp.json();
-            var el = document.getElementById('stat-integrity');
-            if (data.status === 'ok') {
-                el.textContent = 'OK';
-                el.style.color = 'var(--success)';
-            } else if (data.status === 'failed') {
-                el.textContent = 'FAIL';
-                el.style.color = 'var(--danger)';
-            } else {
-                el.textContent = 'N/A';
-            }
-        } catch(e) {
-            document.getElementById('stat-integrity').textContent = '?';
-        }
+    function renderIntegrity(data) {
+        data = evidenceObject(data) ? data : {};
+        var passing = data.status === 'checked' && data.passing === true && data.authenticated_read === true && evidenceFresh(data);
+        if (data.status === 'failed' && data.authenticated_read === true) lastModelFailure = true;
+        if (passing) lastModelFailure = false;
+        var el = document.getElementById('stat-integrity');
+        el.textContent = lastModelFailure ? 'FAIL' : passing ? 'Checked' : 'Unknown';
+        el.style.color = lastModelFailure ? 'var(--danger)' : passing ? 'var(--success)' : 'var(--text-muted)';
+        el.title = lastModelFailure ? 'A model integrity failure remains unresolved; unavailable evidence does not clear it.' : evidenceText(data.detail, 'No fresh authenticated model check.');
+        expireEvidence('models', data, renderIntegrity);
     }
-
-    async function loadAuditStatus() {
-        try {
-            var resp = await fetch('/api/audit/status');
-            var data = await resp.json();
-            var el = document.getElementById('stat-audit');
-            var detail = document.getElementById('audit-detail');
-            if (data.status === 'ok' || data.valid === true) {
-                el.textContent = 'Valid';
-                el.style.color = 'var(--success)';
-                detail.textContent = 'Chain verified. ' + (data.entries || '?') + ' entries. Last check: ' + (data.checked_at ? new Date(data.checked_at).toLocaleString() : 'unknown');
-            } else if (data.status === 'failed' || data.valid === false) {
-                el.textContent = 'Broken';
-                el.style.color = 'var(--danger)';
-                detail.textContent = 'Audit chain integrity FAILED! ' + (data.detail || '');
-            } else {
-                el.textContent = 'N/A';
-                detail.textContent = data.detail || 'No audit verification has run yet.';
-            }
-        } catch(e) {
-            document.getElementById('stat-audit').textContent = '?';
-            document.getElementById('audit-detail').textContent = 'Could not reach audit status.';
-        }
+    async function loadIntegrity() { try { renderIntegrity(await securityJSON('/api/integrity/status')); } catch(e) { renderIntegrity(null); } }
+    function auditStatusSummary(data, now) {
+        if (!evidenceObject(data)) return {label:'Unknown', color:'var(--text-muted)', text:'Audit evidence unavailable.'};
+        if (data.status === 'failed' && data.basis === 'root_owned_local_report') return {label:'Degraded', color:'var(--danger)', text:'Audit evidence verification failed. Inspect the local verifier report.'};
+        if (data.status === 'checking' && data.basis === 'root_owned_local_report') return {label:'Checking', color:'var(--text-muted)', text:'Audit verification is in progress; readiness is not established.'};
+        var coverage = data.coverage;
+        var keys = ['keyed-tamper-evident', 'unkeyed-hash-linked', 'structured-only', 'not_applicable'];
+        var valid = data.status === 'checked' && data.passing === true && data.basis === 'root_owned_local_report' && Number.isFinite(data.valid_until) && data.valid_until * 1000 > now && evidenceObject(coverage) && keys.every(function(key) { return Number.isSafeInteger(coverage[key]) && coverage[key] >= 0; }) && keys.slice(0,3).some(function(key) { return coverage[key] > 0; });
+        if (!valid) return {label:'Unknown', color:'var(--text-muted)', text:'No current successful verification report is available. Reports expire after 35 minutes.'};
+        return {label:'Checked', color:'var(--success)', text:coverage[keys[0]] + ' keyed chains, ' + coverage[keys[1]] + ' unkeyed chains, ' + coverage[keys[2]] + ' syntax-only logs; ' + coverage[keys[3]] + ' not applicable. Syntax and unkeyed linkage do not prove authenticity.'};
     }
-
-    async function verifyAudit() {
-        try {
-            var resp = await fetch('/api/audit/verify', { method: 'POST' });
-            var data = await resp.json();
-            if (data.valid || data.status === 'ok') {
-                toast('Audit chain verified OK', 'success');
-            } else {
-                toast('Audit chain verification FAILED', 'error');
-            }
-            loadAuditStatus();
-        } catch(e) {
-            toast('Could not verify audit chain.', 'error');
-        }
+    function renderAudit(data) {
+        var summary = auditStatusSummary(data, Date.now()); var el = document.getElementById('stat-audit');
+        el.textContent = summary.label; el.style.color = summary.color; document.getElementById('audit-detail').textContent = summary.text;
+        expireEvidence('audit', data, renderAudit);
     }
-
+    async function loadAuditStatus() { try { renderAudit(await securityJSON('/api/audit/status')); } catch(e) { renderAudit(null); } }
+    async function verifyAudit() { await showConfirm('Audit verification', 'Run sudo /usr/libexec/secure-ai/verify-audit-chains.py from a root local console, then refresh this page. The UI does not hold the audit signing keys.', 'Close', false); }
+    function renderBoot(kind, data) {
+        data = evidenceObject(data) ? data : {};
+        var passing = kind === 'secureboot' && data.status === 'attested' && data.passing === true && data.enabled === true && data.authenticated_read === true && evidenceFresh(data);
+        var enrollment = kind === 'tpm2' && data.status === 'enrollment_reported' && data.basis === 'root_owned_local_report' && evidenceFresh(data);
+        var label = data.status === 'not_available' ? 'not available' : passing ? 'reported verified' : enrollment ? 'enrollment reported' : 'unknown / unverified';
+        setEvidenceBadge(kind + '-badge', label, passing, data.status === 'failed');
+        document.getElementById(kind + '-detail').textContent = evidenceFresh(data) || data.status === 'not_available' ? evidenceText(data.detail, 'Verification is not established.') : 'No current verification evidence is available.';
+        expireEvidence(kind, data, function(value) { renderBoot(kind, value); });
+    }
     async function loadBootStatus() {
-        /* Secure Boot */
-        try {
-            var resp = await fetch('/api/boot/secureboot/status');
-            var data = await resp.json();
-            var badge = document.getElementById('secureboot-badge');
-            var detail = document.getElementById('secureboot-detail');
-            if (data.supported === false || data.status === 'not_available' || data.secure_boot === 'not_available') {
-                badge.className = 'badge badge-muted';
-                badge.textContent = 'not available';
-                detail.textContent = data.detail || 'Secure Boot status is not available in this deployment.';
-                badge.title = detail.textContent;
-            } else if (data.enabled) {
-                badge.className = 'badge badge-success';
-                badge.textContent = 'enabled';
-                detail.textContent = data.detail || 'Secure Boot chain verified.';
-            } else {
-                badge.className = 'badge badge-warning';
-                badge.textContent = 'disabled';
-                detail.textContent = data.detail || 'Secure Boot is not enabled.';
-            }
-        } catch(e) {
-            document.getElementById('secureboot-badge').textContent = 'unknown';
-            document.getElementById('secureboot-detail').textContent = 'Could not check Secure Boot status.';
-        }
-
-        /* TPM2 */
-        try {
-            var resp = await fetch('/api/boot/tpm2/status');
-            var data = await resp.json();
-            var badge = document.getElementById('tpm2-badge');
-            var detail = document.getElementById('tpm2-detail');
-            if (data.supported === false || data.status === 'not_available') {
-                badge.className = 'badge badge-muted';
-                badge.textContent = 'not available';
-                detail.textContent = data.detail || 'TPM2 status is not available in this deployment.';
-                badge.title = detail.textContent;
-            } else if (data.sealed) {
-                badge.className = 'badge badge-success';
-                badge.textContent = 'sealed';
-                detail.textContent = data.detail || 'Vault key sealed to TPM2 PCRs.';
-            } else {
-                badge.className = 'badge badge-warning';
-                badge.textContent = 'not sealed';
-                detail.textContent = data.detail || 'Vault is not TPM2-sealed.';
-            }
-        } catch(e) {
-            document.getElementById('tpm2-badge').textContent = 'unknown';
-            document.getElementById('tpm2-detail').textContent = 'Could not check TPM2 status.';
-        }
+        await Promise.all([['secureboot','secureboot'],['tpm2','tpm2']].map(async function(pair) {
+            try { renderBoot(pair[0], await securityJSON('/api/boot/' + pair[1] + '/status')); } catch(e) { renderBoot(pair[0], null); }
+        }));
     }
-
     async function loadVMStatus() {
         try {
-            var resp = await fetch('/api/vm/status');
-            var data = await resp.json();
-            var badge = document.getElementById('vm-badge');
-            var detail = document.getElementById('vm-detail');
-            if (data.environment_class === 'sandbox') {
-                badge.className = 'badge badge-warning';
-                badge.textContent = 'sandbox';
-                detail.textContent =
-                    'Running in the compose-based sandbox (' + (data.deployment_provider || 'unknown') +
-                    '). Assurance tier: ' + (data.assurance_tier || 'evaluation') +
-                    '. The host can inspect container memory, files, and network activity.';
-            } else if (data.is_vm) {
-                badge.className = 'badge badge-warning';
-                badge.textContent = 'virtual machine';
-                detail.textContent = 'Running inside a VM (' + (data.hypervisor || 'unknown') + '). GPU passthrough: ' + (data.gpu_passthrough ? 'Yes' : 'No');
-            } else {
-                badge.className = 'badge badge-success';
-                badge.textContent = 'bare metal';
-                detail.textContent = 'Running on bare metal hardware.';
-            }
-        } catch(e) {
-            document.getElementById('vm-badge').textContent = 'unknown';
-            document.getElementById('vm-detail').textContent = 'Could not detect environment.';
-        }
+            var data = await securityJSON('/api/vm/status');
+            if (!evidenceObject(data)) throw new Error('invalid');
+            var label = data.environment_class === 'sandbox' ? 'sandbox' : data.is_vm === true ? 'virtual machine reported' : data.is_vm === false ? 'bare metal reported' : 'unknown';
+            setEvidenceBadge('vm-badge', label, false, false);
+            document.getElementById('vm-detail').textContent = label === 'sandbox' ? 'Containers provide evaluation isolation. The host can inspect their memory, files and network activity.' : 'Environment detection is informational; it does not establish hardware attestation.';
+        } catch(e) { setEvidenceBadge('vm-badge','unknown',false,false); document.getElementById('vm-detail').textContent = 'Environment detection unavailable.'; }
     }
-
     async function loadPanicStatus() {
         try {
-            var resp = await fetch('/api/emergency/status');
-            var data = await resp.json();
-            var badge = document.getElementById('panic-badge');
-            var detail = document.getElementById('panic-detail');
-            if (data.level && data.level > 0) {
-                badge.className = 'badge badge-danger';
-                badge.textContent = 'level ' + data.level;
-                detail.textContent = 'Emergency panic active! Level ' + data.level + ' triggered at ' + (data.triggered_at || 'unknown') + '.';
-            } else {
-                badge.className = 'badge badge-success';
-                badge.textContent = 'normal';
-                detail.textContent = 'System operating normally.';
-            }
-        } catch(e) {
-            /* No panic state file = normal operation */
-            document.getElementById('panic-badge').className = 'badge badge-success';
-            document.getElementById('panic-badge').textContent = 'normal';
-        }
+            var data = await securityJSON('/api/emergency/status');
+            if (!evidenceObject(data)) throw new Error('invalid');
+            var active = data.panic_active === true && [1,2,3].includes(data.level);
+            setEvidenceBadge('panic-badge', active ? 'level ' + data.level : data.panic_active === false ? 'no panic record' : 'unknown', false, active);
+            document.getElementById('panic-detail').textContent = active ? 'Emergency action is recorded. Inspect its local enforcement result.' : 'This status does not establish overall system health.';
+        } catch(e) { setEvidenceBadge('panic-badge','unknown',false,false); document.getElementById('panic-detail').textContent = 'Panic status unavailable; absence of a response is not normal-operation evidence.'; }
     }
-
     async function triggerPanic(level) {
-        var titles = {1: 'Level 1: Lock', 2: 'Level 2: Remove Hardware Unlock', 3: 'Level 3: Erase Vault Keys'};
-        var messages = {
-            1: 'Run sudo securectl panic 1 from the local console. This verified lock is reversible after a reboot or recovery.',
-            2: 'Run sudo securectl panic 2 from the local console. It will prompt for the vault passphrase and a UUID-bound confirmation before removing TPM unlock.',
-            3: 'Run sudo securectl panic 3 from the local console. It will prompt locally before destroying every vault LUKS keyslot.'
-        };
-
-        await showConfirm(titles[level], messages[level], 'Close', true);
-        toast('Emergency actions are local-console only.', 'warning');
+        var text = {1:'Run sudo securectl panic 1 locally to request a reversible lock.', 2:'Run sudo securectl panic 2 locally to review removal of TPM unlock. A passphrase and UUID-bound confirmation are required.', 3:'Run sudo securectl panic 3 locally to review destruction of vault keyslots. This is irreversible and requires local confirmation.'};
+        await showConfirm('Local-console emergency action', text[level], 'Close', true);
     }
-
     async function loadFsverityStatus() {
         try {
-            var resp = await fetch('/api/models/fsverity');
-            var models = await resp.json();
-            var badge = document.getElementById('fsverity-badge');
-            var detail = document.getElementById('fsverity-detail');
-            var table = document.getElementById('fsverity-table');
-            var tbody = document.getElementById('fsverity-tbody');
-
-            if (!models || models.length === 0) {
-                badge.className = 'badge badge-muted';
-                badge.textContent = 'no models';
-                detail.textContent = 'No trusted models found.';
-                return;
-            }
-
-            var verityCount = 0;
-            var signedCount = 0;
-            var notAvailableCount = 0;
-            var rows = '';
-            models.forEach(function(m) {
-                if (m.fsverity_enabled) verityCount++;
-                if (m.provenance_signed) signedCount++;
-                if (m.fsverity_status === 'not_available' || m.provenance_status === 'not_available') notAvailableCount++;
-                var verityLabel = m.fsverity_status === 'not_available' ? 'not available' : (m.fsverity_enabled ? 'enabled' : 'off');
-                var provenanceLabel = m.provenance_status === 'not_available' ? 'not available' : (m.provenance_signed ? 'signed' : 'unsigned');
-                var rowTitle = m.detail || '';
-                rows += '<tr>' +
-                    '<td style="font-weight:500">' + esc(m.name) + '</td>' +
-                    '<td title="' + esc(rowTitle) + '"><span class="badge ' + (m.fsverity_enabled ? 'badge-success' : 'badge-muted') + '">' +
-                        esc(verityLabel) + '</span></td>' +
-                    '<td title="' + esc(rowTitle) + '"><span class="badge ' + (m.provenance_signed ? 'badge-success' : 'badge-muted') + '">' +
-                        esc(provenanceLabel) + '</span></td>' +
-                '</tr>';
+            var models = await securityJSON('/api/models/fsverity');
+            if (!Array.isArray(models)) throw new Error('invalid');
+            var rows = models.map(function(model) {
+                if (!evidenceObject(model)) throw new Error('invalid');
+                var row = document.createElement('tr'); textCell(row, evidenceText(model.name, 'Unnamed model'));
+                textCell(row, model.fsverity_status === 'not_available' ? 'not available' : model.fsverity_enabled === true ? 'manifest claims enabled' : 'not verified');
+                textCell(row, model.provenance_status === 'not_available' ? 'not available' : model.provenance_signed === true ? 'signature file present' : 'not verified'); return row;
             });
-
-            tbody.innerHTML = rows;
-            table.style.display = '';
-            if (notAvailableCount === models.length) {
-                detail.textContent = models[0].detail || 'Host-backed fs-verity and signed provenance are not available in this deployment.';
-                badge.className = 'badge badge-muted';
-                badge.textContent = 'not available';
-                return;
-            }
-
-            detail.textContent = verityCount + '/' + models.length + ' models with fs-verity, ' +
-                signedCount + '/' + models.length + ' provenance manifests signed.';
-
-            if (verityCount === models.length && signedCount === models.length) {
-                badge.className = 'badge badge-success';
-                badge.textContent = 'all protected';
-            } else if (verityCount > 0 || signedCount > 0) {
-                badge.className = 'badge badge-warning';
-                badge.textContent = 'partial';
-            } else {
-                badge.className = 'badge badge-muted';
-                badge.textContent = 'unprotected';
-            }
-        } catch(e) {
-            document.getElementById('fsverity-badge').textContent = 'unknown';
-            document.getElementById('fsverity-detail').textContent = 'Could not load fs-verity status.';
-        }
+            document.getElementById('fsverity-tbody').replaceChildren(...rows); document.getElementById('fsverity-table').style.display = rows.length ? '' : 'none';
+            setEvidenceBadge('fsverity-badge', 'verification not established', false, false);
+            document.getElementById('fsverity-detail').textContent = 'Manifest flags and signature-file presence do not prove current fs-verity enforcement or a valid signature. Consult the verified local report.';
+        } catch(e) { setEvidenceBadge('fsverity-badge','unknown',false,false); document.getElementById('fsverity-detail').textContent = 'Model provenance evidence unavailable.'; document.getElementById('fsverity-table').style.display = 'none'; }
     }
-
-    /* --- Appliance State Banner --- */
-    async function loadApplianceState() {
-        try {
-            var resp = await fetch('/api/observability/appliance-state');
-            var data = await resp.json();
-            var banner = document.getElementById('appliance-banner');
-            var badge = document.getElementById('appliance-state-badge');
-            var detail = document.getElementById('appliance-state-detail');
-            var subsDiv = document.getElementById('appliance-subsystems');
-            var subsTbody = document.getElementById('appliance-subsystems-tbody');
-            var state = data.appliance_state;
-
-            var colors = {
-                trusted: 'var(--success)',
-                degraded: 'var(--warning)',
-                recovery_required: 'var(--danger)',
-            };
-            var labels = {
-                trusted: 'TRUSTED',
-                degraded: 'DEGRADED',
-                recovery_required: 'RECOVERY REQUIRED',
-            };
-            var badgeClasses = {
-                trusted: 'badge badge-success',
-                degraded: 'badge badge-warning',
-                recovery_required: 'badge badge-danger',
-            };
-
-            banner.style.borderLeftColor = colors[state] || 'var(--text-muted)';
-            badge.className = badgeClasses[state] || 'badge badge-muted';
-            badge.textContent = labels[state] || state;
-
-            var subs = data.subsystems || {};
-            var detailParts = [];
-            var rows = '';
-            function stateLabel(value) {
-                return value === 'not_available' ? 'not available' : value;
-            }
-            function stateBadge(value, successValue, warningValues, dangerValues) {
-                if (value === successValue) return 'badge-success';
-                if (warningValues.indexOf(value) !== -1) return 'badge-warning';
-                if (dangerValues.indexOf(value) !== -1) return 'badge-danger';
-                return 'badge-muted';
-            }
-
-            /* Attestor */
-            var att = subs.attestor || 'unknown';
-            detailParts.push('Attestor: ' + stateLabel(att));
-            rows += '<tr><td>Runtime Attestor</td><td><span class="badge ' +
-                stateBadge(att, 'attested', ['degraded', 'pending', 'unknown'], ['failed']) +
-                '" title="' + (att === 'not_available' ? 'Host runtime attestation is not available inside the Docker sandbox.' : '') + '">' +
-                stateLabel(att) + '</span></td></tr>';
-
-            /* Integrity Monitor */
-            var integ = subs.integrity_monitor || 'unknown';
-            detailParts.push('Integrity: ' + stateLabel(integ));
-            rows += '<tr><td>Integrity Monitor</td><td><span class="badge ' +
-                stateBadge(integ, 'trusted', ['degraded', 'unknown'], ['recovery_required']) +
-                '" title="' + (integ === 'not_available' ? 'Host integrity monitor is not included in the Docker sandbox.' : '') + '">' +
-                stateLabel(integ) + '</span></td></tr>';
-
-            /* Incidents */
-            var inc = subs.incidents || {};
-            var incText = (inc.total_open || 0) + ' open (' + (inc.open_critical || 0) + ' critical, ' + (inc.open_high || 0) + ' high)';
-            detailParts.push('Incidents: ' + incText);
-            var incBadge = (inc.open_critical || 0) > 0 ? 'badge-danger' : (inc.open_high || 0) > 0 ? 'badge-warning' : 'badge-success';
-            rows += '<tr><td>Open Incidents</td><td><span class="badge ' + incBadge + '">' + incText + '</span></td></tr>';
-
-            detail.textContent = detailParts.join(' | ');
-            subsTbody.innerHTML = rows;
-            subsDiv.style.display = '';
-
-        } catch(e) {
-            document.getElementById('appliance-state-badge').textContent = 'error';
-            document.getElementById('appliance-state-detail').textContent = 'Could not reach observability endpoint.';
-        }
+    function renderAppliance(data) {
+        var view = applianceView(data);
+        setEvidenceBadge('appliance-state-badge', view.label, view.passing, view.failed);
+        document.getElementById('appliance-banner').style.borderLeftColor = view.passing ? 'var(--success)' : view.failed ? 'var(--danger)' : 'var(--text-muted)';
+        if (document.getElementById('appliance-state-detail').textContent !== view.detail) document.getElementById('appliance-state-detail').textContent = view.detail;
+        var evidence = evidenceObject(data) && evidenceObject(data.evidence) ? data.evidence : {};
+        var rows = [['attestor','Runtime Attestor'],['integrity_monitor','Integrity Monitor'],['incidents','Incident Recorder']].map(function(pair) {
+            var item = evidence[pair[0]]; var row = document.createElement('tr'); textCell(row, pair[1]);
+            var known = evidenceObject(item) && ['attested','checked','failed','recovery_required','pending','degraded','evaluation','not_available','unknown','stale','unverified'].includes(item.status);
+            var status = known ? item.status.replace(/_/g, ' ') : 'unknown';
+            if (!view.passing && ['attested','checked'].includes(known && item.status)) status = 'report present; current assurance unavailable';
+            textCell(row, status + (known ? ' — ' + evidenceText(item.detail, 'No validated evidence detail.') : ' — Required evidence is missing or invalid.')); return row;
+        });
+        document.getElementById('appliance-subsystems-tbody').replaceChildren(...rows); document.getElementById('appliance-subsystems').style.display = '';
+        expireEvidence('appliance', view.expires ? data : null, renderAppliance);
     }
-
-    /* --- SLO Compliance --- */
+    window.addEventListener('runtime-evidence', function(event) { renderAppliance(event.detail); });
+    async function loadApplianceState() { await pollApplianceState(); }
     async function loadSLOs() {
         try {
-            var resp = await fetch('/api/observability/slos');
-            var data = await resp.json();
-            var slos = data.slos || [];
-            var tbody = document.getElementById('slo-tbody');
-            var badge = document.getElementById('slo-badge');
-
-            if (slos.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No SLO data collected yet</td></tr>';
-                badge.textContent = 'no data';
-                return;
-            }
-
-            var allCompliant = true;
-            var rows = '';
-            slos.forEach(function(s) {
-                var notApplicable = s.status === 'not_applicable';
-                if (!s.compliant && !notApplicable) allCompliant = false;
-                var label = notApplicable ? 'n/a' : (s.compliant ? 'met' : 'unmet');
-                var badgeClass = notApplicable ? 'badge-muted' : (s.compliant ? 'badge-success' : 'badge-warning');
-                rows += '<tr>' +
-                    '<td>' + esc(s.name) + '</td>' +
-                    '<td>' + esc(s.target) + '</td>' +
-                    '<td>' + esc(s.current_value) + '</td>' +
-                    '<td><span class="badge ' + badgeClass + '" title="' + esc(s.detail || '') + '">' +
-                        label + '</span></td>' +
-                '</tr>';
+            var data = await securityJSON('/api/observability/slos');
+            if (!evidenceObject(data) || data.collection_basis !== 'browser_triggered_health_checks' || data.continuous_compliance_verified !== false || !Array.isArray(data.slos)) throw new Error('invalid');
+            var rows = data.slos.map(function(item) {
+                if (!evidenceObject(item)) throw new Error('invalid');
+                var row = document.createElement('tr'); textCell(row,evidenceText(item.name,'Unknown metric')); textCell(row,evidenceText(item.target,'Unknown target')); textCell(row,evidenceText(item.current_value,'N/A'));
+                var observed = item.status === 'observation_only' && item.current_value !== 'N/A' && typeof item.observed_target_met === 'boolean';
+                textCell(row, observed ? item.observed_target_met ? 'Observed target met; coverage unverified' : 'Observed target missed' : item.status === 'not_applicable' ? 'Not applicable' : 'No verified samples'); return row;
             });
-
-            tbody.innerHTML = rows;
-            badge.className = allCompliant ? 'badge badge-success' : 'badge badge-warning';
-            badge.textContent = allCompliant ? 'all met' : 'unmet';
-        } catch(e) {
-            document.getElementById('slo-tbody').innerHTML = '<tr><td colspan="4" class="text-muted">Could not load SLO data</td></tr>';
-        }
+            if (rows.length) document.getElementById('slo-tbody').replaceChildren(...rows); else emptyTable('slo-tbody',4,'No samples collected.');
+            setEvidenceBadge('slo-badge','continuous compliance unverified',false,false);
+        } catch(e) { emptyTable('slo-tbody',4,'Service observations unavailable.'); setEvidenceBadge('slo-badge','unknown',false,false); }
     }
-
-    /* --- Forensic Bundle Download --- */
-    async function downloadForensicBundle() {
-        try {
-            var resp = await fetch('/api/forensic/export');
-            if (!resp.ok) {
-                toast('Failed to export forensic bundle.', 'error');
-                return;
-            }
-            var blob = await resp.blob();
-            var url = URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = 'forensic-bundle-' + new Date().toISOString().slice(0,19).replace(/[T:]/g,'-') + '.json';
-            a.click();
-            URL.revokeObjectURL(url);
-            toast('Forensic bundle downloaded.', 'success');
-        } catch(e) {
-            toast('Could not export forensic bundle.', 'error');
-        }
-    }
-
+    async function downloadForensicBundle() { await showConfirm('Forensic export', 'Run sudo secai-forensic export --output <path> in a root local-console session. Review what the bundle includes before sharing it.', 'Close', false); }
     document.getElementById('verify-audit-btn').addEventListener('click', verifyAudit);
     document.getElementById('download-forensic-btn').addEventListener('click', downloadForensicBundle);
-    document.querySelectorAll('[data-panic-level]').forEach(function(button) {
-        button.addEventListener('click', function() {
-            triggerPanic(parseInt(button.getAttribute('data-panic-level'), 10));
-        });
-    });
-
-    /* Load all sections */
-    loadApplianceState();
-    loadServiceHealth();
-    loadSLOs();
-    loadModelsCount();
-    loadIntegrity();
-    loadAuditStatus();
-    loadBootStatus();
-    loadVMStatus();
-    loadPanicStatus();
-    loadFsverityStatus();
-
-    setInterval(loadApplianceState, 15000);
-    setInterval(loadServiceHealth, 15000);
-    setInterval(loadSLOs, 30000);
-    setInterval(loadPanicStatus, 10000);
+    document.querySelectorAll('[data-panic-level]').forEach(function(button) { button.addEventListener('click', function() { triggerPanic(Number(button.dataset.panicLevel)); }); });
+    function loadSecurityEvidence() { loadApplianceState(); loadServiceHealth(); loadSLOs(); loadIntegrity(); loadAuditStatus(); loadBootStatus(); loadPanicStatus(); }
+    loadSecurityEvidence(); loadModelsCount(); loadVMStatus(); loadFsverityStatus();
+    setInterval(loadSecurityEvidence, 15000);
 </script>
 {% endblock %}

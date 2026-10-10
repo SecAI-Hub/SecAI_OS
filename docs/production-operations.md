@@ -19,17 +19,23 @@ This validates:
 
 ## Upgrade Procedure
 
-1. **Pre-upgrade snapshot** (if supported by hardware):
+1. **Record the current deployment**:
    ```bash
    rpm-ostree status              # Record current deployment
-   sudo cp /var/lib/secure-ai/data/incidents.jsonl /tmp/incidents-backup.jsonl
    ```
+
+   Keep the deployment record in an operator-controlled location. Complete
+   backup and active restore remain gated by the [backup foundation](backup-foundation.md).
 
 2. **Resolve and stage a verified exact-digest update**:
    ```bash
-   sudo /usr/libexec/secure-ai/update-verify.sh check
+   sudo systemctl start secure-ai-update-check.service
    sudo /usr/libexec/secure-ai/update-verify.sh stage
    ```
+
+   The check requires an explicit network maintenance lease. Its root admission
+   dependency rejects closed or unverified admission state. A failed service
+   start must be resolved before staging; inspect its journal for the failure.
 
 3. **Re-verify, apply, reboot, and verify**:
    ```bash
@@ -42,6 +48,44 @@ This validates:
    ```bash
    sudo /usr/libexec/secure-ai/update-verify.sh rollback
    ```
+
+## Update-check admission boundary
+
+`secure-ai-native-admission.service` initializes a private authority for
+`secure-ai-update-check.service`. The check supervisor retains its shared lock
+until the service's complete cgroup is empty of descendants, including processes
+that outlive the direct updater child. A supervisor crash can release the lock
+while descendants remain; a free lock alone does not establish quiescence.
+
+The root-only `secure-native-admission.py close-update-check` operation durably
+closes admission, inhibits the fixed timer/service, stops them and verifies their
+manager state, retained cgroup and exclusive lock. It reports only this writer's
+quiescence. Other writers, direct root updater invocations, staging, applying and
+emergency containment remain outside this boundary. It cannot authorize restore.
+
+Closure persists across reboot. Record the `closure` UUID returned by the close
+operation. To inspect the control state or explicitly resume this writer:
+
+```bash
+sudo /usr/libexec/secure-ai/secure-native-admission.py status
+sudo /usr/libexec/secure-ai/secure-native-admission.py reopen-update-check --closure CURRENT_CLOSURE_UUID
+```
+
+Replace `CURRENT_CLOSURE_UUID` with the exact current closure ID. Resume rejects
+stale receipts, unknown metadata, pending jobs or live descendants. It validates
+the fixed service and timer, establishes exclusive admission, removes their
+runtime masks and persists the current boot binding before committing open
+admission. It does not enable or start either unit. Start an update check
+explicitly after successful resume when a network maintenance lease is available.
+
+`status` reads the authority without creating or repairing it. It distinguishes
+uninitialized, open, closed and unbound admission and includes the current closure
+ID. This control report does not establish appliance health or global quiescence.
+After interruption, inspect it to determine whether reopening committed. Unknown
+or incomplete metadata remains an error; do not delete private state to bypass it.
+
+Closing this writer does not provide a complete backup or restore maintenance
+boundary and is not a routine pre-upgrade step.
 
 ## Log Rotation
 
@@ -56,25 +100,61 @@ sudo logrotate -f /etc/logrotate.d/secure-ai
 
 ## Key Rotation
 
-### Service Token
+### Scoped service credentials
 
-The inter-service bearer token at `/run/secure-ai/service-token`:
+Native services receive private copies through systemd `LoadCredential=` from
+root-owned mode-`0600` files under `/var/lib/secure-ai/credentials`. The source
+directory is mode `0700` on encrypted host state. Rotating a source does not
+replace credential copies already held by running services. Select one purpose
+and identify every consumer from its installed `LoadCredential=` mappings;
+preserve the service's enabled state and restart only consumers that were active.
 
-1. Generate new token:
-   ```bash
-   openssl rand -hex 32 > /tmp/new-token
-   ```
+For example, `registry-promote.token` is shared by the registry's promotion
+endpoint and quarantine watcher. During a planned interruption, record their
+active state, stop the watcher before the registry, then replace the source:
 
-2. Replace atomically:
-   ```bash
-   sudo mv /tmp/new-token /run/secure-ai/service-token
-   sudo chmod 0640 /run/secure-ai/service-token
-   ```
+```bash
+sudo systemctl stop secure-ai-quarantine-watcher.service secure-ai-registry.service
+sudo python3 - <<'PY'
+import os
+import secrets
+import stat
+from pathlib import Path
 
-3. Restart all services (they read token at startup):
-   ```bash
-   sudo systemctl restart secure-ai-*.service
-   ```
+directory = Path('/var/lib/secure-ai/credentials')
+target = directory / 'registry-promote.token'
+parent = directory.lstat()
+current = target.lstat()
+if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0
+        or stat.S_IMODE(parent.st_mode) != 0o700
+        or not stat.S_ISREG(current.st_mode) or current.st_uid != 0
+        or current.st_gid != 0 or current.st_nlink != 1
+        or stat.S_IMODE(current.st_mode) != 0o600):
+    raise SystemExit('Credential ownership or type requires administrator review')
+temporary = directory / ('.rotation-' + secrets.token_hex(16))
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    with os.fdopen(fd, 'wb') as handle:
+        handle.write((secrets.token_hex(32) + '\n').encode('ascii'))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, target)
+    parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
+```
+
+Start the registry, then the watcher, only if each was active before rotation.
+Check their authenticated health and the next promotion attempt. Other roles
+(read, verify, administration and containment) have distinct tokens and consumer
+sets; rotating this promotion credential does not rotate those authorities.
+If interruption leaves the outcome uncertain, inspect the source and services
+before retrying. Do not print credential contents or restart every SecAI unit.
 
 ### HMAC Signing Key (Attestation Bundles)
 
@@ -201,7 +281,8 @@ When HSM support is implemented (planned milestone):
 
 ### Service Health
 
-All services expose `/health` on their localhost ports:
+These services expose `/health` on their localhost ports. Liveness alone does
+not establish authenticated readiness or runtime admission:
 
 | Service | Port | Endpoint |
 |---------|------|----------|
@@ -217,15 +298,53 @@ All services expose `/health` on their localhost ports:
 ### Incident Dashboard
 
 ```bash
-# Open incidents
-curl -s http://127.0.0.1:8515/api/v1/stats | python3 -m json.tool
+sudo python3 - <<'PY'
+import json
+import os
+import re
+import stat
+from pathlib import Path
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-# Attestation state
-curl -s http://127.0.0.1:8505/api/v1/verify | python3 -m json.tool
+class NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
-# Integrity status
-curl -s http://127.0.0.1:8510/api/v1/status | python3 -m json.tool
+opener = build_opener(ProxyHandler({}), NoRedirects())
+for label, port, endpoint, credential in (
+    ('Incidents', 8515, '/api/v1/stats', 'incident-read.token'),
+    ('Attestation', 8505, '/api/v1/verify', 'runtime-attestor.token'),
+    ('Integrity', 8510, '/api/v1/status', 'integrity-monitor.token'),
+):
+    path = Path('/var/lib/secure-ai/credentials') / credential
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+            raise SystemExit('Unsafe credential source: ' + credential)
+        raw_token = os.read(fd, 66)
+        if len(raw_token) != metadata.st_size or len(raw_token) not in (64, 65):
+            raise SystemExit('Invalid credential size: ' + credential)
+        token = raw_token.decode('ascii').removesuffix('\n')
+        if not re.fullmatch('[0-9a-f]{64}', token):
+            raise SystemExit('Invalid credential source: ' + credential)
+    finally:
+        os.close(fd)
+    request = Request('http://127.0.0.1:' + str(port) + endpoint,
+                      headers={'Authorization': 'Bearer ' + token})
+    with opener.open(request, timeout=5) as response:
+        raw = response.read(1048577)
+        if len(raw) > 1048576:
+            raise SystemExit('Status response exceeds limit')
+        print(label + ':')
+        print(json.dumps(json.loads(raw), indent=2))
+PY
 ```
+
+These reads use the installed scoped credentials without placing their values
+in shell history or process arguments. Review the returned status and incident
+details locally; a reachable endpoint is not a passing security decision.
 
 ### Journal Logs
 
@@ -262,77 +381,57 @@ All Go services handle SIGTERM for clean shutdown:
 
 ## Backup and Restore
 
-### What Is Backed Up
+Active `full`, `config`, `logs`, and `keys` restore commands are currently gated.
+The durable maintenance transaction, producer import/export adapters, historical
+verification/enrollment, and rotation reconciliation must qualify before these
+commands can publish active state. Inspection and inert export do not establish
+complete recoverability. See [the archive foundation and synthetic rehearsal](backup-foundation.md).
 
-| Category | Paths | Criticality |
-|----------|-------|-------------|
-| Policy + config | `/etc/secure-ai/policy/*.yaml`, `/etc/secure-ai/config/appliance.yaml`, `/etc/secure-ai/model-catalog.yaml` | High |
-| Incidents | `/var/lib/secure-ai/data/incidents.jsonl` | High — audit trail |
-| Audit logs | `/var/lib/secure-ai/logs/*.jsonl` | High — hash-chained evidence |
-| Registry manifest | `/var/lib/secure-ai/registry/manifest.json` | Medium — model inventory |
-| Signing keys | `/var/lib/secure-ai/keys/` (cosign, TPM2) | Critical |
-| LUKS header | Vault partition header | Critical — data recovery |
+Version 2 is explicitly a **legacy partial selection**, including when its
+category is named `full`. It omits user documents, outputs, model bytes, and much
+durable state; its sources are not quiesced. The registry manifest alone does
+not establish that every model can be recovered. `/keys` contains device-bound
+material in current native provisioning; no blanket product-signing-key claim
+is made. Its LUKS header is a separate sensitive artifact, not a copy of the vault.
 
-**Note:** Model files (GGUF binaries) are NOT included in backups due to their
-size (4–70 GB each). The registry manifest is backed up, so you know exactly
-which models to re-download after a restore.
-
-### Creating a Backup
-
-```bash
-# Full backup (config + logs + keys + manifest + LUKS header)
-sudo secai-backup.sh full
-
-# Config only (policy, appliance config, model catalog)
-sudo secai-backup.sh config
-
-# Logs and incidents only
-sudo secai-backup.sh logs
-
-# Keys and LUKS header only (most sensitive)
-sudo secai-backup.sh keys --encrypt
-
-# Full encrypted backup to external USB
-sudo secai-backup.sh full --encrypt --output /media/usb/backups
-```
-
-### Verifying a Backup
+Legacy creation requires an explicit partial acknowledgement and a native age
+recipient. Replace the recipient, identity path, and exact artifact name below
+with the values from the separately held recovery kit:
 
 ```bash
-sudo secai-backup.sh verify /var/lib/secure-ai/backups/secai-backup-full-20260314-120000.tar.gz
+sudo secai-backup.sh config --legacy-partial --recipient age1... --output /media/usb/backups
+sudo secai-backup.sh verify /media/usb/backups/EXACT-ARTIFACT.tar.gz.age --identity /private/recovery.identity
+sudo secai-restore.sh inspect /media/usb/backups/EXACT-ARTIFACT.tar.gz.age --identity /private/recovery.identity
 ```
 
-### Restoring from Backup
+The `.sha256` sidecar is checked as transport information. An independently
+retained ciphertext digest can be supplied with `--trusted-sha256 HEX`; a digest
+found only on the same backup medium is not an independent origin anchor.
+Public-recipient age encryption proves ciphertext integrity, not which appliance
+created the backup. Successful inspection does not prove freshness. The bounded
+helper currently supports native unencrypted age identity files, kept private;
+passphrase-encrypted identity, passphrase archive, SSH and plugin adapters are
+explicitly unavailable rather than falling back to unbounded terminal decryption.
 
-```bash
-# Inspect backup contents before restoring
-sudo secai-restore.sh inspect <backup-file>
+Version 3 `export-inert` includes selected data-only classes with exact logical
+filenames and empty directories, encoded as object IDs. It records all installed
+class dispositions and pending adapters. It remains `partial_unquiesced` and
+cannot be applied to live roots. Authentication sessions, runtime secrets and
+capabilities are excluded. Catalog/history/incident/audit/hardware semantics
+remain unavailable pending their producer adapters.
 
-# Full restore
-sudo secai-restore.sh full <backup-file>
+Plaintext staging is private and bounded. The helper does not attest storage
+encryption, tmpfs, quota reservation, power-loss durability, or secure erasure.
+Use separately verified encrypted staging storage and account for plaintext,
+ciphertext, object metadata and reserve space. No automatic backup schedule,
+retention deletion, measured RPO/RTO, or complete replacement-device rehearsal is
+established by this implementation. Keep the recovery identity and trusted
+receipt independently of both the appliance and its writable backup medium.
 
-# Selective restore (config, logs, or keys)
-sudo secai-restore.sh config <backup-file>
-sudo secai-restore.sh logs <backup-file>
-sudo secai-restore.sh keys <backup-file>    # Requires YES confirmation for LUKS header
-```
-
-After restore, the script automatically restarts services and runs the health check.
-
-### Backup Schedule
-
-| Environment | Frequency | Retention | Encryption |
-|-------------|-----------|-----------|------------|
-| Production | Daily (config + logs), weekly (full) | 30 days | Required |
-| Development | Weekly (full) | 14 days | Optional |
-| Pre-upgrade | Immediately before upgrade | Until next successful upgrade verified | Required |
-
-### Backup Storage
-
-- Store backups on a **separate physical device** (USB, NAS, air-gapped machine).
-- Never store unencrypted key backups on network-attached storage.
-- The LUKS header backup + vault passphrase can decrypt the entire vault — treat as highly sensitive.
-- Verify backup integrity periodically: `secai-backup.sh verify <file>`.
+The preserved LUKS repair ceremony requires the explicit restore flag, exact
+block device and matching archived/current/confirmed UUID, plus no mounts,
+children or holders. It is unreachable while active restore is gated. Ordinary
+inspection and inert export never invoke header replacement.
 
 ## Rollback Decision Matrix
 
@@ -592,9 +691,9 @@ Before allowing logrotate to trim old data:
    ```
 2. **Create a log-only backup** to external media:
    ```bash
-   sudo secai-backup.sh logs --encrypt --output /media/usb/archives
+   sudo secai-backup.sh logs --legacy-partial --recipient age1... --output /media/usb/archives
    ```
 3. **Verify the archive** before allowing rotation:
    ```bash
-   sudo secai-backup.sh verify /media/usb/archives/secai-backup-logs-*.tar.gz
+   sudo secai-backup.sh verify /media/usb/archives/EXACT-ARTIFACT.tar.gz.age --identity /private/recovery.identity
    ```

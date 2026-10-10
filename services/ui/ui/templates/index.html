@@ -183,6 +183,7 @@
                 <option value="">Loading models...</option>
             </select>
             <button class="btn btn-sm hidden" id="start-inference-btn" type="button">Start Inference</button>
+            <a class="btn btn-sm hidden" id="runtime-status-link" href="/security" role="status">Safety checks are not ready. Open Security Status.</a>
         </div>
         <div class="chat-control-group" style="justify-content:flex-end">
             <span class="chat-control-label">Mode</span>
@@ -219,8 +220,12 @@
     var inferenceAvailable = false;
     var inferenceAutomationAvailable = false;
     var inferenceDeploymentMode = '';
+    var inferenceSelectionPending = false;
+    var chatRequestPending = false;
     var chatModelMeta = {};
     var startInferenceBtn = document.getElementById('start-inference-btn');
+    var runtimeStatusLink = document.getElementById('runtime-status-link');
+    var runtimeReady = false;
 
     /* Check if search mediator is reachable */
     (async function() {
@@ -248,26 +253,34 @@
         }
     })();
 
-    async function loadChatModels() {
+    async function loadChatModels(preferredModel) {
+        var controller = new AbortController();
+        var timer = setTimeout(function() { controller.abort(); }, 10000);
         try {
-            var resp = await fetch('/api/inference/status');
+            var resp = await fetch('/api/inference/status', {signal: controller.signal});
+            if (!resp.ok) throw new Error('Inference status unavailable');
             var data = await resp.json();
+            if (data.registry_available === false) throw new Error('registry_unavailable');
             var models = data.chat_models || [];
-            var requested = new URLSearchParams(window.location.search).get('model') || '';
+            if (!Array.isArray(models)) throw new Error('Inference status unavailable');
+            var requested = preferredModel || selectedModel || new URLSearchParams(window.location.search).get('model') || '';
             inferenceAvailable = data.available === true;
-            inferenceAutomationAvailable = data.automation_available === true;
+            runtimeReady = data.runtime_ready !== false;
+            runtimeStatusLink.classList.toggle('hidden', runtimeReady);
+            inferenceAutomationAvailable = runtimeReady && data.automation_available === true;
             inferenceDeploymentMode = data.deployment_mode || '';
             chatModelMeta = {};
             if (!models.length) {
                 modelSelect.innerHTML = '<option value="">No trusted GGUF models</option>';
                 modelSelect.disabled = true;
-                startInferenceBtn.classList.add('hidden');
-                return;
+                refreshChatModelControls(data);
+                return data;
             }
-            modelSelect.disabled = false;
+            modelSelect.disabled = inferenceSelectionPending;
             modelSelect.innerHTML = models.map(function(m) {
                 var label = m.name || m.filename;
-                if (m.loaded) label += ' (loaded)';
+                if (!runtimeReady) label += ' (safety checks required)';
+                else if (m.loaded) label += ' (loaded)';
                 else if (!data.available) label += ' (start inference to use)';
                 else label += ' (switch inference to use)';
                 var value = m.filename || m.name;
@@ -280,6 +293,8 @@
                 });
                 if (requestedModel) {
                     modelSelect.value = requestedModel.filename || requestedModel.name;
+                } else {
+                    modelSelect.value = '';
                 }
             } else {
                 var usable = models.find(function(m) { return m.usable; });
@@ -290,10 +305,23 @@
             if (data.guidance && !data.available) {
                 modelSelect.title = data.command ? (data.guidance + ' Command: ' + data.command) : data.guidance;
             }
+            return data;
         } catch(e) {
-            modelSelect.innerHTML = '<option value="">Could not load models</option>';
+            // Stale inventory must never restore readiness after a failed poll.
+            chatModelMeta = {};
+            inferenceAvailable = false;
+            inferenceAutomationAvailable = false;
+            runtimeReady = false;
+            runtimeStatusLink.classList.add('hidden');
+            modelSelect.innerHTML = e.message === 'registry_unavailable'
+                ? '<option value="">Model registry unavailable</option>'
+                : '<option value="">Could not load models</option>';
             modelSelect.disabled = true;
+            refreshChatModelControls({});
             startInferenceBtn.classList.add('hidden');
+            return null;
+        } finally {
+            clearTimeout(timer);
         }
     }
 
@@ -303,14 +331,16 @@
 
     function refreshChatModelControls(data) {
         var meta = currentModelMeta();
-        selectedModelUsable = meta.usable === true;
-        var shouldOfferStart = selectedModel && !selectedModelUsable && inferenceDeploymentMode === 'sandbox';
+        selectedModelUsable = runtimeReady && !inferenceSelectionPending && meta.usable === true;
+        sendBtn.disabled = chatRequestPending || !selectedModelUsable;
+        var shouldOfferStart = runtimeReady && meta.filename && selectedModel && (!selectedModelUsable || inferenceSelectionPending)
+            && ['sandbox', 'appliance'].includes(inferenceDeploymentMode);
         startInferenceBtn.classList.toggle('hidden', !shouldOfferStart);
-        startInferenceBtn.disabled = inferenceAutomationAvailable !== true;
-        startInferenceBtn.textContent = inferenceAvailable ? 'Switch Model' : 'Start Inference';
+        startInferenceBtn.disabled = inferenceSelectionPending || inferenceAutomationAvailable !== true;
+        startInferenceBtn.textContent = inferenceSelectionPending ? 'Loading Model…' : (inferenceAvailable ? 'Switch Model' : 'Start Inference');
         startInferenceBtn.title = inferenceAutomationAvailable === true
             ? 'Start the inference worker with the selected model'
-            : ((data && data.command) ? ('Fallback: ' + data.command) : 'Sandbox automation unavailable');
+            : ((data && data.command) ? ('Fallback: ' + data.command) : 'Inference controls unavailable');
         if (selectedModel && !selectedModelUsable) {
             modelSelect.title = 'This trusted model is not currently loaded. Switch inference to use it.';
         } else {
@@ -333,10 +363,15 @@
     }
 
     async function startInference() {
+        if (inferenceSelectionPending) return;
         var option = modelSelect.options[modelSelect.selectedIndex];
         var filename = option ? (option.getAttribute('data-filename') || '') : '';
         if (!filename) {
             toast('Choose a trusted GGUF model first.', 'warning');
+            return;
+        }
+        if (inferenceDeploymentMode === 'appliance') {
+            await startNativeInference(filename);
             return;
         }
         var profile = '';
@@ -372,6 +407,62 @@
             {profile: profile, inference: true, model_filename: filename},
             'Sandbox restart started for local inference.'
         );
+    }
+
+    async function startNativeInference(filename) {
+        var confirmed = await showConfirm(
+            inferenceAvailable ? 'Switch Model' : 'Start Inference',
+            'Load ' + filename + ' for chat? Any current inference request will be interrupted.',
+            'Load Model',
+            false
+        );
+        if (!confirmed || inferenceSelectionPending) return;
+        inferenceSelectionPending = true;
+        modelSelect.disabled = true;
+        refreshChatModelControls({});
+        var controller = new AbortController();
+        var timer = setTimeout(function() { controller.abort(); }, 10000);
+        try {
+            var resp = await fetch('/api/inference/select', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model_filename: filename}),
+                signal: controller.signal
+            });
+            var result = await resp.json();
+            if (!resp.ok) {
+                toast(result.error || 'Could not request the selected model.', 'warning');
+                return;
+            }
+            clearTimeout(timer);
+            toast('Loading ' + filename + '…', 'info');
+            var deadline = Date.now() + 120000;
+            while (Date.now() < deadline) {
+                var status = await loadChatModels(filename);
+                var selection = (status && status.model_selection) || {};
+                if (selection.request_id === result.request_id && selection.status === 'failed') {
+                    toast(selection.detail || 'The selected model could not be started.', 'error');
+                    return;
+                }
+                // A service restart alone does not prove the model is ready.
+                var loaded = status && (status.chat_models || []).find(function(model) {
+                    return model.filename === filename && model.usable === true;
+                });
+                if (loaded) {
+                    toast(filename + ' is ready for chat.', 'success');
+                    return;
+                }
+                await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+            }
+            toast('The model is still unavailable. Refresh to check its status before retrying.', 'warning');
+        } catch(e) {
+            toast('Could not confirm model loading. Refresh to check its status before retrying.', 'warning');
+        } finally {
+            clearTimeout(timer);
+            inferenceSelectionPending = false;
+            modelSelect.disabled = !Object.keys(chatModelMeta).length;
+            refreshChatModelControls({});
+        }
     }
 
     async function setMode(mode) {
@@ -412,9 +503,18 @@
     async function sendMessage() {
         var text = userInput.value.trim();
         if (!text) return;
-        if (selectedModel && !selectedModelUsable) {
-            toast('Switch inference to the selected model before chatting.', 'warning');
-            if (inferenceAutomationAvailable) {
+        if (chatRequestPending) return;
+        if (inferenceSelectionPending) {
+            toast('Wait for the selected model to finish loading before chatting.', 'warning');
+            return;
+        }
+        if (!selectedModel || !selectedModelUsable) {
+            toast(!runtimeReady
+                ? 'Safety checks are not ready. Open Security Status for details.'
+                : Object.keys(chatModelMeta).length
+                ? 'Switch inference to the selected model before chatting.'
+                : 'Model status is unavailable. Refresh to check it before chatting.', 'warning');
+            if (currentModelMeta().filename && inferenceAutomationAvailable) {
                 await startInference();
             }
             return;
@@ -426,7 +526,8 @@
         messages.push({ role: 'user', content: text });
         userInput.value = '';
         userInput.style.height = 'auto';
-        sendBtn.disabled = true;
+        chatRequestPending = true;
+        refreshChatModelControls({});
 
         /* Show typing indicator */
         var typing = document.createElement('div');
@@ -478,7 +579,8 @@
             appendMessage('assistant', 'Error: could not reach inference worker');
         }
 
-        sendBtn.disabled = false;
+        chatRequestPending = false;
+        refreshChatModelControls({});
         userInput.focus();
     }
 

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/SecAI-Hub/mcp-firewall",
+  "base_commit": "77e3dbe2417637142989ddf45c0aa7589c4732ac",
+  "source_state": "base commit plus reviewed local remediation; hashes identify exact source",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "README.md": "6098334500ba58fd89f9d220e75821c48da728f6804c15b855ce0b678ac183b3",
+    "THREAT_MODEL.md": "575e528f9a6b01c7177b7dbb18205082bd4229d7a56bee4674668b0dc8636070",
+    "adversarial_test.go": "4598f28a767d201fe106e94118a8f73a890d06e36c83dca64ab7e37573ec6131",
+    "audit.go": "e210a1ada2c4ef3b5961da03742bf780f266c39343157476a225f29e06178eb8",
+    "auth.go": "bc86e33325810c09a3582b4aa979e7ab9136c88772cbdf61b0b5408ff5c3d36d",
+    "auth_test.go": "2451a6b69c4f2c9cd97610aef0d99e10cffdef8b45cbac36eb85748bc95e7711",
+    "final_security_test.go": "04a69f717c1ba1a5df0de24daf311c79dc0a0e75e799db1e05d22e06ac43973c",
+    "go.mod": "a65ec5f846fad5138f5a1003c96eef1c12b50322573971a65f8af2ff4e3592dc",
+    "go.sum": "e42794fa9b56301ad073de55cac1dea683b320ed951454d8709ffc7156088dd2",
+    "isolation.go": "57c6f837eaaa1608538cbfa91189e65a9a46acda0332e8149fad9af69af0ccf3",
+    "isolation_test.go": "3d66625e47d84f3fd3b731c92e8bc6fb6c9bc70512836df7eff54e8675106fcf",
+    "main.go": "9b79acfbd2f59a17d36179965d56c8cd55a241028331e322e98d23aa79fb5559",
+    "main_test.go": "efe7916bf1746e403801ee61eed64316b3ef3bac75be5c73f4da2ef488b9c83b",
+    "policies/default-policy.yaml": "8e00fd3d32315d2d77ca16f74c40f898da0f4a796c2a037de8a863c61dd293f7",
+    "policy.go": "fd4df316bb2e0974213f949145f2f745cc67ee64909bb2a3614ead6831a7da67",
+    "recovery.go": "49ddd15a3daad0f37be70c3c4beb26e9ebe672115135c1be0a4e50eadeb34afe",
+    "redact.go": "9c46013edc9fc2dc14dad01029129a7ed5ded9386f58e5fdd024add0bd30d91a",
+    "remediation_test.go": "371f7c4ff9eb299c1a4841b764dedecb26b74ef5d25967fa959bc9e3830c1740",
+    "schemas/openapi.yaml": "ab4df49eb407e4aa04aa0fef3da87d451bb96105382808306a566fc30563b6b0",
+    "schemas/policy.schema.json": "a0d7972ab0bd5ce26a0e5fc37cb566415c5cd8d1e64f3b8e44ca1f0274d19e55",
+    "security_test.go": "68da13d5311548bf194992e56979be49027f1bd91ef521ee0045d3e4a76053ef",
+    "taint.go": "a0123510274cabc7041eb6de64608ab4b348ce9a24250ac64b55e834063cd868",
+    "Dockerfile": "e9badb473b217e14f2a152621664d2f9ec3d0cc79e8183bfb2db66607f836f43"
+  }
+}

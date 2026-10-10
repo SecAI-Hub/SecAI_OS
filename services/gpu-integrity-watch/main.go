@@ -114,6 +114,10 @@ func main() {
 		cmdWatch()
 	case "daemon":
 		cmdDaemon()
+	case "probe-server":
+		cmdProbeServer()
+	case "policy-enabled":
+		cmdPolicyEnabled()
 	case "baseline":
 		cmdBaseline()
 	case "status":
@@ -132,6 +136,7 @@ Usage:
   gpu-integrity-watch check     [-profile FILE]              Run probes once
   gpu-integrity-watch watch     [-profile FILE]              Watch continuously (foreground)
   gpu-integrity-watch daemon    [-profile FILE]              Run as HTTP daemon
+  gpu-integrity-watch probe-server                         Run bounded native probe adapter
   gpu-integrity-watch baseline  [-profile FILE] [-out FILE]  Capture baseline hashes
   gpu-integrity-watch status    [-addr ADDR]                 Query daemon status
 
@@ -144,14 +149,19 @@ Environment:
 
 // ---------- profile loading ----------
 
-func loadProfile() *IntegrityProfile {
+func integrityProfilePath() string {
 	path := envOr("INTEGRITY_PROFILE", "profiles/default-profile.yaml")
 	for i, arg := range os.Args[2:] {
-		if arg == "-profile" && i+1 < len(os.Args[2:])-1 {
+		if arg == "-profile" && i+1 < len(os.Args[2:]) {
 			path = os.Args[i+3]
 		}
 	}
 
+	return path
+}
+
+func loadProfile() *IntegrityProfile {
+	path := integrityProfilePath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("failed to load profile %s: %v", path, err)
@@ -198,6 +208,15 @@ func cmdCheck() {
 	initAudit(os.Getenv("AUDIT_LOG"))
 
 	runner := NewProbeRunner(profile, baseline)
+	if integrityProfilePath() == nativeProbeProfile {
+		protectedProfile, protectedBaseline, ph, bh, err := loadGPUProducerInputs(nativeProbeProfile)
+		if err == nil {
+			runner = NewProbeRunner(protectedProfile, protectedBaseline)
+			if err := configureNativeGPUProbeClient(runner, ph, bh); err != nil {
+				log.Printf("GPU authenticated live probe client unavailable")
+			}
+		}
+	}
 	results := runner.RunAll()
 
 	weights := convertWeights(profile.Scoring.Weights)
@@ -225,6 +244,11 @@ func cmdCheck() {
 	enc.SetIndent("", "  ")
 	enc.Encode(output)
 
+	for _, result := range results {
+		if (result.Type == ProbeSentinelInfer || result.Type == ProbeReferenceDrift) && (result.Status == StatusError || result.Status == StatusSkip) {
+			os.Exit(2)
+		}
+	}
 	switch entry.Verdict {
 	case VerdictCritical:
 		os.Exit(2)
@@ -309,7 +333,10 @@ func cmdBaseline() {
 	}
 
 	patterns := []string{"*.gguf", "*.bin", "*.safetensors"}
-	hashes := hashModelFiles(profile.ModelDir, patterns)
+	hashes, err := hashModelFiles(profile.ModelDir, patterns)
+	if err != nil || len(hashes) == 0 {
+		log.Fatalf("cannot capture incomplete or empty baseline: %v", err)
+	}
 
 	if len(hashes) == 0 {
 		log.Fatalf("no model files found in %s", profile.ModelDir)
@@ -372,11 +399,28 @@ func cmdStatus() {
 // ---------- daemon ----------
 
 func cmdDaemon() {
-	profile := loadProfile()
-	baseline := loadBaseline(profile)
+	profile, baseline, profileHash, baselineHash, err := loadGPUProducerInputs(integrityProfilePath())
+	if err != nil {
+		log.Fatalf("GPU evidence profile unavailable: %v", err)
+	}
+	scope := os.Getenv("GPU_ATTESTATION_SCOPE")
+	evidenceKey, err := loadGPUAttestationKey(os.Getenv("GPU_ATTESTATION_KEY_PATH"))
+	if err != nil {
+		log.Fatalf("GPU evidence credential unavailable: %v", err)
+	}
+	publisher, err := newGPUEvidencePublisher(scope, evidenceKey, profile, baseline, profileHash, baselineHash)
+	if err != nil {
+		log.Fatalf("GPU evidence producer unavailable: %v", err)
+	}
+
 	initAudit(os.Getenv("AUDIT_LOG"))
 
 	runner := NewProbeRunner(profile, baseline)
+	if scope == "runtime" {
+		if err := configureNativeGPUProbeClient(runner, profileHash, baselineHash); err != nil {
+			log.Printf("GPU authenticated live probe client unavailable")
+		}
+	}
 	weights := convertWeights(profile.Scoring.Weights)
 	scorer := NewScoringEngine(weights, profile.Scoring.MaxHistory)
 	executor := NewActionExecutor(profile.Actions, profile.ModelDir, profile.InferenceURL)
@@ -391,6 +435,7 @@ func cmdDaemon() {
 		}
 	}
 
+	var cycleMu sync.Mutex
 	var latestMu sync.Mutex
 	var latestResults []ProbeResult
 	var latestActions []ActionResult
@@ -405,8 +450,11 @@ func cmdDaemon() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			results := runner.RunAll()
-			entry := scorer.Score(results)
+			cycleMu.Lock()
+			results, entry, evidenceErr := publisher.capture(runner.RunAll, scorer)
+			if evidenceErr != nil {
+				log.Printf("GPU completed-cycle evidence unavailable")
+			}
 			actions := executor.Evaluate(entry)
 
 			metricChecks.Add(1)
@@ -426,6 +474,7 @@ func cmdDaemon() {
 
 			// Report incidents on warning/critical
 			reportIncident(incidentURL, incidentToken, entry, results)
+			cycleMu.Unlock()
 
 			<-ticker.C
 		}
@@ -445,8 +494,15 @@ func cmdDaemon() {
 			return
 		}
 
-		results := runner.RunAll()
-		entry := scorer.Score(results)
+		if !cycleMu.TryLock() {
+			http.Error(w, "an integrity check is already running", http.StatusConflict)
+			return
+		}
+		defer cycleMu.Unlock()
+		results, entry, evidenceErr := publisher.capture(runner.RunAll, scorer)
+		if evidenceErr != nil {
+			log.Printf("GPU completed-cycle evidence unavailable")
+		}
 		actions := executor.Evaluate(entry)
 
 		metricChecks.Add(1)
@@ -463,6 +519,7 @@ func cmdDaemon() {
 			"source":  r.RemoteAddr,
 		})
 
+		reportIncident(incidentURL, incidentToken, entry, results)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"probes":  results,
@@ -498,77 +555,9 @@ func cmdDaemon() {
 		json.NewEncoder(w).Encode(scorer.History())
 	})
 
-	mux.HandleFunc("/v1/baseline", func(w http.ResponseWriter, r *http.Request) {
-		metricHTTPReqs.Add(1)
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !checkToken(r, inboundToken) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	mux.HandleFunc("/v1/baseline", baselineEnrollmentDisabled)
 
-		if profile.ModelDir == "" {
-			http.Error(w, `{"error":"model_dir not configured"}`, http.StatusBadRequest)
-			return
-		}
-
-		patterns := []string{"*.gguf", "*.bin", "*.safetensors"}
-		hashes := hashModelFiles(profile.ModelDir, patterns)
-
-		newBaseline := &Baseline{
-			CapturedAt:   time.Now().UTC(),
-			TensorHashes: hashes,
-		}
-
-		runner.baseline = newBaseline
-
-		// Persist baseline
-		bPath := profile.BaselineFile
-		if bPath == "" {
-			bPath = "baseline.yaml"
-		}
-		data, _ := yaml.Marshal(newBaseline)
-		os.WriteFile(bPath, data, 0o600)
-
-		auditLog("baseline_capture", map[string]interface{}{
-			"files":  len(hashes),
-			"source": r.RemoteAddr,
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "baseline captured",
-			"files":  len(hashes),
-		})
-	})
-
-	mux.HandleFunc("/v1/reload", func(w http.ResponseWriter, r *http.Request) {
-		metricHTTPReqs.Add(1)
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !checkToken(r, inboundToken) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		newProfile := loadProfile()
-		newBaseline := loadBaseline(newProfile)
-
-		*profile = *newProfile
-		runner.profile = profile
-		runner.baseline = newBaseline
-
-		auditLog("profile_reload", map[string]interface{}{
-			"source": r.RemoteAddr,
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "profile reloaded"})
-	})
+	mux.HandleFunc("/v1/reload", maintenanceReloadRequired)
 
 	mux.HandleFunc("/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
 		metricHTTPReqs.Add(1)
@@ -583,20 +572,6 @@ func cmdDaemon() {
 		})
 	})
 
-	// GPU attestation state endpoint — consumed by the runtime-attestor
-	// to include GPU integrity in the signed attestation bundle.
-	mux.HandleFunc("/v1/attest-state", func(w http.ResponseWriter, r *http.Request) {
-		metricHTTPReqs.Add(1)
-		latestMu.Lock()
-		results := latestResults
-		latestMu.Unlock()
-
-		state := buildAttestState(scorer, results)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(state)
-	})
-
 	addr := profile.Daemon.BindAddr
 	if addr == "" {
 		addr = "127.0.0.1:8505"
@@ -606,7 +581,7 @@ func cmdDaemon() {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           authenticatedGPUHandler(mux, inboundToken),
+		Handler:           gpuDaemonEvidenceHandler(authenticatedGPUHandler(mux, inboundToken), publisher),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -632,6 +607,23 @@ func cmdDaemon() {
 }
 
 // ---------- helpers ----------
+
+// Enrollment changes the root of trust. Monitoring credentials cannot authorize
+// it; an operator must enroll an independently verified baseline offline.
+func baselineEnrollmentDisabled(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	json.NewEncoder(w).Encode(map[string]string{"error": "HTTP baseline enrollment is disabled; use the offline maintenance enrollment procedure"})
+}
+
+// Profile changes include action destinations, scoring weights and probe
+// cadence. Apply them together on a supervised maintenance restart; mutating a
+// live runner previously acknowledged only part of the requested policy.
+func maintenanceReloadRequired(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(map[string]string{"error": "profile changes require a supervised maintenance restart; active policy is unchanged"})
+}
 
 func checkToken(r *http.Request, expected string) bool {
 	if expected == "" {

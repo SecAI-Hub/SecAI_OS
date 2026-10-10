@@ -12,12 +12,12 @@ export TMP="${SECURE_AI_TMPDIR}"
 export TEMP="${SECURE_AI_TMPDIR}"
 
 UI_WORKERS="${GUNICORN_WORKERS:-1}"
-if [ "${UI_WORKERS}" -gt 1 ]; then
-    echo "warning: forcing GUNICORN_WORKERS=1 because AuthManager session state is process-local" >&2
-    UI_WORKERS=1
-fi
+case "${UI_WORKERS}" in
+    1) ;;
+    *) echo "GUNICORN_WORKERS must be 1; shared audit writers are not qualified" >&2; exit 1 ;;
+esac
 
-exec gunicorn \
+exec /opt/venv/bin/python -I /app/ui/runtime.py -- /opt/venv/bin/gunicorn \
     --chdir /app \
     --bind "${BIND_ADDR:-0.0.0.0:8480}" \
     --workers "${UI_WORKERS}" \
@@ -27,6 +27,7 @@ exec gunicorn \
     --worker-tmp-dir "${SECURE_AI_TMPDIR}" \
     --max-requests "${GUNICORN_MAX_REQUESTS:-1000}" \
     --max-requests-jitter "${GUNICORN_MAX_REQUESTS_JITTER:-50}" \
+    --no-control-socket \
     --access-logfile - \
     --error-logfile - \
     ui.app:app

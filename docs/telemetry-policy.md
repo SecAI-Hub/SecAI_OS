@@ -1,59 +1,24 @@
-# Telemetry Policy
+# Telemetry and network policy
 
-**SecAI OS does not collect telemetry.** No data leaves the device unless explicitly enabled by the user.
+The appliance does not intentionally send usage analytics or automatic crash reports. This is a source policy, not a claim that a selected profile proves the running host is disconnected. Native network assurance requires a fresh, same-boot runtime firewall observation. Container deployments do not establish a host firewall guarantee.
 
-## What This Means
+The native boot guard installs empty online leases before the configured network managers. In verified `offline_private` operation, the owned IPv4/IPv6 and wildcard device-egress rules permit loopback and block non-loopback host egress, including established streams, DNS, NTP, HTTPS and tested raw packet sockets. Offline mode also blocks DHCP, ARP and IPv6 neighbor discovery. It does not promise radio, firmware, hypervisor or pre-guard/initrd silence.
 
-| Category | Behavior |
-|----------|----------|
-| Usage analytics | Not collected |
-| Crash reports | Not sent externally |
-| Phone-home / heartbeat | None |
-| Update checks | Pulled by the device on a schedule, not pushed from a server |
-| DNS | Blocked by default (nftables). DNS leak detection runs locally. |
-| Model data | Never transmitted. Inference runs entirely on local hardware. |
-| Prompts and responses | Never logged to external services. Local audit logging optional. |
+Explicit online scopes expire in the kernel. They have visible network-configuration exceptions:
 
-## Network Access Requires Explicit Consent
+| Effective scope | Permitted egress, subject to other restrictive rules |
+| --- | --- |
+| Offline | Loopback only |
+| Research | Loopback; DHCP, ARP and IPv6 neighbor discovery; Tor service TCP |
+| Full lab | Research scope plus the dedicated airlock UID's HTTPS and direct DNS |
+| Maintenance | Research scope plus host HTTPS, DNS and NTP |
 
-Network access is controlled by the active [profile](../files/system/etc/secure-ai/config/appliance.yaml):
+Research and full-lab profile applications grant at most one hour. A separate local administrator maintenance grant defaults to five minutes and cannot exceed fifteen minutes. Renewal closes egress first and requires a new explicit action. Persisted profile selection and ordinary observation never renew a lease. A failed transition does not restore a previous online lease.
 
-- **offline_private** (default): All egress blocked. No exceptions.
-- **research**: Tor-routed web search only, through the search mediator with PII stripping and differential privacy (decoy queries).
-- **full_lab**: Filtered outbound through Airlock decisions. All connections logged to the local audit chain.
+Automatic update-check and DNS-diagnostic timers are disabled. Their services and network-bearing update steps additionally require a fresh maintenance observation. The optional DNS diagnostic sends an explicit maintenance DNS request; it is not a leak-freedom test. Updates and diagnostics may fail when a lease expires; this does not authorize automatic renewal.
 
-Switching profiles requires explicit user confirmation. The UI shows the privacy implications before applying.
+Full lab uses direct DNS only inside the airlock's read-only resolver binding, prepared from the host's existing trusted uplink configuration. It does not select a public DNS provider or permit the shared root resolver outside maintenance. DNS queries and allowed application requests remain disclosures to the configured network and destinations. Search sanitization, Tor and application policy do not justify a general anonymity or content-confidentiality claim.
 
-## Audit Trail
+Local audit coverage is mixed: some writers have authenticated chains, while others have structured durable records. Profile and diagnostic status are not universal cryptographic proof of every network event. Audit checks have their own enrollment, retention and external-anchor limits. Agent task history stores bounded metadata; live service results and other service logs follow their separate documented policies.
 
-All network-related events are recorded in the tamper-evident audit chain:
-
-- Profile changes (including who changed it and when)
-- Airlock connections (destination, sanitization applied, data size)
-- Search queries (stripped of PII, with decoy query counts)
-- Service state changes (which services started/stopped)
-
-The audit chain is hash-linked — any tampering is detectable via `verify-release.sh` or the Security Dashboard.
-
-## Verification
-
-To confirm no unexpected outbound connections:
-
-```bash
-# Check nftables rules (should show default-deny egress)
-sudo nft list ruleset | grep -A5 "chain output"
-
-# Check for active connections
-ss -tunap | grep -v '127.0.0.1'
-
-# DNS leak check (runs automatically on a timer)
-journalctl -u secure-ai-dns-leak-check --no-pager -n 5
-```
-
-## Policy Scope
-
-This policy covers the SecAI OS image and all bundled services. It does not cover:
-
-- Third-party models (their behavior during inference is constrained by sandboxing, but not guaranteed)
-- User-installed software (if the immutable OS is modified)
-- Network traffic from hypervisors when running in a VM
+See [the native network runbook](network-profiles.md) for prerequisites, exact runtime status, maintenance and recovery commands, resolver renewal, and the boundary between namespace test evidence and assembled Fedora qualification.

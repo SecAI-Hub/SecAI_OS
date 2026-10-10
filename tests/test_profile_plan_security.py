@@ -196,6 +196,10 @@ esac
 """,
         encoding="utf-8",
     )
+    (fake_bin / "network-helper").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "${FAKE_NETWORK_LOG:?}"\n'
+        '[ "${FAIL_NETWORK_COMMAND:-}" != "$1" ]\n', encoding="utf-8",
+    )
     for executable in fake_bin.iterdir():
         executable.chmod(0o755)
 
@@ -226,6 +230,8 @@ esac
         "AUDIT_LOG": str(tmp_path / "logs/audit.jsonl"),
         "UNIT_ROOT": str(UNIT_ROOT),
         "PROFILE_HELPER": str(HELPER_PATH),
+        "NETWORK_HELPER": str(fake_bin / "network-helper"),
+        "FAKE_NETWORK_LOG": str(tmp_path / "network.log"),
         "WORK_ROOT": str(runtime / "work"),
         "LOCK_FILE": str(runtime / "profile.lock"),
         "FAKE_SYSTEMD_STATE": str(state_dir),
@@ -287,3 +293,29 @@ def test_profile_shell_restores_exact_snapshot_on_start_failure(
     result = json.loads(Path(environment["RESULT_FILE"]).read_text(encoding="utf-8"))
     assert state["active"] == "offline_private"
     assert result["status"] == "rolled_back"
+
+
+@pytest.mark.parametrize('failure', ['grant', 'prepare-resolver'])
+def test_network_failure_restores_service_and_selection_but_never_old_lease(tmp_path, monkeypatch, failure):
+    environment, state_dir = _profile_shell_environment(tmp_path, monkeypatch)
+    environment['FAIL_NETWORK_COMMAND'] = failure
+    before = {path.name: path.read_text() for path in state_dir.iterdir()}
+    completed = subprocess.run([str(REPO_ROOT/'files/system/usr/libexec/secure-ai/apply-profile.sh'), 'full_lab', 'test'],
+                               env=environment, text=True, capture_output=True, check=False)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert {path.name: path.read_text() for path in state_dir.iterdir()} == before
+    assert json.loads(Path(environment['PROFILE_STATE']).read_text())['active'] == 'offline_private'
+    assert json.loads(Path(environment['RESULT_FILE']).read_text())['status'] == 'rolled_back'
+    calls = Path(environment['FAKE_NETWORK_LOG']).read_text().splitlines()
+    assert calls[0] == calls[-1] == 'close'
+    assert sum(call.startswith('grant') for call in calls) == int(failure == 'grant')
+
+
+def test_no_request_boot_closes_persisted_online_selection_without_grant(tmp_path, monkeypatch):
+    environment, _ = _profile_shell_environment(tmp_path, monkeypatch, initial_profile='full_lab')
+    completed = subprocess.run([str(REPO_ROOT/'files/system/usr/libexec/secure-ai/apply-profile.sh')],
+                               env=environment, text=True, capture_output=True, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(Path(environment['PROFILE_STATE']).read_text())['active'] == 'offline_private'
+    calls = Path(environment['FAKE_NETWORK_LOG']).read_text().splitlines()
+    assert calls == ['close']

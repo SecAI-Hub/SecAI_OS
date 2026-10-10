@@ -7,7 +7,7 @@
 
 ## Purpose
 
-Continuous GPU runtime integrity verification. Monitors the GPU hardware and driver stack to detect tampering, unexpected changes, or anomalies that could compromise model execution trust. Integrates with the runtime attestor and incident recorder for end-to-end GPU security.
+Continuous GPU runtime integrity verification. Monitors the GPU hardware and driver stack to detect tampering, unexpected changes, or anomalies that could compromise model execution trust. Reports incidents and publishes authenticated completed-cycle evidence. Main runtime-attestor bundle/recovery/UI adoption is a separate pending integration stage; this producer alone does not establish end-to-end GPU attestation.
 
 ## Architecture
 
@@ -45,19 +45,17 @@ GPU Integrity Watch runs as a daemon that periodically probes the GPU subsystem 
 
 ### Runtime Attestor
 
-The `/v1/attest-state` endpoint returns a `GPUAttestState` summary that the runtime attestor can include in the signed attestation bundle:
+`POST /v1/attest-state` uses a dedicated challenge/response protocol. GET and the old raw `GPUAttestState` response are retired. The existing monitoring bearer token does not authorize this route, and the evidence key does not authorize action routes.
 
-```json
-{
-  "timestamp": "2026-03-13T12:00:00Z",
-  "verdict": "healthy",
-  "composite_score": 0.0,
-  "probe_statuses": {"hash": "pass", "driver": "pass"},
-  "driver_version": "565.57.01",
-  "device_nodes": ["/dev/dri/card0", "/dev/dri/renderD128"],
-  "trend": 0.0
-}
-```
+A request contains exactly `schema_version: 1`, the producer's fixed `scope` (`runtime` or `bootstrap`), a fresh 64-lowercase-hex `request_nonce`, and `request_mac`. Requests use HMAC-SHA256 over the UTF-8 domain `SecAI GPU evidence request v1`, a NUL byte, and canonical JSON with `request_mac` empty. Responses use the distinct domain `SecAI GPU evidence response v1` and canonical JSON with `response_mac` empty. Canonicalization sorts object keys recursively and preserves JSON numbers. The key is never transmitted in a header or payload.
+
+The response contains schema, fixed scope, echoed nonce, random producer instance, latest sequence, availability/reason, snapshot and response MAC. A snapshot has actual cycle start/completion times, exact loaded profile/baseline hashes, baseline state, verdict/composite score, and a sorted list of typed probe IDs/types/statuses/scores/reason codes. It excludes raw findings, prompts, model output, model paths, device paths and driver-detail strings. Each snapshot is published atomically after its selected probe run and scoring; readers cannot mix cycles. A new invalid/aborted cycle clears prior success. Requests do not run probes or refresh cycle timestamps.
+
+No completed cycle is `unavailable` with a null snapshot. Missing required baseline is `unverified`, not healthy; an observed critical verdict remains critical. A loaded baseline hash identifies bytes, not operator approval. Source authentication is also separate from trust: consumers verify MAC/nonce and independently approved profile/baseline/probe coverage, healthy/all-pass results and bounded cycle freshness. Stale/unknown/critical evidence cannot satisfy that policy check. The native runtime attestor now includes separate bootstrap and runtime evidence in schema-2 bundles; UI and agent action admission and incident recovery require the current runtime decision. See [runtime attestor](runtime-attestor.md) for policy and startup ordering. This wiring does not establish native hardware qualification.
+
+Limits: 4 KiB requests, 64 KiB responses, 64 probes, 8 concurrent evidence requests, one retained completed snapshot, 5-second exchange deadline and at most 1,000 existing scoring-history entries. Profile/baseline inputs are protected, bounded regular files; credential copies must be owner-only, single-link canonical 256-bit hex files. JSON rejects unknown/missing/null-required fields, duplicate Unicode-equivalent keys and trailing data. Native client origins are numeric loopback with an explicit port; proxies and redirects are disabled.
+
+The runtime GPU unit fixes `scope=runtime` and loads only `gpu-runtime-attestation-hmac.key`. The separate native bootstrap unit fixes `scope=bootstrap`, uses `gpu-bootstrap-attestation-hmac.key`, and rejects model/inference probe types. A dedicated authenticated probe adapter performs only approved bounded runtime reference requests. The measured policy explicitly selects `required`, `optional`, or `no_gpu`; shipped required approvals are empty and cannot pass until a reviewed release supplies them. An approved CPU-only release enforces CPU execution. Compose does not define equivalent attestation services or scoped readiness wiring, so compose GPU attestation remains unsupported.
 
 ### Incident Recorder
 
@@ -74,7 +72,7 @@ On `warning` or `critical` verdicts, GPU Integrity Watch automatically reports i
 ## Configuration
 
 - **Profile:** `/etc/secure-ai/gpu-integrity/default-profile.yaml`
-- **Baseline:** `/var/lib/secure-ai/gpu-integrity/baseline.yaml`
+- **Native runtime baseline:** `/etc/secure-ai/gpu-integrity/runtime-baseline.yaml`
 - **Audit log:** `/var/lib/secure-ai/logs/gpu-integrity-audit.jsonl`
 
 ### Environment Variables
@@ -82,7 +80,9 @@ On `warning` or `critical` verdicts, GPU Integrity Watch automatically reports i
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `INTEGRITY_PROFILE` | `profiles/default-profile.yaml` | Profile YAML path |
-| `SERVICE_TOKEN` | (none) | Bearer token for protected endpoints |
+| `SERVICE_TOKEN_PATH` | (required) | Monitoring/action bearer credential file |
+| `GPU_ATTESTATION_SCOPE` | (required) | Fixed producer scope; shipped unit uses `runtime` |
+| `GPU_ATTESTATION_KEY_PATH` | (required) | Dedicated scope-specific HMAC credential file, never a bearer token |
 | `AUDIT_LOG` | (none) | JSONL audit log path |
 | `INCIDENT_RECORDER_URL` | (from profile) | Override incident-recorder URL |
 
@@ -95,6 +95,15 @@ gpu-integrity-watch daemon     # HTTP daemon + background monitoring
 gpu-integrity-watch baseline   # Capture baseline hashes
 gpu-integrity-watch status     # Query daemon status
 ```
+
+`-profile FILE` overrides `INTEGRITY_PROFILE`, including when it is the final
+argument pair. Repeated selectors use the last supplied profile.
+
+Driver evidence currently measures the reported version and module name. An
+enrolled `module_hash` returns an error until a module-binary measurement source
+is implemented; the daemon cannot publish healthy evidence by skipping that
+requirement. A sysfs lifecycle status file is not a module binary, and an on-disk
+binary hash would not by itself authenticate loaded kernel memory.
 
 ## Actions
 
@@ -110,13 +119,13 @@ gpu-integrity-watch status     # Query daemon status
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | No | Liveness check |
-| POST | `/v1/check` | No | Trigger full probe cycle |
-| GET | `/v1/status` | No | Latest verdict, trend, probes, actions |
-| GET | `/v1/history` | No | Score history array |
-| GET | `/v1/metrics` | No | Counter metrics |
-| GET | `/v1/attest-state` | No | GPU attestation state for runtime-attestor |
-| POST | `/v1/baseline` | Token | Recapture baseline from model directory |
-| POST | `/v1/reload` | Token | Reload profile and baseline from disk |
+| POST | `/v1/check` | Bearer | Trigger full probe cycle |
+| GET | `/v1/status` | Bearer | Latest verdict, trend, probes, actions |
+| GET | `/v1/history` | Bearer | Score history array |
+| GET | `/v1/metrics` | Bearer | Counter metrics |
+| POST | `/v1/attest-state` | Dedicated request MAC | Authenticated immutable completed-cycle snapshot |
+| POST | `/v1/baseline` | Bearer | Disabled; offline enrollment required (403) |
+| POST | `/v1/reload` | Bearer | Disabled; supervised maintenance restart required (409) |
 
 ## Systemd Hardening
 
@@ -132,30 +141,16 @@ gpu-integrity-watch status     # Query daemon status
 
 ## Test Coverage
 
-81 tests covering:
-- Tensor hash probes (5 tests)
-- Sentinel inference/drift probes (3 tests)
-- ECC status parsing (5 tests)
-- Similarity computation (4 tests)
-- Scoring engine (7 tests)
-- Action execution (5 tests)
-- Integration pipeline (2 tests)
-- HTTP endpoints (10 tests)
-- Token authentication (3 tests)
-- Driver fingerprint probes (5 tests)
-- Device allowlist probes (5 tests)
-- Attestation state building (3 tests)
-- Incident classification (4 tests)
-- New probe integration (2 tests)
-- Scoring with new weights (1 test)
+The `TestGPUEvidence*` suite uses synthetic probes, clocks and keys for authentication, atomic publication, privacy, baseline/freshness/coverage rejection, malformed frames, source substitution and bounded exchange tests. It performs no physical GPU probes. Existing probe tests may access hardware and must be selected deliberately.
 
 ```bash
-cd services/gpu-integrity-watch && go test -v -race ./...
+cd services/gpu-integrity-watch
+go test -race -run '^TestGPUEvidence' -timeout=45s ./...
 ```
 
 ## Related
 
-- [Runtime Attestor](runtime-attestor.md) -- consumes GPU attest-state
+- [Runtime Attestor](runtime-attestor.md) -- signed-bundle consumer integration pending
 - [Incident Recorder](incident-recorder.md) -- receives GPU integrity incidents
 - [Integrity Monitor](integrity-monitor.md) -- continuous file integrity
 - [Architecture](../architecture.md) -- system design overview

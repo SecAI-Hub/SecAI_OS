@@ -1,0 +1,22 @@
+[extend]
+useDefault = true
+
+# Public provenance digests, not bearer credentials. Match exact file/value
+# pairs so new findings in either file remain subject to the default rules.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)modules/pinned-akmods/UPSTREAM_SOURCE\.json$''']
+regexes = ['''^af78ecfda6eb21c35195af3739341715e9cfc3f2f5911dd9c10b0670547bf6e8$''']
+
+[[rules.allowlists]]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)services/mcp-firewall/UPSTREAM_SYNC\.json$''']
+regexes = [
+  '''^2451a6b69c4f2c9cd97610aef0d99e10cffdef8b45cbac36eb85748bc95e7711$''',
+  '''^bc86e33325810c09a3582b4aa979e7ab9136c88772cbdf61b0b5408ff5c3d36d$''',
+  '''^ab4df49eb407e4aa04aa0fef3da87d451bb96105382808306a566fc30563b6b0$''',
+]

@@ -13,7 +13,7 @@
             --border: #2a2b3d;
             --text: #c0caf5;
             --text-secondary: #a9b1d6;
-            --text-muted: #565f89;
+            --text-muted: #97a0c5;
             --accent: #7aa2f7;
             --accent-hover: #89b4fa;
             --danger: #f7768e;
@@ -82,7 +82,8 @@
             font-family: inherit;
             transition: border-color var(--transition);
         }
-        .form-input:focus { outline: none; border-color: var(--accent); }
+        .form-input:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
         .form-input::placeholder { color: var(--text-muted); }
         .btn-primary {
             width: 100%;
@@ -142,19 +143,19 @@
             <h1 id="title">Unlock Appliance</h1>
             <p class="subtitle" id="subtitle">Enter your passphrase to continue.</p>
 
-            <div class="error-msg" id="error-msg"></div>
+            <div class="error-msg" id="error-msg" role="alert" aria-atomic="true"></div>
 
             <form id="auth-form">
                 <div class="form-group">
                     <label class="form-label" for="passphrase">Passphrase</label>
-                    <input class="form-input" type="password" id="passphrase" name="passphrase"
+                    <input class="form-input" type="password" id="passphrase" name="passphrase" aria-describedby="error-msg"
                            placeholder="Enter passphrase" autofocus required minlength="15" maxlength="256">
                 </div>
 
                 <div class="confirm-group" id="confirm-group">
                     <div class="form-group">
                         <label class="form-label" for="confirm">Confirm Passphrase</label>
-                        <input class="form-input" type="password" id="confirm" name="confirm"
+                        <input class="form-input" type="password" id="confirm" name="confirm" aria-describedby="error-msg"
                                placeholder="Confirm passphrase" minlength="15" maxlength="256">
                     </div>
                 </div>
@@ -162,7 +163,7 @@
                 <div class="confirm-group" id="setup-token-group">
                     <div class="form-group">
                         <label class="form-label" for="setup-token">First-boot setup credential</label>
-                        <input class="form-input" type="password" id="setup-token" name="setup-token"
+                        <input class="form-input" type="password" id="setup-token" name="setup-token" aria-describedby="error-msg"
                                placeholder="Paste the one-time setup credential" maxlength="256"
                                autocomplete="one-time-code">
                     </div>
@@ -178,7 +179,7 @@
 
         <div class="security-footer">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            All data stays on this device
+            Local appliance sign-in
         </div>
     </div>
 

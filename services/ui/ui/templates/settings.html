@@ -96,7 +96,7 @@
                 var age = Math.floor(data.session.age_seconds / 60);
                 var idle = Math.floor(data.session.idle_seconds / 60);
                 var timeout = Math.floor(data.session.timeout / 60);
-                info.textContent = 'Active for ' + age + ' min | Idle: ' + idle + ' min | Auto-lock after ' + timeout + ' min inactivity';
+                info.textContent = 'Active for ' + age + ' min | Idle: ' + idle + ' min | Auto-lock after ' + timeout + ' min inactivity | Session ceiling: ' + Math.floor(data.session.absolute_timeout / 3600) + ' hours. Status polling does not extend this session. Logout stops authorized downloads.';
             } else {
                 info.textContent = 'No active session.';
             }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -176,13 +177,25 @@ func cmdPath(name string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if code == 404 {
-		fmt.Fprintf(os.Stderr, "model %q not found\n", name)
+	path, err := verifiedPathResponse(data, code)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "model %q: %v\n", name, err)
 		os.Exit(1)
 	}
-	var result map[string]string
-	json.Unmarshal(data, &result)
-	fmt.Println(result["path"])
+	fmt.Println(path)
+}
+
+func verifiedPathResponse(data []byte, code int) (string, error) {
+	if code != http.StatusOK {
+		return "", fmt.Errorf("path verification unavailable (HTTP %d)", code)
+	}
+	var result struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || !filepath.IsAbs(result.Path) || strings.ContainsAny(result.Path, "\x00\r\n") {
+		return "", fmt.Errorf("invalid verified path response")
+	}
+	return result.Path, nil
 }
 
 func cmdDelete(name string) {

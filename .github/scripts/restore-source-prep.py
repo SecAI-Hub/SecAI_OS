@@ -26,6 +26,7 @@ SOURCE_PREP_FILES = {
     PurePosixPath(".source-prep"),
     PurePosixPath(".source-prep/SOURCE_PREP_MANIFEST.json"),
     PurePosixPath(".source-prep/llama-cpp-staged.tar.gz"),
+    PurePosixPath(".source-prep/go-toolchain.tar.gz"),
 }
 
 
@@ -77,6 +78,8 @@ def _verify_bundle_digest(archive: Path, checksum: Path) -> str:
 def _member_root(path: PurePosixPath) -> PurePosixPath:
     parts = path.parts
     if path in SOURCE_PREP_FILES:
+        return PurePosixPath(".source-prep")
+    if parts[:2] == (".source-prep", "tor") and len(parts) in (2, 3):
         return PurePosixPath(".source-prep")
     if path == PurePosixPath(".upstreams.lock.yaml"):
         return path
@@ -237,6 +240,39 @@ def _verify_wheelhouse(staging_root: Path, manifest: dict[str, object]) -> None:
         raise ValueError("wheelhouse contents do not exactly match SHA256SUMS")
 
 
+def _verify_tor_inputs(staging_root: Path, workspace: Path, manifest: dict[str, object]) -> None:
+    staged = staging_root / '.source-prep/tor'
+    tor_manifest = _regular_file(staging_root, '.source-prep/tor/TOR_SOURCE_MANIFEST.json')
+    expected_manifest = _manifest_digest(manifest, 'tor_source_manifest_sha256')
+    if not hmac.compare_digest(_sha256(tor_manifest), expected_manifest):
+        raise ValueError('Tor input manifest differs from source preparation')
+    expected_contract = _manifest_digest(manifest, 'tor_source_contract_sha256')
+    for parent, relative in [(staging_root, '.source-prep/tor/source.lock.json'),
+                             (workspace, 'build/tor/source.lock.json')]:
+        if not hmac.compare_digest(_sha256(_regular_file(parent, relative)), expected_contract):
+            raise ValueError('Tor source contract differs from the workflow checkout')
+    data = json.loads(tor_manifest.read_text(encoding='utf-8'))
+    if (not isinstance(data, dict) or data.get('schema_version') != 1
+            or data.get('contract_sha256') != expected_contract
+            or not isinstance(data.get('version'), str)
+            or not isinstance(data.get('inputs'), dict) or not 1 <= len(data['inputs']) <= 64):
+        raise ValueError('invalid Tor input manifest')
+    expected_names = {'TOR_SOURCE_MANIFEST.json'}
+    for name, entry in data['inputs'].items():
+        if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}', name)
+                or not isinstance(entry, dict) or set(entry) != {'sha256', 'bytes'}
+                or not isinstance(entry['sha256'], str) or not SHA256_RE.fullmatch(entry['sha256'])
+                or type(entry['bytes']) is not int or not 0 < entry['bytes'] <= 64*1024*1024):
+            raise ValueError('unsafe Tor input declaration')
+        path = _regular_file(staging_root, f'.source-prep/tor/{name}')
+        if path.stat().st_size != entry['bytes'] or not hmac.compare_digest(_sha256(path), entry['sha256']):
+            raise ValueError('Tor input checksum or size mismatch')
+        expected_names.add(name)
+    if not {'source.lock.json', 'TOR_SOURCE_MANIFEST.json'} <= expected_names or {
+            path.name for path in staged.iterdir()} != expected_names:
+        raise ValueError('Tor input tree has extra or missing files')
+
+
 def _verify_manifest(staging_root: Path, workspace: Path) -> list[PurePosixPath]:
     manifest_path = _regular_file(
         staging_root, ".source-prep/SOURCE_PREP_MANIFEST.json"
@@ -251,6 +287,8 @@ def _verify_manifest(staging_root: Path, workspace: Path) -> list[PurePosixPath]
         raise ValueError("source-prep manifest does not belong to this workflow commit")
     if manifest.get("application_dependency_mode") != "staged-offline":
         raise ValueError("source-prep manifest is not in staged-offline mode")
+
+    _verify_tor_inputs(staging_root, workspace, manifest)
 
     staged_lock = _regular_file(staging_root, ".upstreams.lock.yaml")
     checkout_lock = _regular_file(workspace, ".upstreams.lock.yaml")
@@ -270,6 +308,13 @@ def _verify_manifest(staging_root: Path, workspace: Path) -> list[PurePosixPath]
     ):
         raise ValueError("application dependency lock does not match the manifest")
 
+    go_tarball = _regular_file(staging_root, ".source-prep/go-toolchain.tar.gz")
+    expected_go = _manifest_digest(manifest, "go_toolchain_tarball_sha256")
+    if not hmac.compare_digest(_sha256(go_tarball), expected_go):
+        raise ValueError("Go compiler digest does not match the manifest")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(manifest.get("go_toolchain_version", ""))):
+        raise ValueError("Go compiler version must be an exact release")
+
     llama_tarball = _regular_file(
         staging_root, ".source-prep/llama-cpp-staged.tar.gz"
     )
@@ -278,6 +323,16 @@ def _verify_manifest(staging_root: Path, workspace: Path) -> list[PurePosixPath]
         raise ValueError("llama.cpp source digest does not match the manifest")
 
     upstream_paths = _manifest_paths(manifest, "upstream_paths", ("upstreams",))
+    # The artifact may carry only the external roots declared by source prep.
+    # This closes extra/shadow trees without changing archive or lock provenance.
+    if any(len(path.parts) != 2 for path in upstream_paths):
+        raise ValueError("manifest contains an invalid upstream root")
+    upstream_root = staging_root / "upstreams"
+    if upstream_root.is_symlink() or not upstream_root.is_dir():
+        raise ValueError("source-prep upstream root is missing or unsafe")
+    actual_upstreams = {PurePosixPath("upstreams", path.name) for path in upstream_root.iterdir()}
+    if actual_upstreams != set(upstream_paths):
+        raise ValueError("upstream contents do not exactly match the manifest")
     go_vendor_paths = _manifest_paths(manifest, "go_vendor_paths", ("services",))
     for path in upstream_paths + go_vendor_paths:
         staged_path = staging_root.joinpath(*path.parts)

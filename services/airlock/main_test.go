@@ -19,7 +19,8 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
 
-func setupTestPolicy() {
+func setupTestPolicy(t *testing.T) {
+	setupAudit(t)
 	containmentDisabled.Store(false)
 	policyMu.Lock()
 	policy = AirlockPolicy{
@@ -37,7 +38,7 @@ func setupTestPolicy() {
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	handleHealth(w, req)
@@ -73,7 +74,7 @@ func TestBlockedWhenDisabled(t *testing.T) {
 }
 
 func TestContainmentDisablePersistsAndBlocksEgress(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	t.Cleanup(func() { containmentDisabled.Store(false) })
 	statePath := filepath.Join(t.TempDir(), "containment.json")
 	t.Setenv("AIRLOCK_CONTAINMENT_STATE_PATH", statePath)
@@ -114,7 +115,7 @@ func TestContainmentDisablePersistsAndBlocksEgress(t *testing.T) {
 }
 
 func TestAirlockMuxProtectsDisable(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	serviceToken = "test-service-token"
 	containmentToken = "test-containment-token"
 	t.Cleanup(func() {
@@ -136,7 +137,7 @@ func TestAirlockMuxProtectsDisable(t *testing.T) {
 }
 
 func TestAirlockContainmentCredentialCannotUseGeneralEgressRoute(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	serviceToken = "general-airlock-token"
 	containmentToken = "containment-only-token"
 	t.Cleanup(func() {
@@ -158,7 +159,7 @@ func TestAirlockContainmentCredentialCannotUseGeneralEgressRoute(t *testing.T) {
 }
 
 func TestAirlockGeneralCredentialCannotDisable(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	serviceToken = "general-airlock-token"
 	containmentToken = "containment-only-token"
 	t.Cleanup(func() {
@@ -184,7 +185,7 @@ func TestAirlockGeneralCredentialCannotDisable(t *testing.T) {
 }
 
 func TestAllowValidDestination(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://huggingface.co/models/test","method":"GET","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -198,7 +199,7 @@ func TestAllowValidDestination(t *testing.T) {
 }
 
 func TestRejectLookalikeDestination(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://huggingface.co.evil.example/models/test","method":"GET","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -212,7 +213,7 @@ func TestRejectLookalikeDestination(t *testing.T) {
 }
 
 func TestBlockUnknownDestination(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://evil.com/payload","method":"GET","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -226,7 +227,7 @@ func TestBlockUnknownDestination(t *testing.T) {
 }
 
 func TestBlockHTTPDestination(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"http://huggingface.co/models/test","method":"GET","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -240,7 +241,7 @@ func TestBlockHTTPDestination(t *testing.T) {
 }
 
 func TestBlockLocalhostDestination(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://localhost/secret","method":"GET","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -254,7 +255,7 @@ func TestBlockLocalhostDestination(t *testing.T) {
 }
 
 func TestBlockSSN(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://huggingface.co/api","method":"POST","body":"my ssn is 123-45-6789"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -268,7 +269,7 @@ func TestBlockSSN(t *testing.T) {
 }
 
 func TestBlockCredential(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://huggingface.co/api","method":"POST","body":"api_key=sk-abc123secret"}` // gitleaks:allow
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -282,7 +283,7 @@ func TestBlockCredential(t *testing.T) {
 }
 
 func TestBlockDisallowedMethod(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	body := `{"destination":"https://huggingface.co/api","method":"DELETE","body":""}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/egress/check", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -405,7 +406,7 @@ func TestAuditDestinationDropsSignedQuery(t *testing.T) {
 }
 
 func TestRejectTrailingOrUnknownJSON(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	for _, body := range []string{
 		`{"destination":"https://huggingface.co/model","method":"GET"} {}`,
 		`{"destination":"https://huggingface.co/model","method":"GET","unexpected":true}`,
@@ -466,6 +467,7 @@ func TestConfigurationReloadIsAtomicAndMissingSourcesClearOldEntries(t *testing.
 	); err != nil {
 		t.Fatal(err)
 	}
+	setupAudit(t)
 	if err := loadConfiguration(); err != nil {
 		t.Fatalf("initial configuration: %v", err)
 	}
@@ -507,7 +509,7 @@ func TestFetchRequiresPost(t *testing.T) {
 }
 
 func TestFetchDoesNotForwardBytePastResponseLimit(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	policyMu.Lock()
 	policy.MaxResponseSize = 4
 	policyMu.Unlock()
@@ -552,7 +554,7 @@ func TestFetchDoesNotForwardBytePastResponseLimit(t *testing.T) {
 }
 
 func TestFetchResponseHeaderDropsSignedQuery(t *testing.T) {
-	setupTestPolicy()
+	setupTestPolicy(t)
 	originalClient := fetchClient
 	fetchClient = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
