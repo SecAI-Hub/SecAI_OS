@@ -21,7 +21,11 @@ LockPersonality=yes
 
 # Kernel protection
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# The verifier reads the running kernel and modinfo metadata. The boolean
+# hides /usr/lib/modules; keep it readable but immutable, with loading denied
+# by the empty capability set and the @module syscall filter below.
+ProtectKernelModules=no
+ReadOnlyPaths=/usr/lib/modules -/lib/modules
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes

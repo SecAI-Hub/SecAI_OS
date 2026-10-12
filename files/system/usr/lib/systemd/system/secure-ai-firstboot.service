@@ -23,7 +23,11 @@ PrivateTmp=yes
 # firstboot.sh intentionally adjusts a small set of boot-time sysctls
 # and may need to disable swap on the initial boot.
 ProtectKernelTunables=no
-ProtectKernelModules=yes
+# firstboot invokes the boot verifier, which reads kernel/module signatures.
+# Keep module files read-only rather than hiding them; loading stays denied
+# by the capability set (no CAP_SYS_MODULE) and the explicit filter below.
+ProtectKernelModules=no
+ReadOnlyPaths=/usr/lib/modules -/lib/modules
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
@@ -43,6 +47,7 @@ AmbientCapabilities=
 # hardware-discovery tools.  A generic @system-service allow-list omits
 # syscalls those tools require, so capabilities and the remaining namespaces
 # are the enforceable boundary here.
+SystemCallFilter=~@module
 MemoryMax=1G
 CPUQuota=50%
 TasksMax=256

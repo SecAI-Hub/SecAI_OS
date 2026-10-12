@@ -169,6 +169,45 @@ def test_firstboot_does_not_mark_complete_after_critical_control_failure():
     assert 'fatal "update-verify.sh is missing or not executable"' in script
 
 
+def test_boot_verifiers_can_read_modules_without_loading_them():
+    for name, protection in (
+        ("secure-ai-boot-verify.service", "full"),
+        ("secure-ai-firstboot.service", "strict"),
+    ):
+        directives = {}
+        for line in (UNIT_DIR / name).read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                directives.setdefault(key, []).append(value)
+
+        # ProtectKernelModules=yes masks the metadata that modinfo requires.
+        assert directives["ProtectKernelModules"] == ["no"]
+        assert directives["ProtectSystem"] == [protection]
+        assert directives["NoNewPrivileges"] == ["yes"]
+        readonly = {
+            path.lstrip("-")
+            for value in directives["ReadOnlyPaths"]
+            for path in value.split()
+        }
+        assert {"/usr/lib/modules", "/lib/modules"} <= readonly
+        writable = {
+            path.lstrip("-")
+            for value in directives["ReadWritePaths"]
+            for path in value.split()
+        }
+        assert not {"/usr/lib/modules", "/lib/modules"} & writable
+        caps = " ".join(directives["CapabilityBoundingSet"]).split()
+        assert "CAP_SYS_MODULE" not in caps
+        assert not any(cap.startswith("~") for cap in caps)
+        denied = {
+            group
+            for value in directives["SystemCallFilter"]
+            if value.startswith("~")
+            for group in value[1:].split()
+        }
+        assert "@module" in denied
+
+
 def test_host_firewall_does_not_publish_the_loopback_ui():
     rules = (SYSTEM_ROOT / "etc" / "nftables" / "secure-ai.nft").read_text(
         encoding="utf-8"
