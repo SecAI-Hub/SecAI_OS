@@ -27,6 +27,6 @@
     "schemas/policy.schema.json": "a0d7972ab0bd5ce26a0e5fc37cb566415c5cd8d1e64f3b8e44ca1f0274d19e55",
     "security_test.go": "68da13d5311548bf194992e56979be49027f1bd91ef521ee0045d3e4a76053ef",
     "taint.go": "a0123510274cabc7041eb6de64608ab4b348ce9a24250ac64b55e834063cd868",
-    "Dockerfile": "e9badb473b217e14f2a152621664d2f9ec3d0cc79e8183bfb2db66607f836f43"
+    "Dockerfile": "0374b90890d604a1c7e57f6389f81e4f0e05c37b51590e396afcc5429850e4ce"
   }
 }
