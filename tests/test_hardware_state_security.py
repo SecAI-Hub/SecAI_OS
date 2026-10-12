@@ -148,6 +148,84 @@ def test_firstboot_never_sources_hardware_state():
     assert "jq -er" in content
 
 
+
+def run_firstboot_hardware_assignments(state_kind, state):
+    """Execute the product's real assignments under its strict shell options."""
+    names = {
+        "vm": ("is_vm", "hypervisor", "gpu_passthrough", "gpu_enabled"),
+        "tee": ("tee_active", "tee_type"),
+    }[state_kind]
+    lines = FIRSTBOOT.read_text().splitlines()
+    assignments = []
+    for name in names:
+        assignments.append(next(line.strip() for line in lines if line.strip().startswith(name + "=$(")))
+    script = "set -euo pipefail\n" + "\n".join(assignments)
+    script += "\nprintf '%s\\n' " + " ".join('"$' + name + '"' for name in names)
+    return subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, state_kind + "_state": state if isinstance(state, str) else json.dumps(state)},
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("is_vm,passthrough,enabled", [
+    (False, False, False),  # Bare metal without GPU.
+    (True, False, False),  # The failing native boot's KVM state.
+    (True, True, False),   # Passthrough awaiting explicit opt-in.
+    (True, True, True),    # Opted-in passthrough.
+])
+def test_firstboot_accepts_typed_vm_booleans(is_vm, passthrough, enabled):
+    state = {"is_vm": is_vm, "hypervisor": "kvm" if is_vm else "none",
+             "gpu_passthrough": passthrough, "gpu_enabled": enabled}
+    result = run_firstboot_hardware_assignments("vm", state)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(is_vm).lower(), state["hypervisor"],
+                                         str(passthrough).lower(), str(enabled).lower()]
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_firstboot_accepts_typed_tee_boolean(active):
+    result = run_firstboot_hardware_assignments("tee", {"active": active, "type": "none"})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(active).lower(), "none"]
+
+
+@pytest.mark.parametrize("state_kind,field", [
+    ("vm", "is_vm"), ("vm", "gpu_passthrough"), ("vm", "gpu_enabled"), ("tee", "active"),
+])
+@pytest.mark.parametrize("invalid", [None, "false", "true", 0, 1, [], {}])
+def test_firstboot_rejects_nonboolean_hardware_state(state_kind, field, invalid):
+    state = ({"is_vm": False, "hypervisor": "none", "gpu_passthrough": False,
+              "gpu_enabled": False} if state_kind == "vm" else {"active": False, "type": "none"})
+    state[field] = invalid
+    result = run_firstboot_hardware_assignments(state_kind, state)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("state_kind,field", [
+    ("vm", "is_vm"), ("vm", "gpu_passthrough"), ("vm", "gpu_enabled"), ("tee", "active"),
+])
+def test_firstboot_rejects_missing_hardware_boolean(state_kind, field):
+    state = ({"is_vm": False, "hypervisor": "none", "gpu_passthrough": False,
+              "gpu_enabled": False} if state_kind == "vm" else {"active": False, "type": "none"})
+    del state[field]
+    result = run_firstboot_hardware_assignments(state_kind, state)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("state_kind", ["vm", "tee"])
+@pytest.mark.parametrize("malformed", ["{", "not-json"])
+def test_firstboot_rejects_malformed_hardware_json(state_kind, malformed):
+    result = run_firstboot_hardware_assignments(state_kind, malformed)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
 def test_inference_defaults_cpu_and_uses_typed_environment():
     content = INFERENCE_UNIT.read_text()
     assert "Environment=GPU_LAYERS=0" in content

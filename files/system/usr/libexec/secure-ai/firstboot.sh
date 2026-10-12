@@ -62,10 +62,10 @@ log "Running VM detection..."
 vm_detection=$(/usr/libexec/secure-ai/detect-vm.sh)
 while IFS= read -r line; do log "$line"; done <<< "$vm_detection"
 vm_state=$(/usr/libexec/secure-ai/secure-hardware-detect.py show vm)
-is_vm=$(printf '%s' "$vm_state" | jq -er '.is_vm | if type == "boolean" then . else error("is_vm") end')
+is_vm=$(printf '%s' "$vm_state" | jq -er '.is_vm | if type == "boolean" then tostring else error("is_vm") end')
 hypervisor=$(printf '%s' "$vm_state" | jq -er '.hypervisor | select(type == "string" and test("^[a-z0-9_-]{1,64}$"))')
-gpu_passthrough=$(printf '%s' "$vm_state" | jq -er '.gpu_passthrough | if type == "boolean" then . else error("gpu_passthrough") end')
-gpu_enabled=$(printf '%s' "$vm_state" | jq -er '.gpu_enabled | if type == "boolean" then . else error("gpu_enabled") end')
+gpu_passthrough=$(printf '%s' "$vm_state" | jq -er '.gpu_passthrough | if type == "boolean" then tostring else error("gpu_passthrough") end')
+gpu_enabled=$(printf '%s' "$vm_state" | jq -er '.gpu_enabled | if type == "boolean" then tostring else error("gpu_enabled") end')
 if [ "$is_vm" = "true" ]; then
     log "============================================"
     log "WARNING: Running inside a virtual machine (${hypervisor})"
@@ -147,7 +147,7 @@ tee_detection=""
 if tee_detection=$(/usr/libexec/secure-ai/detect-tee.sh 2>&1); then
     while IFS= read -r line; do log "$line"; done <<< "$tee_detection"
     tee_state=$(/usr/libexec/secure-ai/secure-hardware-detect.py show tee)
-    tee_active=$(printf '%s' "$tee_state" | jq -er '.active | if type == "boolean" then . else error("active") end')
+    tee_active=$(printf '%s' "$tee_state" | jq -er '.active | if type == "boolean" then tostring else error("active") end')
     tee_type=$(printf '%s' "$tee_state" | jq -er '.type | select(type == "string")')
     if [ "$tee_active" = "true" ]; then
         log "Hardware memory encryption: ACTIVE and evidenced (${tee_type})"
