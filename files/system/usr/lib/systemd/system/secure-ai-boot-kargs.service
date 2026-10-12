@@ -21,8 +21,10 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 PrivateNetwork=yes
+# libostree reads /proc/sys/kernel/random/boot_id when opening the sysroot;
+# hardware discovery also reads /proc/driver/nvidia/version. Keep non-process
+# proc entries available and read-only through ProtectKernelTunables.
 ProtectProc=invisible
-ProcSubset=pid
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=yes
