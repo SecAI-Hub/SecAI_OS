@@ -135,6 +135,25 @@ def test_boot_karg_sync_does_not_swallow_update_failures():
     assert "CapabilityBoundingSet=\n" in unit
     assert "RestrictAddressFamilies=AF_UNIX" in unit
 
+    # libostree needs the kernel boot ID; the hardware probe needs /proc/driver.
+    # ProcSubset=pid hides both trees even though ProtectProc can stay enabled.
+    directives = {}
+    for line in unit.splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            directives.setdefault(key, []).append(value)
+    assert directives.get("ProcSubset", ["all"])[-1] == "all"
+    assert directives["ProtectProc"] == ["invisible"]
+    assert directives["ProtectKernelTunables"] == ["yes"]
+    assert directives["ReadWritePaths"] == ["/var/lib/secure-ai/state"]
+    assert directives["PrivateNetwork"] == ["yes"]
+    assert directives["RestrictNamespaces"] == ["yes"]
+    assert directives["NoNewPrivileges"] == ["yes"]
+    assert directives["SystemCallFilter"] == [
+        "@system-service",
+        "~@privileged @resources @mount @clock @debug @swap @reboot @raw-io @module @cpu-emulation @obsolete",
+    ]
+
 
 def test_firstboot_does_not_mark_complete_after_critical_control_failure():
     script = (SYSTEM_ROOT / "usr" / "libexec" / "secure-ai" / "firstboot.sh").read_text(
