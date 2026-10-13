@@ -6,8 +6,8 @@ This guide covers running SecAI OS services locally for development and testing,
 
 ## Prerequisites
 
-- **Go 1.26.5+** for building Go services
-- **Python 3.12+ recommended** for local Python services. CI and quarantine lockfiles use Python 3.12; sandbox UI, agent, search, and diffusion images use patched Python 3.14.5 runtimes where compatible. Some package metadata remains permissive for source compatibility, but the supported locked/runtime paths are 3.12/3.14.
+- **Go 1.27.2** to match the pinned native service builds and CI.
+- **Python 3.12** for local services and the locked test environment. The native appliance currently installs Python 3.12.15; the UI and agent evaluation containers pin Python 3.14.8. Use each service's checked-in Dockerfile and dependency lock for its exact runtime rather than treating package metadata as a tested version range.
 - **pip** for Python dependency management
 - **git** for version control
 - **make** (optional, for convenience targets)
@@ -44,6 +44,29 @@ The tested Go module set is: `airlock`, `registry`, `tool-firewall`,
 `integrity-monitor`, `incident-recorder`, and the sandbox-only `ui-ingress`.
 The first nine are native release services; `ui-ingress` is built only for the
 Compose evaluation path.
+
+On a computer shared with other tasks, check current available memory, disk
+space, and pressure before starting a build. Run one build or test workload at
+a time. Limit compiler parallelism with `GOMAXPROCS=1 go test -p 1 ./...` when
+working in an individual Go service. Large image builds and VM qualification
+also need writable artifact storage and enough free memory for the desktop
+and other active tasks; installed RAM alone is not an admission check.
+
+On Linux with a systemd user manager, a focused test can run with an enforced
+memory and CPU budget:
+
+```bash
+systemd-run --user --scope \
+  -p MemoryMax=768M -p MemorySwapMax=0 -p CPUQuota=50% -p TasksMax=64 \
+  nice -n 10 timeout --kill-after=5 60 \
+  python -m pytest -q tests/test_ui.py -k quarantine_status
+```
+
+Choose a budget that leaves headroom for the other tasks. This command limits
+its own process tree; it does not limit a separate Docker daemon or a libvirt
+guest. Those workloads need their own limits. Do not force-mount or repair a
+storage volume that belongs to another bootable system to make room for a
+build.
 
 ---
 
