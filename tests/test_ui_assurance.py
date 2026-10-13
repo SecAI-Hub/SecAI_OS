@@ -305,6 +305,17 @@ def test_tpm_report_does_not_equate_enrollment_to_successful_hardware_unsealing(
     assert client.get('/api/boot/tpm2/status').json['status'] == 'stale'
 
 
+def test_unknown_tpm_platform_never_reports_hardware_assurance(client, monkeypatch):
+    report = {'schema_version': 1, 'checked_at': stamp(), 'tpm2_available': True, 'enrolled': True,
+              'crypttab_tpm2_enabled': True, 'token_count': 1, 'keyslot_count': 2,
+              'pcr_binding': 'sha256:0,2,4,7', 'assurance': 'platform_unknown'}
+    monkeypatch.setattr(assurance, 'read_root_json', Mock(return_value=report))
+    data = client.get('/api/boot/tpm2/status').json
+    assert data['status'] == 'unverified'
+    assert data['passing'] is False
+    assert 'host type could not be established' in data['detail']
+
+
 def test_audit_requires_authentic_file_and_real_nonempty_coverage(client, monkeypatch):
     reader = Mock(side_effect=assurance.EvidenceUnavailable('unsafe file'))
     monkeypatch.setattr(assurance, 'read_root_json', reader)

@@ -174,7 +174,9 @@ def current_state(detail: str = "") -> dict[str, object]:
     except (LUKSError, OSError):
         device = None
 
-    if vm_type not in {"none", "unknown"}:
+    if vm_type == "unknown":
+        assurance = "platform_unknown"
+    elif vm_type != "none":
         assurance = "virtual_tpm_host_controlled"
     elif not secure_boot_enabled():
         assurance = "secure_boot_not_verified"
@@ -248,7 +250,9 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
     if not tpm_available():
         raise TPMError("TPM2 device, systemd-cryptenroll, or required PCR bank is unavailable")
     vm_type = virtualization_type()
-    if vm_type not in {"none", "unknown"} and not allow_vtpm:
+    if vm_type == "unknown":
+        raise TPMError("host virtualization status is unknown; TPM enrollment is unavailable")
+    if vm_type != "none" and not allow_vtpm:
         raise TPMError(
             "vTPM enrollment requires --allow-vtpm because the hypervisor controls its state"
         )
@@ -355,7 +359,7 @@ def status() -> int:
         # Non-root status remains useful even when it cannot update /run.
         pass
     print(json.dumps(state, sort_keys=True, separators=(",", ":")))
-    if state["assurance"] in {"virtual_tpm_host_controlled", "secure_boot_not_verified"}:
+    if state["assurance"] in {"platform_unknown", "virtual_tpm_host_controlled", "secure_boot_not_verified"}:
         return 2
     return 0 if state["enrolled"] else 1
 

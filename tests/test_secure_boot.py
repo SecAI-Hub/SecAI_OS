@@ -297,6 +297,24 @@ def test_tpm_status_does_not_claim_a_different_pcr_enrollment(secure_tpm, monkey
     assert state["assurance"] == "not_enrolled"
 
 
+@pytest.mark.parametrize("allow_vtpm", [False, True])
+def test_tpm_enrollment_rejects_unknown_platform_before_mutation(secure_tpm, monkeypatch, allow_vtpm):
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "unknown")
+    def forbidden(*args, **kwargs):
+        pytest.fail("no TPM enrollment command may run for an unknown platform")
+    monkeypatch.setattr(secure_tpm, "run_command", forbidden)
+    with pytest.raises(secure_tpm.TPMError, match="virtualization status is unknown"):
+        secure_tpm.enroll(allow_vtpm=allow_vtpm, allow_insecure_boot=True)
+
+
+def test_tpm_status_unknown_platform_is_degraded(secure_tpm, monkeypatch):
+    monkeypatch.setattr(secure_tpm, "current_state", lambda:
+                        {"assurance": "platform_unknown", "enrolled": True})
+    monkeypatch.setattr(secure_tpm, "atomic_state", lambda value: None)
+    assert secure_tpm.status() == 2
+
+
 def test_tpm_unlock_rejects_wrong_policy_before_invoking_unlock(secure_tpm, monkeypatch):
     metadata = _configured_tpm_metadata()
     metadata["tokens"]["0"]["tpm2-pcrs"] = [7]

@@ -396,14 +396,15 @@ def tpm_enrollment(data: dict, now: float) -> dict:
     if (type(data.get('schema_version')) is not int or data['schema_version'] != 1
             or any(type(data.get(key)) is not bool for key in fields)
             or any(not count(data.get(key)) for key in ('token_count', 'keyslot_count'))
-            or data.get('assurance') not in ('virtual_tpm_host_controlled', 'secure_boot_not_verified', 'pcr_bound', 'not_enrolled')):
+            or data.get('assurance') not in ('platform_unknown', 'virtual_tpm_host_controlled', 'secure_boot_not_verified', 'pcr_bound', 'not_enrolled')):
         return result('unknown', 'TPM enrollment evidence is missing or invalid.')
     if not fresh(data.get('checked_at'), now, MODEL_CHECK_MAX_AGE):
         return result('stale', 'No recent TPM enrollment inspection is available.')
     if data['assurance'] == 'pcr_bound' and all(data[key] is True for key in fields) and data['token_count'] > 0 and data['keyslot_count'] > 0 and data.get('pcr_binding') == 'sha256:0,2,4,7':
         return result('enrollment_reported', 'The root-owned inspection reports SHA-256 PCR 0, 2, 4, 7 enrollment. This is not proof of successful hardware unsealing on this boot.',
                       observed_at=data['checked_at'], passing=False)
-    detail = {'virtual_tpm_host_controlled': 'A virtual TPM is controlled by its host; hardware isolation is not established.',
+    detail = {'platform_unknown': 'The host type could not be established; hardware TPM assurance is unavailable.',
+              'virtual_tpm_host_controlled': 'A virtual TPM is controlled by its host; hardware isolation is not established.',
               'secure_boot_not_verified': 'The enrollment inspection did not verify Secure Boot.',
               'not_enrolled': 'The inspection reports no usable TPM enrollment.'}
     return result('unverified', detail.get(data['assurance'], 'TPM enrollment fields are inconsistent.'), observed_at=data['checked_at'])
