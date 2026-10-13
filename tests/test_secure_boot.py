@@ -242,6 +242,26 @@ def _boot_function(script_name, start, end):
     return source[source.index(start):source.index(end)]
 
 
+@pytest.mark.parametrize("pcr_result,expected", [(0, "available"), (1, "error")])
+def test_boot_tpm_status_does_not_trust_legacy_sealed_markers(pcr_result, expected):
+    function = _boot_function("verify-boot-chain.sh", "check_tpm2() {", "running_kernel_path() {")
+    script = """
+set -euo pipefail
+declare -A checks
+function [() {
+    if [[ "$1" == '-e' && "$2" == /dev/tpm* ]]; then return 0; fi
+    if [[ "$1" == '-f' && "$2" == /var/lib/secure-ai/keys/tpm2/* ]]; then return 0; fi
+    builtin [ "$@"
+}
+tpm2_pcrread() { return "$PCR_RESULT"; }
+""" + function + '\ncheck_tpm2\nprintf "%s:%s\\n" "${checks[tpm2]}" "${checks[tpm2_sealed]}"'
+    result = subprocess.run(["bash", "-c", script],
+                            env={**os.environ, "PCR_RESULT": str(pcr_result)},
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected + ":false"
+
+
 def _configured_tpm_metadata():
     return {
         "keyslots": {"0": {"type": "luks2"}, "1": {"type": "luks2"}},

@@ -73,14 +73,11 @@ check_tpm2() {
 
     if tpm2_pcrread "sha256:0" >/dev/null 2>&1; then
         checks[tpm2]="available"
-        if [ -f /var/lib/secure-ai/keys/tpm2/vault-key.sealed ] || \
-           [ -f /var/lib/secure-ai/keys/tpm2/vault-key.sealed.pub ]; then
-            checks[tpm2_sealed]="true"
-            checks[tpm2_detail]="TPM2 active; vault key is sealed"
-        else
-            checks[tpm2_sealed]="false"
-            checks[tpm2_detail]="TPM2 active; vault uses passphrase-only mode"
-        fi
+        # Legacy file presence is neither native LUKS enrollment nor proof of
+        # successful hardware unsealing. The typed enrollment inspection is
+        # reported separately through tpm2-seal-vault.sh status.
+        checks[tpm2_sealed]="false"
+        checks[tpm2_detail]="TPM2 PCR access verified; vault enrollment and unlock are reported separately"
     else
         checks[tpm2]="error"
         checks[tpm2_sealed]="false"
