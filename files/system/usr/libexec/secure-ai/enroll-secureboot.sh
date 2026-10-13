@@ -2,20 +2,71 @@
 #
 # Secure AI Appliance — Secure Boot MOK Enrollment
 #
-# Enrolls the SecAI Machine Owner Key (MOK) into the system's UEFI MOK
+# Enrolls a reviewed module-signing certificate into the system's UEFI MOK
 # database. Enrollment adds this certificate to shim's trust list; existing
 # platform trust anchors remain in place.
 #
-# This script is called during firstboot. The user must reboot and
-# confirm enrollment in the MOK Manager (MokManager.efi) screen.
+# Firstboot calls the status path. Explicit enrollment requires a reboot and
+# confirmation in the MOK Manager (MokManager.efi) screen.
 #
 # Usage: enroll-secureboot.sh [--check-only | --enroll]
+#        [--certificate /path/to/reviewed.der --sha256 <release-certificate-sha256>]
 #
 set -euo pipefail
 
 MOK_DER="/etc/secure-ai/keys/secureai-mok.der"
-MOK_PEM="/etc/secure-ai/keys/secureai-mok.pem"
 STATE_FILE="/run/secure-ai/secureboot-state"
+CERT_STAGE_DIR=""
+
+stage_reviewed_certificate() {
+    # Copy the exact pinned public certificate into a private directory before
+    # mokutil reopens it. Source replacement cannot substitute another key.
+    python3 - "$1" "$2" <<'PY'
+import hashlib, os, re, stat, subprocess, sys, tempfile
+from pathlib import Path
+
+if os.geteuid() != 0 or not re.fullmatch(r"[0-9a-f]{64}", sys.argv[2]):
+    raise SystemExit("root and a canonical release certificate SHA256 are required")
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+try:
+    before = os.fstat(descriptor)
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0
+            or before.st_mode & 0o022 or not 0 < before.st_size <= 131072):
+        raise SystemExit("certificate must be a protected root-owned regular file")
+    with os.fdopen(descriptor, "rb", closefd=False) as handle:
+        data = handle.read(131073)
+    after = os.fstat(descriptor)
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if (identity(before) != identity(after) or len(data) != before.st_size
+            or hashlib.sha256(data).hexdigest() != sys.argv[2]):
+        raise SystemExit("certificate identity or release SHA256 does not match")
+finally:
+    os.close(descriptor)
+result = subprocess.run(["openssl", "x509", "-inform", "DER", "-outform", "DER"],
+                        input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        timeout=5, check=False)
+if result.returncode != 0 or result.stdout != data:
+    raise SystemExit("selected file must contain exactly one canonical DER X.509 certificate")
+temporary_root = Path("/tmp").lstat()
+if (not stat.S_ISDIR(temporary_root.st_mode) or temporary_root.st_uid != 0
+        or (temporary_root.st_mode & 0o022 and not temporary_root.st_mode & stat.S_ISVTX)):
+    raise SystemExit("protected temporary directory is unavailable")
+directory = Path(tempfile.mkdtemp(prefix="secai-mok-", dir="/tmp"))
+target = directory / "certificate.der"
+try:
+    with target.open("xb") as handle:
+        os.fchmod(handle.fileno(), 0o400)
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+except BaseException:
+    if target.exists():
+        target.unlink()
+    directory.rmdir()
+    raise
+print(target)
+PY
+}
 
 log() {
     echo "[enroll-secureboot] $*"
@@ -90,34 +141,23 @@ cmd_check() {
     # Check MOK enrollment
     if [ ! -f "$MOK_DER" ]; then
         echo "SecAI MOK certificate not found at ${MOK_DER}"
-        echo "Run generate-mok.sh during image build to create it."
+        echo "Use the reviewed certificate and SHA256 supplied by the release."
+        echo "A new generated key does not sign the prebuilt GPU modules."
         write_state "enabled" "false" "no_mok_cert"
         return
     fi
 
     if check_mok_enrolled; then
-        echo "SecAI MOK: ENROLLED"
-        write_state "enabled" "true" "fully_configured"
+        echo "Selected MOK certificate: ENROLLED"
+        write_state "enabled" "true" "certificate_enrolled"
     else
-        echo "SecAI MOK: NOT ENROLLED"
-        echo "Run: sudo /usr/libexec/secure-ai/enroll-secureboot.sh --enroll"
+        echo "Selected MOK certificate: NOT ENROLLED"
+        echo "Run this utility with --enroll and the same certificate/SHA256 options."
         write_state "enabled" "false" "mok_not_enrolled"
     fi
 
-    # Check if kernel is signed
-    if command -v sbverify &>/dev/null; then
-        local kernel
-        # shellcheck disable=SC2012  # ls is fine here — vmlinuz filenames are predictable
-        kernel=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || echo "")
-        if [ -n "$kernel" ]; then
-            if sbverify --cert "$MOK_PEM" "$kernel" 2>/dev/null; then
-                echo "Kernel signature: VALID"
-            else
-                echo "Kernel signature: NOT SIGNED or INVALID"
-                echo "  The kernel may not be signed with the SecAI MOK."
-            fi
-        fi
-    fi
+    echo "Verify the running boot chain separately with verify-boot-chain.sh."
+    echo "Module-key enrollment does not prove the kernel or GPU driver loaded."
 
     echo "=== End Secure Boot Status ==="
 }
@@ -127,7 +167,7 @@ cmd_enroll() {
 
     if [ ! -f "$MOK_DER" ] || [ -L "$MOK_DER" ]; then
         log "ERROR: MOK certificate not found at ${MOK_DER}"
-        log "Generate it first: /usr/libexec/secure-ai/generate-mok.sh"
+        log "Use --certificate and --sha256 with the release's reviewed module-signing certificate."
         exit 1
     fi
 
@@ -146,7 +186,7 @@ cmd_enroll() {
     fi
 
     if check_mok_enrolled; then
-        log "SecAI MOK is already enrolled."
+        log "Selected MOK certificate is already enrolled."
         write_state "$sb_state" "true" "already_enrolled"
         exit 0
     fi
@@ -171,17 +211,41 @@ cmd_enroll() {
     log "  3. Enter the one-time password you just set"
     log "  4. Select 'Reboot'"
     log ""
-    log "After reboot, the SecAI signing key will be trusted."
+    log "After firmware confirmation and reboot, recheck this exact certificate's enrollment."
 
     write_state "$sb_state" "pending" "enrollment_pending_reboot"
 }
 
 # --- Main ---
-case "${1:---check-only}" in
+action=--check-only
+action_set=false
+certificate=""
+certificate_sha256=""
+usage() {
+    echo "Usage: $0 [--check-only | --enroll] [--certificate /path/to/reviewed.der --sha256 <release-certificate-sha256>]"
+}
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check-only|check|status|enroll|--enroll)
+            [ "$action_set" = false ] || { usage >&2; exit 2; }
+            action="$1"; action_set=true; shift ;;
+        --certificate)
+            [ "$#" -ge 2 ] && [[ "$2" == /* ]] && [ -z "$certificate" ] || { usage >&2; exit 2; }
+            certificate="$2"; shift 2 ;;
+        --sha256)
+            [ "$#" -ge 2 ] && [[ "$2" =~ ^[0-9a-f]{64}$ ]] && [ -z "$certificate_sha256" ] || { usage >&2; exit 2; }
+            certificate_sha256="$2"; shift 2 ;;
+        --help|-h) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+if [ -n "$certificate" ] || [ -n "$certificate_sha256" ]; then
+    [ -n "$certificate" ] && [ -n "$certificate_sha256" ] || { usage >&2; exit 2; }
+    MOK_DER=$(stage_reviewed_certificate "$certificate" "$certificate_sha256") || exit 1
+    CERT_STAGE_DIR=$(dirname -- "$MOK_DER")
+    trap 'rm -f -- "$CERT_STAGE_DIR/certificate.der"; rmdir -- "$CERT_STAGE_DIR"' EXIT
+fi
+case "$action" in
     --check-only|check|status) cmd_check ;;
-    enroll|--enroll)           cmd_enroll ;;
-    *)
-        echo "Usage: $0 [--check-only | enroll]"
-        exit 1
-        ;;
+    enroll|--enroll) cmd_enroll ;;
 esac

@@ -198,7 +198,22 @@ sudo /usr/libexec/secure-ai/first-boot-check.sh
 ```
 
 If the release supplies a MOK certificate that needs enrollment, use the
-enrollment utility's explicit `--enroll` option and complete firmware
+actual module-signing certificate and its independently reviewed release SHA256:
+
+```bash
+sudo /usr/libexec/secure-ai/enroll-secureboot.sh --enroll \
+  --certificate /path/to/REVIEWED_MODULE_SIGNER.der \
+  --sha256 RELEASE_CERTIFICATE_SHA256
+```
+
+The certificate must be a protected root-owned DER file. The utility verifies
+its exact bytes and stages a private copy before importing it. Rerun with
+`--check-only` and the same certificate/SHA256 options after firmware
+confirmation. Generating a new key does not sign the prebuilt NVIDIA modules.
+If a reviewed certificate is provisioned at the utility's default path, the
+certificate options may be omitted.
+
+Complete firmware
 confirmation after reboot. A pending request is not completed enrollment,
 and MOK enrollment does not turn on Secure Boot. Fresh TPM quote verification
 and approved GPU bootstrap/runtime evidence must also pass; do not waive these
