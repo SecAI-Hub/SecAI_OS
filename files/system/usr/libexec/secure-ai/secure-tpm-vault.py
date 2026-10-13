@@ -22,6 +22,7 @@ from secure_luks import (
     keyslot_count,
     luks_metadata,
     parse_crypttab,
+    resolve_device,
     tpm2_token_count,
     update_crypttab_tpm2,
 )
@@ -71,6 +72,7 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
+            env={**os.environ, "LC_ALL": "C"},
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise TPMError(f"required command failed to execute: {args[0]}") from error
@@ -322,6 +324,39 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
     return 0
 
 
+def verify_active_mapper(device: Path) -> None:
+    """The fixed mapper name must belong to the configured LUKS2 device."""
+    before = MAPPER_PATH.stat()
+    expected = device.stat()
+    if not stat.S_ISBLK(before.st_mode) or not stat.S_ISBLK(expected.st_mode):
+        raise TPMError("vault mapper or configured device is not a block device")
+    result = run_command(("cryptsetup", "status", "secure-ai-vault"), timeout=15)
+    if result.returncode != 0 or not isinstance(result.stdout, bytes) or len(result.stdout) > 16_384:
+        raise TPMError("could not verify the active vault mapper")
+    try:
+        output = result.stdout.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise TPMError("active vault mapper status is malformed") from error
+    fields = {}
+    for line in output.splitlines():
+        name, separator, value = line.strip().partition(":")
+        if separator and name in {"type", "device"}:
+            if name in fields:
+                raise TPMError("active vault mapper identity is ambiguous")
+            fields[name] = value.strip()
+    source = fields.get("device", "")
+    if (fields.get("type") != "LUKS2" or not source.startswith("/dev/")
+            or ".." in Path(source).parts):
+        raise TPMError("active vault mapper is not the configured LUKS2 mapping")
+    actual = resolve_device(source).stat()
+    after = MAPPER_PATH.stat()
+    if (not stat.S_ISBLK(actual.st_mode) or not stat.S_ISBLK(after.st_mode)
+            or actual.st_rdev != expected.st_rdev
+            or (before.st_dev, before.st_ino, before.st_rdev) !=
+               (after.st_dev, after.st_ino, after.st_rdev)):
+        raise TPMError("active vault mapper belongs to another device or changed during verification")
+
+
 def unseal() -> int:
     if not tpm_available():
         raise TPMError("TPM2 is unavailable")
@@ -330,7 +365,8 @@ def unseal() -> int:
     if not enrollment_policy_matches(metadata):
         raise TPMError("exactly one systemd-tpm2 token with the configured PCR policy is required")
     if MAPPER_PATH.exists():
-        log("vault mapper is already active")
+        verify_active_mapper(device)
+        log("configured vault mapper is already active; this does not establish how it was unlocked")
         return 0
     result = run_command(
         (
@@ -347,8 +383,9 @@ def unseal() -> int:
         raise TPMError(
             "TPM unlock failed; enter the recovery passphrase through the normal boot prompt"
         )
-    atomic_state(current_state("TPM2 unlock verified"))
-    log("vault mapper unlocked through the enrolled TPM2 token")
+    verify_active_mapper(device)
+    atomic_state(current_state("vault mapper verified after TPM2 unlock request"))
+    log("configured vault mapper is active after the TPM2 unlock request")
     return 0
 
 

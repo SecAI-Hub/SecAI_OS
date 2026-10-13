@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -240,6 +242,68 @@ class TestBootChainIntegration:
 def _boot_function(script_name, start, end):
     source = (SCRIPTS_DIR / script_name).read_text()
     return source[source.index(start):source.index(end)]
+
+
+def _mapper_fixture(secure_tpm, monkeypatch, *, actual_device=8, changed=False):
+    expected = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=8)
+    mapper = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=253, st_dev=1, st_ino=10)
+    reads = iter([mapper, SimpleNamespace(**{**vars(mapper), "st_ino": 11})] if changed else [mapper, mapper])
+    monkeypatch.setattr(secure_tpm, "MAPPER_PATH", SimpleNamespace(exists=lambda: True, stat=lambda: next(reads)))
+    monkeypatch.setattr(secure_tpm, "resolve_device", lambda source:
+                        SimpleNamespace(stat=lambda: SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=actual_device)))
+    return SimpleNamespace(stat=lambda: expected)
+
+
+@pytest.mark.parametrize("output,expected_error", [
+    (b"/dev/mapper/secure-ai-vault is active\n  type: LUKS2\n  device: /dev/expected\n", None),
+    (b"  type: PLAIN\n  device: /dev/expected\n", "configured LUKS2"),
+    (b"  type: LUKS2\n  device: /etc/private\n", "configured LUKS2"),
+    (b"  type: LUKS2\n  device: /dev/expected\n  device: /dev/other\n", "ambiguous"),
+    (b"  type: LUKS2\n", "configured LUKS2"),
+    (b"\xff", "malformed"),
+])
+def test_active_mapper_requires_exact_luks2_identity(secure_tpm, monkeypatch, output, expected_error):
+    device = _mapper_fixture(secure_tpm, monkeypatch)
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout=output, stderr=b""))
+    if expected_error:
+        with pytest.raises(secure_tpm.TPMError, match=expected_error):
+            secure_tpm.verify_active_mapper(device)
+    else:
+        secure_tpm.verify_active_mapper(device)
+
+
+@pytest.mark.parametrize("changed,actual_device", [(False, 9), (True, 8)])
+def test_active_mapper_refuses_another_device_or_identity_change(secure_tpm, monkeypatch, changed, actual_device):
+    device = _mapper_fixture(secure_tpm, monkeypatch, actual_device=actual_device, changed=changed)
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout=b"  type: LUKS2\n  device: /dev/expected\n", stderr=b""))
+    with pytest.raises(secure_tpm.TPMError, match="another device or changed"):
+        secure_tpm.verify_active_mapper(device)
+
+
+@pytest.mark.parametrize("already_active", [False, True])
+def test_unlock_requires_mapper_verification_before_success(secure_tpm, monkeypatch, already_active):
+    exists = iter([True] if already_active else [False, True])
+    device = Path("/test/vault")
+    commands = []
+    monkeypatch.setattr(secure_tpm, "MAPPER_PATH", SimpleNamespace(exists=lambda: next(exists)))
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: device)
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: _configured_tpm_metadata())
+    def run(args, **kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(secure_tpm, "run_command", run)
+    def reject(actual):
+        assert actual == device
+        raise secure_tpm.TPMError("wrong mapping")
+    monkeypatch.setattr(secure_tpm, "verify_active_mapper", reject)
+    monkeypatch.setattr(secure_tpm, "atomic_state", lambda value: pytest.fail("must not record unlock success"))
+    with pytest.raises(secure_tpm.TPMError, match="wrong mapping"):
+        secure_tpm.unseal()
+    assert len(commands) == (0 if already_active else 1)
+    assert not any("close" in args or "detach" in args for args in commands)
 
 
 @pytest.mark.parametrize("pcr_result,expected", [(0, "available"), (1, "error")])
