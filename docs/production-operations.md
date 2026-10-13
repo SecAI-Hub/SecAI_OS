@@ -651,7 +651,7 @@ additional boot loop recovery scenarios.
 | Incident store | 12 weeks | 6 months | logrotate (weekly, 12 rotations) | Latched incidents retained until resolution |
 | Forensic bundles | 1 year | Indefinite | Manual export | Export via `/api/v1/forensic/export` before pruning |
 | Backup archives | 30 days (prod) | 90 days | Operator-managed | Encrypted, stored on external media |
-| Model files (GGUF) | While promoted | N/A | Manual prune | Quarantined models auto-expire in 30 days |
+| Model files (GGUF) | While promoted | Operator-defined | Manual review | No general quarantine expiration or automatic pruning is established |
 | LUKS header backup | Indefinite | Indefinite | Manual | Critical for recovery; store offline |
 | Panic audit log | 1 year | Indefinite | Not rotated | Emergency event record |
 
@@ -662,25 +662,32 @@ When `/var/lib/secure-ai` usage exceeds thresholds (check with
 
 | Usage | Action |
 |-------|--------|
-| > 70% | Review and prune quarantined models in `/var/lib/secure-ai/quarantine/` |
-| > 80% | Archive oldest audit logs to external media, remove unpromoted models from staging |
-| > 90% | Emergency: force logrotate (`sudo logrotate -f /etc/logrotate.d/secure-ai`), remove all quarantined models |
+| > 70% | Review model, quarantine, staging, and retained job inventories; plan exact artifact removal |
+| > 80% | Stop new imports/downloads, verify external archive capacity, and preserve required audit/incident evidence |
+| > 90% | Stop active transfer/scan owners before reviewed cleanup; retain job inventories and incident artifacts |
 | > 95% | **Critical:** Services may fail to write logs. Immediate operator intervention required |
 
 ### Model Pruning
 
 ```bash
-# List models by size
-du -sh /var/lib/secure-ai/registry/*.gguf 2>/dev/null | sort -rh
+# Inspect model storage; the registry manifest is separate from model files
+du -sh /var/lib/secure-ai/vault/models/* 2>/dev/null | sort -rh
 
-# List quarantined models (safe to remove)
+# Inspect pending and retained quarantine artifacts
 ls -lh /var/lib/secure-ai/quarantine/incoming/
 ls -lh /var/lib/secure-ai/quarantine/tampered/
-
-# Remove all quarantined models
-sudo rm -rf /var/lib/secure-ai/quarantine/incoming/*
-sudo rm -rf /var/lib/secure-ai/quarantine/tampered/*
 ```
+
+An incoming file may still belong to a download or scan, and a tampered file
+may be incident evidence. Record the active state of the catalog worker,
+quarantine watcher, scanner, and registry before stopping the applicable
+owners for maintenance. Review the durable catalog job and scanner inventories
+alongside the registry manifest and incident records. Keep the required audit
+chain and forensic evidence, and verify any archive before removing its source.
+Remove only exact reviewed artifacts after those checks; broad wildcard deletion
+can strand retained job state or destroy evidence. Automatic cleanup of started
+catalog attempts is unavailable. Restart only the services that were active
+before maintenance.
 
 ### Archive Procedures
 
