@@ -481,16 +481,16 @@
                         '<div class="progress-bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
                         '<span style="font-size:0.75rem;color:var(--text-muted)">' + esc(dlText) + '</span>' +
                         '</div><button class="btn btn-sm" type="button" data-action="catalog-cancel" data-job="' + esc(dl.job_id) + '">Cancel</button>';
-                } else if (dl && dl.status === 'quarantined') {
-                    btnHtml = '<span class="badge badge-warning">Submitted to quarantine · outcome pending</span>';
                 } else if (dl && dl.cleanup_required) {
                     btnHtml = '<span class="badge badge-warning">Stopped · cleanup required</span>' +
                         '<p class="meta">Partial files and their inventory are retained. Automatic cleanup and retry are unavailable.</p>';
+                } else if (matchingRegistry) {
+                    btnHtml = '<span class="badge">Matching digest reported by registry · verify in Models</span>';
+                } else if (dl && dl.status === 'quarantined') {
+                    btnHtml = '<span class="badge badge-warning">Submitted to quarantine · outcome pending</span>';
                 } else if (dl) {
                     btnHtml = '<span class="badge badge-warning">' + esc(dl.status === 'handoff_unknown' ? 'Download outcome needs review' : dl.status) + '</span>';
                     if (dl.retry_available) btnHtml += '<button class="btn btn-sm" type="button" data-action="catalog-retry" data-job="' + esc(dl.job_id) + '">Retry with current sign-in</button>';
-                } else if (matchingRegistry) {
-                    btnHtml = '<span class="badge">Matching digest reported by registry · verify in Models</span>';
                 } else {
                     btnHtml = '<button class="btn btn-sm btn-primary" type="button" data-action="catalog-download" data-url="' + encodeURIComponent(m.url) + '" data-filename="' + encodeURIComponent(m.filename) + '" data-type="' + encodeURIComponent(m.type) + '">Download</button>';
                 }
@@ -498,7 +498,7 @@
                 var terms = m.requires_terms && m.terms_url
                     ? '<a class="btn btn-sm" href="' + esc(m.terms_url) + '" target="_blank" rel="noopener noreferrer">Provider Terms</a>'
                     : '';
-                var failedDetail = dl && dl.error
+                var failedDetail = dl && dl.error && (!matchingRegistry || blocked || dl.cleanup_required)
                     ? '<p class="meta mt-sm">' + esc(dl.error === 'handoff_unknown' ? 'Download outcome needs review' : dl.error.replace(/_/g, ' ')) + '</p>'
                     : '';
                 var blockedDetail = blocked && m.blocked_reason
