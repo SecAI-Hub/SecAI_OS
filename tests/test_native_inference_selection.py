@@ -132,6 +132,52 @@ def test_explicit_cpu_assurance_overrides_detected_gpu(tmp_path, monkeypatch):
     assert control.gpu_layers(path, "-1") == "0"
 
 
+@pytest.mark.parametrize("backend,requested,accepted", [
+    ("cuda", "-1", True), ("vulkan", "-1", True),
+    ("cpu", "-1", False), ("cuda", "0", False),
+    ("vulkan", "0", False), ("unknown", "-1", False),
+])
+def test_required_gpu_refuses_cpu_launch_or_build(tmp_path, monkeypatch, backend, requested, accepted):
+    monkeypatch.setattr(control, "ROOT_UID", os.getuid())
+    policy = tmp_path / "attestation.yaml"
+    policy.write_text("version: 1\ngpu: {mode: required, bootstrap: {}, runtime: {}}\n")
+    policy.chmod(0o600)
+    metadata = tmp_path / "gpu-backend.json"
+    metadata.write_text(json.dumps({"backend": backend}))
+    metadata.chmod(0o644)
+    if accepted:
+        assert control.gpu_layers(policy, requested, build_metadata=metadata) == "-1"
+    else:
+        with pytest.raises(control.SelectionError):
+            control.gpu_layers(policy, requested, build_metadata=metadata)
+
+
+@pytest.mark.parametrize("metadata_case", ["missing", "symlink", "writable", "duplicate", "invalid", "wrong_type"])
+def test_required_gpu_cannot_use_unsafe_build_metadata(tmp_path, monkeypatch, metadata_case):
+    monkeypatch.setattr(control, "ROOT_UID", os.getuid())
+    policy = tmp_path / "attestation.yaml"
+    policy.write_text("version: 1\ngpu: {mode: required, bootstrap: {}, runtime: {}}\n")
+    policy.chmod(0o600)
+    metadata = tmp_path / "gpu-backend.json"
+    if metadata_case != "missing":
+        metadata.write_text('{"backend":"cuda"}')
+        metadata.chmod(0o644)
+    if metadata_case == "symlink":
+        target = tmp_path / "target.json"
+        metadata.rename(target)
+        metadata.symlink_to(target)
+    elif metadata_case == "writable":
+        metadata.chmod(0o666)
+    elif metadata_case == "duplicate":
+        metadata.write_text('{"backend":"cpu","backend":"cuda"}')
+    elif metadata_case == "invalid":
+        metadata.write_text('invalid')
+    elif metadata_case == "wrong_type":
+        metadata.write_text('{"backend":[]}')
+    with pytest.raises((OSError, control.SelectionError)):
+        control.gpu_layers(policy, "-1", build_metadata=metadata)
+
+
 def test_inference_cli_ignores_unapproved_policy_environment(monkeypatch, capsys):
     monkeypatch.setenv("ATTESTATION_POLICY_PATH", "/unapproved/policy.yaml")
     monkeypatch.setattr(sys, "argv", [str(HELPER), "gpu-layers", "-1"])

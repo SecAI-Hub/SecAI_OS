@@ -93,8 +93,9 @@ def _directory(path: Path) -> int:
     return descriptor
 
 
-def gpu_layers(policy: Path, requested: str) -> str:
-    """An explicitly enrolled CPU release cannot offload to an autodetected GPU."""
+def gpu_layers(policy: Path, requested: str, *,
+               build_metadata: Path = Path('/etc/secure-ai/gpu-backend.json')) -> str:
+    """Enforce release execution prerequisites; metadata is not live GPU proof."""
     if requested not in {'0', '-1'}:
         raise SelectionError('invalid GPU offload configuration')
 
@@ -121,6 +122,15 @@ def gpu_layers(policy: Path, requested: str) -> str:
             return '0'
         if not isinstance(gpu.get('bootstrap'), dict) or not isinstance(gpu.get('runtime'), dict):
             raise SelectionError('GPU assurance scopes are not explicitly enrolled')
+        if gpu['mode'] == 'required':
+            if requested != '-1':
+                raise SelectionError('required GPU policy refuses CPU-only offload settings')
+            metadata = _decode(_read_regular(build_metadata, 4096, owner=ROOT_UID))
+            # These are the backends actually emitted by build-services.sh.
+            # Never infer compiled GPU support from hardware detection alone.
+            if (not isinstance(metadata, dict) or not isinstance(metadata.get('backend'), str)
+                    or metadata['backend'] not in {'cuda', 'vulkan'}):
+                raise SelectionError('required GPU policy needs a compiled CUDA or Vulkan backend')
         return requested
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
         raise SelectionError('invalid GPU assurance policy') from exc

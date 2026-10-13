@@ -92,6 +92,7 @@ policy_files:
   - /etc/secure-ai/policy/diffusion-models.lock.yaml
   - /etc/secure-ai/policy/sources.allowlist.yaml
   - /etc/secure-ai/model-catalog.yaml
+  - /etc/secure-ai/gpu-backend.json
   - /usr/lib/systemd/system/secure-ai-tpm-attestation-setup.service
   - /usr/lib/systemd/system/secure-ai-runtime-attestor.service
   - /usr/lib/systemd/system/secure-ai-gpu-bootstrap.service

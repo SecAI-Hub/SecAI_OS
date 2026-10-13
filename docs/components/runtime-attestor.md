@@ -89,6 +89,12 @@ uses `gpu: {mode: no_gpu}` without GPU scopes; the inference selector enforces
 zero GPU offload even if hardware detection requests it. Device absence or
 failed probes never choose this mode automatically.
 
+For `required` GPU policy, the inference launcher refuses zero GPU offload and
+requires protected build metadata naming the compiled CUDA or Vulkan backend.
+The image build may fall back to a CPU backend, but that build cannot launch
+the required GPU appliance's inference worker. This prerequisite does not
+prove a loaded driver, successful offload, or physical GPU qualification.
+
 Bundles use `schema_version: 2`, with separate signed bootstrap state and GPU
 bootstrap/runtime outcomes. Old bundles cannot satisfy current incident
 recovery. A recovery GPU cycle must start and finish after containment; a fresh
