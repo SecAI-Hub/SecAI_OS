@@ -244,13 +244,18 @@ def _boot_function(script_name, start, end):
     return source[source.index(start):source.index(end)]
 
 
-def _mapper_fixture(secure_tpm, monkeypatch, *, actual_device=8, changed=False):
+def _mapper_fixture(secure_tpm, monkeypatch, tmp_path, *, actual_device=8, changed=False):
     expected = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=8)
     mapper = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=253, st_dev=1, st_ino=10)
     reads = iter([mapper, SimpleNamespace(**{**vars(mapper), "st_ino": 11})] if changed else [mapper, mapper])
     monkeypatch.setattr(secure_tpm, "MAPPER_PATH", SimpleNamespace(exists=lambda: True, stat=lambda: next(reads)))
     monkeypatch.setattr(secure_tpm, "resolve_device", lambda source:
                         SimpleNamespace(stat=lambda: SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=actual_device)))
+    sys_dir = tmp_path / "sys"
+    dm = sys_dir / "0:253" / "dm"
+    dm.mkdir(parents=True)
+    (dm / "uuid").write_text("CRYPT-LUKS2-11111111111111111111111111111111-secure-ai-vault\n")
+    monkeypatch.setattr(secure_tpm, "SYS_DEV_BLOCK", sys_dir)
     return SimpleNamespace(stat=lambda: expected)
 
 
@@ -262,10 +267,10 @@ def _mapper_fixture(secure_tpm, monkeypatch, *, actual_device=8, changed=False):
     (b"  type: LUKS2\n", "configured LUKS2"),
     (b"\xff", "malformed"),
 ])
-def test_active_mapper_requires_exact_luks2_identity(secure_tpm, monkeypatch, output, expected_error):
-    device = _mapper_fixture(secure_tpm, monkeypatch)
+def test_active_mapper_requires_exact_luks2_identity(secure_tpm, monkeypatch, tmp_path, output, expected_error):
+    device = _mapper_fixture(secure_tpm, monkeypatch, tmp_path)
     monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
-                        subprocess.CompletedProcess(args, 0, stdout=output, stderr=b""))
+                        subprocess.CompletedProcess(args, 0, stdout=b"11111111-1111-1111-1111-111111111111\n" if args[1] == "luksUUID" else output, stderr=b""))
     if expected_error:
         with pytest.raises(secure_tpm.TPMError, match=expected_error):
             secure_tpm.verify_active_mapper(device)
@@ -274,11 +279,27 @@ def test_active_mapper_requires_exact_luks2_identity(secure_tpm, monkeypatch, ou
 
 
 @pytest.mark.parametrize("changed,actual_device", [(False, 9), (True, 8)])
-def test_active_mapper_refuses_another_device_or_identity_change(secure_tpm, monkeypatch, changed, actual_device):
-    device = _mapper_fixture(secure_tpm, monkeypatch, actual_device=actual_device, changed=changed)
+def test_active_mapper_refuses_another_device_or_identity_change(secure_tpm, monkeypatch, tmp_path, changed, actual_device):
+    device = _mapper_fixture(secure_tpm, monkeypatch, tmp_path, actual_device=actual_device, changed=changed)
     monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
-                        subprocess.CompletedProcess(args, 0, stdout=b"  type: LUKS2\n  device: /dev/expected\n", stderr=b""))
+                        subprocess.CompletedProcess(args, 0, stdout=b"11111111-1111-1111-1111-111111111111\n" if args[1] == "luksUUID" else b"  type: LUKS2\n  device: /dev/expected\n", stderr=b""))
     with pytest.raises(secure_tpm.TPMError, match="another device or changed"):
+        secure_tpm.verify_active_mapper(device)
+
+
+@pytest.mark.parametrize("mapper_uuid", [
+    "CRYPT-LUKS2-22222222222222222222222222222222-secure-ai-vault",
+    "CRYPT-LUKS1-11111111111111111111111111111111-secure-ai-vault",
+    "CRYPT-LUKS2-11111111111111111111111111111111-other-vault",
+])
+def test_active_mapper_rejects_different_volume_uuid(secure_tpm, monkeypatch, tmp_path, mapper_uuid):
+    device = _mapper_fixture(secure_tpm, monkeypatch, tmp_path)
+    (secure_tpm.SYS_DEV_BLOCK / "0:253" / "dm" / "uuid").write_text(mapper_uuid)
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0,
+                            stdout=b"11111111-1111-1111-1111-111111111111\n" if args[1] == "luksUUID"
+                            else b"  type: LUKS2\n  device: /dev/expected\n", stderr=b""))
+    with pytest.raises(secure_tpm.TPMError, match="UUID does not match"):
         secure_tpm.verify_active_mapper(device)
 
 

@@ -18,6 +18,7 @@ from typing import Sequence
 
 from secure_luks import (
     LUKSError,
+    UUID_RE,
     configured_device,
     keyslot_count,
     luks_metadata,
@@ -29,6 +30,7 @@ from secure_luks import (
 
 STATE_PATH = Path("/run/secure-ai/tpm2-state.json")
 MAPPER_PATH = Path("/dev/mapper/secure-ai-vault")
+SYS_DEV_BLOCK = Path("/sys/dev/block")
 PCRS = "0:sha256+2:sha256+4:sha256+7:sha256"
 PCRS_DISPLAY = "sha256:0,2,4,7"
 LEGACY_TPM_DIR = Path("/var/lib/secure-ai/keys/tpm2")
@@ -349,6 +351,21 @@ def verify_active_mapper(device: Path) -> None:
             or ".." in Path(source).parts):
         raise TPMError("active vault mapper is not the configured LUKS2 mapping")
     actual = resolve_device(source).stat()
+    uuid_result = run_command(("cryptsetup", "luksUUID", str(device)), timeout=15)
+    if (uuid_result.returncode != 0 or not isinstance(uuid_result.stdout, bytes)
+            or len(uuid_result.stdout) > 128):
+        raise TPMError("configured vault LUKS UUID is unavailable")
+    try:
+        volume_uuid = uuid_result.stdout.decode("ascii", "strict").strip()
+        uuid_path = SYS_DEV_BLOCK / f"{os.major(before.st_rdev)}:{os.minor(before.st_rdev)}" / "dm" / "uuid"
+        with uuid_path.open("r", encoding="ascii") as handle:
+            mapper_uuid = handle.read(129).strip()
+    except (OSError, UnicodeError) as error:
+        raise TPMError("active vault mapper UUID is unavailable") from error
+    expected_uuid = f"CRYPT-LUKS2-{volume_uuid.replace('-', '')}-secure-ai-vault"
+    if (not UUID_RE.fullmatch(volume_uuid) or len(mapper_uuid) > 128
+            or mapper_uuid.lower() != expected_uuid.lower()):
+        raise TPMError("active vault mapper UUID does not match the configured LUKS volume")
     after = MAPPER_PATH.stat()
     if (not stat.S_ISBLK(actual.st_mode) or not stat.S_ISBLK(after.st_mode)
             or actual.st_rdev != expected.st_rdev
