@@ -98,6 +98,54 @@ ask_yes_no() {
     done
 }
 
+read_tpm_state() {
+    local response status
+    if [ ! -x "$TPM2_SEAL" ]; then
+        printf 'error\n'
+        return
+    fi
+    if response=$("$TPM2_SEAL" status 2>/dev/null); then
+        status=0
+    else
+        status=$?
+    fi
+    printf '%s' "$response" | python3 -c '
+import json, sys
+try:
+    raw = sys.stdin.read(16385)
+    if len(raw) > 16384:
+        raise ValueError("oversized status")
+    data = json.loads(raw)
+    if (not isinstance(data, dict) or type(data.get("schema_version")) is not int
+            or data["schema_version"] != 1
+            or any(type(data.get(key)) is not bool for key in
+                   ("tpm2_available", "enrolled", "crypttab_tpm2_enabled"))
+            or int(sys.argv[1]) not in (0, 1, 2)):
+        raise ValueError("invalid status")
+    if not data["tpm2_available"]:
+        state = "unavailable"
+    elif (int(sys.argv[1]) == 0 and data["enrolled"]
+          and data["crypttab_tpm2_enabled"] and data.get("assurance") == "pcr_bound"
+          and data.get("virtualization") == "none"
+          and type(data.get("token_count")) is int and data["token_count"] == 1
+          and data.get("pcr_binding") == "sha256:0,2,4,7"):
+        state = "enrolled"
+    elif data["enrolled"] or data["crypttab_tpm2_enabled"]:
+        state = "unverified"
+    else:
+        state = "not_enrolled"
+except (ValueError, TypeError):
+    state = "error"
+print(state)
+' "$status"
+}
+
+report_tpm_enrollment() {
+    pass "Vault TPM2 enrollment: configured SHA256 PCR 0/2/4/7 policy verified"
+    info "This checks enrollment metadata and boot prerequisites."
+    info "Automatic unlock and recovery passphrase still require a boot/recovery test."
+}
+
 # ---------------------------------------------------------------------------
 # Preamble
 # ---------------------------------------------------------------------------
@@ -332,43 +380,47 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════
 step "5" "TPM2 Key Sealing (optional)"
 
-TPM2_AVAILABLE=false
-if [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; then
-    TPM2_AVAILABLE=true
-fi
-
-if [ "$TPM2_AVAILABLE" = true ] && [ "$VAULT_READY" = true ]; then
-    SEALED_KEY="/var/lib/secure-ai/keys/tpm2/vault-key.sealed"
-    if [ -f "$SEALED_KEY" ]; then
-        pass "Vault key: sealed to TPM2 PCRs"
-        info "Auto-unlock will work as long as the boot chain is unchanged"
-    else
-        info "TPM2 is available but vault key is not sealed"
-        echo ""
-        echo -e "  ${BOLD}TPM2 sealing enables auto-unlock of the vault on trusted boots.${NC}"
-        echo -e "  If the boot chain is tampered with (firmware, bootloader, kernel),"
-        echo -e "  the TPM will refuse to release the key and you'll need the passphrase."
-        echo ""
-        if [ -x "$TPM2_SEAL" ]; then
-            if ask_yes_no "Seal vault key to TPM2 now?" "n"; then
-                echo ""
+TPM2_STATE=not_checked
+if [ "$VAULT_READY" = true ]; then
+    TPM2_STATE=$(read_tpm_state)
+    case "$TPM2_STATE" in
+        enrolled)
+            report_tpm_enrollment
+            ;;
+        not_enrolled)
+            info "Vault has no verified TPM2 enrollment"
+            info "Enrollment requires bare metal, active Secure Boot and an independent recovery keyslot."
+            if ask_yes_no "Enroll vault TPM2 unlock now?" "n"; then
                 echo "  You will be prompted for your vault passphrase."
-                $TPM2_SEAL seal || {
-                    fail "TPM2 sealing failed"
-                    info "Try manually: sudo ${TPM2_SEAL} seal"
-                }
+                if "$TPM2_SEAL" seal; then
+                    TPM2_STATE=$(read_tpm_state)
+                    if [ "$TPM2_STATE" = enrolled ]; then
+                        report_tpm_enrollment
+                    else
+                        fail "TPM2 enrollment returned success but current verification failed"
+                    fi
+                else
+                    fail "TPM2 enrollment failed"
+                    info "Review: sudo ${TPM2_SEAL} status"
+                fi
             else
-                info "Skipped — seal later: sudo ${TPM2_SEAL} seal"
+                info "Skipped — enroll later: sudo ${TPM2_SEAL} seal"
             fi
-        else
-            info "TPM2 sealing script not found at ${TPM2_SEAL}"
-        fi
-    fi
-elif [ "$TPM2_AVAILABLE" = true ]; then
-    warn_msg "TPM2 is available, but key sealing is blocked until the vault is mounted"
+            ;;
+        unverified)
+            warn_msg "TPM2 enrollment or boot prerequisites are not verified"
+            info "Review: sudo ${TPM2_SEAL} status"
+            ;;
+        unavailable)
+            info "TPM2 or required tools are unavailable; vault requires passphrase unlock"
+            ;;
+        *)
+            fail "Could not read valid current TPM2 enrollment status"
+            info "Review: sudo ${TPM2_SEAL} status"
+            ;;
+    esac
 else
-    info "TPM2: not available (virtual machine or no TPM hardware)"
-    info "Vault will require passphrase on every boot"
+    warn_msg "TPM2 vault enrollment cannot be checked until the exact vault mount is verified"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -418,12 +470,10 @@ else
 fi
 
 # TPM2
-if [ -f "/var/lib/secure-ai/keys/tpm2/vault-key.sealed" ] 2>/dev/null; then
-    SUMMARY_ITEMS+=("${GREEN}PASS${NC}  TPM2 key sealing active")
-elif [ "$TPM2_AVAILABLE" = true ]; then
-    SUMMARY_ITEMS+=("${YELLOW}WARN${NC}  TPM2 available but key not sealed")
+if [ "$TPM2_STATE" = enrolled ]; then
+    SUMMARY_ITEMS+=("${GREEN}PASS${NC}  TPM2 enrollment verified; unlock/recovery test required")
 else
-    SUMMARY_ITEMS+=("${DIM}INFO${NC}  TPM2 not available")
+    SUMMARY_ITEMS+=("${DIM}INFO${NC}  TPM2 vault enrollment: ${TPM2_STATE}")
 fi
 
 # Cosign key

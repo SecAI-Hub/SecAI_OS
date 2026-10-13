@@ -13,7 +13,14 @@ This guide covers installing SecAI OS on physical hardware.
 - **GPU:** NVIDIA GPU with CUDA support (RTX 3000 series or newer recommended); other appliance backends require release-specific qualification
 - **Network:** Ethernet or WiFi (only needed for initial setup if downloading models)
 - **USB drive:** 8 GB or larger for installation media
-- **UEFI firmware:** Secure Boot supported (optional but recommended)
+- **UEFI firmware:** Secure Boot enabled, with shim signature validation active
+- **TPM:** Physical TPM2 available for enrollment and fresh boot attestation
+
+The first production target is a bare-metal GPU appliance. Its required GPU
+policy must contain reviewed profile and baseline approvals for the release's
+qualified hardware. The source defaults contain empty approval pins and cannot
+pass appliance readiness until that enrollment is supplied. Hardware detection
+alone does not approve a GPU.
 
 ---
 
@@ -147,7 +154,7 @@ The wizard walks you through:
 2. **Image integrity** — Cosign signature verification of the running image
 3. **Transport check** — Confirms you are on signed transport (offers to switch if not)
 4. **Vault setup** — Creates the independently lockable LUKS volume for models, user documents, and outputs
-5. **TPM2 sealing** (optional) — Seals the vault key to TPM2 PCRs for auto-unlock on trusted boots
+5. **Vault TPM2 enrollment** (optional) — Checks the current LUKS2 token and configured PCR policy; offers enrollment for TPM unlock
 6. **Health check** — Validates all services are running and endpoints are reachable
 7. **Summary** — Security posture card and next steps
 
@@ -167,16 +174,35 @@ sudo /usr/libexec/secure-ai/first-boot-check.sh
 - Review `/etc/secure-ai/policy/policy.yaml` to customize security policy.
 - If you have a TPM2 module, the vault passphrase can be sealed to the TPM for automatic unlock on trusted boots.
 
+Vault TPM unlock is separate from required appliance TPM attestation. An
+enrollment status check verifies metadata and current boot prerequisites; it
+does not prove automatic unlock or recovery. Verify both through a cold boot
+and recovery passphrase test before depending on automatic unlock.
+
 ---
 
-## Secure Boot (Optional)
+## Secure Boot and TPM Qualification
 
-If your hardware supports Secure Boot:
+Secure Boot and physical TPM evidence are required for the production hardware
+profile. Enable firmware Secure Boot and retain shim signature validation.
+Use signed kernel and GPU driver components appropriate to the qualified
+release. The repository does not ship a private MOK signing key, and a
+signature table alone does not prove that a component is trusted.
 
-1. The SecAI OS image includes a MOK (Machine Owner Key) for signing.
-2. On first boot with Secure Boot enabled, you will be prompted to enroll the MOK.
-3. After enrollment, the full Secure Boot chain is verified: UEFI firmware, bootloader, kernel, and initramfs.
-4. TPM2 measured boot records extend PCR values at each stage for tamper detection.
+Inspect enrollment from a local console:
+
+```bash
+sudo /usr/libexec/secure-ai/enroll-secureboot.sh --check-only
+sudo /usr/libexec/secure-ai/tpm2-seal-vault.sh status
+sudo /usr/libexec/secure-ai/first-boot-check.sh
+```
+
+If the release supplies a MOK certificate that needs enrollment, use the
+enrollment utility's explicit `--enroll` option and complete firmware
+confirmation after reboot. A pending request is not completed enrollment,
+and MOK enrollment does not turn on Secure Boot. Fresh TPM quote verification
+and approved GPU bootstrap/runtime evidence must also pass; do not waive these
+gates to complete setup.
 
 ---
 
