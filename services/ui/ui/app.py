@@ -2262,23 +2262,83 @@ def import_model():
     return jsonify({"error": "provide a file upload or a JSON body with 'path'"}), 400
 
 
+_QUARANTINE_INVENTORY_MAX_ENTRIES = 20_000
+_QUARANTINE_INVENTORY_MAX_DEPTH = 32
+
+
+def _quarantine_inventory(root: Path) -> list[dict]:
+    """Read bounded metadata below opened directory FDs without following links."""
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    remaining = _QUARANTINE_INVENTORY_MAX_ENTRIES
+
+    def entries(directory_fd):
+        nonlocal remaining
+        with os.scandir(directory_fd) as directory:
+            for entry in directory:
+                remaining -= 1
+                if remaining < 0:
+                    raise ValueError("quarantine inventory entry limit")
+                yield entry
+
+    def directory_size(directory_fd, depth):
+        if depth > _QUARANTINE_INVENTORY_MAX_DEPTH:
+            raise ValueError("quarantine inventory depth limit")
+        total = 0
+        for entry in entries(directory_fd):
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                elif stat.S_ISDIR(info.st_mode):
+                    child_fd = os.open(entry.name, flags, dir_fd=directory_fd)
+                    try:
+                        total += directory_size(child_fd, depth + 1)
+                    finally:
+                        os.close(child_fd)
+            except FileNotFoundError:
+                # The watcher can move or remove an artifact while we list it.
+                continue
+        return total
+
+    try:
+        root_fd = os.open(root, flags)
+    except FileNotFoundError:
+        return []
+    try:
+        files = []
+        for entry in entries(root_fd):
+            if entry.name.startswith("."):
+                continue
+            try:
+                os.stat(f".{entry.name}.status.json", dir_fd=root_fd, follow_symlinks=False)
+                continue
+            except FileNotFoundError:
+                pass
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode):
+                    files.append({"filename": entry.name, "size_bytes": info.st_size, "type": "file"})
+                elif stat.S_ISDIR(info.st_mode):
+                    child_fd = os.open(entry.name, flags, dir_fd=root_fd)
+                    try:
+                        total = directory_size(child_fd, 1)
+                    finally:
+                        os.close(child_fd)
+                    files.append({"filename": entry.name, "size_bytes": total, "type": "directory"})
+            except FileNotFoundError:
+                continue
+        return sorted(files, key=lambda item: item["filename"])
+    finally:
+        os.close(root_fd)
+
+
 @app.route("/api/models/quarantine")
 def quarantine_status():
     """List files currently in quarantine (pending scan/promotion)."""
-    if not QUARANTINE_DIR.exists():
-        return jsonify([])
-    files = []
-    for f in sorted(QUARANTINE_DIR.iterdir()):
-        if f.name.startswith("."):
-            continue
-        if _quarantine_status_marker_path(f.name).exists():
-            continue
-        if f.is_file():
-            files.append({"filename": f.name, "size_bytes": f.stat().st_size, "type": "file"})
-        elif f.is_dir():
-            total = sum(p.stat().st_size for p in f.rglob("*") if p.is_file())
-            files.append({"filename": f.name, "size_bytes": total, "type": "directory"})
-    return jsonify(files)
+    try:
+        return jsonify(_quarantine_inventory(QUARANTINE_DIR))
+    except (OSError, ValueError):
+        return jsonify({"error": "Quarantine status is unavailable. Retry shortly."}), 503
 
 
 # --- API: Chat ---

@@ -1097,6 +1097,89 @@ class TestCatalogDownloads:
         assert resp.status_code == 200
         assert [item["filename"] for item in resp.get_json()] == ["active.gguf"]
 
+    def test_quarantine_status_does_not_follow_external_links(self, client, tmp_path):
+        quarantine = tmp_path / "quarantine"
+        quarantine.mkdir()
+        outside = tmp_path / "private.gguf"
+        outside.write_bytes(b"private data")
+        (quarantine / "linked.gguf").symlink_to(outside)
+        (quarantine / "linked-directory").symlink_to(tmp_path, target_is_directory=True)
+        bundle = quarantine / "bundle"
+        bundle.mkdir()
+        (bundle / "model.safetensors").write_bytes(b"abc")
+        (bundle / "linked.safetensors").symlink_to(outside)
+        (quarantine / "active.gguf").write_bytes(b"data")
+
+        with patch("ui.app.QUARANTINE_DIR", quarantine):
+            resp = client.get("/api/models/quarantine")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == [
+            {"filename": "active.gguf", "size_bytes": 4, "type": "file"},
+            {"filename": "bundle", "size_bytes": 3, "type": "directory"},
+        ]
+
+    def test_quarantine_status_refuses_linked_root(self, client, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "private.gguf").write_bytes(b"private data")
+        root = tmp_path / "quarantine"
+        root.symlink_to(outside, target_is_directory=True)
+        with patch("ui.app.QUARANTINE_DIR", root):
+            resp = client.get("/api/models/quarantine")
+        assert resp.status_code == 503
+        assert "private" not in resp.get_data(as_text=True)
+
+    def test_quarantine_status_does_not_follow_directory_swap(self, client, tmp_path):
+        quarantine = tmp_path / "quarantine"
+        quarantine.mkdir()
+        bundle = quarantine / "bundle"
+        bundle.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "private.gguf").write_bytes(b"private data")
+        original_open = os.open
+        swapped = False
+
+        def swap_before_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if path == "bundle" and kwargs.get("dir_fd") is not None and not swapped:
+                swapped = True
+                bundle.rmdir()
+                bundle.symlink_to(outside, target_is_directory=True)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch("ui.app.QUARANTINE_DIR", quarantine), \
+             patch("ui.app.os.open", side_effect=swap_before_open):
+            resp = client.get("/api/models/quarantine")
+        assert swapped
+        assert resp.status_code == 503
+        assert "private" not in resp.get_data(as_text=True)
+
+    def test_quarantine_status_missing_root_is_empty(self, client, tmp_path):
+        with patch("ui.app.QUARANTINE_DIR", tmp_path / "missing"):
+            resp = client.get("/api/models/quarantine")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+
+    def test_quarantine_status_bounds_total_entries(self, client, tmp_path):
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        for index in range(4):
+            (bundle / f"tensor{index}.safetensors").write_bytes(b"abc")
+        with patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch("ui.app._QUARANTINE_INVENTORY_MAX_ENTRIES", 3):
+            resp = client.get("/api/models/quarantine")
+        assert resp.status_code == 503
+        assert resp.get_json() == {"error": "Quarantine status is unavailable. Retry shortly."}
+
+    def test_quarantine_status_bounds_directory_depth(self, client, tmp_path):
+        (tmp_path / "bundle" / "nested").mkdir(parents=True)
+        with patch("ui.app.QUARANTINE_DIR", tmp_path), \
+             patch("ui.app._QUARANTINE_INVENTORY_MAX_DEPTH", 1):
+            resp = client.get("/api/models/quarantine")
+        assert resp.status_code == 503
+
     def test_delete_model_includes_service_token_header(self, client):
         mock_resp = type("Resp", (), {
             "json": lambda self: {"status": "deleted"},
