@@ -52,6 +52,12 @@ working in an individual Go service. Large image builds and VM qualification
 also need writable artifact storage and enough free memory for the desktop
 and other active tasks; installed RAM alone is not an admission check.
 
+The native service build script defaults to one compiler job for Go and
+llama.cpp. `SECAI_BUILD_JOBS` accepts an explicit integer from 1 to 8 in the
+build environment. Increase it only after reserving enough host headroom; the
+value is a parallelism budget, not a memory reservation. It does not change
+the separate Tor build contract or limit container daemons and virtual machines.
+
 On Linux with a systemd user manager, a focused test can run with an enforced
 memory and CPU budget:
 

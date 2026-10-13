@@ -375,3 +375,47 @@ class TestHermeticGoBuilds:
         assert "GOPROXY=off" in build_script_content, (
             "Hermetic mode must set GOPROXY=off"
         )
+
+
+@pytest.mark.parametrize("configured,expected", [(None, "1"), ("1", "1"), ("2", "2"), ("8", "8")])
+def test_build_job_budget_is_explicit_and_defaults_to_one(build_script_content, configured, expected):
+    preamble = build_script_content.split('echo "=== Building Secure AI services ==="', 1)[0]
+    environment = dict(os.environ)
+    environment.pop("SECAI_BUILD_JOBS", None)
+    if configured is not None:
+        environment["SECAI_BUILD_JOBS"] = configured
+    result = subprocess.run(
+        ["bash", "-c", preamble + '\nprintf "%s:%s\\n" "$BUILD_JOBS" "$GOMAXPROCS"'],
+        env=environment, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{expected}:{expected}"
+    go_commands = [line for line in build_script_content.splitlines() if "CGO_ENABLED=0 go build " in line]
+    assert len(go_commands) == 11
+    cmake_command = next(line for line in build_script_content.splitlines()
+                         if line.startswith("cmake --build build --target llama-server "))
+    commands = "\n".join(go_commands + [cmake_command])
+    mocks = '\ngo() { printf "GO:%s:%s\\n" "$GOMAXPROCS" "$*"; }\ncmake() { printf "CMAKE:%s\\n" "$*"; }\n'
+    dispatched = subprocess.run(
+        ["bash", "-c", preamble + mocks + commands],
+        env=environment, capture_output=True, text=True, timeout=5,
+    )
+    assert dispatched.returncode == 0, dispatched.stderr
+    output = dispatched.stdout.splitlines()
+    assert len(output) == 12
+    assert all(line.startswith(f"GO:{expected}:build -p {expected} ") for line in output[:11])
+    assert output[-1] == f"CMAKE:--build build --target llama-server -j{expected}"
+    assert "$(nproc)" not in build_script_content
+
+
+@pytest.mark.parametrize("configured", ["0", "9", "-1", "1.5", "two", "1 2", "$(nproc)", "99999999999999999999"])
+def test_build_job_budget_rejects_invalid_values_before_building(build_script_content, configured):
+    preamble = build_script_content.split('echo "=== Building Secure AI services ==="', 1)[0]
+    result = subprocess.run(
+        ["bash", "-c", preamble + "\necho build-would-start"],
+        env={**os.environ, "SECAI_BUILD_JOBS": configured},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode != 0
+    assert "SECAI_BUILD_JOBS must be an integer from 1 to 8" in result.stdout + result.stderr
+    assert "build-would-start" not in result.stdout

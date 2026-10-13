@@ -30,6 +30,12 @@ fail_build() {
     exit 1
 }
 
+# Compilation shares the builder with other work. Do not derive parallelism
+# from the machine's CPU count; faster builds require an explicit budget.
+BUILD_JOBS="${SECAI_BUILD_JOBS:-1}"
+[[ "$BUILD_JOBS" =~ ^[1-8]$ ]] || fail_build "SECAI_BUILD_JOBS must be an integer from 1 to 8"
+export GOMAXPROCS="$BUILD_JOBS"
+
 echo "=== Building Secure AI services ==="
 
 # ---------------------------------------------------------------------------
@@ -235,7 +241,7 @@ GO_SKIPPED=0
 echo "Building: airlock"
 if locate_source airlock /tmp/services/airlock; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/airlock" .
     track_binary "${INSTALL_DIR}/airlock"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -244,8 +250,8 @@ echo "Building: ai-model-registry"
 if locate_source ai-model-registry \
     /tmp/services/registry; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/secai-registryctl ./cmd/securectl/
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/registry" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o /usr/bin/secai-registryctl ./cmd/securectl/
     track_binary "${INSTALL_DIR}/registry"
     track_binary "/usr/bin/secai-registryctl"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
@@ -255,7 +261,7 @@ echo "Building: agent-tool-firewall"
 if locate_source agent-tool-firewall \
     /tmp/services/tool-firewall; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/tool-firewall" .
     track_binary "${INSTALL_DIR}/tool-firewall"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -264,7 +270,7 @@ echo "Building: gpu-integrity-watch"
 if locate_source gpu-integrity-watch \
     /tmp/services/gpu-integrity-watch; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/gpu-integrity-watch" .
     track_binary "${INSTALL_DIR}/gpu-integrity-watch"
     # Producer input is required protected release policy, never a fallback.
     mkdir -p /etc/secure-ai/gpu-integrity
@@ -277,7 +283,7 @@ if locate_source mcp-firewall \
     /tmp/services/mcp-firewall; then
     python3 /tmp/files/scripts/verify-source-snapshot.py "$SOURCE_DIR" || fail_build "MCP source snapshot verification failed"
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/mcp-firewall" .
     track_binary "${INSTALL_DIR}/mcp-firewall"
     # Default policy (optional -- runtime uses built-in defaults if missing)
     mkdir -p /etc/secure-ai/mcp-firewall
@@ -289,7 +295,7 @@ echo "Building: policy-engine"
 if locate_source policy-engine \
     /tmp/services/policy-engine; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/policy-engine" .
     track_binary "${INSTALL_DIR}/policy-engine"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -298,7 +304,7 @@ echo "Building: runtime-attestor"
 if locate_source runtime-attestor \
     /tmp/services/runtime-attestor; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/runtime-attestor" .
     track_binary "${INSTALL_DIR}/runtime-attestor"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -307,7 +313,7 @@ echo "Building: integrity-monitor"
 if locate_source integrity-monitor \
     /tmp/services/integrity-monitor; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/integrity-monitor" .
     track_binary "${INSTALL_DIR}/integrity-monitor"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -316,7 +322,7 @@ echo "Building: incident-recorder"
 if locate_source incident-recorder \
     /tmp/services/incident-recorder; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o "${INSTALL_DIR}/incident-recorder" .
     track_binary "${INSTALL_DIR}/incident-recorder"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -325,7 +331,7 @@ echo "Building: gguf-guard"
 if locate_source gguf-guard \
     /tmp/upstreams/gguf-guard; then
     cd "$SOURCE_DIR"
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/bin/gguf-guard ./cmd/gguf-guard/
+    CGO_ENABLED=0 go build -p "$BUILD_JOBS" -ldflags="-s -w" -o /usr/bin/gguf-guard ./cmd/gguf-guard/
     track_binary "/usr/bin/gguf-guard"
 else GO_SKIPPED=$((GO_SKIPPED + 1)); fi
 
@@ -385,7 +391,7 @@ else
     rm -rf build && cmake -B build "${LLAMA_CMAKE_ARGS[@]}"
     GPU_BACKEND="cpu"
 fi
-cmake --build build --target llama-server -j"$(nproc)"
+cmake --build build --target llama-server -j"$BUILD_JOBS"
 install -m 755 build/bin/llama-server /usr/bin/llama-server
 track_binary "/usr/bin/llama-server"
 
