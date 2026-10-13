@@ -3,8 +3,8 @@
 # Secure AI Appliance — Secure Boot MOK Enrollment
 #
 # Enrolls the SecAI Machine Owner Key (MOK) into the system's UEFI MOK
-# database. After enrollment, only kernels/bootloaders signed with this
-# key will be trusted.
+# database. Enrollment adds this certificate to shim's trust list; existing
+# platform trust anchors remain in place.
 #
 # This script is called during firstboot. The user must reboot and
 # confirm enrollment in the MOK Manager (MokManager.efi) screen.
@@ -48,19 +48,18 @@ check_secure_boot() {
 
 check_mok_enrolled() {
     # Check if our MOK is already enrolled
-    if [ ! -f "$MOK_DER" ]; then
+    if [ ! -f "$MOK_DER" ] || [ -L "$MOK_DER" ]; then
         return 1
     fi
 
     if command -v mokutil &>/dev/null; then
-        # Get the fingerprint of our cert
-        local our_fp
-        our_fp=$(openssl x509 -in "$MOK_PEM" -noout -fingerprint -sha256 2>/dev/null | \
-                 sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
-
-        # Check enrolled keys
-        if mokutil --list-enrolled 2>/dev/null | grep -qi "$our_fp"; then
-            return 0
+        # Ask about the exact DER certificate that enrollment would import.
+        # Text fingerprints can use a different digest or be empty on failure.
+        local enrollment
+        if enrollment=$(LC_ALL=C mokutil --test-key "$MOK_DER" 2>/dev/null); then
+            # Exit 0 also covers a pending request or a certificate in db/dbx.
+            # Only the exact MokListRT result establishes completed enrollment.
+            [[ "$enrollment" == "$MOK_DER is already enrolled" ]] && return 0
         fi
     fi
     return 1
@@ -70,19 +69,20 @@ cmd_check() {
     echo "=== Secure Boot Status ==="
 
     local sb_state
-    sb_state=$(check_secure_boot)
+    # Disabled/unavailable are expected status outcomes, not shell failures.
+    sb_state=$(check_secure_boot) || :
     echo "UEFI Secure Boot: ${sb_state}"
 
     if [ "$sb_state" = "unavailable" ]; then
-        echo "System does not support UEFI Secure Boot."
-        echo "This may be a legacy BIOS system or a VM without UEFI."
-        write_state "unavailable" "false" "no_uefi"
+        echo "Secure Boot status could not be established."
+        echo "Check UEFI support and whether mokutil can read firmware state."
+        write_state "unavailable" "false" "sb_unavailable"
         return
     fi
 
     if [ "$sb_state" = "disabled" ]; then
-        echo "Secure Boot is disabled in firmware."
-        echo "Enable it in BIOS/UEFI settings for full boot chain verification."
+        echo "Secure Boot validation is disabled."
+        echo "Check both firmware Secure Boot and shim validation settings."
         write_state "disabled" "false" "sb_disabled"
         return
     fi

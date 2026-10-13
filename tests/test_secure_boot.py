@@ -242,6 +242,52 @@ def _boot_function(script_name, start, end):
     return source[source.index(start):source.index(end)]
 
 
+@pytest.mark.parametrize("state", ["disabled", "unavailable"])
+def test_secure_boot_status_reports_negative_states_without_aborting(tmp_path, state):
+    command = _boot_function("enroll-secureboot.sh", "cmd_check() {", "cmd_enroll() {")
+    script = """
+set -euo pipefail
+check_secure_boot() { printf '%s\\n' "$REPORTED_STATE"; return 1; }
+write_state() { printf '%s:%s:%s\\n' "$@" > "$STATE_FILE"; }
+""" + command + "\ncmd_check\n"
+    result = subprocess.run(
+        ["bash", "-c", script], env={**os.environ, "REPORTED_STATE": state,
+                                    "STATE_FILE": str(tmp_path / "state")},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "state").read_text().startswith(state + ":false:")
+
+
+@pytest.mark.parametrize("message,code,enrolled", [
+    ("is already enrolled", 0, True),
+    ("is not enrolled", 1, False),
+    ("is already in the enrollment request", 0, False),
+    ("is already in db", 0, False),
+    ("is already in dbx", 0, False),
+    ("", 0, False),
+    ("is already enrolled", 255, False),
+])
+def test_mok_enrollment_requires_exact_completed_certificate_result(tmp_path, message, code, enrolled):
+    cert = tmp_path / "mok.der"
+    cert.write_bytes(b"synthetic certificate fixture")
+    function = _boot_function("enroll-secureboot.sh", "check_mok_enrolled() {", "cmd_check() {")
+    script = """
+set -euo pipefail
+mokutil() {
+    [[ "$1" == '--test-key' && "$2" == "$MOK_DER" ]] || return 99
+    printf '%s %s\\n' "$2" "$TEST_MESSAGE"
+    return "$TEST_CODE"
+}
+""" + function + "\ncheck_mok_enrolled\n"
+    result = subprocess.run(
+        ["bash", "-c", script], env={**os.environ, "MOK_DER": str(cert),
+                                    "TEST_MESSAGE": message, "TEST_CODE": str(code)},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == (0 if enrolled else 1), result.stderr
+
+
 @pytest.mark.parametrize("output,code,expected", [
     ("SecureBoot enabled\n", 0, "enabled"),
     ("SecureBoot disabled\n", 0, "disabled"),
