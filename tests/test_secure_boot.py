@@ -356,6 +356,81 @@ def test_tpm_enroll_verifies_policy_before_enabling_auto_unlock(secure_tpm, monk
         assert calls == []
 
 
+def test_tpm_enroll_requires_independent_recovery_before_mutating(secure_tpm, monkeypatch):
+    metadata = _configured_tpm_metadata()
+    metadata["tokens"]["1"] = {"type": "systemd-fido2", "keyslots": ["0"]}
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "none")
+    monkeypatch.setattr(secure_tpm, "secure_boot_enabled", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: metadata)
+    def forbidden(*args, **kwargs):
+        pytest.fail("enrollment must not execute without an independent recovery slot")
+    monkeypatch.setattr(secure_tpm, "run_command", forbidden)
+    with pytest.raises(secure_tpm.TPMError, match="no independent recovery"):
+        secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False)
+
+
+@pytest.mark.parametrize("change", ["token_assignment", "slot_metadata"])
+def test_tpm_enroll_recovery_change_blocks_auto_unlock_configuration(secure_tpm, monkeypatch, change):
+    before = {"keyslots": {"0": {"type": "luks2"}}, "tokens": {}}
+    after = _configured_tpm_metadata()
+    if change == "token_assignment":
+        after["tokens"]["1"] = {"type": "systemd-fido2", "keyslots": ["0"]}
+    else:
+        after["keyslots"]["0"]["area"] = {"offset": "changed"}
+    metadata = iter([before, after])
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "none")
+    monkeypatch.setattr(secure_tpm, "secure_boot_enabled", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: next(metadata))
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b""))
+    def forbidden(**kwargs):
+        pytest.fail("auto unlock must not be enabled after recovery metadata changes")
+    monkeypatch.setattr(secure_tpm, "update_crypttab_tpm2", forbidden)
+    with pytest.raises(secure_tpm.TPMError, match="preserve independent recovery"):
+        secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False)
+
+
+def test_tpm_removal_refuses_token_only_vault_before_mutation(secure_tpm, monkeypatch):
+    metadata = _configured_tpm_metadata()
+    del metadata["keyslots"]["0"]
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: metadata)
+    def forbidden(*args, **kwargs):
+        pytest.fail("removal must not execute without independent recovery")
+    monkeypatch.setattr(secure_tpm, "run_command", forbidden)
+    with pytest.raises(secure_tpm.TPMError, match="independent recovery"):
+        secure_tpm.wipe("REMOVE-TPM2-UNLOCK")
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_tpm_removal_verifies_preserved_recovery_before_config_changes(secure_tpm, monkeypatch, changed):
+    before = _configured_tpm_metadata()
+    after = {"keyslots": {"0": {"type": "luks2"}}, "tokens": {}}
+    if changed:
+        after["keyslots"]["0"]["area"] = {"offset": "changed"}
+    metadata = iter([before, after])
+    calls = []
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: next(metadata))
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b""))
+    monkeypatch.setattr(secure_tpm, "update_crypttab_tpm2", lambda **kwargs: calls.append("crypttab"))
+    monkeypatch.setattr(secure_tpm, "remove_legacy_artifacts", lambda: calls.append("legacy"))
+    monkeypatch.setattr(secure_tpm, "current_state", lambda detail: {})
+    monkeypatch.setattr(secure_tpm, "atomic_state", lambda value: calls.append("state"))
+    if changed:
+        with pytest.raises(secure_tpm.TPMError, match="preserve independent recovery"):
+            secure_tpm.wipe("REMOVE-TPM2-UNLOCK")
+        assert calls == []
+    else:
+        assert secure_tpm.wipe("REMOVE-TPM2-UNLOCK") == 0
+        assert calls == ["crypttab", "legacy", "state"]
+
+
 @pytest.mark.parametrize("state", ["disabled", "unavailable"])
 def test_secure_boot_status_reports_negative_states_without_aborting(tmp_path, state):
     command = _boot_function("enroll-secureboot.sh", "cmd_check() {", "cmd_enroll() {")

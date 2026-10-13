@@ -232,6 +232,28 @@ def enrollment_policy_matches(metadata: dict[str, object]) -> bool:
     return isinstance(slot, dict) and slot.get("type") == "luks2"
 
 
+def independent_keyslots(metadata: dict[str, object]) -> set[str]:
+    """Identify non-token keyslots; their presence is not a recovery rehearsal."""
+    keyslots = metadata.get("keyslots")
+    tokens = metadata.get("tokens", {})
+    if not isinstance(keyslots, dict) or not isinstance(tokens, dict):
+        raise LUKSError("invalid keyslot or token map")
+    for identifier, slot in keyslots.items():
+        if (not isinstance(identifier, str) or not 1 <= len(identifier) <= 2
+                or not identifier.isascii() or not identifier.isdigit()
+                or str(int(identifier)) != identifier or not 0 <= int(identifier) < 32
+                or not isinstance(slot, dict) or slot.get("type") != "luks2"):
+            raise LUKSError("invalid recovery keyslot metadata")
+    assigned = set()
+    for token in tokens.values():
+        slots = token.get("keyslots") if isinstance(token, dict) else None
+        if (not isinstance(slots, list) or any(not isinstance(slot, str) for slot in slots)
+                or any(slot not in keyslots for slot in slots)):
+            raise LUKSError("invalid token keyslot association")
+        assigned.update(slots)
+    return set(keyslots) - assigned
+
+
 def remove_legacy_artifacts() -> None:
     if not LEGACY_TPM_DIR.exists():
         return
@@ -263,8 +285,9 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
 
     device = configured_device()
     before = luks_metadata(device)
-    if keyslot_count(before) < 1:
-        raise TPMError("vault has no existing recovery/passphrase keyslot")
+    recovery_slots = independent_keyslots(before)
+    if not recovery_slots:
+        raise TPMError("vault has no independent recovery/passphrase keyslot")
 
     log("systemd-cryptenroll will request an existing vault passphrase")
     result = run_command(
@@ -286,6 +309,9 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
         raise TPMError(
             "TPM enrollment policy verification failed or no passphrase recovery slot remains"
         )
+    if (not recovery_slots <= independent_keyslots(after)
+            or any(before["keyslots"][slot] != after["keyslots"][slot] for slot in recovery_slots)):
+        raise TPMError("TPM enrollment did not preserve independent recovery keyslot metadata")
     update_crypttab_tpm2(enabled=True)
     remove_legacy_artifacts()
     state = current_state("TPM2 enrollment verified")
@@ -334,6 +360,9 @@ def wipe(confirmation: str | None) -> int:
     device = configured_device()
     before = luks_metadata(device)
     count = tpm2_token_count(before)
+    recovery_slots = independent_keyslots(before)
+    if count and not recovery_slots:
+        raise TPMError("TPM removal requires an independent recovery/passphrase keyslot")
     if count:
         result = run_command(
             ("systemd-cryptenroll", str(device), "--wipe-slot=tpm2"),
@@ -344,6 +373,9 @@ def wipe(confirmation: str | None) -> int:
     after = luks_metadata(device)
     if tpm2_token_count(after) != 0 or keyslot_count(after) < 1:
         raise TPMError("TPM2 removal verification failed or no recovery key remains")
+    if (not recovery_slots <= independent_keyslots(after)
+            or any(before["keyslots"][slot] != after["keyslots"][slot] for slot in recovery_slots)):
+        raise TPMError("TPM removal did not preserve independent recovery keyslot metadata")
     update_crypttab_tpm2(enabled=False)
     remove_legacy_artifacts()
     atomic_state(current_state("TPM2 enrollment removed; passphrase required"))
