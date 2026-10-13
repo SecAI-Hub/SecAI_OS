@@ -66,6 +66,28 @@ func TestGPUExplicitModesAndNoDowngrade(t *testing.T) {
 	}
 }
 
+func TestGPUScopeDedicatedNativeOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		bootstrap string
+		runtime   string
+		accepted  bool
+	}{
+		{"http://127.0.0.1:8492", "http://127.0.0.1:8495", true},
+		{"http://127.0.0.1:8496", "http://127.0.0.1:8495", false}, // MCP firewall
+		{"http://127.0.0.1:8495", "http://127.0.0.1:8492", false}, // crossed scopes
+		{"http://127.0.0.1:8492", "http://127.0.0.1:8497", false}, // probe adapter
+	} {
+		makeScope := func(origin string) *GPUScopePolicy {
+			return &GPUScopePolicy{Origin: origin, MaxAge: "90s", MaxCycleDuration: "30s",
+				RequiredProbes: map[string]evidence.ProbeType{"ecc": evidence.ProbeECCStatus}}
+		}
+		policy := GPUTrustPolicy{Mode: "required", Bootstrap: makeScope(tc.bootstrap), Runtime: makeScope(tc.runtime)}
+		if (validateGPUTrustPolicy(policy) == nil) != tc.accepted {
+			t.Fatalf("unexpected endpoint policy result for bootstrap=%s runtime=%s", tc.bootstrap, tc.runtime)
+		}
+	}
+}
+
 func TestExpiredCPUOnlyBundleCannotRetainVerificationFlags(t *testing.T) {
 	resetGlobalState(t)
 	bundle := RuntimeStateBundle{SchemaVersion: 2, State: StateAttested, AssuranceMode: "hardware",
@@ -150,7 +172,7 @@ func TestGPUAuthenticatedLifecycleBootstrapThenRuntime(t *testing.T) {
 	yaml := strings.Replace(testAttestPolicyYAML, "gpu: {mode: no_gpu}", fmt.Sprintf(`gpu:
   mode: required
   bootstrap:
-    origin: http://127.0.0.1:8496
+    origin: http://127.0.0.1:8492
     profile_sha256: "%s"
     required_probes: {ecc: ecc_status}
     max_age: 90s

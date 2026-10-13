@@ -77,10 +77,10 @@ func validateGPUTrustPolicy(p GPUTrustPolicy) error {
 			configuration.BaselineSHA256 != "" && !canonicalSHA256(configuration.BaselineSHA256) {
 			return fmt.Errorf("GPU %s approval pin is malformed", scope)
 		}
-		if configuration.Origin != "http://127.0.0.1:8495" && configuration.Origin != "http://127.0.0.1:8496" {
+		if configuration.Origin != "http://127.0.0.1:8495" && configuration.Origin != "http://127.0.0.1:8492" {
 			return fmt.Errorf("GPU %s origin must be a dedicated native endpoint", scope)
 		}
-		if scope == "bootstrap" && configuration.Origin != "http://127.0.0.1:8496" || scope == "runtime" && configuration.Origin != "http://127.0.0.1:8495" {
+		if scope == "bootstrap" && configuration.Origin != "http://127.0.0.1:8492" || scope == "runtime" && configuration.Origin != "http://127.0.0.1:8495" {
 			return fmt.Errorf("GPU origins cannot cross assurance scopes")
 		}
 		policy := configuration.consumer(scope)

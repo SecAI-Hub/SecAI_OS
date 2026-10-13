@@ -55,6 +55,11 @@ No completed cycle is `unavailable` with a null snapshot. Missing required basel
 
 Limits: 4 KiB requests, 64 KiB responses, 64 probes, 8 concurrent evidence requests, one retained completed snapshot, 5-second exchange deadline and at most 1,000 existing scoring-history entries. Profile/baseline inputs are protected, bounded regular files; credential copies must be owner-only, single-link canonical 256-bit hex files. JSON rejects unknown/missing/null-required fields, duplicate Unicode-equivalent keys and trailing data. Native client origins are numeric loopback with an explicit port; proxies and redirects are disabled.
 
+The native bootstrap daemon binds `127.0.0.1:8492`; the runtime daemon binds
+`127.0.0.1:8495`, and the probe adapter binds `127.0.0.1:8497`. The MCP
+firewall retains `127.0.0.1:8496`. Attestation pins the matching dedicated
+endpoint for each GPU scope.
+
 The runtime GPU unit fixes `scope=runtime` and loads only `gpu-runtime-attestation-hmac.key`. The separate native bootstrap unit fixes `scope=bootstrap`, uses `gpu-bootstrap-attestation-hmac.key`, and rejects model/inference probe types. A dedicated authenticated probe adapter performs only approved bounded runtime reference requests. The measured policy explicitly selects `required`, `optional`, or `no_gpu`; shipped required approvals are empty and cannot pass until a reviewed release supplies them. An approved CPU-only release enforces CPU execution. Compose does not define equivalent attestation services or scoped readiness wiring, so compose GPU attestation remains unsupported.
 
 ### Incident Recorder

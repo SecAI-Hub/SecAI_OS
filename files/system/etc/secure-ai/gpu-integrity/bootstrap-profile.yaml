@@ -21,6 +21,6 @@ scoring:
   max_history: 20
 actions: []
 daemon:
-  bind_addr: 127.0.0.1:8496
+  bind_addr: 127.0.0.1:8492
   interval: 30s
 integrations: {}

@@ -20,7 +20,7 @@ version: 1
 gpu:
   mode: required
   bootstrap:
-    origin: http://127.0.0.1:8496
+    origin: http://127.0.0.1:8492
     profile_sha256: ""
     baseline_sha256: ""
     required_probes:

@@ -6,9 +6,28 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT/'files/system/usr/libexec/secure-ai/attestation-gate.sh'
+
+
+def test_native_gpu_bootstrap_uses_dedicated_service_port():
+    config = ROOT / 'files/system/etc/secure-ai'
+    policy = yaml.safe_load((config / 'policy/attestation.yaml').read_text())
+    bootstrap = yaml.safe_load((config / 'gpu-integrity/bootstrap-profile.yaml').read_text())
+    runtime = yaml.safe_load((ROOT / 'services/gpu-integrity-watch/profiles/default-profile.yaml').read_text())
+    profile = json.loads((config / 'config/service-profile.json').read_text())
+    bootstrap_address = bootstrap['daemon']['bind_addr']
+    assert policy['gpu']['bootstrap']['origin'] == f'http://{bootstrap_address}'
+    assert policy['gpu']['runtime']['origin'] == f"http://{runtime['daemon']['bind_addr']}"
+    # Both daemons must coexist with the declared native control-plane services.
+    occupied = {item['health_url'].split('/')[2] for item in profile['services']
+                if item['health_url'].startswith('http://')}
+    assert bootstrap_address not in occupied
+    assert bootstrap_address != runtime['daemon']['bind_addr']
+    mcp_unit = (ROOT / 'files/system/usr/lib/systemd/system/secure-ai-mcp-firewall.service').read_text()
+    assert f'Environment=BIND_ADDR={bootstrap_address}\n' not in mcp_unit
 
 
 @pytest.mark.parametrize('scope,change,accepted', [
