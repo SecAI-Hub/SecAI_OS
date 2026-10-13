@@ -242,6 +242,102 @@ def _boot_function(script_name, start, end):
     return source[source.index(start):source.index(end)]
 
 
+def _configured_tpm_metadata():
+    return {
+        "keyslots": {"0": {"type": "luks2"}, "1": {"type": "luks2"}},
+        "tokens": {"0": {"type": "systemd-tpm2", "keyslots": ["1"],
+                         "tpm2-pcrs": [0, 2, 4, 7], "tpm2-pcr-bank": "sha256"}},
+    }
+
+
+def test_tpm_enrollment_policy_accepts_exact_static_binding(secure_tpm):
+    metadata = _configured_tpm_metadata()
+    assert secure_tpm.enrollment_policy_matches(metadata)
+    metadata["tokens"]["0"]["tpm2-pcrs"] = [7, 4, 2, 0]
+    assert secure_tpm.enrollment_policy_matches(metadata)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("tpm2-pcr-bank", "sha1"), ("tpm2-pcr-bank", None),
+    ("tpm2-pcrs", []), ("tpm2-pcrs", [7]), ("tpm2-pcrs", [0, 2, 4, 11]),
+    ("tpm2-pcrs", [0, 2, 4, 4]), ("tpm2-pcrs", [False, 2, 4, 7]),
+    ("tpm2-pcrs", ["0", 2, 4, 7]), ("tpm2-pcrs", "0+2+4+7"),
+    ("keyslots", []), ("keyslots", ["1", "0"]), ("keyslots", [1]),
+    ("keyslots", ["01"]), ("keyslots", ["-1"]), ("keyslots", ["32"]),
+    ("keyslots", ["9" * 10_000]), ("keyslots", ["2"]),
+])
+def test_tpm_enrollment_policy_rejects_wrong_or_malformed_binding(secure_tpm, field, value):
+    metadata = _configured_tpm_metadata()
+    metadata["tokens"]["0"][field] = value
+    assert not secure_tpm.enrollment_policy_matches(metadata)
+
+
+def test_tpm_enrollment_policy_requires_one_token_and_existing_luks_slot(secure_tpm):
+    metadata = _configured_tpm_metadata()
+    metadata["tokens"]["1"] = dict(metadata["tokens"]["0"])
+    assert not secure_tpm.enrollment_policy_matches(metadata)
+    del metadata["tokens"]["1"]
+    metadata["keyslots"]["1"] = {"type": "unknown"}
+    assert not secure_tpm.enrollment_policy_matches(metadata)
+
+
+def test_tpm_status_does_not_claim_a_different_pcr_enrollment(secure_tpm, monkeypatch):
+    metadata = _configured_tpm_metadata()
+    metadata["tokens"]["0"]["tpm2-pcrs"] = [7]
+    monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "none")
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "secure_boot_enabled", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: metadata)
+    monkeypatch.setattr(secure_tpm, "parse_crypttab", lambda:
+                        ([], 0, ["secure-ai-vault", "/test/vault", "none", "luks,tpm2-device=auto"]))
+    state = secure_tpm.current_state()
+    assert state["token_count"] == 1
+    assert state["enrolled"] is False
+    assert state["assurance"] == "not_enrolled"
+
+
+def test_tpm_unlock_rejects_wrong_policy_before_invoking_unlock(secure_tpm, monkeypatch):
+    metadata = _configured_tpm_metadata()
+    metadata["tokens"]["0"]["tpm2-pcrs"] = [7]
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: metadata)
+    def forbidden(*args, **kwargs):
+        pytest.fail("unlock command must not execute for a different PCR policy")
+    monkeypatch.setattr(secure_tpm, "run_command", forbidden)
+    with pytest.raises(secure_tpm.TPMError, match="configured PCR policy"):
+        secure_tpm.unseal()
+
+
+@pytest.mark.parametrize("pcrs,accepted", [([0, 2, 4, 7], True), ([7], False)])
+def test_tpm_enroll_verifies_policy_before_enabling_auto_unlock(secure_tpm, monkeypatch, pcrs, accepted):
+    before = {"keyslots": {"0": {"type": "luks2"}}, "tokens": {}}
+    after = _configured_tpm_metadata()
+    after["tokens"]["0"]["tpm2-pcrs"] = pcrs
+    metadata = iter([before, after])
+    calls = []
+    monkeypatch.setattr(secure_tpm, "tpm_available", lambda: True)
+    monkeypatch.setattr(secure_tpm, "virtualization_type", lambda: "none")
+    monkeypatch.setattr(secure_tpm, "secure_boot_enabled", lambda: True)
+    monkeypatch.setattr(secure_tpm, "configured_device", lambda: Path("/test/vault"))
+    monkeypatch.setattr(secure_tpm, "luks_metadata", lambda device: next(metadata))
+    monkeypatch.setattr(secure_tpm, "run_command", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b""))
+    monkeypatch.setattr(secure_tpm, "update_crypttab_tpm2", lambda **kwargs: calls.append("crypttab"))
+    monkeypatch.setattr(secure_tpm, "remove_legacy_artifacts", lambda: calls.append("legacy"))
+    monkeypatch.setattr(secure_tpm, "current_state", lambda detail:
+                        {"enrolled": True, "crypttab_tpm2_enabled": True})
+    monkeypatch.setattr(secure_tpm, "atomic_state", lambda value: calls.append("state"))
+    if accepted:
+        assert secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False) == 0
+        assert calls == ["crypttab", "legacy", "state"]
+    else:
+        with pytest.raises(secure_tpm.TPMError, match="policy verification failed"):
+            secure_tpm.enroll(allow_vtpm=False, allow_insecure_boot=False)
+        assert calls == []
+
+
 @pytest.mark.parametrize("state", ["disabled", "unavailable"])
 def test_secure_boot_status_reports_negative_states_without_aborting(tmp_path, state):
     command = _boot_function("enroll-secureboot.sh", "cmd_check() {", "cmd_enroll() {")

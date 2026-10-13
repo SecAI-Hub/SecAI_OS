@@ -167,7 +167,7 @@ def current_state(detail: str = "") -> dict[str, object]:
         metadata = luks_metadata(device)
         token_count = tpm2_token_count(metadata)
         slots = keyslot_count(metadata)
-        enrolled = token_count == 1
+        enrolled = enrollment_policy_matches(metadata)
         _lines, _index, fields = parse_crypttab()
         options = fields[3].split(",") if len(fields) >= 4 else []
         crypttab_enabled = "tpm2-device=auto" in options
@@ -200,6 +200,34 @@ def current_state(detail: str = "") -> dict[str, object]:
     if detail:
         state["detail"] = detail[:512]
     return state
+
+
+def enrollment_policy_matches(metadata: dict[str, object]) -> bool:
+    """Validate the configured static PCR policy, not just token presence.
+
+    Header metadata is not a TPM quote or proof that unlock succeeds. This
+    check prevents a different enrollment from being described as our policy.
+    """
+    if tpm2_token_count(metadata) != 1:
+        return False
+    token = next(value for value in metadata["tokens"].values()
+                 if value.get("type") == "systemd-tpm2")
+    pcrs = token.get("tpm2-pcrs")
+    if (not isinstance(pcrs, list) or len(pcrs) != 4
+            or any(type(value) is not int for value in pcrs)
+            or set(pcrs) != {0, 2, 4, 7}
+            or token.get("tpm2-pcr-bank") != "sha256"):
+        return False
+    slots = token.get("keyslots")
+    keyslots = metadata.get("keyslots")
+    if (not isinstance(slots, list) or len(slots) != 1
+            or not isinstance(slots[0], str) or not 1 <= len(slots[0]) <= 2
+            or not slots[0].isascii()
+            or not slots[0].isdigit() or str(int(slots[0])) != slots[0]
+            or not 0 <= int(slots[0]) < 32 or not isinstance(keyslots, dict)):
+        return False
+    slot = keyslots.get(slots[0])
+    return isinstance(slot, dict) and slot.get("type") == "luks2"
 
 
 def remove_legacy_artifacts() -> None:
@@ -250,9 +278,9 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
         raise TPMError("systemd-cryptenroll failed; existing keyslots were retained")
 
     after = luks_metadata(device)
-    if tpm2_token_count(after) != 1 or keyslot_count(after) < 2:
+    if not enrollment_policy_matches(after) or keyslot_count(after) < 2:
         raise TPMError(
-            "TPM enrollment verification failed or no passphrase recovery slot remains"
+            "TPM enrollment policy verification failed or no passphrase recovery slot remains"
         )
     update_crypttab_tpm2(enabled=True)
     remove_legacy_artifacts()
@@ -269,8 +297,8 @@ def unseal() -> int:
         raise TPMError("TPM2 is unavailable")
     device = configured_device()
     metadata = luks_metadata(device)
-    if tpm2_token_count(metadata) != 1:
-        raise TPMError("exactly one systemd-tpm2 LUKS token is required")
+    if not enrollment_policy_matches(metadata):
+        raise TPMError("exactly one systemd-tpm2 token with the configured PCR policy is required")
     if MAPPER_PATH.exists():
         log("vault mapper is already active")
         return 0
