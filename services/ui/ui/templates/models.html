@@ -258,7 +258,9 @@
                 body: JSON.stringify({name: name}),
             });
             var data = await resp.json();
-            if (data.status === 'verified') {
+            if (!resp.ok) {
+                toast(data.error || 'Tensor verification is unavailable.', 'error');
+            } else if (data.status === 'verified') {
                 toast(name + ': all tensors verified OK', 'success');
             } else if (data.status === 'skipped') {
                 toast(name + ': no tensor manifest available', 'info');
@@ -278,7 +280,9 @@
                 body: JSON.stringify({name: name}),
             });
             var data = await resp.json();
-            if (data.status === 'verified') {
+            if (!resp.ok) {
+                toast(data.error || 'Model verification is unavailable.', 'error');
+            } else if (data.status === 'verified') {
                 toast(name + ': hash verified OK', 'success');
             } else {
                 toast(name + ': verification FAILED', 'error');
@@ -301,7 +305,9 @@
                 toast(name + ' deleted.', 'success');
                 refreshAll();
             } else {
-                toast('Delete failed.', 'error');
+                var data = await resp.json();
+                toast(data.error || 'Deletion is unavailable.', 'error');
+                if (resp.status === 504) refreshAll();
             }
         } catch(e) {
             toast('Could not reach registry.', 'error');
