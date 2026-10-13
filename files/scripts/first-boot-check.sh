@@ -31,6 +31,101 @@ credential_get() {
             --fail --silent --show-error --max-time 5 --max-filesize 1048576 "$url"
 }
 
+security_reply() {
+    python3 -c '
+import json, sys
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+try:
+    raw = sys.stdin.read(1048577)
+    if len(raw) > 1048576:
+        raise ValueError("oversized response")
+    data = json.loads(raw, object_pairs_hook=unique)
+    if not isinstance(data, dict):
+        raise ValueError("expected object")
+    kind = sys.argv[1]
+    if kind == "attestation":
+        valid = (type(data.get("schema_version")) is int and data["schema_version"] == 2
+                 and data.get("verification_scope") == "runtime"
+                 and data.get("state") == "attested"
+                 and data.get("assurance_mode") == "hardware"
+                 and data.get("gpu_mode") in ("required", "optional", "no_gpu")
+                 and all(data.get(key) is True for key in
+                         ("verified", "evidence_verified", "policy_satisfied", "gpu_policy_satisfied")))
+    elif kind == "integrity":
+        valid = (data.get("state") == "trusted"
+                 and type(data.get("scan_count")) is int and data["scan_count"] > 0
+                 and type(data.get("violation_count")) is int and data["violation_count"] == 0)
+    elif kind == "incidents":
+        valid = type(data.get("open_incidents")) is int and data["open_incidents"] >= 0
+        if valid:
+            print(data["open_incidents"])
+    else:
+        valid = False
+    if not valid:
+        raise ValueError("readiness evidence rejected")
+except (ValueError, TypeError):
+    sys.exit(1)
+' "$1"
+}
+
+load_service_profile() {
+    python3 - "$SERVICE_PROFILE" <<'PY'
+import json, re, sys
+from urllib.parse import urlsplit
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    raw = handle.read(1048577)
+if len(raw) > 1048576:
+    raise SystemExit("service profile is too large")
+profile = json.loads(raw)
+if (not isinstance(profile, dict) or type(profile.get("version")) is not int
+        or profile["version"] != 1 or not isinstance(profile.get("services"), list)
+        or not profile["services"] or len(profile["services"]) > 128):
+    raise SystemExit("invalid service profile")
+ids, units = set(), set()
+for service in profile["services"]:
+    if (not isinstance(service, dict) or type(service.get("required")) is not bool
+            or not isinstance(service.get("id"), str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", service["id"])
+            or not isinstance(service.get("unit"), str)
+            or not re.fullmatch(r"secure-ai-[a-z0-9-]+\.service", service["unit"])
+            or service["id"] in ids or service["unit"] in units):
+        raise SystemExit("invalid service declaration")
+    ids.add(service["id"])
+    units.add(service["unit"])
+    url = service.get("health_url", "")
+    if not isinstance(url, str) or any(char.isspace() for char in url):
+        raise SystemExit("invalid health endpoint")
+    if url.startswith("unix://"):
+        if not re.fullmatch(r"unix:///run/secure-ai/[a-z0-9_/-]+\.sock", url) or "//" in url[7:]:
+            raise SystemExit("invalid health socket")
+    elif url:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port is None or not 1 <= parsed.port <= 65535
+                or not re.fullmatch(r"/[a-zA-Z0-9/_-]+", parsed.path)
+                or parsed.query or parsed.fragment):
+            raise SystemExit("health endpoint must be exact numeric loopback HTTP")
+    credentials = service.get("inbound_credentials", [])
+    if not isinstance(credentials, list):
+        raise SystemExit("invalid credential list")
+    for credential in [service.get("inbound_credential", ""), *credentials]:
+        if (not isinstance(credential, str) or (credential and
+                (not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", credential) or ".." in credential))):
+            raise SystemExit("invalid credential name")
+if not any(service["required"] for service in profile["services"]):
+    raise SystemExit("service profile has no required services")
+print(json.dumps(profile, separators=(",", ":")))
+PY
+}
+
 echo "=============================================="
 echo "  Secure AI OS — First-Boot Health Check"
 echo "=============================================="
@@ -38,21 +133,19 @@ echo ""
 
 # 1. Core services status
 echo "--- Service Status ---"
-if [ ! -s "$SERVICE_PROFILE" ]; then
-    fail "Service profile manifest is missing: $SERVICE_PROFILE"
-    CORE_SERVICES=()
-else
-    mapfile -t CORE_SERVICES < <(
-        python3 - "$SERVICE_PROFILE" <<'PY'
+if ! PROFILE_JSON=$(load_service_profile 2>/dev/null); then
+    fail "Service profile manifest is missing or invalid: $SERVICE_PROFILE"
+    exit 1
+fi
+mapfile -t CORE_SERVICES < <(
+    printf '%s' "$PROFILE_JSON" | python3 -c '
 import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    profile = json.load(handle)
+profile = json.load(sys.stdin)
 for service in profile.get("services", []):
     if service.get("required"):
         print(service["unit"])
-PY
-    )
-fi
+'
+)
 
 for svc in "${CORE_SERVICES[@]}"; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
@@ -67,20 +160,26 @@ echo ""
 # 2. Health endpoint checks
 echo "--- Health Endpoints ---"
 mapfile -t HEALTH_ENDPOINTS < <(
-    python3 - "$SERVICE_PROFILE" <<'PY'
+    printf '%s' "$PROFILE_JSON" | python3 -c '
 import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    profile = json.load(handle)
+profile = json.load(sys.stdin)
 for service in profile.get("services", []):
     url = service.get("health_url", "")
-    if service.get("required") and url.startswith(("http://", "https://")):
-        print(f'{service["id"]}|{url}')
-PY
+    if service.get("required") and url:
+        print("{}|{}".format(service["id"], url))
+'
 )
 
 for entry in "${HEALTH_ENDPOINTS[@]}"; do
     IFS='|' read -r name url <<< "$entry"
-    if curl -sf "$url" > /dev/null 2>&1; then
+    socket_options=()
+    if [[ "$url" == unix://* ]]; then
+        socket_options=(--unix-socket "${url#unix://}")
+        url=http://localhost/health
+    fi
+    if curl --proto '=http' --proto-redir '=http' --noproxy '*' \
+        --connect-timeout 1 --max-time 5 --max-filesize 1048576 \
+        "${socket_options[@]}" -sf "$url" > /dev/null 2>&1; then
         info "$name health OK"
     else
         fail "$name health check FAILED at $url"
@@ -102,33 +201,34 @@ else
 fi
 
 # Check attestation state
-ATTEST=$(credential_get runtime-attestor.token \
-    http://127.0.0.1:8505/api/v1/verify 2>/dev/null || echo '{"verified":false}')
-if echo "$ATTEST" | grep -q '"verified":true'; then
+if ATTEST=$(credential_get runtime-attestor.token \
+    http://127.0.0.1:8505/api/v1/verify 2>/dev/null) && \
+    printf '%s' "$ATTEST" | security_reply attestation; then
     info "Runtime attestation: VERIFIED"
 else
-    warn "Runtime attestation: NOT fully verified (check boot measurements)"
+    fail "Runtime attestation: current full hardware and GPU policy is not verified"
 fi
 
 # Check integrity monitor
-INTEG=$(credential_get integrity-monitor.token \
-    http://127.0.0.1:8510/api/v1/status 2>/dev/null || echo '{"state":"unknown"}')
-if echo "$INTEG" | grep -q '"state":"trusted"'; then
+if INTEG=$(credential_get integrity-monitor.token \
+    http://127.0.0.1:8510/api/v1/status 2>/dev/null) && \
+    printf '%s' "$INTEG" | security_reply integrity; then
     info "Integrity monitor: TRUSTED"
-elif echo "$INTEG" | grep -q '"state"'; then
-    warn "Integrity monitor: state=$(echo "$INTEG" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("state","unknown"))' 2>/dev/null || echo 'unknown')"
 else
-    fail "Integrity monitor: unreachable"
+    fail "Integrity monitor: no valid trusted completed scan or service unavailable"
 fi
 
 # Check for open incidents
-INC_STATS=$(credential_get incident-read.token \
-    http://127.0.0.1:8515/api/v1/stats 2>/dev/null || echo '{"open_incidents":0}')
-OPEN_INC=$(echo "$INC_STATS" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("open_incidents",0))' 2>/dev/null || echo 0)
-if [ "$OPEN_INC" -eq 0 ] 2>/dev/null; then
-    info "No open incidents"
+if INC_STATS=$(credential_get incident-read.token \
+    http://127.0.0.1:8515/api/v1/stats 2>/dev/null) && \
+    OPEN_INC=$(printf '%s' "$INC_STATS" | security_reply incidents); then
+    if [ "$OPEN_INC" -eq 0 ]; then
+        info "No open incidents"
+    else
+        warn "$OPEN_INC open incident(s) detected"
+    fi
 else
-    warn "$OPEN_INC open incident(s) detected"
+    fail "Incident recorder: current incident state is unavailable or invalid"
 fi
 
 echo ""
@@ -159,10 +259,9 @@ while IFS= read -r credential; do
         info "Credential source validated: $credential"
     fi
 done < <(
-    python3 - "$SERVICE_PROFILE" <<'PY'
+    printf '%s' "$PROFILE_JSON" | python3 -c '
 import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    profile = json.load(handle)
+profile = json.load(sys.stdin)
 credentials = set()
 for service in profile.get("services", []):
     if not service.get("required"):
@@ -176,7 +275,7 @@ for service in profile.get("services", []):
 for credential in sorted(credentials):
     if credential:
         print(credential)
-PY
+'
 )
 
 # Check policy files
