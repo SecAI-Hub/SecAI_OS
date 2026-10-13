@@ -288,6 +288,48 @@ mokutil() {
     assert result.returncode == (0 if enrolled else 1), result.stderr
 
 
+@pytest.mark.parametrize("state,enrolled,requested", [
+    ("enabled", False, True),
+    ("disabled", False, True),
+    ("unavailable", False, False),
+    ("enabled", True, False),
+    ("disabled", True, False),
+])
+def test_explicit_mok_enrollment_handles_platform_status(tmp_path, state, enrolled, requested):
+    cert = tmp_path / "mok.der"
+    cert.write_bytes(b"synthetic certificate fixture")
+    function = _boot_function("enroll-secureboot.sh", "cmd_enroll() {", "# --- Main ---")
+    script = """
+set -euo pipefail
+check_secure_boot() {
+    printf '%s\\n' "$REPORTED_STATE"
+    [[ "$REPORTED_STATE" == enabled ]]
+}
+check_mok_enrolled() { [[ "$ALREADY_ENROLLED" == yes ]]; }
+log() { printf '%s\\n' "$*"; }
+write_state() { printf '%s:%s:%s\\n' "$@" > "$STATE_FILE"; }
+mokutil() {
+    [[ "$1" == '--import' && "$2" == "$MOK_DER" ]] || return 99
+    printf 'requested\\n' > "$REQUEST_MARKER"
+}
+""" + function + "\ncmd_enroll\n"
+    result = subprocess.run(
+        ["bash", "-c", script], env={**os.environ, "REPORTED_STATE": state,
+                                    "ALREADY_ENROLLED": "yes" if enrolled else "no",
+                                    "MOK_DER": str(cert), "STATE_FILE": str(tmp_path / "state"),
+                                    "REQUEST_MARKER": str(tmp_path / "request")},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "request").exists() is requested
+    recorded = (tmp_path / "state").read_text()
+    assert recorded.startswith(state + ":")
+    if requested:
+        assert ":pending:" in recorded
+    if state == "disabled":
+        assert "does not enable firmware or shim validation" in result.stdout
+
+
 @pytest.mark.parametrize("output,code,expected", [
     ("SecureBoot enabled\n", 0, "enabled"),
     ("SecureBoot disabled\n", 0, "disabled"),

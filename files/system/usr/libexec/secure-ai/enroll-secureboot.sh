@@ -9,7 +9,7 @@
 # This script is called during firstboot. The user must reboot and
 # confirm enrollment in the MOK Manager (MokManager.efi) screen.
 #
-# Usage: enroll-secureboot.sh [--check-only]
+# Usage: enroll-secureboot.sh [--check-only | --enroll]
 #
 set -euo pipefail
 
@@ -100,7 +100,7 @@ cmd_check() {
         write_state "enabled" "true" "fully_configured"
     else
         echo "SecAI MOK: NOT ENROLLED"
-        echo "Run: enroll-secureboot.sh (without --check-only) to enroll."
+        echo "Run: sudo /usr/libexec/secure-ai/enroll-secureboot.sh --enroll"
         write_state "enabled" "false" "mok_not_enrolled"
     fi
 
@@ -125,19 +125,24 @@ cmd_check() {
 cmd_enroll() {
     log "Starting MOK enrollment..."
 
-    if [ ! -f "$MOK_DER" ]; then
+    if [ ! -f "$MOK_DER" ] || [ -L "$MOK_DER" ]; then
         log "ERROR: MOK certificate not found at ${MOK_DER}"
         log "Generate it first: /usr/libexec/secure-ai/generate-mok.sh"
         exit 1
     fi
 
     local sb_state
-    sb_state=$(check_secure_boot)
+    sb_state=$(check_secure_boot) || :
 
     if [ "$sb_state" = "unavailable" ]; then
-        log "WARNING: UEFI not available. MOK enrollment skipped."
-        write_state "unavailable" "false" "no_uefi"
+        log "WARNING: Secure Boot status unavailable. MOK enrollment skipped."
+        write_state "unavailable" "false" "sb_unavailable"
         exit 0
+    fi
+
+    if [ "$sb_state" = "disabled" ]; then
+        log "WARNING: Enrolling a key does not enable firmware or shim validation."
+        log "Recheck Secure Boot after enabling validation and completing enrollment."
     fi
 
     if check_mok_enrolled; then
