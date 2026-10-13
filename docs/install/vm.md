@@ -2,6 +2,15 @@
 
 This guide covers running SecAI OS in a virtual machine. VM mode is suitable for evaluation, development, and environments where bare metal installation is not practical.
 
+Allocate resources from the host's current free capacity. The allocations
+below assume that the host can spare them while its desktop and other tasks
+remain responsive. Check available memory and disk space before starting a
+guest, run one image build or qualification workload at a time, and reduce or
+defer the workload when the host is busy. A configured guest memory limit does
+not reserve enough memory for the host. See the [shared-host development
+guidance](dev.md#build-go-services) for capped local tests; VM and container
+daemons need their own resource limits.
+
 ---
 
 ## Security Limitations of VM Mode
