@@ -221,6 +221,7 @@ class TestBootChainIntegration:
         assert "tpm2-seal-vault.sh" in content
         assert "verify-boot-chain.sh" in content
 
+
     def test_recipe_has_required_platform_tools(self):
         recipe = yaml.safe_load(RECIPE_PATH.read_text())
         rpm_module = next(
@@ -235,3 +236,91 @@ class TestBootChainIntegration:
         config = yaml.safe_load(CONFIG_PATH.read_text())["secure_boot"]
         assert config["tpm2_pcr_binding"] == "sha256:0,2,4,7"
         assert config["passphrase_fallback"] is True
+
+def _boot_function(script_name, start, end):
+    source = (SCRIPTS_DIR / script_name).read_text()
+    return source[source.index(start):source.index(end)]
+
+
+@pytest.mark.parametrize("output,code,expected", [
+    ("SecureBoot enabled\n", 0, "enabled"),
+    ("SecureBoot disabled\n", 0, "disabled"),
+    ("SecureBoot enabled\nSecureBoot validation is disabled in shim\n", 0, "disabled"),
+    ("SecureBoot enabled\nSecureBoot disabled\n", 0, "disabled"),
+    ("SecureBoot enabled\n", 1, "unknown"),
+    ("SecureBoot enabled unexpectedly\n", 0, "unknown"),
+    ("This system doesn't support Secure Boot\n", 1, "unknown"),
+])
+def test_shell_secure_boot_consumers_do_not_accept_disabled_validation(tmp_path, output, code, expected):
+    environment = {**os.environ, "MOKUTIL_OUTPUT": output, "MOKUTIL_CODE": str(code)}
+    mocks = """
+function [() {
+    if [[ "$*" == '-d /sys/firmware/efi' ]]; then return 0; fi
+    builtin [ "$@"
+}
+mokutil() { printf '%s' "$MOKUTIL_OUTPUT"; return "$MOKUTIL_CODE"; }
+"""
+    verifier = _boot_function("verify-boot-chain.sh", "check_secure_boot() {", "check_tpm2() {")
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\ndeclare -A checks\n" + mocks + verifier
+         + '\ncheck_secure_boot\nprintf "%s\\n" "${checks[secure_boot]}"'],
+        env=environment, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+    enrollment = _boot_function("enroll-secureboot.sh", "check_secure_boot() {", "check_mok_enrolled() {")
+    result = subprocess.run(
+        ["bash", "-c", mocks + enrollment + "\ncheck_secure_boot"],
+        env=environment, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == (0 if expected == "enabled" else 1)
+    assert result.stdout.strip() == (expected if expected != "unknown" else "unavailable")
+
+
+@pytest.mark.parametrize("output,code,enabled", [
+    (b"SecureBoot enabled\n", 0, True),
+    (b"SecureBoot disabled\n", 0, False),
+    (b"SecureBoot enabled\nSecureBoot validation is disabled in shim\n", 0, False),
+    (b"SecureBoot enabled\nSecureBoot disabled\n", 0, False),
+    (b"SecureBoot enabled\n", 1, False),
+    (b"SecureBoot enabled unexpectedly\n", 0, False),
+])
+def test_tpm_vault_requires_active_secure_boot_validation(secure_tpm, monkeypatch, output, code, enabled):
+    monkeypatch.setattr(secure_tpm.shutil, "which", lambda command: "/test/mokutil")
+    monkeypatch.setattr(secure_tpm, "run_command", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(["mokutil"], code, stdout=output, stderr=b""))
+    assert secure_tpm.secure_boot_enabled() is enabled
+
+
+@pytest.mark.parametrize("secure_boot,certificate,certificate_valid,table_valid,expected", [
+    ("enabled", False, False, True, "valid"),
+    ("disabled", False, False, True, "unchecked"),
+    ("unknown", False, False, True, "unchecked"),
+    ("disabled", True, True, True, "valid"),
+    ("disabled", True, False, True, "unchecked"),
+    ("enabled", False, False, False, "invalid"),
+])
+def test_kernel_signature_table_alone_is_not_verification(tmp_path, secure_boot, certificate,
+                                                         certificate_valid, table_valid, expected):
+    cert = tmp_path / "mok.pem"
+    if certificate:
+        cert.write_text("synthetic test certificate")
+    function = _boot_function("verify-boot-chain.sh", "check_kernel_signature() {", "check_module_signatures() {")
+    mocks = """
+uname() { printf 'test-kernel\\n'; }
+running_kernel_path() { printf '/test/vmlinuz\\n'; }
+sbverify() {
+    if [[ "$1" == '--list' ]]; then return "$TABLE_CODE"; fi
+    return "$CERTIFICATE_CODE"
+}
+"""
+    environment = {**os.environ, "MOK_PEM": str(cert), "SECURE_BOOT": secure_boot,
+                   "TABLE_CODE": "0" if table_valid else "1",
+                   "CERTIFICATE_CODE": "0" if certificate_valid else "1"}
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\ndeclare -A checks\nchecks[secure_boot]=$SECURE_BOOT\n"
+         + mocks + function + '\ncheck_kernel_signature\nprintf "%s\\n" "${checks[kernel_sig]}"'],
+        env=environment, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected

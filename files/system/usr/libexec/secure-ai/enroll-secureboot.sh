@@ -31,17 +31,16 @@ check_secure_boot() {
     # Check if Secure Boot is enabled
     if [ -d /sys/firmware/efi ]; then
         local sb_state
-        sb_state=$(mokutil --sb-state 2>/dev/null || echo "unknown")
-        case "$sb_state" in
-            *enabled*|*Enabled*)
-                echo "enabled"
-                return 0
-                ;;
-            *disabled*|*Disabled*)
+        if sb_state=$(mokutil --sb-state 2>/dev/null); then
+            if grep -Fxq 'SecureBoot validation is disabled in shim' <<< "$sb_state" ||
+               grep -Fxq 'SecureBoot disabled' <<< "$sb_state"; then
                 echo "disabled"
                 return 1
-                ;;
-        esac
+            elif grep -Fxq 'SecureBoot enabled' <<< "$sb_state"; then
+                echo "enabled"
+                return 0
+            fi
+        fi
     fi
     echo "unavailable"
     return 1

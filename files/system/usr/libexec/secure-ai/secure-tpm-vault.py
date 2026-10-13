@@ -95,8 +95,13 @@ def secure_boot_enabled() -> bool:
         return False
     result = run_command(("mokutil", "--sb-state"), timeout=15)
     assert isinstance(result.stdout, bytes)
-    output = (result.stdout + result.stderr).decode("utf-8", "replace").lower()
-    return result.returncode == 0 and "secureboot enabled" in output
+    lines = set(result.stdout.decode("utf-8", "replace").splitlines())
+    return (
+        result.returncode == 0
+        and "SecureBoot enabled" in lines
+        and "SecureBoot disabled" not in lines
+        and "SecureBoot validation is disabled in shim" not in lines
+    )
 
 
 def tpm_available() -> bool:

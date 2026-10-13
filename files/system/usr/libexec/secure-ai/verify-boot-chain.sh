@@ -39,21 +39,22 @@ check_secure_boot() {
     fi
 
     local sb_state
-    sb_state=$(mokutil --sb-state 2>/dev/null || printf 'unknown')
-    case "$sb_state" in
-        *enabled*|*Enabled*)
-            checks[secure_boot]="enabled"
-            checks[secure_boot_detail]="UEFI Secure Boot is active"
-            ;;
-        *disabled*|*Disabled*)
-            checks[secure_boot]="disabled"
-            checks[secure_boot_detail]="Secure Boot is disabled"
-            ;;
-        *)
-            checks[secure_boot]="unknown"
-            checks[secure_boot_detail]="could not determine Secure Boot state"
-            ;;
-    esac
+    if ! sb_state=$(mokutil --sb-state 2>/dev/null); then
+        checks[secure_boot]="unknown"
+        checks[secure_boot_detail]="could not read Secure Boot state"
+    elif grep -Fxq 'SecureBoot validation is disabled in shim' <<< "$sb_state"; then
+        checks[secure_boot]="disabled"
+        checks[secure_boot_detail]="Secure Boot validation is disabled in shim"
+    elif grep -Fxq 'SecureBoot disabled' <<< "$sb_state"; then
+        checks[secure_boot]="disabled"
+        checks[secure_boot_detail]="Secure Boot is disabled"
+    elif grep -Fxq 'SecureBoot enabled' <<< "$sb_state"; then
+        checks[secure_boot]="enabled"
+        checks[secure_boot_detail]="UEFI Secure Boot is active"
+    else
+        checks[secure_boot]="unknown"
+        checks[secure_boot_detail]="could not determine Secure Boot state"
+    fi
 }
 
 check_tpm2() {
@@ -130,10 +131,13 @@ check_kernel_signature() {
     if [ -f "$MOK_PEM" ] && ! [ -L "$MOK_PEM" ] && \
        sbverify --cert "$MOK_PEM" "$kernel" >/dev/null 2>&1; then
         checks[kernel_sig]="valid"
-        checks[kernel_sig_detail]="running kernel is signed by the enrolled SecAI MOK"
-    else
+        checks[kernel_sig_detail]="running kernel signature verified against the SecAI MOK certificate"
+    elif [ "${checks[secure_boot]:-unknown}" = "enabled" ]; then
         checks[kernel_sig]="valid"
         checks[kernel_sig_detail]="running kernel has a PE signature and was selected under Secure Boot policy"
+    else
+        checks[kernel_sig]="unchecked"
+        checks[kernel_sig_detail]="kernel has a signature table, but no verified certificate or active Secure Boot validation"
     fi
 }
 
