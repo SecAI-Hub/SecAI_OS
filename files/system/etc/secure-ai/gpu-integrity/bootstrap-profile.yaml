@@ -4,12 +4,18 @@ model_dir: ""
 inference_url: ""
 baseline_file: /etc/secure-ai/gpu-integrity/bootstrap-baseline.yaml
 probes:
+  # First appliance target: RTX 5080 reports ECC telemetry unavailable.
+  # Never convert unavailable counters into healthy ECC evidence. A release
+  # for ECC-capable hardware must explicitly enable and require this probe.
   - name: ecc-status
     type: ecc_status
-    enabled: true
+    enabled: false
   - name: driver-fingerprint
     type: driver_fingerprint
     enabled: true
+    settings:
+      driver_version_path: /sys/module/nvidia/version
+      kernel_module: nvidia
   - name: device-allowlist
     type: device_allowlist
     enabled: true

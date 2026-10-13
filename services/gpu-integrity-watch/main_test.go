@@ -208,8 +208,36 @@ func TestParseECC_Disabled(t *testing.T) {
 
 func TestParseECC_NotSupported(t *testing.T) {
 	result := parseECCOutput(ProbeResult{}, "[Not Supported]")
-	if result.Status != StatusSkip {
-		t.Errorf("expected skip for unsupported ECC, got %s", result.Status)
+	if result.Status != StatusError {
+		t.Errorf("expected unavailable ECC error, got %s", result.Status)
+	}
+}
+
+func TestParseECC_UnavailableMalformedOrPartialNeverPass(t *testing.T) {
+	for _, output := range []string{"", "N/A, N/A, N/A", "[N/A], [N/A], [N/A]",
+		"0, 0, EnabledExtra", "0, nope, Enabled", "0, 0", "0, 0, Enabled, extra",
+		"18446744073709551616, 0, Enabled", "N/A, 0, Enabled"} {
+		if result := parseECCOutput(ProbeResult{}, output); result.Status != StatusError {
+			t.Errorf("expected error for %q, got %s", output, result.Status)
+		}
+	}
+}
+
+func TestParseECC_AggregatesEveryGPUAndPreservesFailures(t *testing.T) {
+	for _, tc := range []struct {
+		output string
+		status ProbeStatus
+	}{
+		{"150, 0, Enabled\n0, 0, Enabled", StatusDrift},
+		{"0, 0, Enabled\nN/A, N/A, N/A", StatusError},
+		{"N/A, N/A, N/A\n0, 0, Enabled", StatusError},
+		{"0, 2, Enabled\nN/A, N/A, N/A", StatusFail},
+		{"0, 0\n0, 2, Enabled", StatusFail},
+		{"0, 2, Disabled", StatusFail},
+	} {
+		if result := parseECCOutput(ProbeResult{}, tc.output); result.Status != tc.status {
+			t.Errorf("expected %s for %q, got %s", tc.status, tc.output, result.Status)
+		}
 	}
 }
 

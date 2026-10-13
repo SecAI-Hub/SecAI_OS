@@ -60,6 +60,15 @@ The native bootstrap daemon binds `127.0.0.1:8492`; the runtime daemon binds
 firewall retains `127.0.0.1:8496`. Attestation pins the matching dedicated
 endpoint for each GPU scope.
 
+The first appliance target is the RTX 5080. The observed development device
+reports ECC mode and counters as unavailable, so its bootstrap/runtime profiles
+disable ECC and require the supported driver/device checks plus runtime model
+hash and sentinel checks. These profiles cannot claim ECC assurance. Approval
+pins remain empty until the Fedora hardware and model are qualified; Ubuntu
+driver observations do not enroll a release. An ECC-capable hardware release
+must explicitly enable and require its ECC probe. The ECC parser rejects
+unavailable or malformed telemetry and preserves the worst result across GPUs.
+
 The runtime GPU unit fixes `scope=runtime` and loads only `gpu-runtime-attestation-hmac.key`. The separate native bootstrap unit fixes `scope=bootstrap`, uses `gpu-bootstrap-attestation-hmac.key`, and rejects model/inference probe types. A dedicated authenticated probe adapter performs only approved bounded runtime reference requests. The measured policy explicitly selects `required`, `optional`, or `no_gpu`; shipped required approvals are empty and cannot pass until a reviewed release supplies them. An approved CPU-only release enforces CPU execution. Compose does not define equivalent attestation services or scoped readiness wiring, so compose GPU attestation remains unsupported.
 
 ### Incident Recorder

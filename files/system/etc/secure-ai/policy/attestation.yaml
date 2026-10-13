@@ -17,6 +17,10 @@ version: 1
 # cannot pass startup/runtime verification. Fill from reviewed protected
 # profiles/baselines before deploying a GPU appliance. A CPU-only release may
 # instead set gpu: {mode: no_gpu}; inference then enforces zero GPU offload.
+# First production target: RTX 5080. ECC telemetry is unavailable on the
+# observed device; this release cannot claim ECC memory assurance. Keep the
+# supported driver/device and model/runtime checks mandatory, with approvals
+# still empty until physical Fedora qualification and review.
 gpu:
   mode: required
   bootstrap:
@@ -24,7 +28,6 @@ gpu:
     profile_sha256: ""
     baseline_sha256: ""
     required_probes:
-      ecc-status: ecc_status
       driver-fingerprint: driver_fingerprint
       device-allowlist: device_allowlist
     max_age: 90s
@@ -36,7 +39,6 @@ gpu:
     required_probes:
       tensor-hash-check: tensor_hash
       sentinel-inference: sentinel_inference
-      ecc-status: ecc_status
       driver-fingerprint: driver_fingerprint
       device-allowlist: device_allowlist
     max_age: 10m

@@ -10,7 +10,7 @@ This guide covers installing SecAI OS on physical hardware.
 - **RAM:** 16 GB minimum, 32 GB recommended
 - **Storage:** 100 GB SSD minimum (NVMe recommended), with either a second
   dedicated data device or space reserved for an unused vault partition
-- **GPU:** NVIDIA GPU with CUDA support (RTX 3000 series or newer recommended); other appliance backends require release-specific qualification
+- **GPU:** NVIDIA RTX 5080 is the first qualification target; other GPUs require release-specific qualification
 - **Network:** Ethernet or WiFi (only needed for initial setup if downloading models)
 - **USB drive:** 8 GB or larger for installation media
 - **UEFI firmware:** Secure Boot enabled, with shim signature validation active

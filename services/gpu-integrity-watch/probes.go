@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -637,95 +637,76 @@ func (r *ProbeRunner) runECCStatus(pc ProbeConfig) ProbeResult {
 
 // parseECCOutput parses nvidia-smi ECC output and updates the probe result.
 func parseECCOutput(result ProbeResult, output string) ProbeResult {
-	if output == "" {
-		result.Status = StatusSkip
-		result.Score = 0.0
-		return result
+	reader := csv.NewReader(strings.NewReader(output))
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+	worst := StatusPass
+	worstRank := 0
+	worstScore := 0.0
+	rows := 0
+	setWorst := func(status ProbeStatus, rank int, score float64) {
+		if rank > worstRank {
+			worst, worstRank, worstScore = status, rank, score
+		} else if rank == worstRank && score > worstScore {
+			worstScore = score
+		}
 	}
-
-	re := regexp.MustCompile(`(\d+|N/A)\s*,\s*(\d+|N/A)\s*,\s*(\w+)`)
-
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{Description: "malformed ECC CSV output", Severity: "critical", Detail: err.Error()})
+			setWorst(StatusError, 2, 1)
+			break
+		}
+		rows++
+		gpu := fmt.Sprintf("GPU %d", rows-1)
+		if len(record) != 3 {
+			result.Findings = append(result.Findings, Finding{Description: gpu + ": ECC row must contain exactly three fields", Severity: "critical"})
+			setWorst(StatusError, 2, 1)
 			continue
 		}
-
-		matches := re.FindStringSubmatch(line)
-		if matches == nil {
-			// Check for "[Not Supported]" or similar
-			if strings.Contains(line, "Not Supported") || strings.Contains(line, "N/A") {
-				result.Findings = append(result.Findings, Finding{
-					Description: "ECC not supported on this GPU",
-					Severity:    "info",
-				})
-				result.Status = StatusSkip
-				result.Score = 0.0
-			}
+		for i := range record {
+			record[i] = strings.TrimSpace(record[i])
+		}
+		correctedRaw, uncorrectedRaw, mode := record[0], record[1], record[2]
+		if correctedRaw == "N/A" || uncorrectedRaw == "N/A" || mode == "N/A" || strings.Contains(mode, "Not Supported") {
+			result.Findings = append(result.Findings, Finding{Description: gpu + ": ECC data unavailable", Severity: "critical"})
+			setWorst(StatusError, 2, 1)
 			continue
 		}
-
-		corrected := matches[1]
-		uncorrected := matches[2]
-		mode := matches[3]
-
-		if mode == "Disabled" || mode == "N/A" {
-			result.Findings = append(result.Findings, Finding{
-				Description: "ECC is disabled on GPU",
-				Severity:    "warning",
-				Detail:      "enable ECC for production AI workloads",
-			})
-			result.Status = StatusDrift
-			result.Score = 0.3
-			return result
+		corrected, correctedErr := strconv.ParseUint(correctedRaw, 10, 64)
+		uncorrected, uncorrectedErr := strconv.ParseUint(uncorrectedRaw, 10, 64)
+		if correctedErr != nil || uncorrectedErr != nil || (mode != "Enabled" && mode != "Disabled") {
+			result.Findings = append(result.Findings, Finding{Description: gpu + ": malformed ECC fields", Severity: "critical"})
+			setWorst(StatusError, 2, 1)
+			continue
 		}
-
-		var correctedN, uncorrectedN int
-		fmt.Sscanf(corrected, "%d", &correctedN)
-		fmt.Sscanf(uncorrected, "%d", &uncorrectedN)
-
-		if uncorrectedN > 0 {
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("uncorrected ECC errors detected: %d", uncorrectedN),
-				Severity:    "critical",
-				Detail:      "uncorrected memory errors may corrupt model weights in VRAM",
-			})
-			result.Status = StatusFail
-			result.Score = 1.0
-			return result
+		if uncorrected > 0 {
+			result.Findings = append(result.Findings, Finding{Description: fmt.Sprintf("%s: uncorrected ECC errors detected: %d", gpu, uncorrected), Severity: "critical", Detail: "uncorrected memory errors may corrupt model weights in VRAM"})
+			setWorst(StatusFail, 3, 1)
+			continue
 		}
-
-		if correctedN > 100 {
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("high corrected ECC error count: %d", correctedN),
-				Severity:    "warning",
-				Detail:      "elevated corrected errors may indicate degrading memory",
-			})
-			result.Status = StatusDrift
-			result.Score = 0.4
-			return result
+		if mode == "Disabled" {
+			result.Findings = append(result.Findings, Finding{Description: gpu + ": ECC is disabled", Severity: "warning", Detail: "enable ECC for production AI workloads"})
+			setWorst(StatusDrift, 1, .3)
+			continue
 		}
-
-		if correctedN > 0 {
-			result.Findings = append(result.Findings, Finding{
-				Description: fmt.Sprintf("corrected ECC errors: %d (within normal range)", correctedN),
-				Severity:    "info",
-			})
+		if corrected > 100 {
+			result.Findings = append(result.Findings, Finding{Description: fmt.Sprintf("%s: high corrected ECC error count: %d", gpu, corrected), Severity: "warning", Detail: "elevated corrected errors may indicate degrading memory"})
+			setWorst(StatusDrift, 1, .4)
+			continue
 		}
-
-		result.Findings = append(result.Findings, Finding{
-			Description: "ECC enabled and healthy",
-			Severity:    "info",
-		})
-		result.Status = StatusPass
-		result.Score = 0.0
+		result.Findings = append(result.Findings, Finding{Description: fmt.Sprintf("%s: ECC enabled and healthy (corrected=%d)", gpu, corrected), Severity: "info"})
 	}
-
-	if result.Status == "" {
-		result.Status = StatusSkip
-		result.Score = 0.0
+	if rows == 0 {
+		result.Findings = append(result.Findings, Finding{Description: "ECC output contained no GPU records", Severity: "critical"})
+		setWorst(StatusError, 2, 1)
 	}
-
+	result.Status = worst
+	result.Score = worstScore
 	return result
 }
 

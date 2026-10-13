@@ -30,6 +30,28 @@ def test_native_gpu_bootstrap_uses_dedicated_service_port():
     assert f'Environment=BIND_ADDR={bootstrap_address}\n' not in mcp_unit
 
 
+def test_rtx5080_profiles_require_exact_supported_probe_coverage():
+    config = ROOT / 'files/system/etc/secure-ai'
+    policy = yaml.safe_load((config / 'policy/attestation.yaml').read_text())
+    assert policy['gpu']['mode'] == 'required'
+    paths = {'bootstrap': config / 'gpu-integrity/bootstrap-profile.yaml',
+             'runtime': ROOT / 'services/gpu-integrity-watch/profiles/default-profile.yaml'}
+    for scope, path in paths.items():
+        probes = yaml.safe_load(path.read_text())['probes']
+        enabled = {probe['name']: probe['type'] for probe in probes if probe['enabled']}
+        assert enabled == policy['gpu'][scope]['required_probes']
+        assert 'ecc-status' not in enabled
+        assert enabled['driver-fingerprint'] == 'driver_fingerprint'
+        assert enabled['device-allowlist'] == 'device_allowlist'
+        driver = next(probe for probe in probes if probe['name'] == 'driver-fingerprint')
+        assert driver['settings'] == {'driver_version_path': '/sys/module/nvidia/version', 'kernel_module': 'nvidia'}
+        # Observing the Ubuntu development GPU is never Fedora release approval.
+        assert policy['gpu'][scope]['profile_sha256'] == ''
+        assert policy['gpu'][scope]['baseline_sha256'] == ''
+    assert policy['gpu']['runtime']['required_probes']['tensor-hash-check'] == 'tensor_hash'
+    assert policy['gpu']['runtime']['required_probes']['sentinel-inference'] == 'sentinel_inference'
+
+
 @pytest.mark.parametrize('scope,change,accepted', [
     ('bootstrap', {}, True), ('runtime', {}, True),
     ('bootstrap', {'verification_scope': 'runtime'}, False),
