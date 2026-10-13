@@ -57,6 +57,23 @@ def client(tmp_path):
     ui_app._ui_audit = old_audit
 
 
+@pytest.mark.parametrize("route,method,detail", [
+    ("/api/models/verify", "post", "Model verification timed out"),
+    ("/api/models/verify-manifest", "post", "Tensor verification timed out"),
+    ("/api/models/delete", "delete", "check the outcome"),
+])
+def test_model_action_timeout_is_controlled_without_retry(client, route, method, detail):
+    import requests
+
+    with patch("ui.app._read_service_token", return_value="synthetic-service-token"), \
+         patch(f"ui.app.requests.{method}", side_effect=requests.ReadTimeout("private upstream diagnostic")) as upstream:
+        response = client.post(route, json={"name": "candidate"})
+    assert response.status_code == 504
+    assert detail in response.get_json()["error"]
+    assert "private upstream diagnostic" not in response.get_data(as_text=True)
+    assert upstream.call_count == 1
+
+
 def _write_ready_sandbox_state(
     tmp_path,
     monkeypatch,

@@ -2107,6 +2107,8 @@ def verify_model():
             timeout=30,
         )
         return _proxy_json_or_error(resp)
+    except requests.Timeout:
+        return jsonify({"error": "Model verification timed out. Check model status before trying again."}), 504
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
@@ -2124,6 +2126,8 @@ def verify_model_manifest():
             timeout=120,
         )
         return _proxy_json_or_error(resp)
+    except requests.Timeout:
+        return jsonify({"error": "Tensor verification timed out. Check model status before trying again."}), 504
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
@@ -2140,6 +2144,8 @@ def delete_model():
             timeout=10,
         )
         return _proxy_json_or_error(resp)
+    except requests.Timeout:
+        return jsonify({"error": "Deletion response timed out. Refresh trusted models to check the outcome."}), 504
     except requests.ConnectionError:
         return jsonify({"error": "registry unreachable"}), 503
 
