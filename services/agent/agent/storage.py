@@ -7,10 +7,14 @@ approved output folders.  Supports redaction for outbound candidates.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import logging
 import os
 import re
+import secrets
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +149,12 @@ class StorageGateway:
     ) -> dict[str, Any]:
         """Write a file through the gateway.
 
+        Bytes and retained metadata are synced privately before publication.
+        Overwrites atomically replace the checked pathname; this is not inode-CAS
+        against noncooperating directory writers after the final identity check.
+        A failure after publication reports published=True and unconfirmed
+        durability, rather than claiming rollback or success.
+
         Returns {"ok": True, "path": str, "size": int}
         or {"ok": False, "error": str}.
         """
@@ -164,35 +174,115 @@ class StorageGateway:
         if len(content_bytes) > max_bytes:
             return {"ok": False, "error": f"content too large ({len(content_bytes)} bytes, max {max_bytes})"}
 
-        descriptor = -1
+        descriptor = parent_fd = stage_fd = original_fd = -1
+        staging = None
+        stage_identity = None
+        published = False
+        result = None
         try:
-            flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-            if not overwrite:
-                flags |= os.O_EXCL
-            descriptor = self._open_file_no_symlinks(norm, flags, mode=0o600)
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode):
-                return {"ok": False, "error": "write target is not a regular file"}
-            if info.st_nlink != 1:
-                return {"ok": False, "error": "hard-linked files cannot be overwritten"}
-            if overwrite:
-                os.ftruncate(descriptor, 0)
+            if sys.platform != "linux":
+                raise OSError(errno.ENOTSUP, "atomic agent writes require Linux")
+            parent, name = os.path.split(norm)
+            parent_fd = self._open_directory_no_symlinks(parent)
+            parent_identity = self._parent_identity(parent_fd)
+            original_identity = original_metadata = None
+            try:
+                # Opening the existing inode for writing is essential: writable
+                # directory permissions do not authorize replacing a readonly file.
+                original_fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                                      dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            else:
+                info = os.fstat(original_fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise OSError("write target is not a regular file")
+                if info.st_nlink != 1:
+                    raise OSError("hard-linked files cannot be overwritten")
+                if not overwrite:
+                    raise FileExistsError(errno.EEXIST, "target exists")
+                original_identity = self._write_identity(info)
+                original_metadata = self._file_metadata(original_fd)
+                if info.st_mode & 0o6000 or set(original_metadata[3]) & {
+                        "security.capability", "security.ima", "security.evm"}:
+                    raise OSError("content-bound or privilege-bearing target metadata cannot be retained")
+
+            # The private directory remains private even when setgid is inherited
+            # from the production output parent. The file never becomes visible
+            # under its public name until its bytes and metadata have been synced.
+            candidate = ".agent-write-" + secrets.token_hex(16)
+            os.mkdir(candidate, 0o700, dir_fd=parent_fd)
+            staging = candidate
+            stage_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                               dir_fd=parent_fd)
+            stage_identity = self._private_stage_identity(stage_fd)
+            self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
+            if self._selinux_label(stage_fd) != self._selinux_label(parent_fd):
+                raise OSError("output staging changes the parent SELinux context")
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=stage_fd)
             view = memoryview(content_bytes)
             while view:
                 written = os.write(descriptor, view)
                 if written <= 0:
                     raise OSError("short write")
                 view = view[written:]
+            if original_metadata is not None:
+                self._retain_file_metadata(descriptor, original_metadata)
             os.fsync(descriptor)
-        except FileExistsError:
-            return {"ok": False, "error": f"file exists and overwrite=false: {norm}"}
+            self._check_parent_binding(parent, parent_fd, parent_identity)
+            self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
+            if original_identity is not None:
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (self._write_identity(current) != original_identity
+                        or self._write_identity(os.fstat(original_fd)) != original_identity
+                        or self._file_metadata(original_fd) != original_metadata):
+                    raise OSError("write target changed during preparation")
+                # This is atomic pathname replacement, not inode-CAS against a
+                # noncooperating directory writer after the final identity check.
+                os.replace(name, name, src_dir_fd=stage_fd, dst_dir_fd=parent_fd)
+            else:
+                self._rename_no_replace(stage_fd, name, parent_fd, name)
+            published = True
+            os.fsync(stage_fd)
+            self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
+            os.rmdir(staging, dir_fd=parent_fd)
+            staging = None
+            os.fsync(parent_fd)
         except OSError as exc:
-            return {"ok": False, "error": f"write error: {exc}"}
+            result = {"ok": False, "error": f"write error: {exc}"}
+            if published:
+                result.update(published=True, durability_confirmed=False)
+                result["error"] = f"output published; durability unconfirmed: {exc}"
+            elif isinstance(exc, FileExistsError):
+                result["error"] = f"file exists and overwrite=false: {norm}"
         finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+            try:
+                if staging is not None:
+                    if (stage_identity is None or stage_fd < 0
+                            or self._private_stage_identity(stage_fd) != stage_identity):
+                        raise OSError("output staging ownership is unverified; cleanup ambiguous")
+                    # Only the pinned caller-owned directory may lose our staged
+                    # file. A replacement at its former name is never cleaned.
+                    try:
+                        os.unlink(name, dir_fd=stage_fd)
+                    except FileNotFoundError:
+                        pass
+                    self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
+                    os.rmdir(staging, dir_fd=parent_fd)
+            except OSError as exc:
+                result = result or {"ok": False, "error": "output staging cleanup failed"}
+                result.update(cleanup_error=str(exc), cleanup_ambiguous=True)
+                if staging is not None:
+                    result["staging"] = str(Path(parent) / staging)
+                if published:
+                    result.update(published=True, durability_confirmed=False)
+            finally:
+                for fd in (descriptor, original_fd, stage_fd, parent_fd):
+                    if fd >= 0:
+                        os.close(fd)
 
-        return {"ok": True, "path": norm, "size": len(content_bytes)}
+        return result or {"ok": True, "path": norm, "size": len(content_bytes)}
 
     def list_files(
         self,
@@ -244,6 +334,97 @@ class StorageGateway:
         return redacted
 
     # --- internal ----------------------------------------------------------
+
+    @staticmethod
+    def _write_identity(info: os.stat_result) -> tuple:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid,
+                info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    @staticmethod
+    def _parent_identity(fd: int) -> tuple:
+        info = os.fstat(fd)
+        return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
+
+    @classmethod
+    def _private_stage_identity(cls, fd: int) -> tuple:
+        identity = cls._parent_identity(fd)
+        if (not stat.S_ISDIR(identity[2]) or identity[3] != os.geteuid()
+                or stat.S_IMODE(identity[2]) & 0o777 != 0o700):
+            raise OSError("output staging directory is not caller-owned and private")
+        return identity
+
+    @classmethod
+    def _check_stage_binding(cls, parent_fd: int, name: str, fd: int, identity: tuple) -> None:
+        """Reject observed substitution; subsequent rmdir is not inode-CAS."""
+        if cls._private_stage_identity(fd) != identity:
+            raise OSError("output staging ownership changed; cleanup ambiguous")
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_gid) != identity:
+            raise OSError("output staging directory entry changed; cleanup ambiguous")
+
+    @classmethod
+    def _check_parent_binding(cls, path: str, fd: int, identity: tuple) -> None:
+        reopened = cls._open_directory_no_symlinks(path)
+        try:
+            if cls._parent_identity(fd) != identity or cls._parent_identity(reopened) != identity:
+                raise OSError("output parent changed during preparation")
+        finally:
+            os.close(reopened)
+
+    @staticmethod
+    def _selinux_label(fd: int) -> bytes | None:
+        try:
+            return os.getxattr(fd, "security.selinux")
+        except OSError as exc:
+            if exc.errno not in (errno.ENODATA, errno.ENOTSUP):
+                raise
+            return None
+
+    @staticmethod
+    def _file_metadata(fd: int) -> tuple:
+        info = os.fstat(fd)
+        attributes = {}
+        size = 0
+        for name in os.listxattr(fd):
+            value = os.getxattr(fd, name)
+            size += len(os.fsencode(name)) + len(value)
+            if size > 65536:
+                raise OSError("output extended metadata exceeds preservation bound")
+            attributes[name] = value
+        return info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), attributes
+
+    @classmethod
+    def _retain_file_metadata(cls, fd: int, metadata: tuple) -> None:
+        uid, gid, mode, attributes = metadata
+        current = os.fstat(fd)
+        if (current.st_uid, current.st_gid) != (uid, gid):
+            os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+        for name in set(os.listxattr(fd)) - set(attributes):
+            os.removexattr(fd, name)
+        for name, value in attributes.items():
+            try:
+                existing = os.getxattr(fd, name)
+            except OSError as exc:
+                if exc.errno != errno.ENODATA:
+                    raise
+                existing = None
+            if existing != value:
+                os.setxattr(fd, name, value)
+        if cls._file_metadata(fd) != metadata:
+            raise OSError("output metadata could not be retained")
+
+    @staticmethod
+    def _rename_no_replace(source_fd: int, source: str, target_fd: int, target: str) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(libc, "renameat2", None)
+        if rename is None:
+            raise OSError(errno.ENOTSUP, "atomic no-clobber publication unavailable")
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(source_fd, os.fsencode(source), target_fd, os.fsencode(target), 1) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
 
     @staticmethod
     def _normalise(path: str) -> str:
