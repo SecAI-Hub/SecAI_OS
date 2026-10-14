@@ -2135,7 +2135,8 @@ def _analyze_weight_distribution(artifact_path: Path) -> dict:
 def _compute_tensor_stats(data: bytes, count: int, dtype: str = "f32") -> dict | None:
     """Compute statistics for a raw tensor buffer.
 
-    Returns dict with mean, variance, kurtosis, zero_fraction, or None on error.
+    Returns statistics, or None when there are too few supported values.
+    Rejects sampled non-finite values instead of silently excluding them.
     """
     if count == 0:
         return None
@@ -2157,9 +2158,8 @@ def _compute_tensor_stats(data: bytes, count: int, dtype: str = "f32") -> dict |
         return None
 
     actual_count = min(count, len(data) // fmt_size)
-    if actual_count < 16:
+    if actual_count == 0:
         return None
-
     sample_count = min(actual_count, max_samples)
     # Use struct to unpack values (no numpy dependency)
     step = max(1, actual_count // sample_count)
@@ -2170,8 +2170,9 @@ def _compute_tensor_stats(data: bytes, count: int, dtype: str = "f32") -> dict |
             break
         try:
             val = struct.unpack_from(f"<{fmt_char}", data, offset)[0]
-            if math.isfinite(val):
-                values.append(val)
+            if not math.isfinite(val):
+                raise ValueError(f"non-finite sampled tensor value at index {i}")
+            values.append(val)
         except struct.error:
             break
 
@@ -2202,7 +2203,7 @@ def _dequant_q8_0_stats(data: bytes, _element_count: int) -> dict | None:
         try:
             scale = struct.unpack_from("<e", data, offset)[0]
             if not math.isfinite(scale):
-                continue
+                raise ValueError(f"non-finite sampled Q8_0 scale at block {bi}")
             for qi in range(32):
                 qval = struct.unpack_from("b", data, offset + 2 + qi)[0]
                 values.append(scale * qval)
@@ -2230,11 +2231,14 @@ def _stats_from_values(values: list) -> dict:
 
     zero_count = sum(1 for v in values if v == 0.0)
 
+    # Policy decisions must use full precision. Rounding variance to six
+    # decimals erased values above the 1e-12 minimum; rounding fractions
+    # could hide values just beyond the rejection threshold.
     return {
-        "mean": round(mean, 6),
-        "variance": round(var, 6),
-        "kurtosis": round(kurtosis, 4),
-        "zero_fraction": round(zero_count / n, 4),
+        "mean": mean,
+        "variance": var,
+        "kurtosis": kurtosis,
+        "zero_fraction": zero_count / n,
         "samples": n,
     }
 

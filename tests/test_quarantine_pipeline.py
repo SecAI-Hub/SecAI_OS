@@ -15,6 +15,102 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "quarantine")
 from quarantine import pipeline
 
 
+@pytest.mark.parametrize("count", [0, 1, 2, 15])
+def test_weight_stats_preserve_small_finite_tensor_handling(count):
+    data = struct.pack(f"<{count}f", *([1.0] * count))
+
+    assert pipeline._compute_tensor_stats(data, count, "f32") is None
+
+
+def test_weight_stats_preserve_empty_buffer_handling():
+    assert pipeline._compute_tensor_stats(b"", 32, "f32") is None
+
+
+def test_weight_stats_keep_extreme_kurtosis_rejection():
+    stats = pipeline._stats_from_values([0.0] * 255 + [1.0])
+
+    assert stats["kurtosis"] > pipeline.WEIGHT_STATS_MAX_KURTOSIS
+    assert any("extreme kurtosis" in issue for issue in pipeline._check_weight_anomalies("weight", stats))
+
+
+@pytest.mark.parametrize("dtype,format_code", [("f32", "f"), ("f16", "e")])
+@pytest.mark.parametrize("count", [2, 32])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_weight_stats_reject_sampled_nonfinite_values(dtype, format_code, count, invalid):
+    values = [1.0, -1.0] * (count // 2)
+    values[-1] = invalid
+    data = struct.pack(f"<{count}{format_code}", *values)
+
+    with pytest.raises(ValueError, match="non-finite sampled tensor value"):
+        pipeline._compute_tensor_stats(data, count, dtype)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_weight_stats_reject_nonfinite_quantization_scale(invalid):
+    valid_block = struct.pack("<e32b", 1.0, *([1, -1] * 16))
+    invalid_block = struct.pack("<e32b", invalid, *([1, -1] * 16))
+
+    with pytest.raises(ValueError, match="non-finite sampled Q8_0 scale"):
+        pipeline._compute_tensor_stats(valid_block + invalid_block, 64, "q8_0")
+
+
+@pytest.mark.parametrize("count", [2, 32])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_safetensors_weight_analysis_fails_closed_for_nonfinite_values(
+    tmp_path, count, invalid
+):
+    values = [1.0, -1.0] * (count // 2)
+    values[-1] = invalid
+    payload = tmp_path / "nonfinite.safetensors"
+    _write_safetensors(
+        payload,
+        {"weight": {"dtype": "F32", "shape": [count], "data_offsets": [0, count * 4]}},
+        struct.pack(f"<{count}f", *values),
+    )
+
+    result = pipeline._analyze_weight_distribution(payload)
+
+    assert result["passed"] is False
+    assert "non-finite sampled tensor value" in result["reason"]
+
+
+@pytest.mark.parametrize("amplitude,passed", [(1.25e-6, True), (5e-7, False)])
+def test_safetensors_weight_variance_uses_unrounded_threshold(tmp_path, amplitude, passed):
+    values = [amplitude, -amplitude] * 16
+    payload = tmp_path / "small-variance.safetensors"
+    _write_safetensors(
+        payload,
+        {"weight": {"dtype": "F32", "shape": [32], "data_offsets": [0, 128]}},
+        struct.pack("<32f", *values),
+    )
+
+    result = pipeline._analyze_weight_distribution(payload)
+
+    assert result["passed"] is passed
+    if passed:
+        assert result["tensor_stats"][0]["variance"] > pipeline.WEIGHT_STATS_MIN_VARIANCE
+    else:
+        assert "near-zero variance" in result["reason"]
+
+
+@pytest.mark.parametrize("zeros,passed", [(9900, True), (9901, False)])
+def test_safetensors_weight_zero_fraction_uses_unrounded_threshold(tmp_path, zeros, passed):
+    count = 10001
+    values = [0.0] * zeros + [1.0 if i % 2 else -1.0 for i in range(count - zeros)]
+    payload = tmp_path / "zero-fraction.safetensors"
+    _write_safetensors(
+        payload,
+        {"weight": {"dtype": "F32", "shape": [count], "data_offsets": [0, count * 4]}},
+        struct.pack(f"<{count}f", *values),
+    )
+
+    result = pipeline._analyze_weight_distribution(payload)
+
+    assert result["passed"] is passed
+    if not passed:
+        assert "zeros" in result["reason"]
+
+
 def _write_safetensors(
     path: Path,
     header: dict,
