@@ -13,12 +13,12 @@ schema_version: 1
 upstreams:
   gguf-guard:
     upstream_url: https://github.com/SecAI-Hub/gguf-guard.git
-    pinned_commit: df62fa1dcd665c146edf49be1b55caaaccd81535
-    archive_sha256: 5e45dcd6fbe1ccd577592fcf2638d8c87d223e430effcea877a8ef4136c63c0a
+    pinned_commit: 882ed70a45988a6982d5fad1928eee48dcb13bb2
+    archive_sha256: db7180f721d67339b13d7bc4c5ceadd64e05c239b79124cbf2737122f41aa5fe
     local_path: upstreams/gguf-guard
     license: Apache-2.0
-    sync_date: "2026-10-10T23:11:12.279558Z"
-    reviewer: secai-vocabulary-boundary-review
+    sync_date: "2026-10-14T21:45:33.113010Z"
+    reviewer: secai-nonfinite-anomaly-review
   searxng:
     upstream_url: https://github.com/searxng/searxng.git
     pinned_commit: 23e7e4da008fdc9ac5b27b2625faa9144d46f208
