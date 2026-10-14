@@ -17,6 +17,15 @@ hooks, reopen services, or qualify native restore. Its current tests exercise
 the coordinator with manager/cgroup fixtures and preserve the existing narrow
 update-check admission tests. Native activation and recovery remain gated.
 
+The internal `secure-native-generation-metadata.py` planner keeps existing
+generation metadata separate from incoming metadata. Existing ownership, modes
+and SELinux labels are read from pinned descriptors without changing them.
+Incoming documents and outputs resolve the installed inventory, local group
+IDs and enforcing SELinux target policy; archive fields cannot choose these
+values. This read-only planner does not install metadata, extend the B1 journal
+schema, or enable a native recovery backend. Its policy probes are tested with
+fixtures; native labeling and policy stability still require qualification.
+
 ## Format and metadata contract
 
 Version 3 uses `format="secure-ai-backup"`, archive version 3 and inventory
