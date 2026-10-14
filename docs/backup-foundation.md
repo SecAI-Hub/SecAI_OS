@@ -46,6 +46,16 @@ admission before verified recovery and release. Default callers remain strict.
 Tests simulate changed mount IDs and a lost runtime readiness file; actual boot,
 filesystem device rebinding and native startup integration remain unqualified.
 
+The internal `secure-native-generation-stage.py` helper prepares a private
+`incoming` document or output tree using the installed metadata contract. Its
+root caller must supply pinned private directories and an already authenticated,
+verified logical class tree; the v3 `objects/ID` envelope is not that tree.
+The helper checks bounds, source stability, copied bytes and native metadata
+before a no-clobber rename. A failure reports whether publication occurred or
+is unknown and retains ambiguous work. It does not bind live paths or enable
+restore. Tests cover real bytes, modes and Linux ownership in private trees;
+SELinux is simulated and the archive-to-class adapter is still required.
+
 ## Format and metadata contract
 
 Version 3 uses `format="secure-ai-backup"`, archive version 3 and inventory
