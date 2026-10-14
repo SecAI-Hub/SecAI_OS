@@ -454,3 +454,94 @@ def test_content_bound_integrity_metadata_is_rejected_before_staging(output, mon
     assert result["ok"] is False and "content-bound" in result["error"]
     assert target.read_bytes() == b"original bytes" and target.stat().st_ino == before.st_ino
     assert sorted(path.name for path in directory.iterdir()) == ["report.txt"]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("substitute", ["file", "symlink", "hardlink"])
+def test_substituted_staged_payload_is_not_published_or_cleaned(output, monkeypatch, existing, substitute):
+    gateway, capability, directory = output
+    target = directory / "report.txt"
+    outside = directory.parent / "outside.txt"
+    outside.write_bytes(b"outside original bytes")
+    if existing:
+        target.write_bytes(b"public original bytes")
+    before = target.stat() if existing else None
+    sync = os.fsync
+    unknown = None
+
+    def substitute_after_sync(fd):
+        nonlocal unknown
+        sync(fd)
+        if unknown is None and stat.S_ISREG(os.fstat(fd).st_mode):
+            staged = type(target)(os.readlink(f"/proc/self/fd/{fd}"))
+            replacement = staged.with_name("unknown-replacement")
+            if substitute == "file":
+                replacement.write_bytes(b"unexpected replacement")
+            elif substitute == "symlink":
+                replacement.symlink_to(outside)
+            else:
+                os.link(outside, replacement)
+            inode = replacement.lstat().st_ino
+            os.replace(replacement, staged)
+            unknown = staged, inode
+
+    with monkeypatch.context() as race:
+        race.setattr(storage.os, "fsync", substitute_after_sync)
+        result = gateway.write_file(str(target), "requested bytes", capability, overwrite=existing)
+
+    assert result["ok"] is False and not result.get("published", False)
+    assert result["cleanup_ambiguous"] is True
+    staged, inode = unknown
+    assert staged.lstat().st_ino == inode
+    assert type(target)(result["staging"]) == staged.parent
+    if substitute == "file":
+        assert staged.read_bytes() == b"unexpected replacement"
+    elif substitute == "symlink":
+        assert staged.is_symlink() and staged.readlink() == outside
+    else:
+        assert staged.stat().st_ino == outside.stat().st_ino and outside.stat().st_nlink == 2
+    assert outside.read_bytes() == b"outside original bytes"
+    if existing:
+        assert target.read_bytes() == b"public original bytes" and target.stat().st_ino == before.st_ino
+    else:
+        assert not target.exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("change", ["mode", "hardlink"])
+def test_staged_inode_change_during_fsync_is_not_published(output, monkeypatch, existing, change):
+    gateway, capability, directory = output
+    target = directory / "report.txt"
+    if existing:
+        target.write_bytes(b"public original bytes")
+    before = target.stat() if existing else None
+    sync = os.fsync
+    changed = None
+    external = directory.parent / "unexpected-hardlink.txt"
+
+    def change_before_sync(fd):
+        nonlocal changed
+        if changed is None and stat.S_ISREG(os.fstat(fd).st_mode):
+            changed = type(target)(os.readlink(f"/proc/self/fd/{fd}"))
+            if change == "mode":
+                os.fchmod(fd, 0o400)
+            else:
+                os.link(changed, external)
+        sync(fd)
+
+    with monkeypatch.context() as race:
+        race.setattr(storage.os, "fsync", change_before_sync)
+        result = gateway.write_file(str(target), "requested bytes", capability, overwrite=existing)
+
+    assert result["ok"] is False and not result.get("published", False)
+    if change == "hardlink":
+        assert result["cleanup_ambiguous"] is True
+        assert external.read_bytes() == b"requested bytes" and external.stat().st_nlink == 2
+        assert changed.stat().st_ino == external.stat().st_ino
+    else:
+        assert "cleanup_error" not in result
+        assert not changed.parent.exists()
+    if existing:
+        assert target.read_bytes() == b"public original bytes" and target.stat().st_ino == before.st_ino
+    else:
+        assert not target.exists()

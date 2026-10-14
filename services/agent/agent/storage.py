@@ -177,6 +177,7 @@ class StorageGateway:
         descriptor = parent_fd = stage_fd = original_fd = -1
         staging = None
         stage_identity = None
+        payload_identity = None
         published = False
         result = None
         try:
@@ -221,6 +222,8 @@ class StorageGateway:
                 raise OSError("output staging changes the parent SELinux context")
             descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  0o600, dir_fd=stage_fd)
+            created_payload = os.fstat(descriptor)
+            payload_identity = created_payload.st_dev, created_payload.st_ino
             view = memoryview(content_bytes)
             while view:
                 written = os.write(descriptor, view)
@@ -229,6 +232,7 @@ class StorageGateway:
                 view = view[written:]
             if original_metadata is not None:
                 self._retain_file_metadata(descriptor, original_metadata)
+            prepared_payload = self._write_identity(os.fstat(descriptor))
             os.fsync(descriptor)
             self._check_parent_binding(parent, parent_fd, parent_identity)
             self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
@@ -238,6 +242,8 @@ class StorageGateway:
                         or self._write_identity(os.fstat(original_fd)) != original_identity
                         or self._file_metadata(original_fd) != original_metadata):
                     raise OSError("write target changed during preparation")
+            self._check_payload_binding(stage_fd, name, descriptor, payload_identity, prepared_payload)
+            if original_identity is not None:
                 # This is atomic pathname replacement, not inode-CAS against a
                 # noncooperating directory writer after the final identity check.
                 os.replace(name, name, src_dir_fd=stage_fd, dst_dir_fd=parent_fd)
@@ -262,12 +268,17 @@ class StorageGateway:
                     if (stage_identity is None or stage_fd < 0
                             or self._private_stage_identity(stage_fd) != stage_identity):
                         raise OSError("output staging ownership is unverified; cleanup ambiguous")
-                    # Only the pinned caller-owned directory may lose our staged
-                    # file. A replacement at its former name is never cleaned.
                     try:
-                        os.unlink(name, dir_fd=stage_fd)
+                        os.stat(name, dir_fd=stage_fd, follow_symlinks=False)
                     except FileNotFoundError:
                         pass
+                    else:
+                        if descriptor < 0 or payload_identity is None:
+                            raise OSError("staged payload ownership is unverified; cleanup ambiguous")
+                        # Incomplete writes are removable only while the named
+                        # entry still belongs to our held, originally created FD.
+                        self._check_payload_binding(stage_fd, name, descriptor, payload_identity)
+                        os.unlink(name, dir_fd=stage_fd)
                     self._check_stage_binding(parent_fd, staging, stage_fd, stage_identity)
                     os.rmdir(staging, dir_fd=parent_fd)
             except OSError as exc:
@@ -339,6 +350,18 @@ class StorageGateway:
     def _write_identity(info: os.stat_result) -> tuple:
         return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid,
                 info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    @classmethod
+    def _check_payload_binding(cls, directory: int, name: str, fd: int, created: tuple,
+                               prepared: tuple | None = None) -> None:
+        held = os.fstat(fd)
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                or (held.st_dev, held.st_ino) != created
+                or cls._write_identity(current) != cls._write_identity(held)):
+            raise OSError("staged payload entry changed or is not singly linked; cleanup ambiguous")
+        if prepared is not None and cls._write_identity(held) != prepared:
+            raise OSError("staged payload changed during fsync")
 
     @staticmethod
     def _parent_identity(fd: int) -> tuple:
