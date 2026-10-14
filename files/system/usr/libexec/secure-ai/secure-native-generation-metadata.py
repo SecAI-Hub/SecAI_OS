@@ -27,6 +27,7 @@ _spec.loader.exec_module(guard)
 inventory = guard._inventory
 Error = guard.RecoveryError
 INVENTORY = Path("/etc/secure-ai/config/backup-inventory.json")
+ENFORCEMENT = Path("/sys/fs/selinux/enforce")
 EXPECTED = {
     "user-documents": ("vault/user_docs", "secure-ai-vault-read", "2750"),
     "user-outputs": ("vault/outputs", "secure-ai-vault-write", "2770"),
@@ -71,6 +72,21 @@ def _probe(command: list[str], maximum: int) -> bytes:
     return result.stdout.strip()
 
 
+def _enforcement_state() -> bytes:
+    """Read the kernel state directly, as libselinux security_getenforce does."""
+    fd = -1
+    try:
+        fd = os.open(ENFORCEMENT, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Error("unexpected SELinux enforcement object")
+        return os.read(fd, 2)
+    except OSError as exc:
+        raise Error("kernel SELinux enforcement state unavailable") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _target_context(path: Path, directory: bool, check: Callable[[], None] | None = None) -> str:
     def probe(command: list[str], maximum: int) -> bytes:
         if check is not None:
@@ -80,15 +96,22 @@ def _target_context(path: Path, directory: bool, check: Callable[[], None] | Non
             check()
         return value
 
-    command = ["/usr/sbin/getenforce"]
-    if probe(command, 32) != b"Enforcing":
-        raise Error("enforcing SELinux required for native target metadata")
+    def enforcing() -> None:
+        if check is not None:
+            check()
+        state = _enforcement_state()
+        if check is not None:
+            check()
+        if state != b"1":
+            raise Error("enforcing SELinux required for native target metadata")
+
+    enforcing()
     raw = probe([
         "/usr/sbin/matchpathcon", "-N", "-n", "-m", "dir" if directory else "file", str(path),
     ], 4096)
-    if (not raw or raw.count(b":") < 2 or any(value < 33 or value > 126 for value in raw)
-            or probe(command, 32) != b"Enforcing"):
+    if not raw or raw.count(b":") < 2 or any(value < 33 or value > 126 for value in raw):
         raise Error("unavailable or unstable native target context")
+    enforcing()
     return raw.decode("ascii")
 
 

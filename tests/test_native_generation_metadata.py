@@ -99,35 +99,39 @@ def test_archive_names_cannot_escape_or_select_native_metadata(installed, relati
 def test_context_lookup_uses_installed_raw_policy_and_typed_literal_path(monkeypatch, directory, kind):
     calls = []
 
+    def state():
+        calls.append("kernel-enforcement")
+        return b"1"
+
     def run(command, **kwargs):
         calls.append(command)
         assert "shell" not in kwargs and kwargs["timeout"] == 5
-        output = b"Enforcing\n" if command[0].endswith("getenforce") else b"system_u:object_r:var_lib_t:s0\n"
-        return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
+        return SimpleNamespace(returncode=0, stdout=b"system_u:object_r:var_lib_t:s0\n", stderr=b"")
 
     monkeypatch.setattr(metadata.subprocess, "run", run)
+    monkeypatch.setattr(metadata, "_enforcement_state", state)
     path = Path("/var/lib/secure-ai/vault/user_docs/report x;$(id).pdf")
     assert metadata._target_context(path, directory) == "system_u:object_r:var_lib_t:s0"
     assert calls == [
-        ["/usr/sbin/getenforce"],
+        "kernel-enforcement",
         ["/usr/sbin/matchpathcon", "-N", "-n", "-m", kind, str(path)],
-        ["/usr/sbin/getenforce"],
+        "kernel-enforcement",
     ]
 
 
-@pytest.mark.parametrize("state", [b"Permissive\n", b"Disabled\n", b"", b"Enforcing\nextra"])
+@pytest.mark.parametrize("state", [b"0", b"", b"11", b"1\n", b"enabled"])
 def test_missing_enforcement_never_yields_target_context(monkeypatch, state):
-    monkeypatch.setattr(metadata.subprocess, "run", lambda *_args, **_kwargs:
-                        SimpleNamespace(returncode=0, stdout=state, stderr=b""))
+    monkeypatch.setattr(metadata, "_enforcement_state", lambda: state)
+    monkeypatch.setattr(metadata.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("lookup after missing enforcement"))
     with pytest.raises(metadata.Error):
         metadata._target_context(Path("/var/lib/secure-ai/vault/user_docs"), True)
 
 
 @pytest.mark.parametrize("context", [b"", b"<<none>>", b"system_u:object_r:t:s0\nextra", b"x" * 4097])
 def test_incomplete_or_unbounded_context_is_not_a_target_policy(monkeypatch, context):
+    monkeypatch.setattr(metadata, "_enforcement_state", lambda: b"1")
     def run(command, **_kwargs):
-        output = b"Enforcing" if command[0].endswith("getenforce") else context
-        return SimpleNamespace(returncode=0, stdout=output, stderr=b"")
+        return SimpleNamespace(returncode=0, stdout=context, stderr=b"")
 
     monkeypatch.setattr(metadata.subprocess, "run", run)
     with pytest.raises(metadata.Error):
@@ -135,9 +139,10 @@ def test_incomplete_or_unbounded_context_is_not_a_target_policy(monkeypatch, con
 
 
 def test_enforcement_change_during_lookup_refuses_policy(monkeypatch):
-    outputs = iter((b"Enforcing", b"system_u:object_r:var_lib_t:s0", b"Permissive"))
+    states = iter((b"1", b"0"))
+    monkeypatch.setattr(metadata, "_enforcement_state", lambda: next(states))
     monkeypatch.setattr(metadata.subprocess, "run", lambda *_args, **_kwargs:
-                        SimpleNamespace(returncode=0, stdout=next(outputs), stderr=b""))
+                        SimpleNamespace(returncode=0, stdout=b"system_u:object_r:var_lib_t:s0", stderr=b""))
     with pytest.raises(metadata.Error):
         metadata._target_context(Path("/var/lib/secure-ai/vault/user_docs"), True)
 
@@ -163,12 +168,37 @@ def test_expired_policy_probe_does_not_issue_another_command(monkeypatch):
         nonlocal expired
         calls.append(command)
         expired = True
-        return b"Enforcing"
+        return b"system_u:object_r:var_lib_t:s0"
 
+    monkeypatch.setattr(metadata, "_enforcement_state", lambda: b"1")
     monkeypatch.setattr(metadata, "_probe", probe)
     with pytest.raises(metadata.Error, match="deadline expired"):
         metadata._target_context(Path("/var/lib/secure-ai/vault/user_docs"), True, check)
-    assert calls == [["/usr/sbin/getenforce"]]
+    assert calls == [["/usr/sbin/matchpathcon", "-N", "-n", "-m", "dir", "/var/lib/secure-ai/vault/user_docs"]]
+
+
+@pytest.mark.parametrize("value", [b"1", b"0", b"", b"11"])
+def test_kernel_state_reader_is_bounded(tmp_path, monkeypatch, value):
+    source = tmp_path / "enforce"
+    source.write_bytes(value)
+    monkeypatch.setattr(metadata, "ENFORCEMENT", source)
+    assert metadata._enforcement_state() == value[:2]
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "fifo", "directory"])
+def test_kernel_state_reader_rejects_unavailable_or_unsafe_object(tmp_path, monkeypatch, kind):
+    source = tmp_path / "enforce"
+    if kind == "symlink":
+        target = tmp_path / "target"
+        target.write_bytes(b"1")
+        source.symlink_to(target)
+    elif kind == "fifo":
+        os.mkfifo(source, 0o600)
+    elif kind == "directory":
+        source.mkdir()
+    monkeypatch.setattr(metadata, "ENFORCEMENT", source)
+    with pytest.raises(metadata.Error):
+        metadata._enforcement_state()
 
 
 def test_snapshot_rejects_executable_or_hardlinked_sources(tmp_path):
