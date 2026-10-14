@@ -226,7 +226,7 @@ jobs:
           IMAGE_REF: ${{ env.CANONICAL_IMAGE_REF }}
           RELEASE_TAG_INPUT: ${{ github.ref_name }}
         run: |
-          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:latest")
+          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:dev")
           digest=$(jq -er '.Digest' <<<"$inspect_json")
           revision=$(jq -er '.Labels["org.opencontainers.image.revision"]' <<<"$inspect_json")
           if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -234,7 +234,7 @@ jobs:
             exit 1
           fi
           if [ "$revision" != "$GITHUB_SHA" ]; then
-            echo "::error::latest image revision ${revision} does not match release commit ${GITHUB_SHA}"
+            echo "::error::Development image revision ${revision} does not match release commit ${GITHUB_SHA}"
             exit 1
           fi
 

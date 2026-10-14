@@ -3,6 +3,11 @@
 name: secai_os
 description: "Offline-first Secure AI appliance (uBlue base) with sealed runtime and defense-in-depth."
 
+# Default-branch builds are development images. BlueBuild replaces its default
+# latest/timestamp tags when alt-tags is set; stable promotion is a separate gate.
+alt-tags:
+  - dev
+
 # BlueBuild expands environment variables in custom label values. The workflow
 # authenticates GITHUB_SHA against the staged source-prep manifest before this
 # recipe is parsed, binding the published OCI image to its exact source commit.

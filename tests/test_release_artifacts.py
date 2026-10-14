@@ -11,6 +11,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).parent.parent
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 BUILD_YML = REPO_ROOT / ".github" / "workflows" / "build.yml"
@@ -45,6 +47,73 @@ def _read_ci_yml():
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)
+
+
+class TestDevelopmentImageChannel:
+    def test_recipe_replaces_default_production_tags(self):
+        recipe = yaml.safe_load((REPO_ROOT / "recipes" / "recipe.yml").read_text())
+        assert recipe["alt-tags"] == ["dev"]
+
+    def test_consumers_reject_wrong_source_before_signature_or_promotion(self, tmp_path):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        calls = tmp_path / "registry-calls"
+        _write_executable(
+            fake_bin / "skopeo",
+            '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
+            'printf \'{"Digest":"sha256:%s","Labels":'
+            '{"org.opencontainers.image.revision":"%s"}}\\n\' '
+            '"$DIGEST_HEX" "$OBSERVED_REVISION"\n',
+        )
+        _write_executable(fake_bin / "jq", '#!/bin/sh\nexec /usr/bin/jq "$@"\n')
+        _write_executable(
+            fake_bin / "cosign",
+            '#!/bin/sh\nprintf "cosign %s\\n" "$*" >> "$CALLS"\nexit 0\n',
+        )
+        env = os.environ | {
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "CALLS": str(calls),
+            "DIGEST_HEX": "a" * 64,
+            "OBSERVED_REVISION": "b" * 40,
+            "GITHUB_SHA": "c" * 40,
+            "IMAGE_REF": "ghcr.io/example/appliance",
+            "GITHUB_OUTPUT": str(tmp_path / "output"),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        }
+        for workflow in (BUILD_YML, RELEASE_YML):
+            jobs = yaml.safe_load(workflow.read_text())["jobs"]
+            scripts = [
+                step["run"]
+                for job in jobs.values()
+                for step in job.get("steps", [])
+                if "inspect_json=$(skopeo inspect" in step.get("run", "")
+            ]
+            assert len(scripts) == 1
+            calls.write_text("")
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", scripts[0]],
+                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0
+            assert "revision" in result.stdout.lower() or "built from" in result.stdout.lower()
+            assert calls.read_text().splitlines() == [
+                "inspect docker://ghcr.io/example/appliance:dev"
+            ]
+            if workflow == BUILD_YML:
+                calls.write_text("")
+                env["OBSERVED_REVISION"] = env["GITHUB_SHA"]
+                result = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", scripts[0]],
+                    cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10,
+                )
+                assert result.returncode == 0, result.stderr
+                pinned = f"{env['IMAGE_REF']}@sha256:{env['DIGEST_HEX']}"
+                assert calls.read_text().splitlines() == [
+                    "inspect docker://ghcr.io/example/appliance:dev",
+                    f"cosign verify --key cosign.pub {pinned}",
+                ]
+                assert f"pinned_ref={pinned}" in (tmp_path / "output").read_text()
+                env["OBSERVED_REVISION"] = "b" * 40
 
 
 def _fake_vm_builder_environment(tmp_path: Path) -> dict[str, str]:

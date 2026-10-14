@@ -111,7 +111,8 @@ git tag -s v1.2.3 -m "Release v1.2.3"
 git push origin v1.2.3
 
 # Update :latest only after confirming it resolves to the certified digest
-# (Handled automatically by the build workflow)
+# Default-branch builds publish :dev and never move :latest. Stable promotion
+# remains a separate operation after the full qualification gates above pass.
 ```
 
 ### 5. Post-Release

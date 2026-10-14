@@ -520,7 +520,7 @@ jobs:
         if: github.event_name != 'pull_request'
         id: digest
         run: |
-          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:latest")
+          inspect_json=$(skopeo inspect "docker://${IMAGE_REF}:dev")
           digest=$(jq -er '.Digest' <<<"$inspect_json")
           revision=$(jq -er '.Labels["org.opencontainers.image.revision"]' <<<"$inspect_json")
           if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
