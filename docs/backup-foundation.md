@@ -7,6 +7,16 @@ enrollment (D), and rotation reconciliation (R) qualify. There is no bypass flag
 The old in-memory v2 `apply_restore` function remains only for historical
 synthetic regression tests; the supported CLI cannot reach it.
 
+The internal `secure-native-writer-scope.py` library coordinates a writer set
+supplied by trusted installed code. It requires durable closed admission,
+masks activation before stopping, and checks both manager jobs and pinned
+kernel cgroups. Deadline expiry prevents further authorization or a successful
+quiescence result; an already running manager call retains its bounded timeout.
+This library does not supply a complete native writer policy, install startup
+hooks, reopen services, or qualify native restore. Its current tests exercise
+the coordinator with manager/cgroup fixtures and preserve the existing narrow
+update-check admission tests. Native activation and recovery remain gated.
+
 ## Format and metadata contract
 
 Version 3 uses `format="secure-ai-backup"`, archive version 3 and inventory

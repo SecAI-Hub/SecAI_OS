@@ -229,12 +229,15 @@ def inactive(value: dict[str, str]) -> bool:
 
 class Cgroup:
     """Pin the manager's exact fixed cgroup, retaining identity after removal."""
-    def __init__(self, required: bool):
+    def __init__(self, required: bool, *, trusted_path: Path | None = None):
+        # Other installed controllers may supply a fixed trusted unit path;
+        # archive/journal contents must never select a cgroup authority.
+        self.path = CGROUP if trusted_path is None else trusted_path
         self.fd = self.events_fd = self.parent_fd = -1
-        self.parent_fd = guard.open_directory(CGROUP.parent)
+        self.parent_fd = guard.open_directory(self.path.parent)
         self.parent_identity = guard.directory_id(self.parent_fd)
         try:
-            self.fd = guard.open_directory(CGROUP)
+            self.fd = guard.open_directory(self.path)
         except FileNotFoundError:
             if required:
                 self.close()
@@ -248,14 +251,14 @@ class Cgroup:
                 raise
 
     def check(self) -> bool:
-        parent = guard.open_directory(CGROUP.parent)
+        parent = guard.open_directory(self.path.parent)
         try:
             if guard.directory_id(parent) != self.parent_identity or guard.directory_id(self.parent_fd) != self.parent_identity:
                 raise Error("writer cgroup hierarchy was rebound")
         finally:
             os.close(parent)
         try:
-            current = guard.open_directory(CGROUP)
+            current = guard.open_directory(self.path)
         except FileNotFoundError:
             return False
         try:
