@@ -151,6 +151,26 @@ def test_missing_local_group_has_no_root_fallback(installed, monkeypatch):
         metadata.installed_incoming_policy("user-documents")
 
 
+def test_expired_policy_probe_does_not_issue_another_command(monkeypatch):
+    expired = False
+    calls = []
+
+    def check():
+        if expired:
+            raise metadata.Error("deadline expired")
+
+    def probe(command, _maximum):
+        nonlocal expired
+        calls.append(command)
+        expired = True
+        return b"Enforcing"
+
+    monkeypatch.setattr(metadata, "_probe", probe)
+    with pytest.raises(metadata.Error, match="deadline expired"):
+        metadata._target_context(Path("/var/lib/secure-ai/vault/user_docs"), True, check)
+    assert calls == [["/usr/sbin/getenforce"]]
+
+
 def test_snapshot_rejects_executable_or_hardlinked_sources(tmp_path):
     source = tmp_path / "file"
     source.write_bytes(b"data")

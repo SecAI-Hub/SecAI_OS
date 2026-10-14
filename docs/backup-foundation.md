@@ -22,9 +22,20 @@ generation metadata separate from incoming metadata. Existing ownership, modes
 and SELinux labels are read from pinned descriptors without changing them.
 Incoming documents and outputs resolve the installed inventory, local group
 IDs and enforcing SELinux target policy; archive fields cannot choose these
-values. This read-only planner does not install metadata, extend the B1 journal
-schema, or enable a native recovery backend. Its policy probes are tested with
-fixtures; native labeling and policy stability still require qualification.
+values. It does not install metadata or enable a native recovery backend.
+
+Trusted calling code can explicitly pair `NativeDataGate` and the journal's
+`native_classes` argument for those two classes. This uses a separate version 2
+plan binding the installed target contract and fingerprints of actual ownership,
+modes and SELinux labels. Incoming metadata is checked again across staging,
+publication and replay; even a matching supplied fingerprint cannot waive the
+local contract. Old generation metadata is preserved rather than normalized.
+Default B1 gates and plans retain their existing format and reject native plans.
+Private filesystem fixtures exercise commit, rollback, replay and real Linux
+ownership changes. SELinux lookups and labels are simulated in these tests;
+native labeling, policy stability, complete writer admission, namespace mapping
+and boot recovery still require qualification. The installed restore CLI remains
+unavailable.
 
 ## Format and metadata contract
 

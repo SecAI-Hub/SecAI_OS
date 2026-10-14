@@ -437,15 +437,20 @@ class Gate:
         finally:
             os.close(transactions)
 
-    def _verify_history(self, directory: int, identifier: str, head: dict, terminal: dict, deadline: Deadline) -> None:
-        """B1 scrubs bounded control evidence; never re-hashes live application data."""
-        raw_plan = read_bytes(directory, "plan.json", 16 * 1024**2)
-        plan = strict_json(raw_plan, 16 * 1024**2)
+    def _validate_retained_plan(self, plan: object) -> dict:
+        """Default admission accepts only B1 plans, never native metadata authority."""
         if (not isinstance(plan, dict) or set(plan) != {"version", "kind", "mapping", "components", "clock_domain", "limits_sha256"} or
                 type(plan["version"]) is not int or plan["version"] != 1 or plan["kind"] != "inert-components" or
                 plan["clock_domain"] != DOMAIN or not isinstance(plan["components"], dict) or
                 not 1 <= len(plan["components"]) <= 128 or any(not isinstance(key, str) or not ID.fullmatch(key) for key in plan["components"])):
             raise RecoveryError("invalid retained plan")
+        return plan
+
+    def _verify_history(self, directory: int, identifier: str, head: dict, terminal: dict, deadline: Deadline) -> None:
+        """Scrub bounded control evidence; never re-hash live application data."""
+        raw_plan = read_bytes(directory, "plan.json", 16 * 1024**2)
+        plan = strict_json(raw_plan, 16 * 1024**2)
+        plan = self._validate_retained_plan(plan)
         plan_hash = hashlib.sha256(raw_plan).hexdigest()
         records = os.open("records", DIR_FLAGS, dir_fd=directory)
         try:

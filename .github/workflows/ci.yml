@@ -177,6 +177,12 @@ jobs:
           PYTHONPATH: services
         run: python -m pytest tests/ -v --ignore=tests/test_adversarial.py --ignore=tests/test_m5_acceptance.py -x
 
+      - name: Test native journal ownership in private fixtures
+        run: |
+          sudo --non-interactive env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            "$(command -v python)" -I -B -m pytest tests/test_native_generation_transaction.py \
+            -q --tb=short -p no:cacheprovider
+
       - name: Test model page and chat controls
         run: |
           node tests/test_native_chat_frontend.js

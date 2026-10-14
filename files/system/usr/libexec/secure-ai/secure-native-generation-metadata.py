@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 _spec = importlib.util.spec_from_file_location(
     "metadata_guard", Path(__file__).with_name("secure-maintenance-guard.py"))
@@ -71,15 +71,23 @@ def _probe(command: list[str], maximum: int) -> bytes:
     return result.stdout.strip()
 
 
-def _target_context(path: Path, directory: bool) -> str:
+def _target_context(path: Path, directory: bool, check: Callable[[], None] | None = None) -> str:
+    def probe(command: list[str], maximum: int) -> bytes:
+        if check is not None:
+            check()
+        value = _probe(command, maximum)
+        if check is not None:
+            check()
+        return value
+
     command = ["/usr/sbin/getenforce"]
-    if _probe(command, 32) != b"Enforcing":
+    if probe(command, 32) != b"Enforcing":
         raise Error("enforcing SELinux required for native target metadata")
-    raw = _probe([
+    raw = probe([
         "/usr/sbin/matchpathcon", "-N", "-n", "-m", "dir" if directory else "file", str(path),
     ], 4096)
     if (not raw or raw.count(b":") < 2 or any(value < 33 or value > 126 for value in raw)
-            or _probe(command, 32) != b"Enforcing"):
+            or probe(command, 32) != b"Enforcing"):
         raise Error("unavailable or unstable native target context")
     return raw.decode("ascii")
 
@@ -92,7 +100,18 @@ class IncomingPolicy(NamedTuple):
     directory_mode: int
     inventory_sha256: str
 
-    def target_metadata(self, relative: str, *, directory: bool) -> dict:
+    def profile(self) -> dict:
+        """Serializable local contract; never reconstructed as archive authority."""
+        return {
+            "class": self.class_id, "target": str(self.target), "group": self.group_name,
+            "gid": self.gid, "directory_mode": self.directory_mode,
+            "inventory_sha256": self.inventory_sha256,
+        }
+
+    def target_metadata(self, relative: str, *, directory: bool,
+                        check: Callable[[], None] | None = None) -> dict:
+        if check is not None:
+            check()
         if type(directory) is not bool:
             raise Error("explicit target object type required")
         try:
@@ -103,7 +122,7 @@ class IncomingPolicy(NamedTuple):
         return {
             "class": self.class_id, "uid": 0, "gid": self.gid,
             "mode": self.directory_mode if directory else 0o640,
-            "selinux": _target_context(path, directory),
+            "selinux": _target_context(path, directory) if check is None else _target_context(path, directory, check),
             "inventory_sha256": self.inventory_sha256,
         }
 

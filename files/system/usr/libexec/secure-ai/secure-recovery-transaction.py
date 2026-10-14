@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""B1 bounded inert-generation journal library; native mutation CLI is disabled.
+"""Bounded generation journal library; native mutation CLI is disabled.
 
 Trusted calling code supplies component mappings and a quiescence backend.
 There is deliberately no installed backend and no fixture CLI. Tests provide
 the only concrete backend. This library alone does not qualify native restore,
 writer startup/cgroups, mount recovery, SELinux or emergency containment.
+Trusted code may select installed document/output metadata contracts for B2
+integration. This does not install a native backend or qualify active restore.
 """
 
 from __future__ import annotations
@@ -26,6 +28,11 @@ assert _spec and _spec.loader
 guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 RecoveryError = guard.RecoveryError
+_metadata_spec = importlib.util.spec_from_file_location(
+    "transaction_native_metadata", Path(__file__).with_name("secure-native-generation-metadata.py"))
+assert _metadata_spec and _metadata_spec.loader
+native_metadata = importlib.util.module_from_spec(_metadata_spec)
+_metadata_spec.loader.exec_module(native_metadata)
 
 
 class Backend(Protocol):
@@ -94,6 +101,13 @@ def _integer(value: object, maximum: int) -> bool:
     return type(value) is int and 0 <= value <= maximum
 
 
+def _native_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except native_metadata.Error as exc:
+        raise RecoveryError(str(exc)) from exc
+
+
 def _fingerprint_valid(value: object, limits: Limits) -> bool:
     return (isinstance(value, dict) and set(value) == {"root", "sha256", "entries", "bytes"} and
             isinstance(value["root"], dict) and set(value["root"]) == IDENTITY_FIELDS and
@@ -102,15 +116,75 @@ def _fingerprint_valid(value: object, limits: Limits) -> bool:
             _integer(value["entries"], limits.entries) and _integer(value["bytes"], limits.data_bytes))
 
 
+class NativeDataGate(guard.Gate):  # type: ignore[name-defined]  # Loaded from the fixed sibling module.
+    """Explicit trusted-code gate for metadata-aware document/output fixtures.
+
+    This does not install writer admission/startup hooks. Default B1 gates still
+    reject native plans. A future installed backend must qualify its own use.
+    """
+
+    def __init__(self, *args, native_classes: tuple[str, ...], **kwargs):
+        if (type(native_classes) is not tuple or not native_classes or
+                any(type(key) is not str for key in native_classes) or
+                len(set(native_classes)) != len(native_classes)):
+            raise RecoveryError("invalid trusted native history classes")
+        self.native_policies = {
+            key: _native_call(native_metadata.installed_incoming_policy, key) for key in native_classes
+        }
+        super().__init__(*args, **kwargs)
+
+    def metadata_contract(self) -> dict:
+        for key, policy in self.native_policies.items():
+            if _native_call(native_metadata.installed_incoming_policy, key) != policy:
+                raise RecoveryError("installed native metadata contract changed")
+        return {key: policy.profile() for key, policy in self.native_policies.items()}
+
+    def _validate_retained_plan(self, plan: object) -> dict:
+        fields = {"version", "kind", "mapping", "components", "clock_domain", "limits_sha256", "native_metadata"}
+        if (not isinstance(plan, dict) or set(plan) != fields or type(plan["version"]) is not int or
+                plan["version"] != 2 or plan["kind"] != "native-data-components" or plan["clock_domain"] != guard.DOMAIN or
+                not isinstance(plan["components"], dict) or set(plan["components"]) != set(self.native_policies) or
+                not isinstance(plan["mapping"], dict) or set(plan["mapping"]) != set(self.native_policies) or
+                not isinstance(plan["limits_sha256"], str) or not guard.HEX.fullmatch(plan["limits_sha256"])):
+            raise RecoveryError("invalid retained native plan")
+        if guard.encode(plan["native_metadata"]) != guard.encode(self.metadata_contract()):
+            raise RecoveryError("retained native metadata contract changed")
+        for mapping in plan["mapping"].values():
+            if not isinstance(mapping, dict) or set(mapping) != IDENTITY_FIELDS | {"mount"} or any(not _integer(x, 2**64 - 1) for x in mapping.values()):
+                raise RecoveryError("invalid retained native mapping")
+        total = 0
+        ceiling = Limits()
+        for item in plan["components"].values():
+            if not isinstance(item, dict) or set(item) != {"old", "new"} or not _fingerprint_valid(item["new"], ceiling) or (item["old"] is not None and not _fingerprint_valid(item["old"], ceiling)):
+                raise RecoveryError("invalid retained native fingerprint")
+            total += item["new"]["bytes"] + (item["old"]["bytes"] if item["old"] else 0)
+        if total > ceiling.data_bytes:
+            raise RecoveryError("retained native plan byte ceiling exceeded")
+        return plan
+
+
 class Engine:
     """Filesystem mutations require this explicit trusted-code backend object."""
 
-    def __init__(self, gate, backend: Backend, limits: Limits | None = None):
+    def __init__(self, gate, backend: Backend, limits: Limits | None = None, *,
+                 native_classes: tuple[str, ...] = ()):
         self.gate, self.backend, self.limits = gate, backend, limits or Limits()
         self.limits_hash = _digest(guard.encode(self.limits.profile()))
         paths = backend.components()
         if not isinstance(paths, dict) or not 1 <= len(paths) <= self.limits.components:
             raise RecoveryError("invalid trusted component mapping")
+        if (type(native_classes) is not tuple or
+                any(type(item) is not str for item in native_classes) or
+                len(set(native_classes)) != len(native_classes) or
+                (native_classes and set(native_classes) != set(paths))):
+            raise RecoveryError("native contracts must exactly cover trusted components")
+        self.native_policies = {
+            key: _native_call(native_metadata.installed_incoming_policy, key) for key in native_classes
+        }
+        if ((self.native_policies and (not isinstance(gate, NativeDataGate) or
+                                      gate.metadata_contract() != self._metadata_contract())) or
+                (isinstance(gate, NativeDataGate) and not self.native_policies)):
+            raise RecoveryError("native journal requires an explicit matching native data gate")
         self.components: dict = {}
         self.operation_lock: Any = None
         self.admission_lock: Any = None
@@ -162,6 +236,7 @@ class Engine:
             raise RecoveryError("insufficient recovery space including reserve")
 
     def _check(self, *, quiescent: bool = False) -> None:
+        self._metadata_contract()
         self.gate.check(allow_pending=self.recovering)
         if self.operation_lock is not None:
             self.operation_lock.check()
@@ -184,8 +259,18 @@ class Engine:
             if guard.names(component.fd, 16) - allowed:
                 raise RecoveryError("unknown component debris; no automatic cleanup")
 
-    def _fingerprint(self, parent: int, name: str, *, sync: bool = False, label: str = "snapshot") -> dict | None:
+    def _metadata_contract(self) -> dict:
+        for key, policy in self.native_policies.items():
+            if _native_call(native_metadata.installed_incoming_policy, key) != policy:
+                raise RecoveryError("installed native metadata contract changed")
+        return {key: policy.profile() for key, policy in self.native_policies.items()}
+
+    def _fingerprint(self, parent: int, name: str, *, sync: bool = False, label: str = "snapshot",
+                     incoming_class: str | None = None) -> dict | None:
         assert self.deadline is not None
+        self._metadata_contract()
+        if incoming_class is not None and incoming_class not in self.native_policies:
+            raise RecoveryError("incoming metadata requires an installed native contract")
         try:
             root = os.open(name, guard.DIR_FLAGS, dir_fd=parent)
         except FileNotFoundError:
@@ -194,18 +279,50 @@ class Engine:
             root_id = guard.directory_id(root)
             if root_id["mount"] != guard.mount_id(parent):
                 raise RecoveryError("component or generation crosses a mount boundary")
+            if self.native_policies and incoming_class is None and self.plan is not None:
+                # The original incoming inode keeps its target contract after
+                # prepare/publication/rollback renames, including journal replay.
+                matches = [key for key, item in self.plan["components"].items()
+                           if all(item["new"]["root"][field] == root_id[field] for field in ("device", "inode"))]
+                if len(matches) > 1:
+                    raise RecoveryError("native incoming generation identities overlap")
+                if matches:
+                    incoming_class = matches[0]
             records: list[dict[str, Any]] = []
             total = estimated = 0
+
+            def metadata_record(fd: int, relative: str, directory: bool) -> dict:
+                nonlocal estimated
+                self.deadline.check()
+                value = _native_call(native_metadata.snapshot_existing, fd)
+                self.deadline.check()
+                # Labels are bounded individually and count toward the existing
+                # aggregate ceiling before being retained in the manifest.
+                estimated += len(guard.encode(value))
+                if estimated > self.limits.manifest_bytes:
+                    raise RecoveryError("generation metadata/count ceiling exceeded")
+                if incoming_class is not None:
+                    expected = _native_call(self.native_policies[incoming_class].target_metadata, relative,
+                                            directory=directory, check=self.deadline.check)
+                    self.deadline.check()
+                    label = bytes.fromhex(value["selinux_hex"] or "")
+                    context = expected["selinux"].encode("ascii")
+                    if (value["uid"] != expected["uid"] or value["gid"] != expected["gid"] or
+                            value["mode"] != expected["mode"] or
+                            label not in (context, context + b"\0")):
+                        raise RecoveryError("incoming generation differs from installed target metadata")
+                return value
 
             def scan(fd: int, relative: str) -> None:
                 nonlocal total, estimated
                 self.deadline.check()
                 before = os.fstat(fd)
-                if before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) != 0o700:
+                if not self.native_policies and (before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) != 0o700):
                     raise RecoveryError("B1 accepts private inert directory metadata only")
                 if guard.mount_id(fd) != root_id["mount"]:
                     raise RecoveryError("nested generation mount is unsupported")
                 guard._inventory.check_metadata(fd, before)
+                directory_metadata = metadata_record(fd, relative, True) if self.native_policies else None
                 nodes: list[tuple[str, str, os.stat_result]] = []
                 with os.scandir(fd) as children:
                     for child in children:
@@ -223,6 +340,7 @@ class Engine:
                 if len(set(keys)) != len(keys):
                     raise RecoveryError("colliding generation filenames")
                 for path, basename, metadata in sorted(nodes):
+                    self.deadline.check()
                     is_dir = stat.S_ISDIR(metadata.st_mode)
                     child_fd = os.open(basename, guard.DIR_FLAGS if is_dir else guard.FILE_FLAGS, dir_fd=fd)
                     try:
@@ -234,8 +352,10 @@ class Engine:
                             scan(child_fd, path)
                         else:
                             guard._inventory.check_metadata(child_fd, metadata)
-                            if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > self.limits.file_bytes:
+                            if (metadata.st_size > self.limits.file_bytes or
+                                    (not self.native_policies and (metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600))):
                                 raise RecoveryError("B1 accepts bounded private inert files only")
+                            file_metadata = metadata_record(child_fd, path, False) if self.native_policies else None
                             total += metadata.st_size
                             if total > self.limits.data_bytes:
                                 raise RecoveryError("generation byte ceiling exceeded")
@@ -249,9 +369,13 @@ class Engine:
                             if count != metadata.st_size or guard._inventory.identity(metadata) != guard._inventory.identity(os.fstat(child_fd)):
                                 raise RecoveryError("generation file changed")
                             records.append({"path": path, "kind": "file", "device": metadata.st_dev,
-                                            "inode": metadata.st_ino, "mode": 0o600, "uid": metadata.st_uid,
+                                            "inode": metadata.st_ino, "mode": stat.S_IMODE(metadata.st_mode), "uid": metadata.st_uid,
                                             "gid": metadata.st_gid, "size": count, "sha256": digest.hexdigest(),
                                             "mtime_ns": metadata.st_mtime_ns, "ctime_ns": metadata.st_ctime_ns})
+                            if file_metadata is not None:
+                                if file_metadata != _native_call(native_metadata.snapshot_existing, child_fd):
+                                    raise RecoveryError("generation metadata changed while hashing")
+                                records[-1]["native_metadata"] = file_metadata
                             if sync:
                                 self.gate.io.sync(child_fd, label + ":file")
                     finally:
@@ -259,13 +383,18 @@ class Engine:
                 if guard._inventory.identity(before) != guard._inventory.identity(os.fstat(fd)):
                     raise RecoveryError("generation directory changed")
                 records.append({"path": relative, "kind": "directory", "device": before.st_dev,
-                                "inode": before.st_ino, "mode": 0o700, "uid": before.st_uid, "gid": before.st_gid})
+                                "inode": before.st_ino, "mode": stat.S_IMODE(before.st_mode), "uid": before.st_uid, "gid": before.st_gid})
+                if directory_metadata is not None:
+                    if directory_metadata != _native_call(native_metadata.snapshot_existing, fd):
+                        raise RecoveryError("generation metadata changed while hashing")
+                    records[-1]["native_metadata"] = directory_metadata
                 if len(records) > self.limits.entries:
                     raise RecoveryError("generation entry ceiling exceeded")
                 if sync:
                     self.gate.io.sync(fd, label + ":directory")
 
             scan(root, "")
+            self.deadline.check()
             return {"root": {k: root_id[k] for k in IDENTITY_FIELDS},
                     "sha256": _digest(guard.encode(sorted(records, key=lambda r: r["path"]))),
                     "entries": len(records), "bytes": total}
@@ -281,7 +410,7 @@ class Engine:
         total = 0
         for identifier, directory in self.components.items():
             old = self._fingerprint(directory.fd, "active")
-            new = self._fingerprint(directory.fd, "incoming")
+            new = self._fingerprint(directory.fd, "incoming", incoming_class=identifier if self.native_policies else None)
             if new is None:
                 raise RecoveryError("trusted component lacks an inert incoming generation")
             if old is not None and old["root"]["inode"] == new["root"]["inode"]:
@@ -290,14 +419,23 @@ class Engine:
             total += new["bytes"] + (old["bytes"] if old else 0)
         if total > self.limits.data_bytes:
             raise RecoveryError("plan aggregate byte ceiling exceeded")
-        return {"version": 1, "kind": "inert-components", "mapping": copy.deepcopy(self.mapping),
+        plan = {"version": 1, "kind": "inert-components", "mapping": copy.deepcopy(self.mapping),
                 "components": components, "clock_domain": guard.DOMAIN, "limits_sha256": self.limits_hash}
+        if self.native_policies:
+            plan.update(version=2, kind="native-data-components", native_metadata=self._metadata_contract())
+        return self._validate_plan(plan)
 
     def _validate_plan(self, value: object) -> dict:
-        if not isinstance(value, dict) or set(value) != {"version", "kind", "mapping", "components", "clock_domain", "limits_sha256"}:
+        fields = {"version", "kind", "mapping", "components", "clock_domain", "limits_sha256"}
+        if self.native_policies:
+            fields.add("native_metadata")
+        if not isinstance(value, dict) or set(value) != fields:
             raise RecoveryError("plan cannot supply destinations, commands or extra fields")
-        if type(value["version"]) is not int or value["version"] != 1 or value["kind"] != "inert-components" or value["clock_domain"] != guard.DOMAIN:
+        version, kind = (2, "native-data-components") if self.native_policies else (1, "inert-components")
+        if type(value["version"]) is not int or value["version"] != version or value["kind"] != kind or value["clock_domain"] != guard.DOMAIN:
             raise RecoveryError("unsupported plan version or clock domain")
+        if self.native_policies and guard.encode(value["native_metadata"]) != guard.encode(self._metadata_contract()):
+            raise RecoveryError("plan differs from installed native metadata contract")
         if value["limits_sha256"] != self.limits_hash:
             raise RecoveryError("trusted recovery limit profile changed")
         if value["mapping"] != self.mapping or not isinstance(value["components"], dict) or set(value["components"]) != set(self.components):
