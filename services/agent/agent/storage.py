@@ -83,7 +83,7 @@ class StorageGateway:
         try:
             descriptor = self._open_file_no_symlinks(
                 norm,
-                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0),
             )
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode):
