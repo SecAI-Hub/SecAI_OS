@@ -10,6 +10,7 @@ triggers, mount semantics and emergency coordination.
 from __future__ import annotations
 
 import argparse
+import copy
 import ctypes
 import errno
 import fcntl
@@ -318,9 +319,16 @@ class StableLock:
 
 
 class Gate:
-    """Private B1 library gate; native installation/privilege adapters are absent."""
+    """Private B1 gate; native installation/privilege adapters are absent.
 
-    def __init__(self, root: Path, runtime: Path, clock: Clock | None = None, io: DurableIO | None = None):
+    trusted_root_rebind is a calling-code capability for historical mount IDs
+    only. It neither changes durable layout nor opens writer admission.
+    """
+
+    def __init__(self, root: Path, runtime: Path, clock: Clock | None = None, io: DurableIO | None = None,
+                 *, trusted_root_rebind: Callable[[dict, dict], bool] | None = None):
+        if trusted_root_rebind is not None and not callable(trusted_root_rebind):
+            raise RecoveryError("invalid trusted gate root rebind capability")
         self.root = BoundDirectory(root)
         try:
             self.runtime = BoundDirectory(runtime)
@@ -330,13 +338,49 @@ class Gate:
         try:
             self.clock = clock or LinuxClock()
             self.io = io or DurableIO()
-            self.layout = read_json(self.root.fd, "layout.json")
-            if set(self.layout) != {"version", "root", "admission", "operation"} or type(self.layout["version"]) is not int or self.layout["version"] != 1:
-                raise RecoveryError("invalid gate layout")
+            self._layout_bytes = read_bytes(self.root.fd, "layout.json", 4096)
+            self.layout = self._validate_layout(strict_json(self._layout_bytes, 4096))
+            self._root_mount_rebound = False
+            historical = self.layout["root"]
+            current = self.root.identity
+            if any(historical[key] != current[key] for key in set(current) - {"mount"}):
+                raise RecoveryError("gate layout binding changed")
+            deadline = None
+            if historical["mount"] != current["mount"]:
+                if trusted_root_rebind is None:
+                    raise RecoveryError("gate layout binding changed; trusted root rebind required")
+                deadline = Deadline(self.clock, 5)
+                # The private capability is considered only after complete layout,
+                # namespace and stable-lock checks. It never changes durable state.
+                self._check_contents(allow_pending=True)
+                deadline.check()
+                if trusted_root_rebind(copy.deepcopy(historical), copy.deepcopy(current)) is not True:
+                    raise RecoveryError("trusted gate root rebind denied")
+                deadline.check()
+                self._check_contents(allow_pending=True)
+                deadline.check()
+                self._root_mount_rebound = True
             self.check(allow_pending=True)
+            if deadline is not None:
+                deadline.check()
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _validate_layout(value: object) -> dict:
+        if (not isinstance(value, dict) or set(value) != {"version", "root", "admission", "operation"}
+                or type(value["version"]) is not int or value["version"] != 1):
+            raise RecoveryError("invalid gate layout")
+        persistent_fields = {"device", "inode", "mode", "uid", "gid"}
+        for name in ("root", "admission", "operation"):
+            identity = value[name]
+            expected = persistent_fields | {"mount"} if name == "root" else persistent_fields
+            if (not isinstance(identity, dict) or set(identity) != expected
+                    or any(type(item) is not int or not 0 <= item <= 2**64 - 1
+                           for item in identity.values())):
+                raise RecoveryError("invalid gate layout identity")
+        return value
 
     @staticmethod
     def initialize(root: Path, runtime: Path, clock: Clock | None = None, io: DurableIO | None = None) -> None:
@@ -369,9 +413,15 @@ class Gate:
                 running.close()
 
     def check(self, *, allow_pending: bool = False) -> None:
+        self._check_contents(allow_pending=allow_pending)
+        if not self._root_mount_rebound and directory_id(self.root.fd) != self.layout["root"]:
+            raise RecoveryError("gate layout binding changed")
+
+    def _check_contents(self, *, allow_pending: bool) -> None:
         self.root.check()
         self.runtime.check()
-        if read_json(self.root.fd, "layout.json") != self.layout or directory_id(self.root.fd) != self.layout["root"]:
+        raw = read_bytes(self.root.fd, "layout.json", 4096)
+        if raw != self._layout_bytes or strict_json(raw, 4096) != self.layout:
             raise RecoveryError("gate layout binding changed")
         allowed = {"layout.json", "gate.json", "admission.lock", "operation.lock", "transactions"}
         root_names = names(self.root.fd, 16)

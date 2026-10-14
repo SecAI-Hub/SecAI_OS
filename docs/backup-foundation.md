@@ -37,6 +37,15 @@ native labeling, policy stability, complete writer admission, namespace mapping
 and boot recovery still require qualification. The installed restore CLI remains
 unavailable.
 
+Trusted calling code can also supply the gate's `trusted_root_rebind` callback
+for a historical root mount ID. Persistent device/inode, owner, mode, stable
+locks and layout bytes must still match; the callback requires explicit approval
+within its deadline. The journal separately requires a changed origin boot and
+backend approval for component mount IDs. Neither path rewrites layout or opens
+admission before verified recovery and release. Default callers remain strict.
+Tests simulate changed mount IDs and a lost runtime readiness file; actual boot,
+filesystem device rebinding and native startup integration remain unqualified.
+
 ## Format and metadata contract
 
 Version 3 uses `format="secure-ai-backup"`, archive version 3 and inventory
