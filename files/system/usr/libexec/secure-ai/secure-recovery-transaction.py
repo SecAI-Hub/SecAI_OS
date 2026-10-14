@@ -425,7 +425,7 @@ class Engine:
             plan.update(version=2, kind="native-data-components", native_metadata=self._metadata_contract())
         return self._validate_plan(plan)
 
-    def _validate_plan(self, value: object) -> dict:
+    def _validate_plan(self, value: object, *, allow_mount_rebind: bool = False) -> dict:
         fields = {"version", "kind", "mapping", "components", "clock_domain", "limits_sha256"}
         if self.native_policies:
             fields.add("native_metadata")
@@ -438,11 +438,18 @@ class Engine:
             raise RecoveryError("plan differs from installed native metadata contract")
         if value["limits_sha256"] != self.limits_hash:
             raise RecoveryError("trusted recovery limit profile changed")
-        if value["mapping"] != self.mapping or not isinstance(value["components"], dict) or set(value["components"]) != set(self.components):
+        if (not isinstance(value["mapping"], dict) or set(value["mapping"]) != set(self.components) or
+                not isinstance(value["components"], dict) or set(value["components"]) != set(self.components)):
             raise RecoveryError("plan differs from trusted code component mapping")
-        for mapping in value["mapping"].values():
+        for key, mapping in value["mapping"].items():
             if not isinstance(mapping, dict) or set(mapping) != IDENTITY_FIELDS | {"mount"} or any(not _integer(x, 2**64 - 1) for x in mapping.values()):
                 raise RecoveryError("invalid trusted mapping metadata types")
+            # A validated replay may consider boot-local mount ID changes only.
+            # The closed journal and trusted backend must still approve a new
+            # boot before quiescence, journal repair, or generation mutation.
+            fields = IDENTITY_FIELDS if allow_mount_rebind else IDENTITY_FIELDS | {"mount"}
+            if any(mapping[field] != self.mapping[key][field] for field in fields):
+                raise RecoveryError("plan differs from trusted code component mapping")
         total = 0
         for item in value["components"].values():
             if not isinstance(item, dict) or set(item) != {"old", "new"} or not _fingerprint_valid(item["new"], self.limits) or (item["old"] is not None and not _fingerprint_valid(item["old"], self.limits)):
@@ -697,7 +704,7 @@ class Engine:
             raise RecoveryError("unknown or incomplete transaction metadata")
         data = guard.read_bytes(self.tx_fd, "plan.json", self.limits.plan_bytes)
         plan = guard.strict_json(data, self.limits.plan_bytes)
-        self.plan = self._validate_plan(plan)
+        self.plan = self._validate_plan(plan, allow_mount_rebind=True)
         self.plan_hash = _digest(data)
         self.records_fd = os.open("records", guard.DIR_FLAGS, dir_fd=self.tx_fd)
         files = guard.names(self.records_fd, self.limits.records + 1)
@@ -759,8 +766,12 @@ class Engine:
         self.deadline = guard.Deadline(self.gate.clock, self.limits.seconds)
         self._load(identifier)
         if self.current["origin_boot"] != self.deadline.boot:
-            if self.backend.permit_boot_rebind(self.plan["mapping"], self.mapping) is not True:
+            if self.backend.permit_boot_rebind(copy.deepcopy(self.plan["mapping"]),
+                                             copy.deepcopy(self.mapping)) is not True:
                 raise RecoveryError("new boot requires trusted filesystem rebind")
+            self.deadline.check()
+        elif self.plan["mapping"] != self.mapping:
+            raise RecoveryError("same boot cannot rebind component mounts")
         self._acquire_quiescence()
         if self.pending_record:
             self.gate.io.no_replace(self.records_fd, ".next-record", self.records_fd,
