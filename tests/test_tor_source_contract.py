@@ -138,7 +138,9 @@ def test_plain_http_redirect_is_rejected():
 def test_native_entry_contract_has_no_stock_tor_or_network_fallback():
     shell = (ROOT / "files/scripts/build-current-tor.sh").read_text()
     builder = (ROOT / "build/tor/build.py").read_text()
-    assert "1100s" in shell
+    lock = json.loads((ROOT / "build/tor/source.lock.json").read_text())
+    assert lock["build"]["timeout_seconds"] == 3300
+    assert "timeout --signal=TERM --kill-after=10s 3600s" in shell
     assert '"--disablerepo=*", "install", str(main)' in builder
     assert '["make", "-j2", "check"]' in builder
     assert '"--noclean"' in builder
@@ -146,6 +148,16 @@ def test_native_entry_contract_has_no_stock_tor_or_network_fallback():
     assert 'receipt["packaged_tor_elf_sha256"]' in builder
     assert "authenticated_source_built_checked_and_installed" in builder
     assert "wget" not in builder and "curl" not in builder
+
+
+@pytest.mark.parametrize("seconds", [True, 3300.0, 0, 1100, 3301, None])
+def test_source_contract_rejects_unapproved_build_timeout(tmp_path, seconds):
+    lock = json.loads((ROOT / "build/tor/source.lock.json").read_text())
+    lock["build"]["timeout_seconds"] = seconds
+    path = tmp_path / "source.lock.json"
+    path.write_text(json.dumps(lock) + "\n")
+    with pytest.raises(ValueError, match="unsupported bounded Tor build timeout"):
+        verify.load_contract(path)
 
 
 def test_compiler_and_package_transaction_have_separate_file_limits(monkeypatch):

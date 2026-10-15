@@ -17,10 +17,13 @@ Copy the committed `build/tor` tree to `/tmp/build/tor` and staged inputs to
 `/tmp/files/scripts/build-current-tor.sh` with network disabled before removing
 build dependencies. Missing, changed, unsigned or wrong-version inputs and any
 build/check/install failure abort; distribution Tor is never a build fallback.
-The native builder limits compilation to two jobs and 1100 seconds, retains the
+The native builder limits compilation to two jobs and 3300 seconds, retains the
 full upstream `make check`, validates the packaged ELF/config, installs only the
 local main RPM with all DNF repositories disabled, and checks the installed
 NEVRA and exact ELF bytes.
+The external GNU timeout is 3600 seconds, leaving 300 seconds for failure
+reporting and cleanup. Both finite limits count wall time, including pauses
+imposed by the owning build's resource guardian.
 
 The installed `/usr/share/secure-ai/integrity/tor-build.json` and
 `tor-build-logs/` retain source/signature/native-artifact provenance and full

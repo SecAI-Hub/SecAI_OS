@@ -7,7 +7,7 @@
     "jobs": 2,
     "optflags": "-O2 -flto=auto -ffat-lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall -Werror=format-security -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1  -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
     "source_date_epoch": 1791331200,
-    "timeout_seconds": 1100,
+    "timeout_seconds": 3300,
     "tree_stop_bytes": 2130706432
   },
   "fedora_signature": {
@@ -85,9 +85,9 @@
       "sha256": "cd34622fb17d4f23ca1db37600f48ced1c71d0643200b5c0cfa1db03cea227da"
     },
     "verify.py": {
-      "bytes": 9449,
+      "bytes": 9674,
       "path": "verify.py",
-      "sha256": "03685af5a75d68c7419b1089136c3d357ba38e4ecaaaf4579265ea0e3ab37f04"
+      "sha256": "c3fb2c8445907ab2a27921974ede5465117708caa998deea89fac185b9b16656"
     }
   },
   "provenance": {

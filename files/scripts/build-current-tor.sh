@@ -24,5 +24,6 @@ fi
 # external wall-clock deadline. The owning image build rejects any failure.
 # Keep the shell as PID 1. GNU timeout cannot establish its process-group
 # deadline correctly when exec makes it PID 1 in the build container.
-timeout --signal=TERM --kill-after=10s 1100s \
+# Leave 300 seconds beyond the inner contract for failure receipts and cleanup.
+timeout --signal=TERM --kill-after=10s 3600s \
     /usr/bin/python3 -B "$TOR_CONTRACT_DIR/build.py" "${arguments[@]}"

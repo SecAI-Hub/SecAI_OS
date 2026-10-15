@@ -85,6 +85,9 @@ def load_contract(path: Path) -> tuple[dict, bytes]:
         raise ValueError("reserved source contract member")
     if lock["upstream_signature"] != {"signer": "514102454D0A87DB0767A1EBBE6A0531C18A9179", "primary": "1C1BC007A9F607AA8152C040BEA7B180B1491921", "good_keyid": "BE6A0531C18A9179"}:
         raise ValueError("unapproved upstream signing identity")
+    if (not isinstance(lock["build"], dict) or type(lock["build"].get("timeout_seconds")) is not int
+            or lock["build"]["timeout_seconds"] != 3300):
+        raise ValueError("unsupported bounded Tor build timeout")
     return lock, raw
 
 
