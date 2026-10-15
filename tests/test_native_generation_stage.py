@@ -4,6 +4,7 @@ Two Linux-root cases use real DAC with fixture policy/group lookup and mocked
 SELinux. No case qualifies installed native writes, MAC policy, mounts or restore.
 """
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,170 @@ def unchanged(tree):
     assert stat.S_IMODE(tree.source.stat().st_mode) == 0o700
     assert stat.S_IMODE((tree.source / "nested/report ü.txt").stat().st_mode) == 0o600
     assert (tree.parent / "active/original").read_bytes() == b"active bytes"
+
+
+@pytest.fixture
+def archive_tree(tree, tmp_path):
+    spec = importlib.util.spec_from_file_location("stage_test_v3", SOURCE.with_name("secure-backup-v3.py"))
+    assert spec and spec.loader
+    v3 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v3)
+    installation = tmp_path / "archive-installation"
+    for name, filename, data in (("user_docs", "nested/report ü.txt", b"document bytes\x00\xff"),
+                                 ("outputs", "answer.txt", b"output bytes")):
+        root = installation / "var/lib/secure-ai/vault" / name
+        root.mkdir(parents=True)
+        (root / "empty folder").mkdir()
+        target = root / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        (root / "zero bytes").touch()
+    installed = stage.inventory.load_inventory(stage.metadata.INVENTORY, trusted=True)
+    archive = tmp_path / "archive.tar.gz"
+    manifest = v3.create_archive(installation, archive, installed,
+                                 ["user-documents", "user-outputs"], "1" * 64)
+    envelope = tmp_path / "verified-envelope"
+    envelope.mkdir(mode=0o700)
+    assert v3.read_archive(archive, installed, destination=envelope) == manifest
+    origin = stage.guard.BoundDirectory(envelope)
+    try:
+        yield SimpleNamespace(tree=tree, source=envelope, origin=origin, manifest=manifest,
+                              sha256=hashlib.sha256(v3.inventory.encode(manifest)).hexdigest(),
+                              installation=installation, v3=v3, installed=installed)
+    finally:
+        origin.close()
+
+
+@pytest.mark.parametrize("class_id,filename,data,entries", [
+    ("user-documents", "nested/report ü.txt", b"document bytes\x00\xff", 5),
+    ("user-outputs", "answer.txt", b"output bytes", 4),
+])
+def test_archive_maps_only_selected_class_using_real_v3_envelope(archive_tree, class_id, filename, data, entries):
+    fixture = archive_tree
+    result = stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, class_id,
+                                               verified_manifest_sha256=fixture.sha256)
+    incoming = fixture.tree.parent / "incoming"
+    assert result["published"] is True and result["durability_confirmed"] is True
+    assert result["entries"] == entries and result["bytes"] == len(data)
+    assert (incoming / filename).read_bytes() == data
+    assert (incoming / "zero bytes").read_bytes() == b""
+    assert (incoming / "empty folder").is_dir()
+    assert not (incoming / "manifest.json").exists() and not (incoming / "objects").exists()
+    assert not (incoming / ("answer.txt" if class_id == "user-documents" else "nested")).exists()
+    assert (fixture.source / "manifest.json").is_file()
+    unchanged(fixture.tree)
+
+
+@pytest.mark.parametrize("mutation", ["selected", "unselected", "manifest", "unknown-file", "unknown-directory",
+                                     "symlink", "hardlink", "unsafe-mode", "unsafe-owner"])
+def test_archive_mutations_do_not_publish(archive_tree, monkeypatch, mutation):
+    fixture = archive_tree
+    selected = next(r for r in fixture.manifest["objects"] if r["class"] == "user-documents")
+    unselected = next(r for r in fixture.manifest["objects"] if r["class"] == "user-outputs")
+    path = fixture.source / selected["id"]
+    if mutation in {"selected", "unselected"}:
+        path = fixture.source / (selected if mutation == "selected" else unselected)["id"]
+        path.write_bytes(b"x" * path.stat().st_size)
+    elif mutation == "manifest":
+        value = json.loads((fixture.source / "manifest.json").read_text())
+        value["source"]["release_sha256"] = "2" * 64
+        (fixture.source / "manifest.json").write_bytes(fixture.v3.inventory.encode(value))
+    elif mutation == "unknown-file":
+        path = fixture.source / "surprise"
+        path.write_bytes(b"unknown")
+        path.chmod(0o600)
+    elif mutation == "unknown-directory":
+        (fixture.source / "extra").mkdir(mode=0o700)
+    elif mutation == "symlink":
+        path.unlink()
+        path.symlink_to(fixture.tree.source / "nested/report ü.txt")
+    elif mutation == "hardlink":
+        os.link(path, fixture.source / "second-link")
+    elif mutation == "unsafe-mode":
+        path.chmod(0o644)
+    else:
+        uid = os.geteuid()
+        monkeypatch.setattr(stage.os, "geteuid", lambda: uid + 1)
+    with pytest.raises(stage.StageError) as error:
+        stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, "user-documents",
+                                          verified_manifest_sha256=fixture.sha256)
+    assert error.value.published is False
+    assert sorted(p.name for p in fixture.tree.parent.iterdir()) == ["active"]
+    assert path.exists()  # Failed verification does not remove caller-owned source data.
+    unchanged(fixture.tree)
+
+
+@pytest.mark.parametrize("digest", [None, "", "0" * 64, "A" * 64, True, {"sha256": "1" * 64}])
+def test_archive_requires_verified_canonical_manifest_digest(archive_tree, digest):
+    fixture = archive_tree
+    with pytest.raises(stage.StageError):
+        stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, "user-documents",
+                                          verified_manifest_sha256=digest)
+    assert sorted(p.name for p in fixture.tree.parent.iterdir()) == ["active"]
+
+
+def test_archive_change_after_initial_verification_is_detected(archive_tree, monkeypatch):
+    fixture = archive_tree
+    original = os.write
+    changed = False
+    selected = next(r for r in fixture.manifest["objects"]
+                    if r["class"] == "user-documents" and r["size"])
+
+    def change_object(fd, data):
+        nonlocal changed
+        if not changed:
+            changed = True
+            (fixture.source / selected["id"]).write_bytes(b"x" * selected["size"])
+        return original(fd, data)
+
+    monkeypatch.setattr(stage.os, "write", change_object)
+    with pytest.raises(stage.StageError):
+        stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, "user-documents",
+                                          verified_manifest_sha256=fixture.sha256)
+    assert changed and sorted(p.name for p in fixture.tree.parent.iterdir()) == ["active"]
+
+
+def test_archive_framing_does_not_consume_logical_payload_limits(archive_tree):
+    fixture = archive_tree
+    limits = stage.inventory.Limits(total=fixture.manifest["totals"]["bytes"],
+                                    file=max(r["size"] for r in fixture.manifest["objects"]))
+    assert (fixture.source / "manifest.json").stat().st_size > limits.total
+    result = stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, "user-documents",
+                                               verified_manifest_sha256=fixture.sha256, limits=limits)
+    assert result["published"] is True and result["entries"] == 5
+
+
+@pytest.mark.parametrize("limit", ["file", "total", "entries", "manifest"])
+def test_archive_logical_limits_still_apply(archive_tree, limit):
+    fixture = archive_tree
+    with pytest.raises(stage.StageError):
+        stage.materialize_archive_incoming(fixture.tree.destination, fixture.origin, "user-documents",
+                                          verified_manifest_sha256=fixture.sha256,
+                                          limits=stage.inventory.Limits(**{limit: 1}))
+    assert sorted(p.name for p in fixture.tree.parent.iterdir()) == ["active"]
+
+
+def test_archive_empty_selected_root_and_unselected_class(archive_tree, tmp_path):
+    fixture = archive_tree
+    root = tmp_path / "empty-installation"
+    (root / "var/lib/secure-ai/vault/user_docs").mkdir(parents=True)
+    archive = tmp_path / "empty.tar.gz"
+    manifest = fixture.v3.create_archive(root, archive, fixture.installed, ["user-documents"], "1" * 64)
+    envelope = tmp_path / "empty-envelope"
+    envelope.mkdir(mode=0o700)
+    fixture.v3.read_archive(archive, fixture.installed, destination=envelope)
+    origin = stage.guard.BoundDirectory(envelope)
+    try:
+        digest = hashlib.sha256(fixture.v3.inventory.encode(manifest)).hexdigest()
+        with pytest.raises(stage.StageError):
+            stage.materialize_archive_incoming(fixture.tree.destination, origin, "user-outputs",
+                                              verified_manifest_sha256=digest)
+        result = stage.materialize_archive_incoming(fixture.tree.destination, origin, "user-documents",
+                                                   verified_manifest_sha256=digest)
+        assert result["entries"] == 1 and result["bytes"] == 0
+        assert list((fixture.tree.parent / "incoming").iterdir()) == []
+    finally:
+        origin.close()
 
 
 @pytest.mark.parametrize("class_id,mode,canonical", [

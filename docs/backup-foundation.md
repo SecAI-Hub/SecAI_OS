@@ -54,7 +54,19 @@ The helper checks bounds, source stability, copied bytes and native metadata
 before a no-clobber rename. A failure reports whether publication occurred or
 is unknown and retains ambiguous work. It does not bind live paths or enable
 restore. Tests cover real bytes, modes and Linux ownership in private trees;
-SELinux is simulated and the archive-to-class adapter is still required.
+SELinux is simulated; the archive-to-class entry point described below has
+synthetic coverage and still requires native qualification.
+
+The internal `materialize_archive_incoming` entry point now maps the v3 inert
+object envelope to a selected documents or outputs tree through the same private
+publisher. Its caller must retain the canonical manifest digest from independent
+authenticated backup verification. It checks that digest, the installed inventory,
+the complete envelope's paths, private metadata and object hashes, then checks
+selected bytes again while copying. Logical Unicode names, empty directories and
+zero-byte files are preserved; numbered objects and the manifest are not copied
+as user files. The source and active generation remain unchanged. This supplies
+no origin or freshness decision, live mount binding, writer admission or restore
+CLI. Tests use real synthetic v3 export/extraction and simulated native SELinux.
 
 ## Format and metadata contract
 

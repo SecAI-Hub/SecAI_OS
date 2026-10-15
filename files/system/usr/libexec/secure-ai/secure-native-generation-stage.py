@@ -247,6 +247,27 @@ def materialize_incoming(parent: PinnedDirectory, source: PinnedDirectory, class
     cannot be established; neither incoming nor private work is cleaned then.
     Caller-owned pinned directory handles remain open and are never rewritten.
     """
+    return _materialize(parent, source, class_id, limits=limits, deadline=deadline, io=io)
+
+
+def materialize_archive_incoming(parent: PinnedDirectory, source: PinnedDirectory, class_id: str,
+                                 *, verified_manifest_sha256: str, limits=None,
+                                 deadline: Deadline | None = None, io=None) -> dict:
+    """Map an authenticated v3 extracted object envelope to private incoming.
+
+    The digest is the canonical manifest SHA-256 retained from the caller's
+    authenticated archive verification. A digest from the writable envelope
+    alone establishes no origin or freshness. All envelope objects are verified
+    against that manifest; selected file bytes are checked again while copying.
+    The installed policy supplies all target metadata. No CLI invokes this path.
+    """
+    return _materialize(parent, source, class_id, limits=limits, deadline=deadline, io=io,
+                        object_archive=True, verified_manifest_sha256=verified_manifest_sha256)
+
+
+def _materialize(parent: PinnedDirectory, source: PinnedDirectory, class_id: str, *, limits=None,
+                 deadline: Deadline | None = None, io=None, object_archive: bool = False,
+                 verified_manifest_sha256: str | None = None) -> dict:
     _require_root()
     limits = _limits(limits)
     deadline = deadline or guard.Deadline(guard.LinuxClock(), limits.seconds)
@@ -271,7 +292,19 @@ def materialize_incoming(parent: PinnedDirectory, source: PinnedDirectory, class
             pass
         else:
             raise Error("incoming already exists")
-        tree = inventory.SourceTree(source.path, limits, budget)
+        if object_archive:
+            spec = importlib.util.spec_from_file_location(
+                "stage_archive_class", Path(__file__).with_name("secure-backup-class-tree.py"))
+            assert spec and spec.loader
+            archive_class = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(archive_class)
+            installed = inventory.load_inventory(metadata.INVENTORY, trusted=True)
+            tree = archive_class.ClassTree(source.path, class_id, verified_manifest_sha256,
+                                           installed, limits, budget)
+            if tree.inventory_sha256 != policy.inventory_sha256:
+                raise Error("archive and installed incoming policy differ")
+        else:
+            tree = inventory.SourceTree(source.path, limits, budget)
         if (inventory.identity(os.fstat(tree.fd)) != inventory.identity(os.fstat(source.fd))
                 or tree.mount != inventory.mount_id(source.fd)):
             raise Error("verified source binding changed")
@@ -323,7 +356,8 @@ def materialize_incoming(parent: PinnedDirectory, source: PinnedDirectory, class
                                 if written <= 0:
                                     raise Error("short native staging write")
                                 remaining = remaining[written:]
-                    if count != record["size"] or _hash(out, count, budget) != digest.hexdigest():
+                    if (count != record["size"] or _hash(out, count, budget) != digest.hexdigest()
+                            or ("sha256" in record and digest.hexdigest() != record["sha256"])):
                         raise Error("copied bytes differ from verified source")
                     hashes[relative] = {"bytes": count, "sha256": digest.hexdigest()}
                     _apply(out, relative, False, policy, budget)
@@ -390,7 +424,8 @@ def materialize_incoming(parent: PinnedDirectory, source: PinnedDirectory, class
         _cleanup(parent, name, work, identity, created, True)
         name = None
         budget.check()
-        return {"class": class_id, "entries": budget.local.entries, "bytes": budget.local.total,
+        return {"class": class_id, "entries": len(tree.records),
+                "bytes": sum(record["size"] for record in tree.records if record["kind"] == "file"),
                 "content_sha256": hashlib.sha256(guard.encode(hashes)).hexdigest(),
                 "inventory_sha256": policy.inventory_sha256, "published": True, "durability_confirmed": True}
     except BaseException as exc:
