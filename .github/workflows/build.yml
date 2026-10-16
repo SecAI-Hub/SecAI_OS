@@ -389,7 +389,7 @@ jobs:
           echo "bundle_sha256=${bundle_sha256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: source-prep
           path: |
@@ -421,7 +421,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download verified source-prep inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-prep
           path: ${{ runner.temp }}/source-prep-download
@@ -437,7 +437,7 @@ jobs:
           --checksum "$SOURCE_PREP_CHECKSUM"
 
       - name: Build Custom Image Without Publishing
-        uses: blue-build/github-action@836161eb076426a451e6a0054f722b1153b8b3ad # v1.12.0
+        uses: blue-build/github-action@c295af864f2802fc6aea227507af43d35823db81 # v1.13.0
         with:
           recipe: ${{ matrix.recipe }}
           cli_version: v0.9.37
@@ -481,7 +481,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download verified source-prep inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-prep
           path: ${{ runner.temp }}/source-prep-download
@@ -498,7 +498,7 @@ jobs:
 
       - name: Build Custom Image
         id: build
-        uses: blue-build/github-action@836161eb076426a451e6a0054f722b1153b8b3ad # v1.12.0
+        uses: blue-build/github-action@c295af864f2802fc6aea227507af43d35823db81 # v1.13.0
         with:
           recipe: ${{ matrix.recipe }}
           cli_version: v0.9.37
@@ -1398,7 +1398,7 @@ jobs:
           rm -f -- "$provenance_login_marker"
 
       - name: Upload image digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-digest
           path: |
@@ -1411,7 +1411,7 @@ jobs:
           retention-days: 30
 
       - name: Upload Sigstore attestation bundles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-attestation-bundles
           path: ${{ runner.temp }}/secai-attestation-bundles/*.sigstore.json
