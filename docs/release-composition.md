@@ -42,8 +42,17 @@ alternatives do not demonstrate that clean CI was shipping the wrong quarantine.
 
 | Source | Commit | Archive SHA256 |
 |---|---|---|
-| GGUF Guard | `71cdf1f811ba9df8a4ba1e56e343aaabb5a4b65d` | `e0412557c129acc1f79a0d51cf25a4fafe65c2fbceb61a67ef0facba03d8c949` |
+| GGUF Guard | `882ed70a45988a6982d5fad1928eee48dcb13bb2` | `db7180f721d67339b13d7bc4c5ceadd64e05c239b79124cbf2737122f41aa5fe` |
 | SearXNG | `23e7e4da008fdc9ac5b27b2625faa9144d46f208` | `b6622bb036721540ee0e4c1f3570ac653af4527587f0cdc8d48ffd6f55a5b1a0` |
+
+`scripts/update-upstream.sh <name> <full-lowercase-commit-sha>` retains the
+optional Git subtree maintenance workflow. It commits the subtree change and
+then updates the lock atomically; these two operations are not one transaction.
+Review both the source commit and lock diff before publishing. The recorded
+archive checksum identifies the HTTPS download and does not independently
+authenticate the selected commit. Update the reviewer and any source-specific
+metadata, such as SearXNG's commit timestamp, as part of that review. Image builds
+continue to use the checksum-pinned source-prep path described below.
 
 `.github/workflows/build.yml` verifies archives, vendors embedded Go modules,
 stages the hash-locked wheelhouse and compiler/llama archives, and emits a
