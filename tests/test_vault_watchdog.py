@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -45,6 +45,15 @@ def private_operation_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(vw.vault_operation, "_LOCK_PATH", path)
     monkeypatch.setattr(vw.vault_operation, "_OWNER_UID", os.geteuid())
     monkeypatch.setattr(vw.vault_operation, "_OWNER_GID", os.getegid())
+    monkeypatch.setattr(vw, "STATE_FILE", str(tmp_path / "vault-state"))
+    monkeypatch.setattr(vw, "AUDIT_LOG", str(tmp_path / "vault-audit.jsonl"))
+    # Existing operation-behavior tests isolate the separately tested PID1 gateway.
+    monkeypatch.setattr(vw.vault_mount, "state", Mock(return_value=("absent", "")))
+    monkeypatch.setattr(vw.vault_mount, "start", Mock())
+    monkeypatch.setattr(vw.vault_mount, "stop", Mock())
+    monkeypatch.setattr(vw.vault_mount, "stop_consumers", Mock())
+    monkeypatch.setattr(vw.vault_mount, "consumers_idle", Mock(return_value=True))
+    monkeypatch.setattr(vw.vault_mount, "start_consumer", Mock())
 
 
 class TestActivityTracking:
@@ -127,10 +136,7 @@ class TestStateManagement:
 class TestVaultDetection:
     @patch("subprocess.run")
     def test_is_vault_mounted_true(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="/dev/mapper/secure-ai-vault\n",
-        )
+        vw.vault_mount.state.return_value = ("expected", "/dev/mapper/secure-ai-vault")
         assert vw.is_vault_mounted() is True
 
     @patch("subprocess.run")
@@ -140,14 +146,12 @@ class TestVaultDetection:
 
     @patch("subprocess.run")
     def test_similarly_named_mapper_is_not_the_vault(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="/dev/mapper/not-secure-ai-vault\n",
-        )
+        vw.vault_mount.state.return_value = ("unexpected", "/dev/mapper/not-secure-ai-vault")
         assert vw.is_vault_mounted() is False
 
     @patch("subprocess.run", side_effect=OSError("fail"))
     def test_is_vault_mounted_error(self, mock_run):
+        vw.vault_mount.state.side_effect = vw.vault_mount.MountControlError("fixture unavailable")
         assert vw.is_vault_mounted() is False
 
     def test_is_mapper_open(self):
@@ -238,6 +242,7 @@ class TestLockVault:
 class TestUnlockVault:
     @patch("subprocess.run")
     def test_unlock_vault_already_mounted(self, mock_run):
+        vw.vault_mount.state.return_value = ("expected", "/dev/mapper/secure-ai-vault")
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="/dev/mapper/secure-ai-vault\n",
@@ -271,6 +276,7 @@ class TestUnlockVault:
 
     @patch("subprocess.run")
     def test_mount_failure_closes_mapper_opened_by_unlock(self, mock_run):
+        vw.vault_mount.start.side_effect = vw.vault_mount.MountControlError("fixture mount failed")
         def command_result(command, **_kwargs):
             if command[0] == "cryptsetup" and command[1] == "open":
                 return MagicMock(returncode=0, stderr=b"")
@@ -318,12 +324,7 @@ class TestUnlockVault:
 
         assert success is True
         assert failures == []
-        starts = [
-            call.args[0]
-            for call in mock_run.call_args_list
-            if call.args[0][:2] == ["systemctl", "start"]
-        ]
-        assert starts == [["systemctl", "start", enabled_service]]
+        vw.vault_mount.start_consumer.assert_called_once_with(enabled_service)
 
 
 class TestCrypttab:

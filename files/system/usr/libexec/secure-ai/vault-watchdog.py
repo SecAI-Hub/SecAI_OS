@@ -51,6 +51,12 @@ assert _operation_spec and _operation_spec.loader
 vault_operation = importlib.util.module_from_spec(_operation_spec)
 _operation_spec.loader.exec_module(vault_operation)
 
+_mount_spec = importlib.util.spec_from_file_location(
+    "vault_mount_control", Path(__file__).with_name("vault-mount-control.py"))
+assert _mount_spec and _mount_spec.loader
+vault_mount = importlib.util.module_from_spec(_mount_spec)
+_mount_spec.loader.exec_module(vault_mount)
+
 logging.basicConfig(
     level=logging.INFO,
     format="[vault-watchdog] %(asctime)s %(levelname)s %(message)s",
@@ -66,17 +72,7 @@ AUDIT_LOG = "/var/lib/secure-ai/logs/vault-audit.jsonl"
 VAULT_VERIFY = "/usr/libexec/secure-ai/verify-vault-mount.py"
 
 # Services to stop when locking the vault
-SERVICES_TO_STOP = [
-    "secure-ai-inference.service",
-    "secure-ai-diffusion.service",
-    "secure-ai-agent.service",
-    "secure-ai-mcp-firewall.service",
-    "secure-ai-tool-firewall.service",
-    "secure-ai-integrity-monitor.service",
-    "secure-ai-quarantine-watcher.service",
-    "secure-ai-registry.service",
-    "secure-ai-vault-mounted.service",
-]
+SERVICES_TO_STOP = list(vault_mount.CONSUMERS)
 
 # Default settings
 DEFAULT_TIMEOUT = 30  # minutes
@@ -169,24 +165,11 @@ def read_state() -> dict:
 
 
 def vault_mount_state() -> tuple[str, str]:
-    """Return (absent|expected|unexpected|error, source) for the vault."""
+    """Report PID1's host mount state, never a cached/private findmnt view."""
     try:
-        result = subprocess.run(
-            ["findmnt", "-n", "-o", "SOURCE", "--mountpoint", MOUNT_POINT],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+        return vault_mount.state()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
         return "error", ""
-    source = result.stdout.strip()
-    if result.returncode == 1 and not source:
-        return "absent", ""
-    if result.returncode != 0 or not source or "\n" in source:
-        return "error", source
-    if source == f"/dev/mapper/{MAPPER_NAME}" or source.startswith(
-        f"/dev/mapper/{MAPPER_NAME}["
-    ):
-        return "expected", source
-    return "unexpected", source
 
 
 def mounted_vault_source() -> str:
@@ -263,23 +246,20 @@ def audit_event(event: str, **kwargs):
 
 
 def stop_services() -> bool:
-    """Stop inference/diffusion/UI services before locking."""
-    all_stopped = True
-    for svc in SERVICES_TO_STOP:
-        try:
-            result = subprocess.run(
-                ["systemctl", "stop", svc],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0:
-                all_stopped = False
-                log.error("failed to stop %s: %s", svc, result.stderr.strip())
-            else:
-                log.info("stopped %s", svc)
-        except Exception as e:
-            all_stopped = False
-            log.error("failed to stop %s: %s", svc, e)
-    return all_stopped
+    """Drain fixed consumers' PID1 jobs and independently pinned cgroups."""
+    try:
+        vault_mount.stop_consumers()
+        return True
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        log.exception("vault consumers did not drain")
+        return False
+
+
+def _host_absent_and_idle() -> bool:
+    try:
+        return vault_mount_state()[0] == "absent" and vault_mount.consumers_idle()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return False
 
 
 def start_services() -> tuple[bool, list[str]]:
@@ -294,16 +274,9 @@ def start_services() -> tuple[bool, list[str]]:
             if enabled.returncode != 0:
                 log.info("not restarting disabled service %s", svc)
                 continue
-            result = subprocess.run(
-                ["systemctl", "start", svc],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0:
-                failures.append(svc)
-                log.error("failed to start %s: %s", svc, result.stderr.strip())
-            else:
-                log.info("started %s", svc)
-        except (OSError, subprocess.SubprocessError) as e:
+            vault_mount.start_consumer(svc)
+            log.info("started %s", svc)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as e:
             failures.append(svc)
             log.error("failed to start %s: %s", svc, e)
     return not failures, failures
@@ -341,7 +314,7 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
     audit_event("vault_lock", reason=reason)
 
     mount_state, mount_source = vault_mount_state()
-    if mount_state in {"error", "unexpected"}:
+    if mount_state == "unexpected":
         stop_services()
         detail = (
             "cannot determine vault mount state"
@@ -358,6 +331,9 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
         return False
 
     if mount_state == "absent" and not is_mapper_open():
+        if not _host_absent_and_idle():
+            write_state("error", "host vault absence or consumer drain unconfirmed")
+            return False
         state = "locked" if vault_has_configuration() else "setup_required"
         if not write_state(state, reason):
             return False
@@ -372,23 +348,14 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
         write_state("error", f"filesystem sync failed: {e}")
         return False
 
-    # 3. Unmount
-    if mount_state == "expected":
-        try:
-            result = subprocess.run(
-                ["umount", MOUNT_POINT],
-                capture_output=True, text=True, timeout=30, pass_fds=(operation_fd,),
-            )
-        except Exception as e:
-            log.error("unmount failed: %s", e)
-            write_state("error", f"unmount failed: {e}")
-            return False
-        after_state, _after_source = vault_mount_state()
-        if result.returncode != 0 or after_state != "absent":
-            detail = result.stderr.strip() or f"mount state after unmount: {after_state}"
-            log.error("unmount failed: %s", detail)
-            write_state("error", f"unmount failed: {detail}")
-            return False
+    # PID1 owns the host mount; a successful client exit alone is not proof.
+    try:
+        vault_mount.stop()
+        if not _host_absent_and_idle():
+            raise RuntimeError("host mount or consumer drain unconfirmed")
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        write_state("error", "host vault unmount or consumer drain unconfirmed")
+        return False
 
     # 4. Close LUKS
     if is_mapper_open():
@@ -396,6 +363,9 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
             write_state("error", "cryptsetup close failed")
             return False
 
+    if not _host_absent_and_idle():
+        write_state("error", "vault reactivation observed after mapper close")
+        return False
     if not write_state("locked", reason):
         return False
     log.info("vault locked successfully")
@@ -426,7 +396,7 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
 
     initial_mount_state, initial_source = vault_mount_state()
     if initial_mount_state == "expected":
-        if exact_vault_mount_verified():
+        if exact_vault_mount_verified() and vault_mount_state()[0] == "expected":
             return {"success": True, "detail": "already unlocked"}
         relocked = _lock_vault_held("preexisting_mount_verification_failed", operation_fd=operation_fd)
         detail = "pre-existing vault mount failed exact verification"
@@ -484,51 +454,30 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
             audit_event("vault_unlock_failed", reason="cryptsetup_execution_error")
             return {"success": False, "error": f"cryptsetup failed: {exc}"}
 
-    # 2. Mount
-    mount_completed = False
+    # PID1 performs the mount in the host namespace. The fresh verifier also
+    # checks the current sandbox view after inward propagation.
     try:
-        Path(MOUNT_POINT).mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [
-                "mount",
-                "-o",
-                "nodev,nosuid,noexec",
-                "--",
-                f"/dev/mapper/{MAPPER_NAME}",
-                MOUNT_POINT,
-            ],
-            capture_output=True, check=True, timeout=30, pass_fds=(operation_fd,),
-        )
-        mount_completed = True
-        mounted_state, _mounted_source = vault_mount_state()
-        if mounted_state != "expected":
-            raise RuntimeError(
-                f"mounted source did not match the expected mapper: {mounted_state}"
-            )
-        if not exact_vault_mount_verified():
-            raise RuntimeError("exact encrypted vault mount verification failed")
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        unmount_failed = False
-        if mount_completed:
-            try:
-                unmounted = subprocess.run(
-                    ["umount", MOUNT_POINT],
-                    capture_output=True,
-                    text=True,
-                    timeout=30, pass_fds=(operation_fd,),
-                )
-                unmount_failed = unmounted.returncode != 0
-            except (OSError, subprocess.SubprocessError):
-                unmount_failed = True
-        cleanup_failed = opened_here and (unmount_failed or not close_mapper(operation_fd=operation_fd))
-        detail = (
-            "mount failed and newly opened mapper cleanup failed"
-            if cleanup_failed
-            else "mount failed"
-        )
-        audit_event("vault_unlock_failed", reason=detail.replace(" ", "_"))
+        vault_mount.start()
+        if vault_mount_state()[0] != "expected" or not exact_vault_mount_verified():
+            raise RuntimeError("host mount or fresh exact verification failed")
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        # Cancel/drain any delayed job and prove host absence BEFORE closing a
+        # mapper opened here. Preserve the mapper if that proof is unavailable.
+        cleanup_confirmed = False
+        try:
+            if not stop_services():
+                raise RuntimeError("consumer drain unconfirmed")
+            vault_mount.stop()
+            cleanup_confirmed = vault_mount_state()[0] == "absent" and vault_mount.consumers_idle()
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            log.exception("failed mount job cleanup unconfirmed")
+        cleanup_failed = not cleanup_confirmed
+        if opened_here and cleanup_confirmed:
+            cleanup_failed = not close_mapper(operation_fd=operation_fd)
+        detail = "mount failed; cleanup unconfirmed, mapper retained" if cleanup_failed else "mount failed"
+        audit_event("vault_unlock_failed", reason="host_mount_failed")
         write_state("error", detail)
-        return {"success": False, "error": f"{detail}: {exc}"}
+        return {"success": False, "error": detail}
 
     # 3. Start only services configured to start on this appliance.
     services_started, failures = start_services()
@@ -550,6 +499,13 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
         write_state("error", detail)
         return {"success": False, "error": detail}
 
+    if vault_mount_state()[0] != "expected":
+        relocked = _lock_vault_held("host_mount_changed_before_commit", operation_fd=operation_fd)
+        detail = "host vault mount changed before unlock commit"
+        if not relocked:
+            detail += "; automatic relock failed"
+        write_state("error", detail)
+        return {"success": False, "error": detail}
     if not write_state("unlocked"):
         detail = "vault state could not be persisted"
         relocked = _lock_vault_held("state_persistence_failed", operation_fd=operation_fd)

@@ -143,19 +143,14 @@ def default_runner(
     timeout: int = 30,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
-        kwargs: dict[str, object] = {
-            "check": False,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "timeout": timeout,
-        }
         if input_data is None:
-            kwargs["stdin"] = subprocess.DEVNULL
-        else:
-            kwargs["input"] = input_data
+            return subprocess.run(
+                list(args), check=False, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=timeout, stdin=subprocess.DEVNULL,
+            )
         return subprocess.run(
-            list(args),
-            **kwargs,
+            list(args), check=False, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=timeout, input=input_data,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise LUKSError(f"command unavailable: {args[0]}") from error

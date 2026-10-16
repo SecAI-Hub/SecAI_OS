@@ -53,6 +53,9 @@ def watchdog(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "stop_services", Mock(return_value=True))
     monkeypatch.setattr(module, "is_mapper_open", lambda: False)
     monkeypatch.setattr(module, "vault_has_configuration", lambda: True)
+    monkeypatch.setattr(module.vault_mount, "start", Mock())
+    monkeypatch.setattr(module.vault_mount, "stop", Mock())
+    monkeypatch.setattr(module.vault_mount, "consumers_idle", Mock(return_value=True))
     return module, lock
 
 
@@ -83,7 +86,7 @@ def test_unlock_failure_relocks_with_the_same_held_operation(watchdog, tmp_path,
     monkeypatch.setattr(module, "is_mapper_open", lambda: True)
     states = iter([("expected", "mapper")] if reason == "preexisting" else
                   [("absent", ""), ("expected", "mapper")])
-    monkeypatch.setattr(module, "vault_mount_state", lambda: next(states))
+    monkeypatch.setattr(module, "vault_mount_state", lambda: next(states, ("expected", "mapper")))
     monkeypatch.setattr(module, "exact_vault_mount_verified", lambda: reason != "preexisting")
     monkeypatch.setattr(module, "MOUNT_POINT", str(tmp_path / "vault"))
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0))

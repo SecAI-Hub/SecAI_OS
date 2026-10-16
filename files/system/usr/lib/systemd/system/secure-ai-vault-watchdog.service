@@ -13,7 +13,7 @@ UMask=0077
 
 # Sandboxing
 ProtectSystem=strict
-ReadWritePaths=/var/lib/secure-ai/logs /var/lib/secure-ai/vault
+ReadWritePaths=/var/lib/secure-ai/logs
 ReadWritePaths=/run/secure-ai /dev/mapper
 ReadWritePaths=-/run/secure-ai-ui
 ProtectHome=yes

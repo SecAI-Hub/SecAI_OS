@@ -15,6 +15,7 @@ Group=root
 UMask=0077
 
 ProtectSystem=strict
+ProtectControlGroups=yes
 ReadOnlyPaths=/etc/crypttab /var/lib/secure-ai/vault
 ProtectHome=yes
 PrivateTmp=yes
