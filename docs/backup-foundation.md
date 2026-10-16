@@ -21,9 +21,33 @@ Its `documents_outputs_scope` factory fixes the installed agent, diffusion and
 three activation services, plus their path/timer triggers. Trusted callers must
 already exclude direct diffusion installation and vault setup, unlock, relock
 or mount changes; both live exclusion predicates are mandatory and rechecked
-during closure. The factory does not acquire those interlocks or provide startup
-and fresh-boot admission. This selected scope cannot establish global quiescence
-or authorize active restore.
+during closure. The factory's callback API does not acquire exclusions. Trusted
+root code can instead hold the internal `DocumentsOutputsInterlocks` context and
+call its `scope(closed)` method: it acquires the actual fixed diffusion installer
+flock first, then the existing vault-operation flock, and supplies revalidation
+predicates throughout writer stop and quiescence. Keep that context alive for the
+whole maintenance operation; close, acquisition failure or an observed binding
+check failure permanently denies later checks on that capability, even if the
+binding is restored. A failed check retains held descriptors until cleanup;
+partial acquisition releases the first lock.
+
+The installer exclusion uses the same empty root:root inode at
+`/var/lib/secure-ai/.diffusion-install.lock`, accepting only modes 0600/0640/0644
+under a root:root parent without group/other write. It creates a missing inode
+exclusively as 0600 but never truncates, replaces or unlinks it. Parent/path,
+mount, inode, ownership, mode, single-link and empty-file bindings are checked.
+Installer `exec 9>` touches the existing empty file before its nonblocking flock,
+even when contention loses, so mtime/ctime are deliberately excluded from this
+lock identity. The vault side retains the existing helper's stricter stable-inode
+contract. Acquisitions have finite ten-second logical waits per lock; they do not
+kill a contender. Tests use real Linux flocks and the installed shell acquisition
+block on private paths with expected root IDs substituted for unprivileged runs.
+Neither runtime lock survives owner death by itself or supplies startup,
+fresh-boot or persistent producer admission. Acquiring them does not cancel PID1
+jobs already detached from a killed operation owner; mount/job settling remains a
+separate requirement before live generation work. Generated boot units, arbitrary root
+mount/installer changes and global fencing remain outside this selected scope;
+it cannot authorize active restore.
 
 The internal `secure-native-generation-metadata.py` planner keeps existing
 generation metadata separate from incoming metadata. Existing ownership, modes

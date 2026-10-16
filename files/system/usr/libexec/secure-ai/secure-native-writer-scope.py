@@ -9,11 +9,13 @@ separate prerequisites; nothing here reopens admission or starts services.
 """
 from __future__ import annotations
 
+import fcntl
 import importlib.util
+import os
 from pathlib import Path
 import re
 import time
-from typing import Callable
+from typing import Callable, Protocol
 
 _spec = importlib.util.spec_from_file_location(
     "native_admission", Path(__file__).with_name("secure-native-admission.py"))
@@ -21,8 +23,21 @@ assert _spec and _spec.loader
 native = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(native)
 Error = native.Error
+_vault_spec = importlib.util.spec_from_file_location(
+    "writer_vault_operation", Path(__file__).with_name("vault-operation-lock.py"))
+assert _vault_spec and _vault_spec.loader
+vault_operation = importlib.util.module_from_spec(_vault_spec)
+_vault_spec.loader.exec_module(vault_operation)
+_INSTALLER_PATH = Path("/var/lib/secure-ai/.diffusion-install.lock")
+_INSTALLER_OWNER_UID = _INSTALLER_OWNER_GID = 0
+_INSTALLER_ACQUIRE_SECONDS = 10.0
 CGROUP_PARENT = Path("/sys/fs/cgroup/system.slice")
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,190}\.(service|timer|path)")
+
+
+class _Pin(Protocol):
+    def empty(self) -> bool: ...
+    def close(self) -> None: ...
 
 
 class WriterScope:
@@ -40,7 +55,7 @@ class WriterScope:
                 or any(name.endswith(".service") for name in triggers)):
             raise Error("ambiguous or unsupported writer activation scope")
         self.writers, self.triggers, self.closed = writers, triggers, closed
-        self.pins: dict[str, object] = {}
+        self.pins: dict[str, _Pin] = {}
         self.masked = False
         self.finished = False
         self.deadline = None
@@ -142,6 +157,183 @@ class WriterScope:
         self.pins.clear()
         self.finished = True
 
+
+
+class _InstallerLock:
+    """The direct installer's same empty inode; never truncate or unlink it."""
+
+    def __init__(self):
+        self.parent = self.fd = -1
+        self.acquired = False
+
+    @staticmethod
+    def _directory(fd):
+        value = native.guard.directory_id(fd)
+        if (value["uid"] != _INSTALLER_OWNER_UID or value["gid"] != _INSTALLER_OWNER_GID
+                or value["mode"] & 0o022):
+            raise Error("unsafe diffusion installer lock parent")
+        return value
+
+    @staticmethod
+    def _file(fd):
+        value = native.guard.file_id(fd)  # Regular, single-link inode only.
+        if (value["uid"] != _INSTALLER_OWNER_UID or value["gid"] != _INSTALLER_OWNER_GID
+                or value["mode"] not in (0o600, 0o640, 0o644) or os.fstat(fd).st_size != 0):
+            raise Error("unsafe diffusion installer lock")
+        value["mount"] = native.guard.mount_id(fd)
+        # exec9> in the installed shell touches mtime/ctime BEFORE a losing
+        # flock attempt. Those timestamps are not part of this empty lock's identity.
+        return value
+
+    def _binding(self):
+        current = native.guard.open_directory(_INSTALLER_PATH.parent)
+        other = -1
+        try:
+            if self._directory(self.parent) != self.directory or self._directory(current) != self.directory:
+                raise Error("diffusion installer lock parent changed")
+            other = os.open(_INSTALLER_PATH.name, native.guard.FILE_FLAGS, dir_fd=current)
+            if self._file(self.fd) != self.identity or self._file(other) != self.identity:
+                raise Error("diffusion installer lock identity changed")
+        finally:
+            if other >= 0:
+                os.close(other)
+            os.close(current)
+
+    def acquire(self):
+        end = time.monotonic() + _INSTALLER_ACQUIRE_SECONDS
+        try:
+            self.parent = native.guard.open_directory(_INSTALLER_PATH.parent)
+            self.directory = self._directory(self.parent)
+            try:
+                self.fd = os.open(_INSTALLER_PATH.name, native.guard.FILE_FLAGS, dir_fd=self.parent)
+            except FileNotFoundError:
+                try:
+                    self.fd = os.open(_INSTALLER_PATH.name,
+                                      native.guard.FILE_FLAGS | os.O_CREAT | os.O_EXCL,
+                                      0o600, dir_fd=self.parent)
+                except FileExistsError:
+                    self.fd = os.open(_INSTALLER_PATH.name, native.guard.FILE_FLAGS, dir_fd=self.parent)
+            self.identity = self._file(self.fd)
+            while True:
+                self._binding()
+                if time.monotonic() >= end:
+                    raise Error("diffusion installer exclusion deadline expired")
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.acquired = True
+                    break
+                except BlockingIOError:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        raise Error("diffusion installer is busy") from None
+                    time.sleep(min(0.05, remaining))
+            self.check()
+            if time.monotonic() >= end:
+                raise Error("diffusion installer exclusion acquisition expired")
+        except BaseException:
+            self.close()
+            raise
+
+    def check(self):
+        if not self.acquired or self.fd < 0 or self.parent < 0:
+            raise Error("diffusion installer exclusion is closed")
+        self._binding()
+
+    def close(self):
+        self.acquired = False
+        try:
+            if self.fd >= 0:
+                os.close(self.fd)
+                self.fd = -1
+        finally:
+            if self.parent >= 0:
+                os.close(self.parent)
+                self.parent = -1
+
+
+class DocumentsOutputsInterlocks:
+    """Root-only, fixed runtime exclusions for trusted maintenance callers.
+
+    Hold this context through the entire fixed-scope operation. No arbitrary
+    paths, units or commands are accepted; this is not persistent admission or
+    a guarantee against owner death, boot activation or noncooperating root.
+    """
+
+    def __init__(self):
+        self._installer = _InstallerLock()
+        self._vault = vault_operation.operation()
+        self._used = self._active = False
+
+    def __enter__(self):
+        if self._used:
+            raise Error("fixed maintenance exclusions are single-use")
+        self._used = True
+        try:
+            native.root_only()
+            # A consistent order avoids holding vault exclusion while waiting
+            # for a long-running direct installer to finish.
+            self._installer.acquire()
+            self._vault.__enter__()
+            self._active = True
+            self.check()
+            return self
+        except (OSError, vault_operation.VaultOperationError) as exc:
+            self.close()
+            raise Error("fixed maintenance exclusions unavailable") from exc
+        except BaseException:
+            self.close()
+            raise
+
+    def _require_active(self):
+        if not self._active:
+            raise Error("fixed maintenance exclusions are closed or invalid")
+
+    def installer_held(self) -> bool:
+        self._require_active()
+        try:
+            self._installer.check()
+        except OSError as exc:
+            self._active = False
+            raise Error("diffusion installer exclusion changed") from exc
+        except BaseException:
+            self._active = False
+            raise
+        return True
+
+    def vault_mount_held(self) -> bool:
+        self._require_active()
+        try:
+            self._vault.check()
+        except (OSError, vault_operation.VaultOperationError) as exc:
+            self._active = False
+            raise Error("vault operation exclusion changed") from exc
+        except BaseException:
+            self._active = False
+            raise
+        return True
+
+    def check(self) -> None:
+        self.installer_held()
+        self.vault_mount_held()
+
+    def scope(self, closed: Callable[[], bool]) -> WriterScope:
+        self.check()
+        return documents_outputs_scope(closed, installer_interlock=self.installer_held,
+                                       vault_mount_interlock=self.vault_mount_held)
+
+    def close(self) -> None:
+        self._active = False
+        try:
+            self._vault.close()
+        finally:
+            self._installer.close()
+
+    def __exit__(self, kind, value, traceback):
+        try:
+            if kind is None:
+                self.check()
+        finally:
+            self.close()
 
 def documents_outputs_scope(closed: Callable[[], bool], *,
                             installer_interlock: Callable[[], bool],

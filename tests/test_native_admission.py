@@ -140,8 +140,10 @@ class NativeAdmissionStateTest(unittest.TestCase):
             return ""
         first = patch.object(native, "show", side_effect=show)
         second = patch.object(native, "manager", side_effect=manager)
-        first.start(); second.start()
-        self.addCleanup(first.stop); self.addCleanup(second.stop)
+        first.start()
+        second.start()
+        self.addCleanup(first.stop)
+        self.addCleanup(second.stop)
 
     def assert_locked(self, name):
         fd = os.open(self.root / name, os.O_RDONLY | os.O_CLOEXEC)
@@ -173,13 +175,15 @@ class NativeAdmissionStateTest(unittest.TestCase):
             native.reopen(closed["closure"])
 
     def test_stale_closure_is_refused_before_manager_changes(self):
-        self.close_gate(); self.manager_scope()
+        self.close_gate()
+        self.manager_scope()
         with self.assertRaises(native.Error):
             native.reopen(str(uuid.uuid4()))
         self.assertEqual(self.manager_calls, [])
 
     def test_free_flock_does_not_override_live_descendants(self):
-        identifier = self.close_gate(); self.manager_scope()
+        identifier = self.close_gate()
+        self.manager_scope()
         with patch.object(EmptyCgroup, "empty", return_value=False):
             with self.assertRaises(native.Error):
                 native.reopen(identifier)
@@ -187,25 +191,29 @@ class NativeAdmissionStateTest(unittest.TestCase):
         self.assertEqual(native.status()["admission"], "closed")
 
     def test_pending_manager_job_prevents_reopening(self):
-        identifier = self.close_gate(); self.manager_scope()
+        identifier = self.close_gate()
+        self.manager_scope()
         with patch.object(native, "show", return_value={"ActiveState": "inactive", "MainPID": "0", "ControlGroup": "", "Job": "22"}):
             with self.assertRaises(native.Error):
                 native.reopen(identifier)
         self.assertEqual(self.manager_calls, [])
 
     def test_conflicting_operation_blocks_reopening(self):
-        identifier = self.close_gate(); self.manager_scope()
+        identifier = self.close_gate()
+        self.manager_scope()
         gate = native.NativeGate(self.root, self.runtime)
         operation = gate.operation()
         try:
             with self.assertRaises(native.Error):
                 native.reopen(identifier)
         finally:
-            operation.close(); gate.close()
+            operation.close()
+            gate.close()
         self.assertEqual(self.manager_calls, [])
 
     def test_partial_control_metadata_cannot_be_reopened(self):
-        identifier = self.close_gate(); self.manager_scope()
+        identifier = self.close_gate()
+        self.manager_scope()
         (self.root / ".next-gate.json").write_text("pending")
         with self.assertRaises(native.Error):
             native.reopen(identifier)
@@ -214,9 +222,11 @@ class NativeAdmissionStateTest(unittest.TestCase):
         self.assertEqual(self.manager_calls, [])
 
     def test_unknown_ready_is_not_overwritten(self):
-        identifier = self.close_gate(); self.manager_scope()
+        identifier = self.close_gate()
+        self.manager_scope()
         ready = self.runtime / "ready.json"
-        value = json.loads(ready.read_text()); value["epoch"] = str(uuid.uuid4())
+        value = json.loads(ready.read_text())
+        value["epoch"] = str(uuid.uuid4())
         ready.write_text(json.dumps(value))
         before = ready.read_bytes()
         with self.assertRaises(native.Error):
@@ -225,8 +235,10 @@ class NativeAdmissionStateTest(unittest.TestCase):
         self.assertEqual(self.manager_calls, [])
 
     def test_status_missing_runtime_is_read_only_explicit_resume_creates_it(self):
-        identifier = self.close_gate(); self.manager_scope()
-        self.simulate_boot(); self.runtime.rmdir()
+        identifier = self.close_gate()
+        self.manager_scope()
+        self.simulate_boot()
+        self.runtime.rmdir()
         value = native.status()
         self.assertEqual((value["admission"], value["boot_binding"]), ("closed", "unbound"))
         self.assertFalse(self.runtime.exists())
@@ -241,7 +253,9 @@ class NativeAdmissionStateTest(unittest.TestCase):
         self.assertFalse(root.exists() or runtime.exists())
 
     def fault_resume(self, event):
-        identifier = self.close_gate(); self.manager_scope(); self.simulate_boot()
+        identifier = self.close_gate()
+        self.manager_scope()
+        self.simulate_boot()
         implementation = native.guard.DurableIO
         def fault(actual):
             if actual == event:
@@ -270,7 +284,8 @@ class NativeAdmissionStateTest(unittest.TestCase):
         self.assertEqual(native.status()["admission"], "open")
         gate = native.NativeGate(self.root, self.runtime)
         try:
-            lease = gate.lease(); lease.close()
+            lease = gate.lease()
+            lease.close()
         finally:
             gate.close()
 
@@ -293,7 +308,8 @@ class NativeAdmissionStateTest(unittest.TestCase):
                 with self.assertRaises(native.Error):
                     gate.state()
         finally:
-            operation.close(); gate.close()
+            operation.close()
+            gate.close()
 
 
 if __name__ == "__main__":
