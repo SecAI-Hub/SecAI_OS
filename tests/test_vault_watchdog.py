@@ -2,12 +2,13 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -35,6 +36,15 @@ _spec = importlib.util.spec_from_file_location(
 assert _spec is not None and _spec.loader is not None
 vw = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vw)
+
+
+@pytest.fixture(autouse=True)
+def private_operation_lock(tmp_path, monkeypatch):
+    path = tmp_path / "vault-operation.lock"
+    path.touch(mode=0o600)
+    monkeypatch.setattr(vw.vault_operation, "_LOCK_PATH", path)
+    monkeypatch.setattr(vw.vault_operation, "_OWNER_UID", os.geteuid())
+    monkeypatch.setattr(vw.vault_operation, "_OWNER_GID", os.getegid())
 
 
 class TestActivityTracking:
@@ -243,11 +253,11 @@ class TestUnlockVault:
             return_value=("expected", "/dev/mapper/secure-ai-vault"),
         ), patch.object(
             vw, "exact_vault_mount_verified", return_value=False
-        ), patch.object(vw, "lock_vault", return_value=True) as relock:
+        ), patch.object(vw, "_lock_vault_held", return_value=True) as relock:
             result = vw.unlock_vault("password")
 
         assert result["success"] is False
-        relock.assert_called_once_with("preexisting_mount_verification_failed")
+        relock.assert_called_once_with("preexisting_mount_verification_failed", operation_fd=ANY)
 
     @patch("subprocess.run")
     def test_unlock_vault_no_partition(self, mock_run_sub):

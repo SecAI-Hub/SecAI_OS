@@ -25,6 +25,13 @@ if [ $# -ne 1 ]; then
     exit 1
 fi
 
+# Acquire before any mount/mapper observation or mutation. The fixed helper
+# execs this same script with an inherited OFD retained through cleanup traps.
+if [ "${SECAI_VAULT_OPERATION_FD:-}" != 9 ]; then
+    exec /usr/bin/python3 -B /usr/libexec/secure-ai/vault-operation-lock.py setup "$@"
+fi
+/usr/bin/python3 -B /usr/libexec/secure-ai/vault-operation-lock.py validate-setup || exit 1
+
 PARTITION="$1"
 MAPPER_NAME="secure-ai-vault"
 MOUNT_POINT="/var/lib/secure-ai/vault"

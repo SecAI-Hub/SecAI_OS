@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import grp
+import importlib.util
 import json
 import os
 import shutil
@@ -27,6 +28,12 @@ from secure_luks import (
     tpm2_token_count,
     update_crypttab_tpm2,
 )
+
+_operation_spec = importlib.util.spec_from_file_location(
+    "vault_operation_lock", Path(__file__).with_name("vault-operation-lock.py"))
+assert _operation_spec and _operation_spec.loader
+vault_operation = importlib.util.module_from_spec(_operation_spec)
+_operation_spec.loader.exec_module(vault_operation)
 
 STATE_PATH = Path("/run/secure-ai/tpm2-state.json")
 MAPPER_PATH = Path("/dev/mapper/secure-ai-vault")
@@ -59,6 +66,7 @@ def run_command(
     *,
     timeout: int = 60,
     interactive: bool = False,
+    operation_fd: int | None = None,
 ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
     try:
         if interactive:
@@ -66,6 +74,7 @@ def run_command(
                 list(args),
                 check=False,
                 timeout=timeout,
+                pass_fds=() if operation_fd is None else (operation_fd,),
             )
         return subprocess.run(
             list(args),
@@ -74,6 +83,7 @@ def run_command(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
+            pass_fds=() if operation_fd is None else (operation_fd,),
             env={**os.environ, "LC_ALL": "C"},
         )
     except (OSError, subprocess.SubprocessError) as error:
@@ -273,6 +283,12 @@ def remove_legacy_artifacts() -> None:
 
 
 def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
+    with vault_operation.operation() as held:
+        return _enroll_held(allow_vtpm=allow_vtpm, allow_insecure_boot=allow_insecure_boot,
+                            operation_fd=held.fd)
+
+
+def _enroll_held(*, allow_vtpm: bool, allow_insecure_boot: bool, operation_fd: int) -> int:
     if not tpm_available():
         raise TPMError("TPM2 device, systemd-cryptenroll, or required PCR bank is unavailable")
     vm_type = virtualization_type()
@@ -304,6 +320,7 @@ def enroll(*, allow_vtpm: bool, allow_insecure_boot: bool) -> int:
         ),
         timeout=600,
         interactive=True,
+        operation_fd=operation_fd,
     )
     if result.returncode != 0:
         raise TPMError("systemd-cryptenroll failed; existing keyslots were retained")
@@ -375,6 +392,11 @@ def verify_active_mapper(device: Path) -> None:
 
 
 def unseal() -> int:
+    with vault_operation.operation() as held:
+        return _unseal_held(operation_fd=held.fd)
+
+
+def _unseal_held(*, operation_fd: int) -> int:
     if not tpm_available():
         raise TPMError("TPM2 is unavailable")
     device = configured_device()
@@ -395,6 +417,7 @@ def unseal() -> int:
             "tpm2-device=auto",
         ),
         timeout=120,
+        operation_fd=operation_fd,
     )
     if result.returncode != 0 or not MAPPER_PATH.exists():
         raise TPMError(
@@ -407,6 +430,11 @@ def unseal() -> int:
 
 
 def wipe(confirmation: str | None) -> int:
+    with vault_operation.operation() as held:
+        return _wipe_held(confirmation, operation_fd=held.fd)
+
+
+def _wipe_held(confirmation: str | None, *, operation_fd: int) -> int:
     if confirmation != "REMOVE-TPM2-UNLOCK":
         raise TPMError(
             "wipe requires --destructive-confirmation REMOVE-TPM2-UNLOCK"
@@ -421,6 +449,7 @@ def wipe(confirmation: str | None) -> int:
         result = run_command(
             ("systemd-cryptenroll", str(device), "--wipe-slot=tpm2"),
             timeout=120,
+            operation_fd=operation_fd,
         )
         if result.returncode != 0:
             raise TPMError("could not remove TPM2 enrollment")
@@ -480,6 +509,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "unseal":
             return unseal()
         return wipe(args.destructive_confirmation)
+    except vault_operation.VaultOperationError:
+        log("ERROR: vault operation exclusion unavailable or changed; completion not confirmed")
+        return 1
     except (LUKSError, OSError, TPMError) as error:
         log(f"ERROR: {error}")
         try:

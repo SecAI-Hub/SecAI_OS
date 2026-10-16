@@ -48,9 +48,15 @@ def secure_luks():
 
 
 @pytest.fixture
-def secure_tpm(secure_luks):
+def secure_tpm(secure_luks, tmp_path, monkeypatch):
     del secure_luks
-    return load_module("secure_tpm_vault", TPM_HELPER)
+    module = load_module("secure_tpm_vault", TPM_HELPER)
+    path = tmp_path / "vault-operation.lock"
+    path.touch(mode=0o600)
+    monkeypatch.setattr(module.vault_operation, "_LOCK_PATH", path)
+    monkeypatch.setattr(module.vault_operation, "_OWNER_UID", os.geteuid())
+    monkeypatch.setattr(module.vault_operation, "_OWNER_GID", os.getegid())
+    return module
 
 
 class TestMOKUtility:

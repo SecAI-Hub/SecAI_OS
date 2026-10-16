@@ -25,6 +25,7 @@ terminal with echo disabled. It never accepts a passphrase argument.
 
 import argparse
 import getpass
+import importlib.util
 import json
 import logging
 import math
@@ -43,6 +44,12 @@ from secure_luks import (
     parse_crypttab,
     resolve_device,
 )
+
+_operation_spec = importlib.util.spec_from_file_location(
+    "vault_operation_lock", Path(__file__).with_name("vault-operation-lock.py"))
+assert _operation_spec and _operation_spec.loader
+vault_operation = importlib.util.module_from_spec(_operation_spec)
+_operation_spec.loader.exec_module(vault_operation)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -302,12 +309,12 @@ def start_services() -> tuple[bool, list[str]]:
     return not failures, failures
 
 
-def close_mapper() -> bool:
+def close_mapper(*, operation_fd: int) -> bool:
     """Close the fixed vault mapper and verify that it disappeared."""
     try:
         result = subprocess.run(
             ["cryptsetup", "close", MAPPER_NAME],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, pass_fds=(operation_fd,),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.error("cryptsetup close failed: %s", exc)
@@ -319,6 +326,16 @@ def close_mapper() -> bool:
 
 
 def lock_vault(reason: str = "idle_timeout") -> bool:
+    """Serialize the complete relock, including consumer stop and state commit."""
+    try:
+        with vault_operation.operation() as held:
+            return _lock_vault_held(reason, operation_fd=held.fd)
+    except (vault_operation.VaultOperationError, OSError):
+        log.error("vault relock not confirmed: operation exclusion unavailable or changed")
+        return False
+
+
+def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
     """Lock the vault: stop services, unmount, close LUKS."""
     log.warning("LOCKING VAULT — reason: %s", reason)
     audit_event("vault_lock", reason=reason)
@@ -349,7 +366,7 @@ def lock_vault(reason: str = "idle_timeout") -> bool:
 
     # 2. Sync filesystem
     try:
-        subprocess.run(["sync"], check=True, timeout=10)
+        subprocess.run(["sync"], check=True, timeout=10, pass_fds=(operation_fd,))
     except Exception as e:
         log.error("filesystem sync failed: %s", e)
         write_state("error", f"filesystem sync failed: {e}")
@@ -360,7 +377,7 @@ def lock_vault(reason: str = "idle_timeout") -> bool:
         try:
             result = subprocess.run(
                 ["umount", MOUNT_POINT],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, pass_fds=(operation_fd,),
             )
         except Exception as e:
             log.error("unmount failed: %s", e)
@@ -375,7 +392,7 @@ def lock_vault(reason: str = "idle_timeout") -> bool:
 
     # 4. Close LUKS
     if is_mapper_open():
-        if not close_mapper():
+        if not close_mapper(operation_fd=operation_fd):
             write_state("error", "cryptsetup close failed")
             return False
 
@@ -386,6 +403,15 @@ def lock_vault(reason: str = "idle_timeout") -> bool:
 
 
 def unlock_vault(passphrase: str, partition: str = "") -> dict:
+    """Serialize unlock and its failure relock under one operation exclusion."""
+    try:
+        with vault_operation.operation() as held:
+            return _unlock_vault_held(passphrase, partition, operation_fd=held.fd)
+    except (vault_operation.VaultOperationError, OSError):
+        return {"success": False, "error": "vault operation exclusion unavailable or changed; completion not confirmed"}
+
+
+def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: int) -> dict:
     """Unlock the vault: open LUKS, mount, start services.
 
     The partition is read from /etc/crypttab if not provided.
@@ -402,7 +428,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
     if initial_mount_state == "expected":
         if exact_vault_mount_verified():
             return {"success": True, "detail": "already unlocked"}
-        relocked = lock_vault("preexisting_mount_verification_failed")
+        relocked = _lock_vault_held("preexisting_mount_verification_failed", operation_fd=operation_fd)
         detail = "pre-existing vault mount failed exact verification"
         if not relocked:
             detail += "; automatic relock failed"
@@ -449,6 +475,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=30,
+                pass_fds=(operation_fd,),
             )
             if proc.returncode != 0:
                 audit_event("vault_unlock_failed", reason="authentication_or_device_error")
@@ -470,7 +497,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
                 f"/dev/mapper/{MAPPER_NAME}",
                 MOUNT_POINT,
             ],
-            capture_output=True, check=True, timeout=30,
+            capture_output=True, check=True, timeout=30, pass_fds=(operation_fd,),
         )
         mount_completed = True
         mounted_state, _mounted_source = vault_mount_state()
@@ -488,12 +515,12 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
                     ["umount", MOUNT_POINT],
                     capture_output=True,
                     text=True,
-                    timeout=30,
+                    timeout=30, pass_fds=(operation_fd,),
                 )
                 unmount_failed = unmounted.returncode != 0
             except (OSError, subprocess.SubprocessError):
                 unmount_failed = True
-        cleanup_failed = opened_here and (unmount_failed or not close_mapper())
+        cleanup_failed = opened_here and (unmount_failed or not close_mapper(operation_fd=operation_fd))
         detail = (
             "mount failed and newly opened mapper cleanup failed"
             if cleanup_failed
@@ -508,7 +535,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
     if not services_started:
         detail = f"vault mounted but services failed to start: {', '.join(failures)}"
         audit_event("vault_unlock_partial", failed_services=failures)
-        relocked = lock_vault("service_restart_failed")
+        relocked = _lock_vault_held("service_restart_failed", operation_fd=operation_fd)
         if not relocked:
             detail += "; automatic relock failed"
         write_state("error", detail)
@@ -517,7 +544,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
     # 4. Reset the idle timer after the UI runtime directory exists.
     if not touch_activity():
         detail = "vault activity timer could not be initialized"
-        relocked = lock_vault("activity_timer_initialization_failed")
+        relocked = _lock_vault_held("activity_timer_initialization_failed", operation_fd=operation_fd)
         if not relocked:
             detail += "; automatic relock failed"
         write_state("error", detail)
@@ -525,7 +552,7 @@ def unlock_vault(passphrase: str, partition: str = "") -> dict:
 
     if not write_state("unlocked"):
         detail = "vault state could not be persisted"
-        relocked = lock_vault("state_persistence_failed")
+        relocked = _lock_vault_held("state_persistence_failed", operation_fd=operation_fd)
         if not relocked:
             detail += "; automatic relock failed"
         return {"success": False, "error": detail}
@@ -587,69 +614,77 @@ def watchdog_loop(timeout_minutes: int, check_interval: int):
 
     log.info("vault watchdog started (timeout=%dm, check=%ds)", timeout_minutes, check_interval)
 
-    # Set initial state
-    mount_state, _mount_source = vault_mount_state()
-    if mount_state == "expected":
-        if not exact_vault_mount_verified():
-            lock_vault("startup_exact_mount_verification_failed")
-        elif not write_state("unlocked") or not touch_activity():
-            lock_vault("activity_timer_initialization_failed")
-    elif mount_state == "absent" and not is_mapper_open() and not vault_has_configuration():
-        write_state("setup_required", "encrypted vault is not configured")
-    else:
-        lock_vault(f"startup_mount_state_{mount_state}")
+    # Reconcile only while holding per-operation exclusion, never for the daemon lifetime.
+    try:
+        with vault_operation.operation() as held:
+            # Set initial state
+            mount_state, _mount_source = vault_mount_state()
+            if mount_state == "expected":
+                if not exact_vault_mount_verified():
+                    _lock_vault_held("startup_exact_mount_verification_failed", operation_fd=held.fd)
+                elif not write_state("unlocked") or not touch_activity():
+                    _lock_vault_held("activity_timer_initialization_failed", operation_fd=held.fd)
+            elif mount_state == "absent" and not is_mapper_open() and not vault_has_configuration():
+                write_state("setup_required", "encrypted vault is not configured")
+            else:
+                _lock_vault_held(f"startup_mount_state_{mount_state}", operation_fd=held.fd)
+    except (vault_operation.VaultOperationError, OSError):
+        log.error("vault initial reconciliation deferred: operation exclusion unavailable")
 
     while True:
         time.sleep(check_interval)
+        try:
+            with vault_operation.operation() as held:
+                mount_state, _mount_source = vault_mount_state()
+                if mount_state != "expected":
+                    if mount_state != "absent" or is_mapper_open():
+                        _lock_vault_held(f"runtime_mount_state_{mount_state}", operation_fd=held.fd)
+                        grace_warned = False
+                        continue
+                    state = read_state()
+                    expected_state = "locked" if vault_has_configuration() else "setup_required"
+                    if state.get("state") != expected_state:
+                        write_state(expected_state, "vault not mounted")
+                    grace_warned = False
+                    continue
+                if not exact_vault_mount_verified():
+                    _lock_vault_held("runtime_exact_mount_verification_failed", operation_fd=held.fd)
+                    grace_warned = False
+                    continue
 
-        mount_state, _mount_source = vault_mount_state()
-        if mount_state != "expected":
-            if mount_state != "absent" or is_mapper_open():
-                lock_vault(f"runtime_mount_state_{mount_state}")
-                grace_warned = False
-                continue
-            state = read_state()
-            expected_state = "locked" if vault_has_configuration() else "setup_required"
-            if state.get("state") != expected_state:
-                write_state(expected_state, "vault not mounted")
-            grace_warned = False
-            continue
-        if not exact_vault_mount_verified():
-            lock_vault("runtime_exact_mount_verification_failed")
-            grace_warned = False
-            continue
+                activity_state, last = activity_timestamp()
+                if activity_state == "invalid":
+                    _lock_vault_held("invalid_activity_timestamp", operation_fd=held.fd)
+                    grace_warned = False
+                    continue
+                if activity_state == "missing":
+                    if not touch_activity():
+                        _lock_vault_held("activity_timer_initialization_failed", operation_fd=held.fd)
+                    grace_warned = False
+                    continue
 
-        activity_state, last = activity_timestamp()
-        if activity_state == "invalid":
-            lock_vault("invalid_activity_timestamp")
-            grace_warned = False
-            continue
-        if activity_state == "missing":
-            if not touch_activity():
-                lock_vault("activity_timer_initialization_failed")
-            grace_warned = False
-            continue
+                idle = time.time() - last
 
-        idle = time.time() - last
+                # Grace period warning
+                if idle >= (timeout_seconds - GRACE_PERIOD) and not grace_warned:
+                    remaining = int(timeout_seconds - idle)
+                    log.warning("vault will lock in %d seconds due to inactivity", max(remaining, 0))
+                    write_state("locking_soon", f"locking in {max(remaining, 0)}s")
+                    grace_warned = True
 
-        # Grace period warning
-        if idle >= (timeout_seconds - GRACE_PERIOD) and not grace_warned:
-            remaining = int(timeout_seconds - idle)
-            log.warning("vault will lock in %d seconds due to inactivity", max(remaining, 0))
-            write_state("locking_soon", f"locking in {max(remaining, 0)}s")
-            grace_warned = True
+                # Lock if idle timeout exceeded
+                if idle >= timeout_seconds:
+                    _lock_vault_held("idle_timeout", operation_fd=held.fd)
+                    grace_warned = False
 
-        # Lock if idle timeout exceeded
-        if idle >= timeout_seconds:
-            lock_vault("idle_timeout")
-            grace_warned = False
-
-        # Reset grace warning if activity resumed
-        if idle < (timeout_seconds - GRACE_PERIOD):
-            if grace_warned:
-                log.info("activity detected, lock cancelled")
-                write_state("unlocked")
-            grace_warned = False
+                # Reset grace warning if activity resumed
+                if idle < (timeout_seconds - GRACE_PERIOD):
+                    if grace_warned:
+                        log.info("activity detected, lock cancelled")
+                        write_state("unlocked")
+                    grace_warned = False
+        except (vault_operation.VaultOperationError, OSError):
+            log.error("vault observation deferred: operation exclusion unavailable")
 
 
 def main():
