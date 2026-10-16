@@ -5,6 +5,8 @@ After=secure-ai-network-boot.service secure-ai-registry.service dbus.service
 
 [Service]
 Type=oneshot
+KillMode=control-group
+Delegate=no
 SupplementaryGroups=secure-ai-ui-control secure-ai-services secure-ai-logs
 ExecStart=/usr/libexec/secure-ai/apply-profile.sh
 ExecStopPost=-/bin/rm -f /run/secure-ai-ui/profile-request

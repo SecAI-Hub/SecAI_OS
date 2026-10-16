@@ -7,6 +7,8 @@ Requires=secure-ai-credentials.service secure-ai-vault-mounted.service
 
 [Service]
 Type=oneshot
+KillMode=control-group
+Delegate=no
 ExecStart=/usr/libexec/secure-ai/integrity-check.sh
 Environment=REGISTRY_URL=http://127.0.0.1:8470
 Environment=REGISTRY_DIR=/var/lib/secure-ai/vault/models

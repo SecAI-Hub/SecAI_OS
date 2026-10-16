@@ -7,6 +7,8 @@ Requires=secure-ai-credentials.service secure-ai-vault-mounted.service secure-ai
 
 [Service]
 Type=simple
+KillMode=control-group
+Delegate=no
 # Diffusion worker is DISABLED by default. The base ExecStart fails with a
 # helpful message. To enable: run secai-enable-diffusion.sh, which installs
 # GPU dependencies into a venv and writes a systemd override.

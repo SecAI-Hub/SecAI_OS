@@ -17,6 +17,14 @@ hooks, reopen services, or qualify native restore. Its current tests exercise
 the coordinator with manager/cgroup fixtures and preserve the existing narrow
 update-check admission tests. Native activation and recovery remain gated.
 
+Its `documents_outputs_scope` factory fixes the installed agent, diffusion and
+three activation services, plus their path/timer triggers. Trusted callers must
+already exclude direct diffusion installation and vault setup, unlock, relock
+or mount changes; both live exclusion predicates are mandatory and rechecked
+during closure. The factory does not acquire those interlocks or provide startup
+and fresh-boot admission. This selected scope cannot establish global quiescence
+or authorize active restore.
+
 The internal `secure-native-generation-metadata.py` planner keeps existing
 generation metadata separate from incoming metadata. Existing ownership, modes
 and SELinux labels are read from pinned descriptors without changing them.

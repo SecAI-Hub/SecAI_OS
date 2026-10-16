@@ -8,6 +8,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+KillMode=control-group
+Delegate=no
 ExecStart=/usr/libexec/secure-ai/agent
 Environment=BIND_ADDR=unix:/run/secure-ai/agent/agent.sock
 Environment=INFERENCE_URL=http://127.0.0.1:8465

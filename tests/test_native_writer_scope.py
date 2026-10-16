@@ -1,4 +1,5 @@
 """B2 coordination tests; these do not qualify native activation or restore."""
+import configparser
 import importlib.util
 from pathlib import Path
 
@@ -186,3 +187,175 @@ def test_expiration_during_manager_query_cannot_mutate_or_succeed(manager, monke
         assert manager.actions[-1][0] == "daemon-reload"
     controller.close()
     assert manager.closed is True
+
+
+class InstalledDataManager(Manager):
+    WRITERS = ("secure-ai-agent.service", "secure-ai-diffusion.service",
+               "secure-ai-enable-diffusion.service", "secure-ai-apply-profile.service",
+               "secure-ai-integrity.service")
+    TRIGGERS = ("secure-ai-enable-diffusion.path", "secure-ai-apply-profile.path",
+                "secure-ai-integrity.timer")
+
+    def __init__(self):
+        super().__init__()
+        units = SOURCE.parents[2] / "lib/systemd/system"
+        for name in self.WRITERS:
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            assert parser.read(units / name)
+            for key in ("KillMode", "Delegate", "ProtectControlGroups"):
+                # Exercise the installed declarations, not fabricated defaults.
+                self.values[name][key] = parser["Service"][key]
+            if name in ("secure-ai-agent.service", "secure-ai-diffusion.service"):
+                assert parser["Service"]["DynamicUser"] == "yes"
+        for name in self.TRIGGERS:
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            assert parser.read(units / name)
+            if name.endswith(".path"):
+                assert "PathExists" in parser["Path"]
+            else:
+                assert parser["Timer"]["OnUnitActiveSec"] == "15min"
+
+
+@pytest.fixture
+def installed_manager(tmp_path, monkeypatch):
+    """Real pin/check/empty code on private event-file fixtures, not host cgroups."""
+    manager = InstalledDataManager()
+    parent = tmp_path / "system.slice"
+    parent.mkdir()
+    for name in manager.WRITERS:
+        directory = parent / name
+        directory.mkdir()
+        (directory / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+    real_cgroup = scope.native.Cgroup
+
+    def pin(required, *, trusted_path):
+        assert required is False and trusted_path.parent == parent
+        value = real_cgroup(required, trusted_path=trusted_path)
+        manager.pins[trusted_path.name] = value
+        return value
+
+    monkeypatch.setattr(scope, "CGROUP_PARENT", parent)
+    monkeypatch.setattr(scope.native, "manager", manager.manager)
+    monkeypatch.setattr(scope.native, "root_only", lambda: None)
+    monkeypatch.setattr(scope.native, "Cgroup", pin)
+    return manager
+
+
+def data_scope(manager, *, installer=lambda: True, vault=lambda: True):
+    return scope.documents_outputs_scope(lambda: manager.closed,
+                                         installer_interlock=installer,
+                                         vault_mount_interlock=vault)
+
+
+def test_fixed_data_scope_matches_installed_units_and_pins_every_service(installed_manager):
+    manager = installed_manager
+    controller = data_scope(manager)
+    assert controller.writers == manager.WRITERS and controller.triggers == manager.TRIGGERS
+    try:
+        controller.stop_writers(Deadline(1000))
+        assert controller.quiescent() is True
+        assert manager.actions == [
+            ("mask", "--runtime", "--no-reload", *manager.TRIGGERS, *manager.WRITERS),
+            ("stop", "--no-block", *manager.TRIGGERS, *manager.WRITERS), ("daemon-reload",)]
+        pins = list(manager.pins.values())
+    finally:
+        controller.close()
+    assert all(pin.fd == pin.events_fd == pin.parent_fd == -1 for pin in pins)
+    assert manager.closed is True  # No unmask, reopen, or start action.
+
+
+@pytest.mark.parametrize("interlock", ["installer", "vault"])
+@pytest.mark.parametrize("value", [False, 1, None])
+def test_fixed_data_scope_requires_literal_held_external_exclusions(installed_manager, interlock, value):
+    callbacks = {interlock: lambda: value}
+    controller = data_scope(installed_manager, **callbacks)
+    try:
+        with pytest.raises(scope.Error, match="exclusion is not held"):
+            controller.stop_writers(Deadline(1000))
+        assert installed_manager.actions == []
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("interlock", ["installer", "vault"])
+def test_fixed_data_scope_rechecks_external_exclusions(installed_manager, interlock):
+    held = {"installer": True, "vault": True}
+    controller = data_scope(installed_manager, installer=lambda: held["installer"],
+                            vault=lambda: held["vault"])
+    try:
+        controller.stop_writers(Deadline(1000))
+        held[interlock] = False
+        with pytest.raises(scope.Error, match="exclusion is not held"):
+            controller.quiescent()
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("interlock", ["installer", "vault"])
+def test_fixed_data_scope_stops_mutating_when_exclusion_lapses(installed_manager, monkeypatch, interlock):
+    held = {"installer": True, "vault": True}
+    original = installed_manager.manager
+
+    def manager(*args):
+        value = original(*args)
+        if args[0] == "stop":
+            held[interlock] = False
+        return value
+
+    monkeypatch.setattr(scope.native, "manager", manager)
+    controller = data_scope(installed_manager, installer=lambda: held["installer"],
+                            vault=lambda: held["vault"])
+    try:
+        with pytest.raises(scope.Error, match="exclusion is not held"):
+            controller.stop_writers(Deadline(1000))
+        assert [call[0] for call in installed_manager.actions] == ["mask", "stop"]
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize("unit", InstalledDataManager.WRITERS + InstalledDataManager.TRIGGERS)
+def test_fixed_data_scope_rejects_queued_activation(installed_manager, unit):
+    installed_manager.reappear = unit
+    controller = data_scope(installed_manager)
+    try:
+        with pytest.raises(scope.Error):
+            controller.stop_writers(Deadline(1000))
+    finally:
+        controller.close()
+
+
+def test_fixed_data_scope_checks_real_pin_population(installed_manager):
+    name = installed_manager.WRITERS[2]  # An activator's surviving child matters too.
+    (scope.CGROUP_PARENT / name / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+    controller = data_scope(installed_manager)
+    try:
+        with pytest.raises(scope.Error, match="deadline"):
+            controller.stop_writers(Deadline(200))
+        assert installed_manager.actions[-1][0] == "stop"
+    finally:
+        controller.close()
+
+
+def test_fixed_data_scope_rejects_rebound_pinned_service(installed_manager):
+    controller = data_scope(installed_manager)
+    try:
+        controller.stop_writers(Deadline(1000))
+        directory = scope.CGROUP_PARENT / installed_manager.WRITERS[0]
+        directory.rename(directory.with_suffix(".old"))
+        directory.mkdir()
+        (directory / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+        with pytest.raises(scope.Error, match="cgroup was rebound"):
+            controller.quiescent()
+    finally:
+        controller.close()
+
+
+def test_fixed_data_scope_rejects_missing_capabilities_and_archive_selected_units():
+    with pytest.raises(TypeError):
+        scope.documents_outputs_scope(lambda: True)
+    with pytest.raises(scope.Error, match="predicates required"):
+        scope.documents_outputs_scope(lambda: True, installer_interlock=True,
+                                      vault_mount_interlock=lambda: True)
+    with pytest.raises(TypeError):
+        scope.documents_outputs_scope(lambda: True, installer_interlock=lambda: True,
+                                      vault_mount_interlock=lambda: True, writers=("archive.service",))

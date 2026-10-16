@@ -5,6 +5,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+KillMode=control-group
+Delegate=no
 SupplementaryGroups=secure-ai-ui-control
 ExecStart=/usr/libexec/secure-ai/secai-enable-diffusion.sh --progress-file /run/secure-ai/diffusion-progress.json
 # Backstop cleanup — installer script also removes in trap handler

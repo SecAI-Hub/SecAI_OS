@@ -143,5 +143,42 @@ class WriterScope:
         self.finished = True
 
 
+def documents_outputs_scope(closed: Callable[[], bool], *,
+                            installer_interlock: Callable[[], bool],
+                            vault_mount_interlock: Callable[[], bool]) -> WriterScope:
+    """Fixed installed documents/outputs scope, not a native recovery backend.
+
+    Trusted calling code must first hold exclusion against direct/root diffusion
+    installers (including /var/lib/secure-ai/.diffusion-install.lock) and vault
+    setup/unlock/relock/mount changes. These read-only predicates revalidate
+    already-held exclusions throughout closure; they do not acquire them. A
+    systemd mask cannot prove exclusion against commands outside these units.
+
+    Startup/fresh-boot admission and external interlocks remain separate required
+    integration. DynamicUser identities are preserved; no unit is reopened or
+    started here, and quiescence covers only the fixed installed scope below.
+    """
+    if not all(callable(check) for check in (closed, installer_interlock, vault_mount_interlock)):
+        raise Error("trusted closed-admission and external interlock predicates required")
+
+    def admitted_closed() -> bool:
+        if closed() is not True:
+            return False
+        if installer_interlock() is not True:
+            raise Error("external diffusion installer exclusion is not held")
+        if vault_mount_interlock() is not True:
+            raise Error("external vault mount exclusion is not held")
+        return True
+
+    return WriterScope(
+        ("secure-ai-agent.service", "secure-ai-diffusion.service",
+         "secure-ai-enable-diffusion.service", "secure-ai-apply-profile.service",
+         "secure-ai-integrity.service"),
+        ("secure-ai-enable-diffusion.path", "secure-ai-apply-profile.path",
+         "secure-ai-integrity.timer"),
+        admitted_closed,
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit("internal B2 coordination library; native restore remains unavailable")
