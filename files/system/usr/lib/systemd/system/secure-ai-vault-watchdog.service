@@ -22,6 +22,7 @@ PrivateTmp=yes
 PrivateNetwork=yes
 ProtectProc=invisible
 ProcSubset=pid
+BindReadOnlyPaths=/proc/sys/kernel/random/boot_id:/run/secure-ai-vault-boot-id
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=yes

@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from secure_luks import (
@@ -70,6 +71,103 @@ ACTIVITY_FILE = os.getenv("VAULT_ACTIVITY_FILE", "/run/secure-ai/last-activity")
 STATE_FILE = os.getenv("VAULT_STATE_FILE", "/run/secure-ai/vault-state")
 AUDIT_LOG = "/var/lib/secure-ai/logs/vault-audit.jsonl"
 VAULT_VERIFY = "/usr/libexec/secure-ai/verify-vault-mount.py"
+_BOOT_ID_PATHS = (Path("/proc/sys/kernel/random/boot_id"), Path("/run/secure-ai-vault-boot-id"))
+_PENDING = "pending_operation"
+_MAX_STATE_BYTES = 16384
+
+
+class RuntimeIntentError(RuntimeError):
+    """Runtime intent is unavailable or cannot authorize same-boot reconciliation."""
+
+
+def _boot_id() -> str:
+    """Use only the kernel identity and its fixed read-only sandbox bind."""
+    values = set()
+    for index, path in enumerate(_BOOT_ID_PATHS):
+        try:
+            with path.open("r", encoding="ascii") as handle:
+                raw = handle.read(65)
+        except FileNotFoundError:
+            continue
+        # systemd leaves an empty bind-target placeholder in the host view.
+        # Only the secondary empty file is unavailable; the kernel source is strict.
+        if index == 1 and raw == "":
+            continue
+        value = raw.strip()
+        if not vault_mount.native.guard.valid_uuid(value):
+            raise RuntimeIntentError("invalid kernel boot identity")
+        values.add(value)
+    if len(values) != 1:
+        raise RuntimeIntentError("kernel boot identity unavailable or inconsistent")
+    return values.pop()
+
+
+def _state_record() -> dict:
+    try:
+        with open(STATE_FILE, "rb") as handle:
+            raw = handle.read(_MAX_STATE_BYTES + 1)
+    except FileNotFoundError:
+        return {}
+    if not raw:  # Includes the empty tmpfiles-provisioned runtime record.
+        return {}
+    try:
+        value = vault_mount.native.guard.strict_json(raw, _MAX_STATE_BYTES)
+    except (vault_mount.native.guard.RecoveryError, RecursionError) as exc:
+        raise RuntimeIntentError("invalid runtime state") from exc
+    if not isinstance(value, dict):
+        raise RuntimeIntentError("invalid runtime state object")
+    return value
+
+
+def _pending_operation(record: dict) -> dict | None:
+    if _PENDING not in record:
+        return None
+    value = record[_PENDING]
+    if (not isinstance(value, dict) or
+            set(value) != {"version", "boot_id", "operation_id", "action"} or
+            type(value["version"]) is not int or value["version"] != 1 or
+            not vault_mount.native.guard.valid_uuid(value["boot_id"]) or
+            not vault_mount.native.guard.valid_uuid(value["operation_id"]) or
+            not isinstance(value["action"], str) or value["action"] not in {"lock", "unlock"}):
+        raise RuntimeIntentError("invalid or unsupported runtime operation intent")
+    return value
+
+
+def _begin_operation(action: str) -> bool:
+    """Persist before mutation; rollback retains the original pending operation."""
+    try:
+        pending = _pending_operation(_state_record())
+        boot = _boot_id()
+        if pending is not None and pending["boot_id"] != boot:
+            raise RuntimeIntentError("runtime intent belongs to another boot; local review required")
+        if pending is None:
+            pending = {"version": 1, "boot_id": boot, "operation_id": str(uuid.uuid4()), "action": action}
+        return write_state("error", "vault runtime operation in progress", _pending=pending)
+    except (RuntimeIntentError, OSError, UnicodeError):
+        log.exception("vault runtime intent could not be established")
+        write_state("error", "vault runtime intent unavailable; local review required")
+        return False
+
+
+def _reconcile_operation(*, operation_fd: int) -> bool:
+    """Current-boot interruption only: fixed relock, never replay stored commands."""
+    try:
+        pending = _pending_operation(_state_record())
+        if pending is None:
+            return True
+        if pending["boot_id"] != _boot_id():
+            raise RuntimeIntentError("runtime intent belongs to another boot")
+    except (RuntimeIntentError, OSError, UnicodeError):
+        write_state("error", "invalid or other-boot runtime intent; local review required")
+        return False
+    if not _lock_vault_held("interrupted_runtime_operation", operation_fd=operation_fd):
+        write_state("error", "interrupted vault operation cleanup unconfirmed")
+        return False
+    # A success result alone cannot erase a marker left by incomplete cleanup.
+    try:
+        return _pending_operation(_state_record()) is None
+    except (RuntimeIntentError, OSError, UnicodeError):
+        return False
 
 # Services to stop when locking the vault
 SERVICES_TO_STOP = list(vault_mount.CONSUMERS)
@@ -109,10 +207,26 @@ def read_last_activity() -> float:
     return value if status == "valid" else 0.0
 
 
-def write_state(state: str, detail: str = "") -> bool:
-    """Atomically write current vault state without following the target."""
+def write_state(state: str, detail: str = "", *, _pending: dict | None = None, _complete: bool = False) -> bool:
+    """Atomic status update; observations/errors cannot erase operation intent.
+
+    The private completion flag is used only after verified terminal operations.
+    """
     temporary = ""
     try:
+        previous = _state_record()
+        pending = previous.get(_PENDING)
+        marked = _PENDING in previous
+        if _pending is not None:
+            pending = _pending_operation({_PENDING: _pending})
+            marked = True
+        if _complete and marked:
+            valid = _pending_operation({_PENDING: pending})
+            if valid is None or valid["boot_id"] != _boot_id():
+                raise RuntimeIntentError("cannot complete invalid or other-boot operation")
+            marked = False
+        if marked and state not in {"error", "unknown"}:
+            state, detail = "error", "vault runtime operation incomplete; cleanup required"
         state_path = Path(STATE_FILE)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -120,6 +234,8 @@ def write_state(state: str, detail: str = "") -> bool:
             "timestamp": time.time(),
             "detail": detail,
         }
+        if marked:
+            data[_PENDING] = pending
         fd, temporary = tempfile.mkstemp(
             prefix=f".{state_path.name}.",
             dir=state_path.parent,
@@ -144,8 +260,13 @@ def write_state(state: str, detail: str = "") -> bool:
             raise
         os.replace(temporary, state_path)
         temporary = ""
+        parent_fd = os.open(state_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         return True
-    except OSError as e:
+    except (OSError, RuntimeIntentError, UnicodeError) as e:
         log.error("failed to write state file: %s", e)
         return False
     finally:
@@ -159,8 +280,8 @@ def write_state(state: str, detail: str = "") -> bool:
 def read_state() -> dict:
     """Read current vault state."""
     try:
-        return json.loads(Path(STATE_FILE).read_text())
-    except (OSError, json.JSONDecodeError):
+        return _state_record() or {"state": "unknown", "timestamp": 0}
+    except (OSError, RuntimeIntentError, UnicodeError):
         return {"state": "unknown", "timestamp": 0}
 
 
@@ -310,6 +431,8 @@ def lock_vault(reason: str = "idle_timeout") -> bool:
 
 def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
     """Lock the vault: stop services, unmount, close LUKS."""
+    if not _begin_operation("lock"):
+        return False
     log.warning("LOCKING VAULT — reason: %s", reason)
     audit_event("vault_lock", reason=reason)
 
@@ -335,7 +458,7 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
             write_state("error", "host vault absence or consumer drain unconfirmed")
             return False
         state = "locked" if vault_has_configuration() else "setup_required"
-        if not write_state(state, reason):
+        if not write_state(state, reason, _complete=True):
             return False
         log.info("vault is not mounted (%s)", state)
         return True
@@ -366,7 +489,7 @@ def _lock_vault_held(reason: str, *, operation_fd: int) -> bool:
     if not _host_absent_and_idle():
         write_state("error", "vault reactivation observed after mapper close")
         return False
-    if not write_state("locked", reason):
+    if not write_state("locked", reason, _complete=True):
         return False
     log.info("vault locked successfully")
     return True
@@ -393,6 +516,9 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
         or len(passphrase.encode("utf-8")) > 4096
     ):
         return {"success": False, "error": "vault passphrase is empty or too long"}
+
+    if not _reconcile_operation(operation_fd=operation_fd):
+        return {"success": False, "error": "interrupted vault operation requires confirmed cleanup or local review"}
 
     initial_mount_state, initial_source = vault_mount_state()
     if initial_mount_state == "expected":
@@ -426,6 +552,9 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
                 "success": False,
                 "error": "vault partition must resolve to an exact block device",
             }
+    if not _begin_operation("unlock"):
+        return {"success": False, "error": "vault runtime intent could not be persisted"}
+    if opened_here:
         try:
             proc = subprocess.run(
                 [
@@ -506,7 +635,7 @@ def _unlock_vault_held(passphrase: str, partition: str = "", *, operation_fd: in
             detail += "; automatic relock failed"
         write_state("error", detail)
         return {"success": False, "error": detail}
-    if not write_state("unlocked"):
+    if not write_state("unlocked", _complete=True):
         detail = "vault state could not be persisted"
         relocked = _lock_vault_held("state_persistence_failed", operation_fd=operation_fd)
         if not relocked:
@@ -563,6 +692,20 @@ def _find_partition_from_crypttab() -> str:
         return ""
 
 
+def _initial_observation(*, operation_fd: int):
+    """Observe unmarked runtime state, preserving ordinary fresh-boot adoption."""
+    mount_state, _mount_source = vault_mount_state()
+    if mount_state == "expected":
+        if not exact_vault_mount_verified():
+            _lock_vault_held("startup_exact_mount_verification_failed", operation_fd=operation_fd)
+        elif not write_state("unlocked") or not touch_activity():
+            _lock_vault_held("activity_timer_initialization_failed", operation_fd=operation_fd)
+    elif mount_state == "absent" and not is_mapper_open() and not vault_has_configuration():
+        write_state("setup_required", "encrypted vault is not configured")
+    else:
+        _lock_vault_held(f"startup_mount_state_{mount_state}", operation_fd=operation_fd)
+
+
 def watchdog_loop(timeout_minutes: int, check_interval: int):
     """Main watchdog loop. Monitors activity and locks on idle timeout."""
     timeout_seconds = timeout_minutes * 60
@@ -573,17 +716,11 @@ def watchdog_loop(timeout_minutes: int, check_interval: int):
     # Reconcile only while holding per-operation exclusion, never for the daemon lifetime.
     try:
         with vault_operation.operation() as held:
-            # Set initial state
-            mount_state, _mount_source = vault_mount_state()
-            if mount_state == "expected":
-                if not exact_vault_mount_verified():
-                    _lock_vault_held("startup_exact_mount_verification_failed", operation_fd=held.fd)
-                elif not write_state("unlocked") or not touch_activity():
-                    _lock_vault_held("activity_timer_initialization_failed", operation_fd=held.fd)
-            elif mount_state == "absent" and not is_mapper_open() and not vault_has_configuration():
-                write_state("setup_required", "encrypted vault is not configured")
+            # Pending runtime work takes precedence over mount/status adoption.
+            if not _reconcile_operation(operation_fd=held.fd):
+                log.error("vault initial reconciliation incomplete")
             else:
-                _lock_vault_held(f"startup_mount_state_{mount_state}", operation_fd=held.fd)
+                _initial_observation(operation_fd=held.fd)
     except (vault_operation.VaultOperationError, OSError):
         log.error("vault initial reconciliation deferred: operation exclusion unavailable")
 
@@ -591,6 +728,9 @@ def watchdog_loop(timeout_minutes: int, check_interval: int):
         time.sleep(check_interval)
         try:
             with vault_operation.operation() as held:
+                if not _reconcile_operation(operation_fd=held.fd):
+                    grace_warned = False
+                    continue
                 mount_state, _mount_source = vault_mount_state()
                 if mount_state != "expected":
                     if mount_state != "absent" or is_mapper_open():

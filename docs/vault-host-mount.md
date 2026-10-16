@@ -47,7 +47,49 @@ remain required.
 
 There is no persistent boot/producer admission policy in this change. Runtime
 checks reject observed reactivation, but do not provide a race-free global fence
-against external asynchronous activators, arbitrary root actions, or owner kills.
+against external asynchronous activators or arbitrary root actions. An owner kill
+can still leave work running until the next cooperating reconciliation.
 PID1 jobs do not inherit the advisory operation flock. Unknown external namespace
 pins can still keep the mapper busy; that remains an error requiring inspection,
 not proof of successful encrypted relock or global quiescence.
+
+
+## Interrupted runtime operations in the same boot
+
+Before runtime lock/unlock first changes consumers, the mapper or the mount, the
+watchdog atomically commits a non-secret `pending_operation` in the existing
+`/run/secure-ai/vault-state` JSON record, syncing its file and parent directory.
+The version-1 marker contains only the current kernel boot UUID, a generated
+operation UUID, and the fixed action `lock` or `unlock`. It contains no passphrase,
+device, path, unit or command. Error/status updates preserve the marker and cannot
+advertise a completed locked/unlocked state. Only verified terminal completion
+removes it; failed cleanup retains it, including when the mount is already absent.
+A post-rename state sync failure reports failure, not rollback of that publication.
+
+Under the existing operation flock, startup and every observation iteration check
+for pending work before adopting a mount/status. A valid current-boot marker
+requests the existing fixed consumer-drain/relock path, not replay of stored
+commands. Unconfirmed cleanup leaves an error and pending marker for retry.
+Explicit trusted manual unlock first settles an interrupted operation under the
+same held flock, then performs the new requested unlock. It cannot skip cleanup
+through the already-mounted shortcut.
+
+Malformed, duplicate-key, oversized, unsupported-version and other-boot records
+fail closed and require trusted local inspection; they are not silently cleared or
+used as boot authorization. The daemon retains `ProcSubset=pid` and reads the
+kernel boot UUID through its fixed read-only bind at
+`/run/secure-ai-vault-boot-id`; console commands can read the normal proc path.
+Available nonempty sources must agree; the zero-byte secondary target placeholder
+left in the host namespace is unavailable, while the original kernel source stays
+strict. Missing/empty tmpfiles records and legacy unmarked runtime status retain
+ordinary fresh-boot/TPM mount adoption. No marker can identify an interruption
+that occurred before this protocol was installed or after a root operator removed
+its state.
+
+This is runtime same-boot reconciliation, not persistent boot recovery, a change
+to setup/TPM operation intent, producer admission or global fencing. It cannot
+prevent a killed owner from leaving a PID1 job; it ensures cooperating observers
+attempt fixed cleanup before claiming completion. Unknown external jobs, root
+changes and namespace pins remain outside this guarantee. Tests simulate owner
+loss and devices/jobs; no native Fedora LUKS/MAC or power-loss qualification is
+claimed by those tests.

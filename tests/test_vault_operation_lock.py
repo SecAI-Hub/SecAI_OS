@@ -48,6 +48,7 @@ def watchdog(tmp_path, monkeypatch):
         monkeypatch.setattr(module.vault_operation, "_OWNER_UID", os.geteuid())
         monkeypatch.setattr(module.vault_operation, "_OWNER_GID", os.getegid())
         monkeypatch.setattr(module.vault_operation, "_ACQUIRE_SECONDS", 0.05)
+    monkeypatch.setattr(module, "STATE_FILE", str(tmp_path / "vault-state"))
     monkeypatch.setattr(module, "audit_event", Mock())
     monkeypatch.setattr(module, "write_state", Mock(return_value=True))
     monkeypatch.setattr(module, "stop_services", Mock(return_value=True))
@@ -92,7 +93,7 @@ def test_unlock_failure_relocks_with_the_same_held_operation(watchdog, tmp_path,
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0))
     monkeypatch.setattr(module, "start_services", lambda: (reason != "services", ["fixture"]))
     monkeypatch.setattr(module, "touch_activity", lambda: reason != "activity")
-    monkeypatch.setattr(module, "write_state", lambda state, *a: not (reason == "state" and state == "unlocked"))
+    monkeypatch.setattr(module, "write_state", lambda state, *a, **kw: not (reason == "state" and state == "unlocked"))
     relocks = []
 
     def relock(why, *, operation_fd):

@@ -185,6 +185,7 @@ def watchdog(manager, tmp_path, monkeypatch):
     monkeypatch.setattr(watch.vault_operation, "_LOCK_PATH", lock)
     monkeypatch.setattr(watch.vault_operation, "_OWNER_UID", os.geteuid())
     monkeypatch.setattr(watch.vault_operation, "_OWNER_GID", os.getegid())
+    monkeypatch.setattr(watch, "STATE_FILE", str(tmp_path / "vault-state"))
     monkeypatch.setattr(watch, "audit_event", Mock())
     monkeypatch.setattr(watch, "write_state", Mock(return_value=True))
     return watch
