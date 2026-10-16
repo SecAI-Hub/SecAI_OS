@@ -419,3 +419,55 @@ def test_legacy_source_copy_has_limits_before_payload_copy(tmp_path):
     copied = destination / source.absolute().relative_to("/") / "file"
     assert copied.read_bytes() == b"x" * 1000
     assert stat.S_IMODE(copied.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("prefix", [".agent-write-", ".diffusion-write-"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_unfinished_output_workspaces_block_export(source, policy, tmp_path, prefix, nested):
+    root = source / "var/lib/secure-ai/vault/outputs"
+    root.mkdir()
+    workspace = root / ("nested" if nested else "") / (prefix + "a" * 32)
+    workspace.mkdir(parents=True, mode=0o700)
+    payload = workspace / "payload.mp4"
+    payload.write_bytes(b"unfinished private encoder bytes")
+    output = tmp_path / "unfinished.gz"
+    with pytest.raises(v3.ArchiveError, match="unfinished output"):
+        v3.create_archive(source, output, policy, ["user-outputs"], "1" * 64)
+    assert not output.exists()
+    assert payload.read_bytes() == b"unfinished private encoder bytes"
+
+
+@pytest.mark.parametrize("prefix", [".agent-write-", ".diffusion-write-"])
+@pytest.mark.parametrize("directory", [False, True])
+def test_unfinished_output_names_rejected_in_archive(source, policy, tmp_path, prefix, directory):
+    root = source / "var/lib/secure-ai/vault/outputs"
+    root.mkdir()
+    if directory:
+        (root / "ordinary").mkdir()
+        (root / "ordinary/result.png").write_bytes(b"retained output")
+    else:
+        (root / "ordinary").write_bytes(b"retained output")
+    original = tmp_path / "ordinary.gz"
+    manifest = v3.create_archive(source, original, policy, ["user-outputs"], "1" * 64)
+    reserved = prefix + "b" * 32
+    for record in manifest["directories"] + manifest["objects"]:
+        if record["class"] == "user-outputs" and record["path"].startswith("ordinary"):
+            record["path"] = reserved + record["path"][len("ordinary"):]
+    changed = tmp_path / "unfinished.gz"
+    repack(changed, original, manifest)
+    assert_rejected(changed, policy, tmp_path, match="unfinished output")
+
+
+def test_workspace_spelling_is_preserved_in_documents_and_ordinary_outputs(source, policy, tmp_path):
+    docs = source / "var/lib/secure-ai/vault/user_docs"
+    (docs / ".diffusion-write-not-an-output").write_bytes(b"ordinary document")
+    outputs = source / "var/lib/secure-ai/vault/outputs"
+    outputs.mkdir()
+    (outputs / "result.png").write_bytes(b"complete output")
+    (outputs / ".ordinary-hidden-output").write_bytes(b"hidden user output")
+    archive = tmp_path / "ordinary.gz"
+    manifest = v3.create_archive(source, archive, policy,
+                                 ["user-documents", "user-outputs"], "1" * 64)
+    assert v3.read_archive(archive, policy) == manifest
+    assert any(record["path"] == ".diffusion-write-not-an-output"
+               and record["class"] == "user-documents" for record in manifest["objects"])

@@ -133,6 +133,14 @@ are explicitly excluded. Catalog job roots require a sanitized producer export;
 raw operational jobs, worker locks/readiness, pending markers and old grants are
 never exported by the byte adapter. A pending marker is not successful state.
 
+The outputs byte adapter reserves `.agent-write-*` and `.diffusion-write-*`
+path components for private producer work. Export fails before payload copying
+if either is present, preserving the source for reconciliation. Archive
+validation and private incoming materialization reject those names as well;
+unfinished or ambiguously retained work cannot become completed user output.
+Ordinary hidden output names and document filenames are unaffected. This does
+not supply writer quiescence or automatically recover an interrupted producer.
+
 ## Resource and source boundaries
 
 Default ceilings are 65 GiB ciphertext, 64 GiB compressed archive, 64 GiB payload,

@@ -93,6 +93,20 @@ def unchanged(tree):
     assert (tree.parent / "active/original").read_bytes() == b"active bytes"
 
 
+@pytest.mark.parametrize("prefix", [".agent-write-", ".diffusion-write-"])
+def test_unfinished_output_workspace_cannot_be_published(tree, prefix):
+    pending = tree.source / "nested" / (prefix + "a" * 32)
+    pending.mkdir(mode=0o700)
+    (pending / "payload").write_bytes(b"unfinished bytes")
+    (pending / "payload").chmod(0o600)
+    with pytest.raises(stage.StageError, match="unfinished output") as error:
+        stage.materialize_incoming(tree.destination, tree.origin, "user-outputs")
+    assert error.value.published is False
+    assert sorted(path.name for path in tree.parent.iterdir()) == ["active"]
+    assert (pending / "payload").read_bytes() == b"unfinished bytes"
+    unchanged(tree)
+
+
 @pytest.fixture
 def archive_tree(tree, tmp_path):
     spec = importlib.util.spec_from_file_location("stage_test_v3", SOURCE.with_name("secure-backup-v3.py"))

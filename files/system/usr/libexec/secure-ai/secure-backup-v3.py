@@ -393,7 +393,7 @@ def validate_manifest(value: object, actual: dict, installed: dict, limits: Limi
             name = record["class"]
             if not isinstance(name, str) or name not in known or classes[name]["disposition"] not in {"included", "empty"}:
                 raise ArchiveError("object belongs to unknown, excluded or unselected class")
-            path = inventory.relative_name(record["path"], limits, root=is_dir)
+            path = inventory.data_name(name, record["path"], limits, root=is_dir)
             key = (name, path)
             collision = (name, inventory.collision_name(path))
             if key in paths or collision in collision_paths:
@@ -553,6 +553,9 @@ def create_archive(root: Path, output: Path, installed: dict, selected: list[str
                 raise ArchiveError("output must be outside included source roots")
             tree = inventory.SourceTree(root / known[name]["source"], limits, budget)
             trees[name] = tree
+            for record in tree.records:
+                budget.check()
+                inventory.data_name(name, record["path"], limits, root=record["kind"] == "directory")
         # Conservative space estimate before the first source byte is copied.
         required = budget.total + budget.entries * 1024 + limits.manifest + 10240
         inventory.check_space(parent, min(required, limits.archive), limits)

@@ -160,6 +160,16 @@ def collision_name(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
+def data_name(class_id: str, value: object, limits: Limits, *, root: bool = False) -> str:
+    """Validate inert class names without admitting private output workspaces."""
+    name = relative_name(value, limits, root=root)
+    if class_id == "user-outputs" and any(
+        part.startswith((".agent-write-", ".diffusion-write-")) for part in name.split("/")
+    ):
+        raise ArchiveError("unfinished output workspace requires producer reconciliation")
+    return name
+
+
 def identity(metadata: os.stat_result) -> tuple:
     return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
             metadata.st_uid, metadata.st_gid, metadata.st_size,

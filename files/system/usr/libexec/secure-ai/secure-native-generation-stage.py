@@ -310,6 +310,7 @@ def _materialize(parent: PinnedDirectory, source: PinnedDirectory, class_id: str
             raise Error("verified source binding changed")
         for record in tree.records:
             budget.check()
+            inventory.data_name(class_id, record["path"], limits, root=record["kind"] == "directory")
             value = tree.directories[record["path"]] if record["kind"] == "directory" else record["identity"]
             if value[4] != os.geteuid() or stat.S_IMODE(value[2]) != (0o700 if record["kind"] == "directory" else 0o600):
                 raise Error("verified source is not a private inert tree")
