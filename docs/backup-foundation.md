@@ -67,6 +67,24 @@ Gate/NativeDataGate must still reject closed, stale, incomplete or unverified
 history. Unit hook installation, FDSTORE/lifetime handoff, authority provisioning,
 boot readiness and native MAC qualification remain separate required integration.
 
+The fixed `secure-data-admission.py` helper now supplies prehook/supervise modes
+for agent, enable-diffusion, apply-profile and integrity only. Prehook uses actual
+`NativeDataGate` at the fixed private data-admission authority/runtime paths,
+including the two installed class policies and Gate readiness/history checks;
+missing authority is failure, never initialization or reopening. Only the shared
+lease FD is transferred under an invocation-bound name, with PID1 acknowledgement
+and max-one/preserve-no/NotifyAccess-exec checks. The normal service UID retains
+that descriptor, launches only its fixed command with activation FDs/environment
+removed, and waits for the independently pinned cgroup after direct-child exit.
+Normal exit status is preserved after residual drain; TERM/INT/HUP are forwarded
+to the direct child and reported conventionally. An unprovable runtime failure
+reports failure, relying on PID1's qualified control-group teardown/FDSTORE
+lifetime backstop; it is not cgroup-empty proof. Diffusion is explicitly rejected
+in both modes pending fixed venv/Landlock/Gunicorn integration. No hooks, installer
+overrides, provisioning, boot readiness or restore enablement are installed here.
+Tests use actual NativeDataGate with fixture installed policies, private real
+flocks/FD transfer and owned child processes; PID1/cgroup metadata is simulated.
+
 The internal `secure-native-generation-metadata.py` planner keeps existing
 generation metadata separate from incoming metadata. Existing ownership, modes
 and SELinux labels are read from pinned descriptors without changing them.
