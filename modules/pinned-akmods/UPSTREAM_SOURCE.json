@@ -11,10 +11,10 @@
   "review_receipt_sha256": "3b47b2d75b01945cff52dbbc4bb7d316b6c70e5a219468edfc5d4a0107930c87",
   "trusted_ublue_key_sha256": "af78ecfda6eb21c35195af3739341715e9cfc3f2f5911dd9c10b0670547bf6e8",
   "reviewed_inputs": {
-    "base": "ghcr.io/ublue-os/silverblue-main@sha256:30bb3c773b17a7b912458f937a89a2bb373288cfc6c44751532f8e4f6ab9b51d",
-    "common": "ghcr.io/ublue-os/akmods@sha256:42c7592e3a3bad44d3792f63e521faf39951a77ae48fccea64b6bcb9f928ba87",
-    "nvidia_open": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:5ee11a297bd272e192cd452e362af721181a140d2e403d480ff5e0c26b90b6d9",
-    "kernel": "7.2.9-200.fc44.x86_64"
+    "base": "ghcr.io/ublue-os/silverblue-main@sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612",
+    "common": "ghcr.io/ublue-os/akmods@sha256:606ec67c9f5d6a1f738ba1b3d5bb1b0b1d1b9b6358a192112ed7dfc12049f225",
+    "nvidia_open": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:355ad2f68ee9547979ff5aa2c67311636b968e3dc3f6290a06bc4ca82f9471c3",
+    "kernel": "7.2.10-200.fc44.x86_64"
   },
   "signature_verification": "Reviewed base/common/NVIDIA exact digests signed by trusted uBlue key with exact repository identity claims and bundled offline transparency log checks. Upstream module source is bound by OCI manifest/layer SHA, not an independently verified module signature.",
   "local_changes": [
@@ -27,8 +27,8 @@
     "Four preserved RPMFusion URL arguments quoted for ShellCheck0.11; no supported-flow change."
   ],
   "current_existing_image_driver_receipt": "/home/cru/Documents/SecOS-implementation-2026-09-04/fedora44-base-review-20261010-01/current-driver-receipt.json",
-  "qualification_limit": "Current existing image RPM/module consistency does not qualify new30bb/42c/5ee build; no loadeddriver/MOK/hardware proof.",
-  "local_script_sha256": "8c17db080a96d5f5ff645cb7de4ad12ad4043651ec00f48bf0e8e18f5cd21fe2",
+  "qualification_limit": "The current inputs have verified vendor signatures and matching kernel/architecture metadata only. Historical existing-image RPM/module checks do not qualify the current build. A fresh installed-image build, RPM/module consistency checks and native GPU/Secure Boot/TPM qualification remain required.",
+  "local_script_sha256": "563733a7b1201ad6d7dcae7a28d890ca94516350422bf6c53f5fa902def3c0e1",
   "upstream_license": {
     "spdx_id": "Apache-2.0",
     "source": "https://api.github.com/repos/blue-build/modules/git/blobs/d79ba59ce103b08d7eced746dd7f28a2c6ff8676",
@@ -36,5 +36,7 @@
     "sha256": "39b73b1f2197e679ec8af53ba242f2be503b13ae5ab0eee89828a10952a4953a",
     "local_file": "LICENSE",
     "notice": "NOTICE"
-  }
+  },
+  "input_review_receipt": "modules/pinned-akmods/INPUT_REVIEW.json",
+  "input_review_receipt_sha256": "8c420e18803a7542459ee87f876bd56d9f2b7d29d7c036def38febfa158f256b"
 }

@@ -2,7 +2,7 @@
 # Derived from the digest-verified upstream module; see UPSTREAM_SOURCE.json.
 set -euo pipefail
 
-EXPECTED_KERNEL="7.2.9-200.fc44.x86_64"
+EXPECTED_KERNEL="7.2.10-200.fc44.x86_64"
 
 pinned_fail() {
     echo "ERROR: pinned-akmods: $*" >&2
@@ -85,13 +85,13 @@ BASE_IMAGE_NAME=${BASE_IMAGE##*/}
 BASE_IMAGE_NAME=${BASE_IMAGE_NAME%-*}
 
 # Fetch Common AKMODS & Kernel RPMS
-skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods@sha256:42c7592e3a3bad44d3792f63e521faf39951a77ae48fccea64b6bcb9f928ba87 dir:/tmp/akmods
+skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods@sha256:606ec67c9f5d6a1f738ba1b3d5bb1b0b1d1b9b6358a192112ed7dfc12049f225 dir:/tmp/akmods
 AKMODS_TARGZ=$(jq -r '.layers[].digest' </tmp/akmods/manifest.json | cut -d : -f 2)
 tar -xvzf /tmp/akmods/"$AKMODS_TARGZ" -C /tmp/
 mv /tmp/rpms/* /tmp/akmods/
 
 echo "Pulling akmods nvidia image"
-skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-nvidia-open@sha256:5ee11a297bd272e192cd452e362af721181a140d2e403d480ff5e0c26b90b6d9 dir:/tmp/akmods-rpms
+skopeo copy --retry-times 3 docker://ghcr.io/ublue-os/akmods-nvidia-open@sha256:355ad2f68ee9547979ff5aa2c67311636b968e3dc3f6290a06bc4ca82f9471c3 dir:/tmp/akmods-rpms
 
 NVIDIA_TARGZ=$(jq -r '.layers[].digest' </tmp/akmods-rpms/manifest.json | cut -d : -f 2)
 tar -xvzf /tmp/akmods-rpms/"$NVIDIA_TARGZ" -C /tmp/

@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "reviewed_utc": "2026-10-16T22:32:01.340038+00:00",
+  "reviewed_inputs": {
+    "base": "ghcr.io/ublue-os/silverblue-main@sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612",
+    "common": "ghcr.io/ublue-os/akmods@sha256:606ec67c9f5d6a1f738ba1b3d5bb1b0b1d1b9b6358a192112ed7dfc12049f225",
+    "nvidia_open": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:355ad2f68ee9547979ff5aa2c67311636b968e3dc3f6290a06bc4ca82f9471c3",
+    "kernel": "7.2.10-200.fc44.x86_64"
+  },
+  "trusted_ublue_key_sha256": "af78ecfda6eb21c35195af3739341715e9cfc3f2f5911dd9c10b0670547bf6e8",
+  "verification": {
+    "tool": "cosign",
+    "version": "v3.1.3",
+    "tool_sha256": "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71",
+    "tool_bootstrap": "Official HTTPS release plus API asset SHA and same-release checksum integrity; not independent signing of tool.",
+    "command": [
+      "cosign",
+      "verify",
+      "--key",
+      "<trusted-ublue-key>",
+      "<exact-subject>"
+    ],
+    "default_signature_and_transparency_checks": true
+  },
+  "signatures": [
+    {
+      "subject": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:355ad2f68ee9547979ff5aa2c67311636b968e3dc3f6290a06bc4ca82f9471c3",
+      "exit_code": 0,
+      "default_transparency_verification": true,
+      "verified_signature_count": 2,
+      "signed_identity_claims": [
+        "ghcr.io/ublue-os/akmods-nvidia-open:main-44",
+        "ghcr.io/ublue-os/akmods-nvidia-open:main-44-7.2.10-200.fc44"
+      ],
+      "digest_checked": true,
+      "repository_claims_checked": true,
+      "stdout_sha256": "9b8b8ad0f529cf91d22f284eff673017a6c3002be552cb52a7afcce3870e3cbd",
+      "stderr_sha256": "29134ed99170453c2c6860b0f493ed27cb9d4127929a425a82c614c3d0d0b420"
+    },
+    {
+      "subject": "ghcr.io/ublue-os/akmods@sha256:606ec67c9f5d6a1f738ba1b3d5bb1b0b1d1b9b6358a192112ed7dfc12049f225",
+      "exit_code": 0,
+      "default_transparency_verification": true,
+      "verified_signature_count": 2,
+      "signed_identity_claims": [
+        "ghcr.io/ublue-os/akmods:main-44",
+        "ghcr.io/ublue-os/akmods:main-44-7.2.10-200.fc44"
+      ],
+      "digest_checked": true,
+      "repository_claims_checked": true,
+      "stdout_sha256": "7695858342f75afc38129a24a84563bc6ef05bda7704df3a2df45f80fef5d040",
+      "stderr_sha256": "21fffc45e7cd022f76001b141faa73ef8d88210671bb39b11508fdbb119dfce7"
+    },
+    {
+      "subject": "ghcr.io/ublue-os/silverblue-main@sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612",
+      "exit_code": 0,
+      "default_transparency_verification": true,
+      "verified_signature_count": 1,
+      "signed_identity_claims": [
+        "ghcr.io/ublue-os/silverblue-main"
+      ],
+      "digest_checked": true,
+      "repository_claims_checked": true,
+      "stdout_sha256": "f07a8251e9fe5152c3a4bb9319307b696a837adb1c09426d46994db2dee64f8d",
+      "stderr_sha256": "2e2467983c5f682dc56736d19ac20e618780f881ccd81fe35d90fd53becf673d"
+    }
+  ],
+  "immutable_metadata": [
+    {
+      "subject": "ghcr.io/ublue-os/silverblue-main@sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612",
+      "os": "linux",
+      "architecture": "amd64",
+      "kernel": "7.2.10-200.fc44.x86_64",
+      "amd64_manifest": "sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612",
+      "config": {
+        "digest": "sha256:5673bfcf22d7362cce61c60edd4bdf5c722cdca0ed88413b331db234fce68ba5",
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "size": 43075
+      },
+      "version": "44.20261016.1"
+    },
+    {
+      "subject": "ghcr.io/ublue-os/akmods@sha256:606ec67c9f5d6a1f738ba1b3d5bb1b0b1d1b9b6358a192112ed7dfc12049f225",
+      "os": "linux",
+      "architecture": "amd64",
+      "kernel": "7.2.10-200.fc44.x86_64",
+      "amd64_manifest": "sha256:a6107f5ba92d71f2e08a2655bd3c187852887e449cca8f56d8f834c2df3c1667",
+      "config": {
+        "digest": "sha256:e64682828152aeff0985334513c5d299744a86fe596908f01b657c9e415628d9",
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "size": 2747
+      },
+      "version": "7.2.10-200.fc44.x86_64-20261015"
+    },
+    {
+      "subject": "ghcr.io/ublue-os/akmods-nvidia-open@sha256:355ad2f68ee9547979ff5aa2c67311636b968e3dc3f6290a06bc4ca82f9471c3",
+      "os": "linux",
+      "architecture": "amd64",
+      "kernel": "7.2.10-200.fc44.x86_64",
+      "amd64_manifest": "sha256:170d097b1a9754ad890c40df7bcc4fcaec3c366d5b0b20b5716b8bf161073445",
+      "config": {
+        "digest": "sha256:f1e8d336bea5fe5c8337a87e7afdd95dac25aa7e6e179fdaada4d672f2404eb7",
+        "mediaType": "application/vnd.oci.image.config.v1+json",
+        "size": 2803
+      },
+      "version": "7.2.10-200.fc44.x86_64-20261015"
+    }
+  ],
+  "evidence_sha256": {
+    "signature_review": "6f185a9e545e486e73bcdfa18c5356486bd25950bb2a32273206daad148d4fde",
+    "registry_metadata_review": "52593f62087f2ea9d360d3e10fee8ca9f8811e62691715ee48c0fba9028362d0"
+  },
+  "qualification": {
+    "vendor_signatures": true,
+    "matching_kernel_architecture_metadata": true,
+    "installed_image": false,
+    "rpm_dependencies": false,
+    "nvidia_userspace_module_vermagic": false,
+    "native_gpu_secureboot_tpm": false
+  },
+  "limits": [
+    "Metadata and vendor signatures do not establish installed RPM dependencies or module/userspace compatibility.",
+    "A fresh image must pass the retained kernel-core, NVIDIA version and all four module vermagic checks.",
+    "The historical existing-image driver receipt is not qualification for these inputs.",
+    "No filesystem layers were pulled during this review; no development-host driver or operating-system changes."
+  ]
+}

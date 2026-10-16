@@ -2,13 +2,13 @@
 useDefault = true
 
 # Public provenance digests, not bearer credentials. Match exact file/value
-# pairs so new findings in either file remain subject to the default rules.
+# pairs so other values in these files remain subject to the default rules.
 [[rules]]
 id = "generic-api-key"
 [[rules.allowlists]]
 condition = "AND"
 regexTarget = "secret"
-paths = ['''(^|/)modules/pinned-akmods/UPSTREAM_SOURCE\.json$''']
+paths = ['''(^|/)modules/pinned-akmods/(UPSTREAM_SOURCE|INPUT_REVIEW)\.json$''']
 regexes = ['''^af78ecfda6eb21c35195af3739341715e9cfc3f2f5911dd9c10b0670547bf6e8$''']
 
 [[rules.allowlists]]

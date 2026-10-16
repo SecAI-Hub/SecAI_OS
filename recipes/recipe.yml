@@ -19,7 +19,7 @@ labels:
 # The scheduled build fails when that tag moves so a reviewed digest refresh is
 # required instead of silently changing the base of a signed appliance.
 base-image: ghcr.io/ublue-os/silverblue-main
-image-version: "44@sha256:30bb3c773b17a7b912458f937a89a2bb373288cfc6c44751532f8e4f6ab9b51d"
+image-version: "44@sha256:7f829bceba48df411642833d9f3c2b8d6ed49d89ce8a1963f686a7f57b74c612"
 # BlueBuild installs cosign from its upstream OCI image. Keep that helper
 # immutable as well; Fedora 44 does not publish a `cosign` RPM.
 cosign-version: "3.1.3@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8"
