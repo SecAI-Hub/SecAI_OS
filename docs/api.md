@@ -328,6 +328,14 @@ window and do not grant permission to use a model.
 | POST | `/api/generate/img2img` | Image-to-image generation. |
 | GET | `/api/diffusion/models` | Diffusion model inventory. |
 
+Generated images and videos receive unique filenames and become visible only
+after encoding and checked publication complete. The output directory must
+already be provisioned by vault or sandbox setup; a missing or linked directory
+causes publication to fail. Publication applies to each file, so completed images
+remain available if a later image in the same request fails. An error reports
+an uncertain publication outcome when necessary and preserves affected work for
+operator review; retrying may create another complete output.
+
 Inference clients use separate UI and agent credentials. An absent or unsafe
 inference credential prevents the inference RPC; there is no fallback to the
 generic service credential. Inference requests ignore ambient proxies and netrc

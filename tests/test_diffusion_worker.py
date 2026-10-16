@@ -46,6 +46,389 @@ def _load_module():
     return module
 
 
+@pytest.fixture
+def generated_output_case(tmp_path, monkeypatch):
+    """Exercise all publication routes without loading a model or GPU library."""
+    module = _load_module()
+    module.app.config["TESTING"] = True
+    module._find_diffusion_models = lambda: [
+        {"name": "tiny-image", "path": "/tmp/tiny-image", "type": "image",
+         "capabilities": ["txt2img", "img2img"]},
+        {"name": "tiny-video", "path": "/tmp/tiny-video", "type": "video",
+         "class": "StableVideoDiffusionPipeline", "capabilities": ["img2vid"]},
+    ]
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    state = types.SimpleNamespace(module=module, outputs=outputs, calls=0, video_hook=None,
+                                  png_encodings=0, vary_png=False)
+
+    class OutputImage:
+        def __init__(self, content):
+            self.content = content
+
+        def save(self, target, format=None):
+            state.png_encodings += 1
+            content = self.content + (str(state.png_encodings).encode() if state.vary_png else b"")
+            if hasattr(target, "write"):
+                target.write(content)
+            else:
+                Path(target).write_bytes(content)
+
+    class InputImage:
+        size = (16, 16)
+        format = "PNG"
+
+        def convert(self, _mode):
+            return self
+
+        def resize(self, _size):
+            return self
+
+        def verify(self):
+            pass
+
+        def load(self):
+            pass
+
+        def close(self):
+            pass
+
+    def pipeline(**_kwargs):
+        state.calls += 1
+        content = f"generated-{state.calls}".encode()
+        return types.SimpleNamespace(images=[OutputImage(content)], frames=[[content]])
+
+    image = types.ModuleType("PIL.Image")
+    image.open = lambda _stream: InputImage()
+    pil = types.ModuleType("PIL")
+    pil.Image = image
+    utils = types.ModuleType("diffusers.utils")
+
+    def export(frames, path, fps=8):
+        Path(path).write_bytes(frames[0])
+        if state.video_hook:
+            state.video_hook(Path(path))
+
+    utils.export_to_video = export
+    diffusers = types.ModuleType("diffusers")
+    diffusers.utils = utils
+    for name, value in {"torch": types.ModuleType("torch"), "PIL": pil, "PIL.Image": image,
+                        "diffusers": diffusers, "diffusers.utils": utils}.items():
+        monkeypatch.setitem(sys.modules, name, value)
+    module._load_pipeline = lambda *_args, **_kwargs: pipeline
+    monkeypatch.setattr(module, "OUTPUTS_DIR", outputs)
+    monkeypatch.setattr(module, "time", types.SimpleNamespace(monotonic=lambda: 100.0, time=lambda: 1234567890))
+
+    def generate(kind):
+        body = {"model": "tiny-video" if kind == "video" else "tiny-image", "steps": 2}
+        if kind == "video":
+            body.update(image=TINY_PNG_BASE64, num_frames=4, fps=6)
+        elif kind == "img2img":
+            body.update(prompt="test", image=TINY_PNG_BASE64, strength=0.5)
+        else:
+            body.update(prompt="test", width=16, height=16)
+        with _client(module) as client:
+            return client.post("/v1/generate/" + kind, json=body)
+
+    state.generate = generate
+    return state
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "img2img"])
+@pytest.mark.parametrize("existing", ["regular", "symlink", "hardlink"])
+def test_generation_preserves_preexisting_timestamp_targets(generated_output_case, tmp_path, kind, existing):
+    case = generated_output_case
+    old_name = {"image": "gen_1234567890_0.png", "video": "gen_1234567890.mp4",
+                "img2img": "img2img_1234567890.png"}[kind]
+    target = case.outputs / old_name
+    victim = tmp_path / "existing-data"
+    victim.write_bytes(b"preserve existing data")
+    if existing == "regular":
+        target.write_bytes(b"preserve existing data")
+    elif existing == "symlink":
+        target.symlink_to(victim)
+    else:
+        os.link(victim, target)
+    response = case.generate(kind)
+    assert response.status_code == 200
+    assert victim.read_bytes() == b"preserve existing data"
+    assert target.read_bytes() == b"preserve existing data"
+    payload = response.get_json()
+    saved = payload["saved_to"][0] if kind == "image" else payload["saved_to"]
+    assert Path(saved) != target and Path(saved).read_bytes() == b"generated-1"
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "img2img"])
+def test_generations_in_same_second_keep_both_outputs(generated_output_case, kind):
+    case = generated_output_case
+    first = case.generate(kind)
+    assert first.status_code == 200
+    first_saved = first.get_json()["saved_to"]
+    first_path = Path(first_saved[0] if kind == "image" else first_saved)
+    second = case.generate(kind)
+    assert second.status_code == 200
+    second_saved = second.get_json()["saved_to"]
+    second_path = Path(second_saved[0] if kind == "image" else second_saved)
+    assert first_path != second_path
+    assert first_path.read_bytes() == b"generated-1" and second_path.read_bytes() == b"generated-2"
+
+
+def test_failed_video_export_never_publishes_partial_output(generated_output_case):
+    case = generated_output_case
+
+    def fail(_path):
+        raise OSError("synthetic encoder failure after partial write")
+
+    case.video_hook = fail
+    response = case.generate("video")
+    assert response.status_code == 500
+    assert list(case.outputs.iterdir()) == []
+
+
+def test_video_serializer_path_replacement_cannot_leak_other_file(generated_output_case, tmp_path):
+    import base64
+    case = generated_output_case
+    victim = tmp_path / "private-fixture-data"
+    victim.write_bytes(b"PRIVATE-FIXTURE-DATA")
+
+    def replace(path):
+        path.rename(path.with_suffix(".moved"))
+        path.symlink_to(victim)
+
+    case.video_hook = replace
+    response = case.generate("video")
+    assert base64.b64encode(victim.read_bytes()).decode() not in response.get_data(as_text=True)
+    assert response.status_code != 200
+    assert victim.read_bytes() == b"PRIVATE-FIXTURE-DATA"
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "img2img"])
+def test_generation_rejects_linked_output_root(generated_output_case, tmp_path, kind):
+    case = generated_output_case
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    case.outputs.rmdir()
+    case.outputs.symlink_to(outside, target_is_directory=True)
+    response = case.generate(kind)
+    assert response.status_code != 200
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["image", "img2img"])
+def test_generated_png_publishes_exact_response_encoding_once(generated_output_case, kind):
+    import base64
+    case = generated_output_case
+    case.vary_png = True
+    response = case.generate(kind)
+    assert response.status_code == 200
+    result = response.get_json()
+    saved = Path(result["saved_to"][0] if kind == "image" else result["saved_to"])
+    encoded = result["images"][0] if kind == "image" else result["image"]
+    assert saved.read_bytes() == base64.b64decode(encoded)
+    assert case.png_encodings == 1
+
+
+def test_video_stays_private_and_unlisted_until_encoder_completes(generated_output_case):
+    import stat
+    case = generated_output_case
+    observed = {}
+
+    def during_export(path):
+        observed["parent_is_output_root"] = path.parent.resolve() == case.outputs.resolve()
+        info = path.parent.stat()
+        observed["private_access"] = stat.S_IMODE(info.st_mode) & 0o077 == 0
+        observed["owner"] = info.st_uid
+        with _client(case.module) as client:
+            listing = client.get("/v1/outputs")
+            observed["status"] = listing.status_code
+            observed["listed"] = listing.get_json()
+
+    case.video_hook = during_export
+    response = case.generate("video")
+    assert response.status_code == 200
+    assert observed == {"parent_is_output_root": False, "private_access": True,
+                        "owner": os.geteuid(), "status": 200, "listed": []}
+    assert Path(response.get_json()["saved_to"]).is_file()
+
+
+@pytest.mark.parametrize("kind", ["image", "video", "img2img"])
+def test_generated_output_preserves_umask_and_output_group(generated_output_case, kind):
+    import stat
+    case = generated_output_case
+    group = next((gid for gid in os.getgroups() if gid != os.getgid()), os.getgid())
+    os.chown(case.outputs, -1, group)
+    case.outputs.chmod(0o2770)
+    original_umask = os.umask(0o027)
+    try:
+        response = case.generate(kind)
+    finally:
+        os.umask(original_umask)
+    assert response.status_code == 200
+    result = response.get_json()["saved_to"]
+    saved = Path(result[0] if kind == "image" else result)
+    info = saved.stat()
+    assert info.st_uid == os.geteuid() and info.st_gid == group
+    assert stat.S_IMODE(info.st_mode) == 0o640 and info.st_nlink == 1
+    assert list(case.outputs.iterdir()) == [saved]
+
+
+def test_output_publication_late_collision_preserves_other_file(generated_output_case, monkeypatch):
+    case = generated_output_case
+    original = case.module._rename_output_no_replace
+    collision = []
+
+    def create_collision(source, name, target, filename):
+        path = case.outputs / filename
+        path.write_bytes(b"concurrent existing output")
+        collision.append(path)
+        original(source, name, target, filename)
+
+    monkeypatch.setattr(case.module, "_rename_output_no_replace", create_collision)
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"new output")
+    assert error.value.published is False and error.value.cleanup_ambiguous is False
+    assert collision[0].read_bytes() == b"concurrent existing output"
+    assert list(case.outputs.iterdir()) == collision
+
+
+def test_output_publication_error_after_rename_reports_actual_publication(generated_output_case, monkeypatch):
+    case = generated_output_case
+    original = case.module._rename_output_no_replace
+
+    def after_rename(*args):
+        original(*args)
+        raise OSError("synthetic post-rename reporting failure")
+
+    monkeypatch.setattr(case.module, "_rename_output_no_replace", after_rename)
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"complete output")
+    assert error.value.published is True
+    files = list(case.outputs.glob("*.png"))
+    assert len(files) == 1 and files[0].read_bytes() == b"complete output"
+
+
+def test_output_publication_unknown_rename_preserves_replacement(generated_output_case, monkeypatch):
+    case = generated_output_case
+    original = case.module._rename_output_no_replace
+    replacement = []
+
+    def after_rename(source, name, target, filename):
+        original(source, name, target, filename)
+        path = case.outputs / filename
+        path.unlink()
+        path.write_bytes(b"unrelated replacement")
+        replacement.append(path)
+        raise OSError("synthetic unknown rename result")
+
+    monkeypatch.setattr(case.module, "_rename_output_no_replace", after_rename)
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"complete output")
+    assert error.value.published is None
+    assert replacement[0].read_bytes() == b"unrelated replacement"
+
+
+def test_output_publication_handles_short_writes(generated_output_case, monkeypatch):
+    case = generated_output_case
+    original = os.write
+
+    def short(fd, data):
+        return original(fd, data[:2])
+
+    monkeypatch.setattr(case.module.os, "write", short)
+    path, data = case.module._publish_output("gen", ".png", content=b"complete encoded bytes")
+    assert path.read_bytes() == data == b"complete encoded bytes"
+    assert list(case.outputs.iterdir()) == [path]
+
+
+def test_output_publication_cancellation_cleans_only_private_work(generated_output_case):
+    case = generated_output_case
+    existing = case.outputs / "existing.png"
+    existing.write_bytes(b"existing data")
+
+    def cancel(path):
+        Path(path).write_bytes(b"partial output")
+        raise KeyboardInterrupt("synthetic cancellation")
+
+    with pytest.raises(KeyboardInterrupt):
+        case.module._publish_output("gen", ".mp4", serialize=cancel)
+    assert list(case.outputs.iterdir()) == [existing]
+    assert existing.read_bytes() == b"existing data"
+
+
+def test_output_publication_preserves_unknown_workspace_entries(generated_output_case):
+    case = generated_output_case
+    unknown = []
+
+    def produce(path):
+        path = Path(path)
+        path.write_bytes(b"complete output")
+        extra = path.parent / "unrelated"
+        extra.write_bytes(b"preserve unknown data")
+        unknown.append(extra.resolve())
+
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".mp4", serialize=produce)
+    assert error.value.cleanup_ambiguous is True
+    assert unknown[0].read_bytes() == b"preserve unknown data"
+
+
+@pytest.mark.parametrize("after_publication", [False, True])
+def test_output_publication_sync_failure_preserves_published_data(generated_output_case, monkeypatch,
+                                                                after_publication):
+    case = generated_output_case
+    original_sync = os.fsync
+    original_rename = case.module._rename_output_no_replace
+    state = {"renamed": False, "failed": False}
+
+    def rename(*args):
+        original_rename(*args)
+        state["renamed"] = True
+
+    def sync(fd):
+        if not state["failed"] and state["renamed"] is after_publication:
+            state["failed"] = True
+            raise OSError("synthetic sync failure")
+        return original_sync(fd)
+
+    monkeypatch.setattr(case.module, "_rename_output_no_replace", rename)
+    monkeypatch.setattr(case.module.os, "fsync", sync)
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"complete output")
+    assert state["failed"] and error.value.published is after_publication
+    entries = list(case.outputs.iterdir())
+    assert len(entries) == (1 if after_publication else 0)
+    if entries:
+        assert entries[0].read_bytes() == b"complete output"
+
+
+def test_output_publication_checks_post_sync_metadata_changes(generated_output_case, monkeypatch):
+    case = generated_output_case
+    original = os.fsync
+    changed = []
+
+    def sync(fd):
+        result = original(fd)
+        files = list(case.outputs.glob("*.png"))
+        if files and not changed:
+            os.setxattr(files[0], "user.publication-probe", b"changed")
+            changed.append(files[0])
+        return result
+
+    monkeypatch.setattr(case.module.os, "fsync", sync)
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"complete output")
+    assert error.value.published is True
+    assert len(changed) == 1 and changed[0].read_bytes() == b"complete output"
+
+
+def test_output_publication_does_not_create_missing_vault_root(generated_output_case):
+    case = generated_output_case
+    case.outputs.rmdir()
+    with pytest.raises(case.module._OutputPublicationError) as error:
+        case.module._publish_output("gen", ".png", content=b"complete output")
+    assert error.value.published is False and not case.outputs.exists()
+
+
 def test_max_content_length_applies_in_wsgi_mode():
     module = _load_module()
     assert module.app.config["MAX_CONTENT_LENGTH"] == 24 * 1024 * 1024
@@ -625,8 +1008,9 @@ def test_generate_video_honors_requested_dimensions_for_image_conditioned_models
     assert resp.status_code == 200
     assert calls["kwargs"]["width"] == 48
     assert calls["kwargs"]["height"] == 48
-    assert Path(calls["export"]["path"]).exists()
     payload = resp.get_json()
+    assert not Path(calls["export"]["path"]).exists()
+    assert Path(payload["saved_to"]).is_file()
     assert payload["parameters"]["image_conditioned"] is True
     assert payload["saved_to"].endswith(".mp4")
 

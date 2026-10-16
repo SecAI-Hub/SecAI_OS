@@ -168,6 +168,9 @@ def worker(tmp_path, monkeypatch):
     monkeypatch.setenv("SERVICE_TOKEN_PATH", str(service))
     monkeypatch.setenv("ATTESTOR_TOKEN_PATH", str(attestor))
     monkeypatch.setenv("REGISTRY_VERIFY_TOKEN_PATH", str(credential))
+    # Vault setup provisions this directory before native writers start.
+    # Generation must not recreate a missing or unmounted vault path.
+    (tmp_path / "outputs").mkdir()
     monkeypatch.setenv("OUTPUTS_DIR", str(tmp_path / "outputs"))
     monkeypatch.delenv("SECURE_AI_DEPLOYMENT_MODE", raising=False)
     spec = importlib.util.spec_from_file_location("diffusion_integrity_worker", ROOT / "services/diffusion-worker/app.py")

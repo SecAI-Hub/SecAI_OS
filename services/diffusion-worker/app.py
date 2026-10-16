@@ -8,15 +8,20 @@ Models are loaded locally from the registry; runtime admission does not verify m
 
 import base64
 import binascii
+import ctypes
+import errno
 import hmac
 import io
 import json
 import logging
 import os
+import secrets
 import stat
+import sys
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -708,6 +713,221 @@ def _open_output_file(root: int, filename: str) -> tuple[int, os.stat_result]:
             os.close(descriptor)
 
 
+class _OutputPublicationError(OSError):
+    def __init__(self, detail: str, *, published: bool | None, cleanup_ambiguous: bool):
+        self.published = published
+        self.cleanup_ambiguous = cleanup_ambiguous
+        super().__init__(detail)
+
+
+def _output_identity(info: os.stat_result) -> tuple:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid,
+            info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _output_directory_identity(fd: int) -> tuple:
+    info = os.fstat(fd)
+    return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
+
+
+def _output_label(fd: int) -> bytes | None:
+    try:
+        return os.getxattr(fd, "security.selinux")
+    except OSError as exc:
+        if exc.errno not in (errno.ENODATA, errno.ENOTSUP):
+            raise
+        return None
+
+
+def _rename_output_no_replace(source: int, name: str, target: int, filename: str) -> None:
+    # Same Linux primitive as the agent storage gateway; no overwrite fallback.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise OSError(errno.ENOTSUP, "atomic output publication unavailable")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(source, os.fsencode(name), target, os.fsencode(filename), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _publish_output(prefix: str, suffix: str, *, content: bytes | None = None,
+                    serialize: Callable[[str], None] | None = None) -> tuple[Path, bytes]:
+    """Publish one complete output; a batch is not an all-or-nothing transaction.
+
+    Stage/entry checks reject observed swaps, not arbitrary same-UID writers
+    racing the final check and rename/rmdir. Cleanup never recurses or removes
+    an unknown entry. Once publication occurs, failure never rolls it back.
+    """
+    root = stage = payload = -1
+    staging: str | None = None
+    stage_identity = created = None
+    published: bool | None = False
+    ambiguous = rename_attempted = False
+    failure = None
+    result = b""
+    filename = f"{prefix}_{int(time.time())}_{secrets.token_hex(16)}{suffix}"
+    payload_name = "payload" + suffix
+
+    def check_stage():
+        if staging is None:
+            raise OSError("private output workspace unavailable; cleanup ambiguous")
+        held = _output_directory_identity(stage)
+        current = os.stat(staging, dir_fd=root, follow_symlinks=False)
+        named = (current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_gid)
+        if (held != stage_identity or named != stage_identity or held[3] != os.geteuid()
+                or not stat.S_ISDIR(held[2]) or stat.S_IMODE(held[2]) & 0o777 != 0o700):
+            raise OSError("private output workspace changed; cleanup ambiguous")
+
+    def check_payload(directory, name, expected=None):
+        held = os.fstat(payload)
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        value = _output_identity(held)
+        if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                or (held.st_dev, held.st_ino) != created or _output_identity(named) != value
+                or expected is not None and value != expected):
+            raise OSError("output payload changed or is not singly linked; cleanup ambiguous")
+        return value
+
+    def check_root():
+        _validate_output_root(root)
+        if _output_directory_identity(root) != root_identity:
+            raise OSError("output directory metadata changed")
+
+    def publication_state() -> bool | None:
+        # A trusted syscall wrapper can raise after rename already succeeded.
+        # Classify only names bound to our still-held original payload inode.
+        try:
+            held = os.fstat(payload)
+            if (held.st_dev, held.st_ino) != created or not stat.S_ISREG(held.st_mode):
+                return None
+            for directory, name, state in ((root, filename, True), (stage, payload_name, False)):
+                try:
+                    named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if ((named.st_dev, named.st_ino, stat.S_IFMT(named.st_mode), named.st_uid) ==
+                        (held.st_dev, held.st_ino, stat.S_IFMT(held.st_mode), held.st_uid)):
+                    return state
+        except OSError:
+            return None
+        return None
+
+    try:
+        if sys.platform != "linux" or (content is None) == (serialize is None):
+            raise OSError("output publication requires Linux and one trusted producer")
+        if (prefix, suffix) not in {("gen", ".png"), ("gen", ".mp4"), ("img2img", ".png")}:
+            raise OSError("unsupported generated output name")
+        root = _open_output_root()
+        root_identity = _output_directory_identity(root)
+        candidate = ".diffusion-write-" + secrets.token_hex(16)
+        os.mkdir(candidate, 0o700, dir_fd=root)
+        staging = candidate
+        stage = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
+        stage_identity = _output_directory_identity(stage)
+        check_stage()  # Inherited setgid is compatible with private access 0700.
+        if _output_label(stage) != _output_label(root):
+            raise OSError("output workspace changes the parent SELinux context")
+        # Keep normal creation mode, umask, inherited group/default ACL semantics;
+        # the private workspace prevents exposure until publication.
+        payload = os.open(payload_name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                          0o666, dir_fd=stage)
+        info = os.fstat(payload)
+        created = info.st_dev, info.st_ino
+        if serialize is not None:
+            # Child encoders can resolve the parent's held directory descriptor
+            # without inheriting it or traversing the replaceable public root.
+            serialize(f"/proc/{os.getpid()}/fd/{stage}/{payload_name}")
+        else:
+            assert content is not None
+            view = memoryview(content)
+            while view:
+                count = os.write(payload, view)
+                if count <= 0:
+                    raise OSError("short output write")
+                view = view[count:]
+        prepared = check_payload(stage, payload_name)
+        os.lseek(payload, 0, os.SEEK_SET)
+        if content is None:
+            with os.fdopen(os.dup(payload), "rb") as stream:
+                result = stream.read()
+        else:
+            offset = 0
+            while chunk := os.read(payload, 1024**2):
+                if chunk != content[offset:offset + len(chunk)]:
+                    raise OSError("encoded PNG differs from staged output")
+                offset += len(chunk)
+            if offset != len(content):
+                raise OSError("incomplete encoded PNG output")
+            result = content
+        check_payload(stage, payload_name, prepared)
+        os.fsync(payload)
+        check_root()
+        check_stage()
+        check_payload(stage, payload_name, prepared)
+        rename_attempted = True
+        _rename_output_no_replace(stage, payload_name, root, filename)
+        published = True
+        # Rename may change ctime; all other prepared inode/data metadata stays.
+        published_identity = check_payload(root, filename)
+        if published_identity[:-1] != prepared[:-1]:
+            raise OSError("published output changed")
+        os.fsync(stage)
+        os.fsync(root)
+        check_root()
+    except BaseException as exc:  # noqa: BLE001 - cancellation must also clean proven private work.
+        failure = exc
+        if rename_attempted and published is False:
+            published = publication_state()
+    finally:
+        try:
+            if published is None:
+                raise OSError("publication state unknown; cleanup ambiguous")
+            if staging is not None:
+                if stage < 0 or stage_identity is None:
+                    raise OSError("workspace ownership unverified; cleanup ambiguous")
+                check_stage()
+                try:
+                    os.stat(payload_name, dir_fd=stage, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if payload < 0 or created is None:
+                        raise OSError("payload ownership unverified; cleanup ambiguous")
+                    check_payload(stage, payload_name)
+                    os.unlink(payload_name, dir_fd=stage)
+                check_stage()
+                os.rmdir(staging, dir_fd=root)
+                staging = None
+                os.fsync(root)
+            if published and failure is None:
+                check_root()
+                check_payload(root, filename, published_identity)
+        except OSError as exc:
+            ambiguous = True
+            if failure is None or isinstance(failure, Exception):
+                failure = OSError(f"{failure or ''}; output cleanup/final validation failed: {exc}")
+            else:
+                log.error("output cleanup failed during cancellation: %s", exc)
+        finally:
+            for fd in (payload, stage, root):
+                if fd >= 0:
+                    os.close(fd)
+    if failure is not None:
+        if not isinstance(failure, Exception):
+            raise failure
+        if published is None:
+            detail = "output publication state unknown; durability or identity unconfirmed"
+        else:
+            detail = "output published; durability or identity unconfirmed" if published else "output not published"
+        if ambiguous:
+            detail += "; cleanup ambiguous; private workspace retained where present"
+        raise _OutputPublicationError(detail, published=published,
+                                      cleanup_ambiguous=ambiguous) from failure
+    return OUTPUTS_DIR / filename, result
+
+
 @app.route("/v1/outputs")
 def list_outputs():
     """List only real generated outputs belonging to the anchored directory."""
@@ -837,17 +1057,13 @@ def generate_image():
 
         images_b64 = []
         saved_paths = []
-        for i, img in enumerate(result.images):
+        for img in result.images:
             # Encode to base64 PNG
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            images_b64.append(base64.b64encode(buf.getvalue()).decode())
-
-            # Save to outputs
-            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-            ts = int(time.time())
-            out_path = OUTPUTS_DIR / f"gen_{ts}_{i}.png"
-            img.save(str(out_path))
+            encoded = buf.getvalue()
+            images_b64.append(base64.b64encode(encoded).decode())
+            out_path, _ = _publish_output("gen", ".png", content=encoded)
             saved_paths.append(str(out_path))
 
         log.info("generated %d image(s) in %.2fs model=%s", num_images, elapsed, model_info["name"])
@@ -871,6 +1087,9 @@ def generate_image():
         return _model_denial()
     except runtime_assurance.RuntimeAssuranceUnavailable:
         return _runtime_denial()
+    except _OutputPublicationError as exc:
+        log.exception("image output publication failed")
+        return jsonify({"error": str(exc)}), 500
     except Exception:
         log.exception("image generation failed")
         return jsonify({"error": "image generation failed"}), 500
@@ -970,15 +1189,11 @@ def generate_video():
             )
         elapsed = round(time.monotonic() - start, 2)
 
-        # Export video
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        out_path = OUTPUTS_DIR / f"gen_{ts}.mp4"
-        export_to_video(result.frames[0], str(out_path), fps=fps)
-
-        # Read and encode
-        with open(out_path, "rb") as f:
-            video_b64 = base64.b64encode(f.read()).decode()
+        # Serialize privately and encode the same held inode that is published.
+        out_path, encoded = _publish_output(
+            "gen", ".mp4", serialize=lambda path: export_to_video(result.frames[0], path, fps=fps),
+        )
+        video_b64 = base64.b64encode(encoded).decode()
 
         log.info("generated video in %.2fs model=%s frames=%d", elapsed, model_info["name"], num_frames)
 
@@ -1003,6 +1218,9 @@ def generate_video():
         return _model_denial()
     except runtime_assurance.RuntimeAssuranceUnavailable:
         return _runtime_denial()
+    except _OutputPublicationError as exc:
+        log.exception("video output publication failed")
+        return jsonify({"error": str(exc)}), 500
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
@@ -1076,12 +1294,9 @@ def generate_img2img():
 
         buf = io.BytesIO()
         result.images[0].save(buf, format="PNG")
-        out_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        out_path = OUTPUTS_DIR / f"img2img_{ts}.png"
-        result.images[0].save(str(out_path))
+        encoded = buf.getvalue()
+        out_b64 = base64.b64encode(encoded).decode()
+        out_path, _ = _publish_output("img2img", ".png", content=encoded)
 
         log.info("img2img in %.2fs model=%s", elapsed, model_info["name"])
 
@@ -1096,6 +1311,9 @@ def generate_img2img():
         return _model_denial()
     except runtime_assurance.RuntimeAssuranceUnavailable:
         return _runtime_denial()
+    except _OutputPublicationError as exc:
+        log.exception("img2img output publication failed")
+        return jsonify({"error": str(exc)}), 500
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
