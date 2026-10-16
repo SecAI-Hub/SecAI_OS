@@ -210,9 +210,6 @@ rollback() {
     exit 1
 }
 
-trap 'rollback "unexpected error on line $LINENO"' ERR
-trap 'rollback "interrupted by signal"' INT TERM
-
 # ---------------------------------------------------------------------------
 # Audit helper
 # ---------------------------------------------------------------------------
@@ -244,6 +241,11 @@ if ! flock -n 9; then
     echo "ERROR: Another diffusion install is already in progress" >&2
     exit 1
 fi
+
+# Rollback changes shared runtime state. Arm it only after this process owns
+# installation; a lock-open failure must never tear down somebody else's work.
+trap 'rollback "unexpected error on line $LINENO"' ERR
+trap 'rollback "interrupted by signal"' INT TERM
 
 # ---------------------------------------------------------------------------
 # Step 1: Validate platform against manifest
