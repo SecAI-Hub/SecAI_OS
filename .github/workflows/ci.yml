@@ -117,16 +117,16 @@ jobs:
           python -m py_compile services/agent/agent/storage.py
           python -m py_compile services/agent/agent/capabilities.py
           python -m py_compile services/agent/agent/sandbox.py
-          python -m py_compile files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py
+          python -m py_compile files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-data-namespace,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py
 
       - name: Ruff lint
-        run: ruff check services/ tests/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py --select E,F,W --ignore E501,E402
+        run: ruff check services/ tests/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-data-namespace,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py --select E,F,W --ignore E501,E402
 
       - name: Bandit security scan
         run: |
           # Fail on high-severity + high-confidence findings.
           # Medium/low findings are reported as warnings.
-          bandit -r services/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py -ll --skip B101,B404,B603 -f json -o /tmp/bandit.json || true
+          bandit -r services/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-data-namespace,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py -ll --skip B101,B404,B603 -f json -o /tmp/bandit.json || true
           python3 -c "
           import json, sys
           with open('/tmp/bandit.json') as f:
@@ -170,7 +170,7 @@ jobs:
             services/agent/agent/ \
             services/quarantine/quarantine/ \
             services/ui/ui/ \
-            files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py
+            files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-data-namespace,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py
 
       - name: Test (unit + integration)
         env:
@@ -995,7 +995,7 @@ jobs:
       - name: Bandit (release-strict)
         run: |
           # On release branches: fail on ANY high-severity finding regardless of confidence
-          bandit -r services/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py -ll --skip B101,B404,B603 -f json -o /tmp/bandit-release.json || true
+          bandit -r services/ files/system/usr/libexec/secure-ai/{secure-backup-archive,secure-backup-inventory,secure-backup-v3,secure-maintenance-guard,secure-recovery-transaction,secure-native-generation-metadata,secure-native-generation-stage,secure-native-writer-scope,secure-data-namespace,secure-backup-class-tree,vault-operation-lock,vault-mount-control,vault-watchdog,tor-start-check,network-profile}.py -ll --skip B101,B404,B603 -f json -o /tmp/bandit-release.json || true
           python3 -c "
           import json, sys
           with open('/tmp/bandit-release.json') as f:

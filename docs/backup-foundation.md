@@ -49,6 +49,24 @@ separate requirement before live generation work. Generated boot units, arbitrar
 mount/installer changes and global fencing remain outside this selected scope;
 it cannot authorize active restore.
 
+The internal `secure-data-namespace.py` factory supplies a separate root-prehook
+namespace capability for only those five installed roles. It checks PID1's exact
+canonical unit, ControlPID, start-pre state, invocation and containment against
+the caller's own kernel cgroup and mount namespace. Only mount IDs may differ in
+a Gate root rebind; device/inode, root:root ownership and private 0700 mode must
+agree. Observed binding failure permanently invalidates that capability. Its
+clock requires the fixed `/run/secure-ai-data-boot-id` read-only bind to the actual
+proc kernel boot-ID file, checking mount identity/path, file ownership/type/mode,
+strict UUID bytes and agreement with the original proc path whenever visible.
+Every user of this clock must supply that fixed read-only bind; an ordinary host
+placeholder is never a substitute. It preserves the kernel BOOTTIME clock/domain.
+The capability has a ten-second logical lifetime; a running PID1 query can exceed
+the remaining budget by its existing ten-second timeout, but cannot then authorize
+success. This read-only helper neither admits a writer nor changes Gate state:
+Gate/NativeDataGate must still reject closed, stale, incomplete or unverified
+history. Unit hook installation, FDSTORE/lifetime handoff, authority provisioning,
+boot readiness and native MAC qualification remain separate required integration.
+
 The internal `secure-native-generation-metadata.py` planner keeps existing
 generation metadata separate from incoming metadata. Existing ownership, modes
 and SELinux labels are read from pinned descriptors without changing them.
