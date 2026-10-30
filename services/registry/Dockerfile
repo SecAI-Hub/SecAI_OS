@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /registry . && \
     CGO_ENABLED=0 go build -o /secai-registryctl ./cmd/securectl/
 
-FROM docker.io/library/alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 RUN apk add --no-cache ca-certificates
 COPY --from=build /registry /usr/local/bin/registry
 COPY --from=build /secai-registryctl /usr/local/bin/secai-registryctl
