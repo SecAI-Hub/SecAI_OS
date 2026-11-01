@@ -9,7 +9,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "gunicorn==26.2.0",
     "pip==26.2.1",
-    "setuptools==84.0.0",
+    "setuptools==84.1.0",
     "wheel==0.48.0",
 ]
 
@@ -17,7 +17,7 @@ dependencies = [
 secure-ai-ui = "ui.app:main"
 
 [build-system]
-requires = ["setuptools==84.0.0"]
+requires = ["setuptools==84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
